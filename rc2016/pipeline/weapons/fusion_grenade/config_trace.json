@@ -1,0 +1,58 @@
+{
+  "asset_id": "945a11a8211e07f98fdf",
+  "path": "configs/equipment/wpn_fusion_grenade_weapon.config",
+  "sha256": "0e279bd053848baefd5fbe005d7a0d0d0d9453bb01737895ce4bc8e073776646",
+  "decoded_size": 10848,
+  "section": "0xE501186F",
+  "section_span": [
+    3280,
+    10816
+  ],
+  "fields": {
+    "GloveUpgradeModel": {
+      "field": "GloveUpgradeModel",
+      "field_reference_span": [
+        3468,
+        3472
+      ],
+      "field_name_span": [
+        127,
+        144
+      ],
+      "field_name_reference": 127,
+      "node_type": 10,
+      "value_span": [
+        10004,
+        10142
+      ],
+      "encoded_value_span": [
+        9988,
+        10144
+      ],
+      "value": "character/hero/hero_Ratchet/Bangle_Set/hero_Ratchet_Bangle_Glove_RT_Fusion_Grenade_V5/hero_Ratchet_Bangle_Glove_RT_Fusion_Grenade_V5.model"
+    },
+    "GloveModelOverride": {
+      "field": "GloveModelOverride",
+      "field_reference_span": [
+        3472,
+        3476
+      ],
+      "field_name_span": [
+        145,
+        163
+      ],
+      "field_name_reference": 145,
+      "node_type": 10,
+      "value_span": [
+        10160,
+        10292
+      ],
+      "encoded_value_span": [
+        10144,
+        10296
+      ],
+      "value": "character/hero/hero_Ratchet/Bangle_Set/hero_Ratchet_Bangle_Glove_RT_Fusion_Grenade/hero_Ratchet_Bangle_Glove_RT_Fusion_Grenade.model"
+    }
+  },
+  "field_interpretation": "serialized config field labels and paths; override/upgrade roles recorded as config roles, not inferred V1/V5 runtime behavior"
+}

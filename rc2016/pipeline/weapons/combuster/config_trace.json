@@ -1,0 +1,58 @@
+{
+  "asset_id": "993b32a5f4bb1fc65031",
+  "path": "configs/equipment/wpn_blaster_weapon.config",
+  "sha256": "437a7b6a33e9053a44e2921e2a53b8d1e61fe6a0cf05eb67b10da6ae562d61f4",
+  "decoded_size": 6924,
+  "section": "0xE501186F",
+  "section_span": [
+    1968,
+    6884
+  ],
+  "fields": {
+    "DefaultSkinModels": {
+      "field": "DefaultSkinModels",
+      "field_reference_span": [
+        2188,
+        2192
+      ],
+      "field_name_span": [
+        127,
+        144
+      ],
+      "field_name_reference": 127,
+      "node_type": 10,
+      "value_span": [
+        6004,
+        6115
+      ],
+      "encoded_value_span": [
+        5988,
+        6116
+      ],
+      "value": "equipment/weapon/wpn_Blaster_Combuster/Bangle_Set/Bangle_V1_Barrel/wpn_Blaster_Combuster_Bangle_V1_Barrel.model"
+    },
+    "UpgradedSkinModels": {
+      "field": "UpgradedSkinModels",
+      "field_reference_span": [
+        2192,
+        2196
+      ],
+      "field_name_span": [
+        145,
+        163
+      ],
+      "field_name_reference": 145,
+      "node_type": 10,
+      "value_span": [
+        6132,
+        6243
+      ],
+      "encoded_value_span": [
+        6116,
+        6244
+      ],
+      "value": "equipment/weapon/wpn_Blaster_Combuster/Bangle_Set/Bangle_V5_Barrel/wpn_Blaster_Combuster_Bangle_V5_Barrel.model"
+    }
+  },
+  "method": "Instrumented ConfigContentSection._deserialize_object and _deserialize_string in memory; child offset array maps field-name references, call stack assigns inline NT_STRING payload span to active field."
+}

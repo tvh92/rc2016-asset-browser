@@ -34,7 +34,7 @@ Clone into a short path. Some file names are 64-character hashes, so a deep fold
 From the repository folder:
 
 ```bash
-py Animation/rc2016_asset_browser_gui.py
+py rc2016/app/main.py
 ```
 
 1. Set **Source** to the extracted game folder and **Output** to an empty folder for exports and the asset index.
@@ -47,7 +47,7 @@ Viewer controls: left-drag orbits, right-drag pans, the mouse wheel zooms, and d
 The standalone level viewer:
 
 ```bash
-py Animation/pipeline/Research/AssetBrowserReview/level_viewer.py
+py rc2016/levels/viewer.py
 ```
 
 Use `pythonw` instead of `py` to launch without a console window.
@@ -56,30 +56,30 @@ Use `pythonw` instead of `py` to launch without a console window.
 
 | Path | Contents |
 | --- | --- |
-| `Animation/rc2016_asset_browser_gui.py` | Main window, scan/export batch runners, settings |
+| `rc2016/app/main.py` | Main window, scan/export batch runners, settings |
 | `Animation/pipeline/Research/AssetBrowserReview/` | Viewer: 3D viewport and GLSL shading, textures, levels, Flash UI, model export |
 | `Animation/pipeline/` | Shared decoders (archive, native model, textures, materials, clips) and the Blender research-build pipeline (`run.py`, `builder.py`) |
 | `Animation/pipeline/Research/Levels/` | `.level`/`.zone` decoders |
 | `Animation/animation_*.py` | Packed animation decoder and sampler |
 | `Claude_shading_fix/` | RC PS4 deferred BRDF for Blender and the captured game-look view |
-| `blender_defaults.py`, `shared_lighting.json`, `golden_gate_hills_1k.exr` | Blender scene defaults and the shared review lighting |
+| `rc2016/pipeline/scene_defaults.py`, `assets/lighting/shared_lighting.json`, `assets/lighting/golden_gate_hills_1k.exr` | Blender scene defaults and the shared review lighting |
 | `Animation/pipeline/references/` | Third-party code used by the shader decoder (see below) |
 
 The folder layout and names come from the larger research project this repository was split from. Imports and file paths depend on them, so keep the layout.
 
 More detail:
 
-- [`Animation/pipeline/Research/AssetBrowserReview/README.md`](Animation/pipeline/Research/AssetBrowserReview/README.md): the viewer.
-- [`Animation/pipeline/README.md`](Animation/pipeline/README.md): the pipeline.
-- [`Animation/pipeline/Research/Levels/README.md`](Animation/pipeline/Research/Levels/README.md): levels.
-- [`Claude_shading_fix/README.md`](Claude_shading_fix/README.md): shading.
+- [`docs/viewer.md`](docs/viewer.md): the viewer.
+- [`docs/pipeline.md`](docs/pipeline.md): the pipeline.
+- [`docs/levels.md`](docs/levels.md): levels.
+- [`docs/shading.md`](docs/shading.md): shading.
 
 These READMEs cite research evidence that is not part of this repository.
 
 ## Tests
 
 ```bash
-py -m unittest Animation.test_rc2016_asset_browser_gui Animation.test_gui_batch_isolation Animation.test_gui_pipeline_backend
+py -m unittest tests.test_app tests.test_batch_isolation tests.test_pipeline_backend
 ```
 
 ```bash
@@ -90,12 +90,12 @@ Tests that need game files skip when those files are not present.
 
 ## Packaging
 
-`Animation/rc2016_asset_browser.spec` builds a single-file exe with PyInstaller (`pyinstaller --noconfirm --clean Animation/rc2016_asset_browser.spec`, run from the repository root). The exe still runs the pipeline from a checkout of this repository.
+`packaging/asset_browser.spec` builds a single-file exe with PyInstaller (`pyinstaller --noconfirm --clean packaging/asset_browser.spec`, run from the repository root). The exe still runs the pipeline from a checkout of this repository.
 
 ## Third-party code
 
 - `Animation/pipeline/references/ALERT/` (the `dat1lib` package only): [ALERT](https://github.com/Tkachov/ALERT) by Tkachov, GPL-3.0. See its `LICENSE.txt`.
-- `Animation/pipeline/references/opengnm/src/gcn/gcn_types.h`: opengnm, MIT. See its `LICENSE`.
-- `golden_gate_hills_1k.exr`: a downscaled copy of *Golden Gate Hills* from [Poly Haven](https://polyhaven.com/a/golden_gate_hills), CC0.
+- `third_party/opengnm/gcn_types.h`: opengnm, MIT. See its `LICENSE`.
+- `assets/lighting/golden_gate_hills_1k.exr`: a downscaled copy of *Golden Gate Hills* from [Poly Haven](https://polyhaven.com/a/golden_gate_hills), CC0.
 
 Ratchet & Clank is a trademark of Sony Interactive Entertainment. This is an unofficial fan tool for studying and preserving the game's assets, and it is not affiliated with Insomniac Games or Sony.
