@@ -197,6 +197,8 @@ Measured on an RTX 3060 (CPU frame time) in the research notes, for scale only:
 
 Frame cost is dominated by per-call ctypes overhead over the draw calls, not GPU work. All 286 Novalis models decode, including `tb_sewer_pipe_large_end`.
 
+For ranked structural candidates, dat1lib cross-checks and serialized schemas across the archive, see [corpus research](research.md). Inferred layouts remain hypotheses until independently decoded and validated.
+
 ## Known limitations
 
 - Materials: foliage shows as solid blobs (leaf cut-out not decoded); large planes whose materials have no `_c` texture draw flat white (some Novalis surfaces, Veldin's large ground / backdrop plane). Terrain layer textures and other layered or foliage graphs are not fully translated. The research notes counted 88 of 222 Novalis environment materials as unsupported graphs (colour-only fallbacks in the Blender path).

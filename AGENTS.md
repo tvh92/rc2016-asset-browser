@@ -9,6 +9,7 @@ A Windows desktop tool that reads the Ratchet & Clank (PS4, 2016) game archive d
 | `rc2016/app/` | Main window (`main.py`), browser UI (`browser.py`), background workers, saved-result catalog |
 | `rc2016/viewer/` | OpenGL viewport, GLSL shading, textures and per-graph material rules, animation playback, model loader |
 | `rc2016/levels/` | `.level`/`.zone` decoders and the level viewer |
+| `rc2016/research/` | Read-only corpus structural hypotheses and [research reports](docs/research.md) |
 | `rc2016/flash/` | Scaleform GFX renderer, Flash UI tab, planet-map export |
 | `rc2016/export/` | Portable model export and the Blender conversion script |
 | `rc2016/formats/` | Archive, asset index, native model, skeleton, texture, material and animation decoders |
