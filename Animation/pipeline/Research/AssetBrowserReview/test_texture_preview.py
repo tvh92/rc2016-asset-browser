@@ -1,8 +1,12 @@
+from pathlib import Path
 import struct
 import unittest
 
 from Animation.pipeline.Research.AssetBrowserReview import texture_preview as tp
 from Animation.pipeline.Research.AssetBrowserReview.source_preview import mesh_payload
+
+# Game source assets kept in the local research folders; they are not in git.
+MATERIALS = Path(__file__).resolve().parents[1] / 'Materials'
 
 
 class FakeArchive:
@@ -712,6 +716,7 @@ class TexturePreviewTests(unittest.TestCase):
         self.assertEqual(payload['triangles'][1], (3, 4, 5))
 
 
+@unittest.skipUnless((MATERIALS / 'RockBlend/source_assets').is_dir(), 'source assets are not present')
 class RockBlendTests(unittest.TestCase):
     def test_exact_rule_slots_overrides_and_siblings(self):
         from unittest.mock import patch
@@ -773,6 +778,7 @@ class RockBlendTests(unittest.TestCase):
 
 
 
+@unittest.skipUnless((MATERIALS / 'GroundPuddles/source_assets').is_dir(), 'source assets are not present')
 class GroundPuddlesTests(unittest.TestCase):
     def test_exact_graph_and_all_source_material_slots_params(self):
         from pathlib import Path

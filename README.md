@@ -21,6 +21,14 @@ A Windows desktop tool for browsing, viewing and exporting the assets of **Ratch
 py -m pip install pillow numpy lz4
 ```
 
+## Getting the code
+
+```bash
+git clone https://github.com/tvh92/rc2016-asset-browser.git C:/rc2016-asset-browser
+```
+
+Clone into a short path. Some file names are 64-character hashes, so a deep folder can exceed Windows' 260-character path limit.
+
 ## Running
 
 From the repository folder:
@@ -71,7 +79,11 @@ These READMEs cite research evidence that is not part of this repository.
 ## Tests
 
 ```bash
-py -m unittest Animation.test_rc2016_asset_browser_gui Animation.test_gui_batch_isolation Animation.test_gui_pipeline_backend Animation.pipeline.Research.AssetBrowserReview.test_catalog Animation.pipeline.Research.AssetBrowserReview.test_workers Animation.pipeline.Research.AssetBrowserReview.test_viewport Animation.pipeline.Research.AssetBrowserReview.test_texture_preview Animation.pipeline.Research.AssetBrowserReview.test_gfx_render Animation.pipeline.Research.AssetBrowserReview.test_level_view
+py -m unittest Animation.test_rc2016_asset_browser_gui Animation.test_gui_batch_isolation Animation.test_gui_pipeline_backend
+```
+
+```bash
+py -m unittest discover -s Animation/pipeline/Research/AssetBrowserReview -t . -p "test_*.py"
 ```
 
 Tests that need game files skip when those files are not present.
