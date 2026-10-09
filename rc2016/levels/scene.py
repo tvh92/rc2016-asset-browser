@@ -17,7 +17,7 @@ from rc2016.formats.archive import Archive, decompress, locate
 from rc2016.levels.level_format import decode_level
 from rc2016.levels.zone_format import decode_zone
 
-# The Blender assembler keeps these but hides them (Levels README, "Assembly").
+# The Blender assembler keeps these but hides them (docs/levels.md).
 HIDDEN_MARKERS = ('collision', 'environment/template/')
 
 
@@ -54,7 +54,7 @@ def level_list(archive):
 
 
 def level_zone_paths(archive, level_path):
-    """The zone asset paths a `.level` lists (Levels README, "Decoded: `.level`")."""
+    """The zone asset paths a `.level` lists (docs/levels.md)."""
     return [z.replace('\\', '/') for z in decode_level(asset_bytes(archive, level_path))['zones']]
 
 

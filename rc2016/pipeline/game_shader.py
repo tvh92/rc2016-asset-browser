@@ -1,6 +1,6 @@
 """Game-accurate opaque surface shader for Ratchet & Clank (PS4) assets in Blender.
 
-Derived from the shadPS4 RenderDoc capture shaders (see SHADING_LIGHTING_AUDIT.md):
+Derived from the shadPS4 RenderDoc capture shaders (see docs/shading.md):
   * G-buffer writer  fragment_6553  (_g = BC7 *sRGB*, alpha = gloss)
   * deferred lighting fragment_532  (GGX + Smith-Schlick + Schlick, Oren-Nayar diffuse)
 
@@ -798,7 +798,7 @@ def build_character_glass_group(force=False):
     alpha = (1.001-N.V)^P8 * (P10 + sat(P11 + sat(4*(1-N.V)^P13)))   (instance fade 0, attr0.w 1)
     F = (1.001-N.V)^P12,  T = sat(4*sqrt(1-N.V)).  A = "Attenuate background": 0 = additive
     (SRC_ALPHA, ONE), 1 = alpha-over (SRC_ALPHA, ONE_MINUS_SRC_ALPHA); set from the material's flags
-    word (render_state/README.md), never from the graph. Back faces are culled (flags bit 2 clear):
+    word (rc2016.pipeline.render_state), never from the graph. Back faces are culled (flags bit 2 clear):
     without the cull, back faces have N.V < 0, so alpha -> 1 and they block the view under alpha-over.
     """
     g = bpy.data.node_groups.get(GLASS_GROUP_NAME)
@@ -1588,25 +1588,6 @@ def apply_preflight_material(mat, source):
 
 
 # ----------------------------------------------------------------------------- lighting
-def apply_game_view(scene=None, view_json=None, exposure_stops=None):
-    """Use the captured tonemap view (install_rc_view.py) and the captured exposure."""
-    scene = scene or bpy.context.scene
-    vs = scene.view_settings
-    try:
-        vs.view_transform = "RC PS4 Game"
-    except TypeError:
-        raise RuntimeError("View 'RC PS4 Game' not found - start Blender with "
-                           "Launch-Blender-RC-View.bat produced by install_rc_view.py")
-    vs.look = "None"
-    vs.gamma = 1.0
-    if exposure_stops is None and view_json:
-        with open(view_json) as fh:
-            exposure_stops = json.load(fh).get("blender_exposure_stops")
-    if exposure_stops is not None:
-        vs.exposure = float(exposure_stops)
-    scene["rc_view"] = "captured R&C PS4 tonemap; exposure %.4f stops" % vs.exposure
-
-
 def game_light_to_blender_strength(game_rgb):
     """Game light colours are irradiance/pi (the BRDF omits 1/pi): Blender = pi * game."""
     peak = max(game_rgb) or 1.0

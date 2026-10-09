@@ -1,4 +1,4 @@
-"""Shared Blender scene defaults for the PS4 gadget reconstruction work.
+"""Shared Blender scene defaults for scenes built from the game's assets.
 
 Run inside Blender's Python console or with ``blender --background --python``.
 ``apply_new_scene_defaults`` is intended for a newly created scene.  It does

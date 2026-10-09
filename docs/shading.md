@@ -1,118 +1,230 @@
-# RC PS4 game shading toolkit
+# Shading, render state and lighting
 
-Scripts that reproduce the Ratchet & Clank (PS4) deferred shading, lighting and tonemap in Blender, using values read from the shadPS4 RenderDoc capture instead of hand-tuned presets. The equations and the reasoning behind them are in [SHADING_LIGHTING_AUDIT.md](SHADING_LIGHTING_AUDIT.md).
+Reference for how the pipeline shades Ratchet & Clank (PS4, 2016) materials in Blender, which parts come from recovered game data, and which are approximations. Pipeline stages are described in [pipeline](pipeline.md); the in-app viewer's own GL shading is described in [viewer](viewer.md).
 
-## Files
+The equations below were read from the SPIR-V of a RenderDoc capture of the game (recorded with shadPS4) instead of being traced from GCN microcode. The capture analysis, capture IDs and dump scripts live in the research notes and are not part of this repository. Facts that depend on the capture are marked as such.
 
-| File | Run with | Purpose |
-|---|---|---|
-| `qrenderdoc_run.py` | qrenderdoc `--python` | Wrapper that runs a RenderDoc script with arguments and a `<script>.log` file. |
-| `renderdoc_dump_frame.py` | via `qrenderdoc_run.py` | Dumps textures, buffers and push constants at the lighting and composite events. |
-| `renderdoc_dump_material_cbs.py` | via `qrenderdoc_run.py` | Dumps each G-buffer draw's fragment constant buffers and texture hashes (matches `.material` keys to CB offsets). |
-| `dump_material_values.py` | Python 3 | Prints a `.material` instance value section as floats, for comparison with the CB dump. |
-| `build_rc_game_view.py` | Blender's Python (numpy) | Builds the 1D/3D LUTs and `rc_game_view.json` (exposure, key light, ambient fit) and validates against the captured frame. |
-| `fit_capture_ambient.py` | Blender's Python (numpy) | Fits the captured irradiance as `a + B.n`; called by the view build, also usable alone. |
-| `install_rc_view.py` | `blender -b` | Adds the OCIO view "RC PS4 Game" in a private copy of Blender's colour config. |
-| `rc_game_shader.py` | Blender | Node group "RC PS4 Deferred BRDF" plus conversion helpers. |
-| `render_game_look.py` | `blender -b` | Applies shader, Veldin lighting and tonemap to a delivered model blend and renders it. |
-| `render_state/` | see its README | Render-state translator: captured blend/cull/depth/sampler state, the per-material flags word (`0xE1275683`), and the Blender applier `render_state.py`. |
-| `brdf_check.py` | Python 3 (numpy) | Numerical proof of the lighting BRDF. |
-| `materials_srgb_from_dxgi_format.patch` | archived | Pipeline patch (applied 2026-10-06). |
+## Modules and data
 
-## Rebuild / render a model
+| Path | Purpose |
+|---|---|
+| `rc2016/pipeline/game_shader.py` | Node group "RC PS4 Deferred BRDF", material conversion, per-family front-ends, character glass, viewer graph rules. |
+| `rc2016/pipeline/render_state.py` | Blend and cull state from a `.material` flags word. |
+| `rc2016/pipeline/material_flags.json.gz` | Census of the flags word for every `.material` in the archive (path to flags). |
+| `rc2016/pipeline/scene_defaults.py` | New-scene defaults, `load_shared_lighting`, `apply_shared_lighting`, `check_shared_lighting`, `audit_scene`. |
+| `assets/lighting/shared_lighting.json`, `golden_gate_hills_1k.exr` | Shared review lighting. |
+| `rc2016/pipeline/game_look.py` | Opt-in captured Veldin look (`apply_veldin_look`). |
+| `rc2016/pipeline/game_view_compositor.py` | The captured tonemap as compositor nodes. |
+| `assets/game_view/` | Captured view data: `rc_game_view.json`, `rc_tonemap.spi1d`, `rc_grade.cube`. |
+| `rc2016/formats/materials.py` | Chooses image colourspaces; produces the material reports used here. |
+| `rc2016/shaders/families.py` | Shader family registry keyed by source path and decoded SHA-256. |
 
-Run from the project root `C:\Users\Tim\Documents\Bestanden\Downloads\Models\PS4 models` unless stated.
+## Textures
 
-1. Dump the capture (only needed when the capture changes):
+- Set DDS images to `Alpha Mode: Channel Packed`. Alpha is always linear data.
+- Colourspace follows the native DXGI format, not the filename: sRGB for formats 29, 72, 75, 78, 91, 93 and 99, Non-Color for every other format. `rc2016/formats/materials.py` applies this; for example a `_g` stored as BC7 sRGB (format 99) is sRGB.
+- Normals are always Non-Color.
+- Roles by suffix:
+  - `_c`: base colour, normally BC7 sRGB. Its alpha is a self-lit mask, never ordinary transparency.
+  - `_g`: normally BC7 sRGB, coloured specular F0 in RGB and gloss in alpha. This is a property of the common graph; some graphs use `_g` differently (see Graph families).
+  - `_n`: DirectX tangent normal (BC5 RG, `z = 1 - x² - y²`, normalised), strength 1.0. Green is not flipped by default (`flip_normal_green=` exists on `convert_material`); the game takes the tangent sign from a vertex flag, so test a flip on a model with obvious bevels before using it.
+- Keep UV orientation. Do not add metallic masks or strong AO.
 
-```powershell
-cd Claude_shading_fix
-$env:RC_HOME = "$PWD"; $env:RC_SCRIPT = "renderdoc_dump_frame.py"; $env:RC_ARGS = "--lighting-shader 540 --composite-shader 6172"
-Start-Process -Wait "..\.codex\scratch\renderdoc-noadb-1.45\qrenderdoc.exe" -ArgumentList "--python", "`"$PWD\qrenderdoc_run.py`"" -WorkingDirectory "$PWD"
-Get-Content renderdoc_dump_frame.log
+## Opaque deferred BRDF
+
+### Recovered equations
+
+G-buffer writer:
+- `_g` RGB (sRGB-decoded, times a material constant) goes to MRT2 RGB as linear F0.
+- Gloss: `t = sqrt(saturate(gloss² × K_gloss))`, `e = 2^(-11 t)`, then a geometric specular anti-aliasing widening `w`, `alpha_out = -log2(1 - w(1 - e)) / 11`. On flat surfaces `w = 1` and `alpha_out = t`.
+- `_c` goes to MRT1 RGB as albedo. MRT1 is `R8G8B8A8_SRGB`, so albedo is stored clamped to [0, 1]. MRT1 alpha stores the self-lit term as `0.2 × log2(1 + x)`; lighting decodes `x = 2^(5a) - 1`.
+
+Deferred lighting, with `s = 2^(-11 × gloss)` (GGX α² = s):
+
+```
+k      = (α + 1)² / 8, α = sqrt(s)                      Smith-Schlick
+D·G    = s / ((NH²(s-1) + 1)² · (NV(1-k) + k) · (NL(1-k) + k))
+F      = F0 + (sat(60·F0) - F0)(1 - VH)^5              Schlick with F90 = sat(60·F0)
+spec   = 1/4 · D·G · NL · F · lightColour
+diff   = NL · OrenNayar(σ² = s) · lightColour
+out    = Σspec + (Σdiff + ambientDiffuse·AO + selfLit) · albedo + reflections · specOcclusion
 ```
 
-`qrenderdoc --python` shows no stdout, passes no arguments and defines no `__file__`, hence the wrapper; the output log is `<script>.log`. The capture `%APPDATA%\shadPS4\captures\CUSA01073_capture.rdc` was re-recorded on 2026-09-25, so the shader IDs changed from those in the audit: lighting 532 to 540, tonemap 6386 to 6172, G-buffer writer 6553 to 6335 (identical disassembly). If the capture is replaced again, re-inventory and match shaders by disassembly content, not by ID.
+A numerical check against textbook GGX/Smith/Schlick with α = 2^(-5.5 × gloss) and light irradiance E = π × colour agreed to four significant figures. The game BRDF omits 1/π, so Blender light strength = π × game light colour (`game_light_to_blender_strength`).
 
-2. Build the view (also writes the capture-ambient fit, `capture_ambient` in `rc_game_view.json`):
+Summary used by the Blender group:
 
-```powershell
-$py = "C:\Program Files\Blender Foundation\Blender 5.0\5.0\python\bin\python.exe"
-& $py build_rc_game_view.py rc_frame_dump --out rc_game_view
+| Term | Value |
+|---|---|
+| Diffuse | `_c`, no `(1 - _g)` factor |
+| Specular | GGX with Schlick Fresnel, F0 = `_g.rgb` |
+| F90 | `sat(60 · F0)` |
+| Blender roughness | `2^(-2.75 · gloss)` |
+| Combination | diffuse and specular are added, not mixed |
+| Self-lit | `_c.rgb × _c.a × K` |
+| Metallic | 0 |
+
+The `_c × (1 − _g)` diffuse, the 18% Principled mix and `1 − gloss` roughness floors are not the game equation and must not be reintroduced.
+
+### Self-lit constant K
+
+K is a per-material constant under the material key `0x66EFA55B` (`EMISSIVE_K_KEY`). It was identified from the capture: the emissive G-buffer shader for the hero character reads K from its material constant buffer (8.0), and 8.0 occurs in that `.material` only under this key. A second material was checked offline against a native skin graph's cached writer (K = 2.0 for the Toxic Crab). The key identity is inferred from these matches, not from a full survey. K is per graph (see Graph families).
+
+`emissive_constants_from_reports(materials_dir)` reads K for each material from the pipeline reports (`<model>/materials/*.json`, `instance_parameters`) and returns `{material name: K}`.
+
+### Blender node group
+
+`game_shader.py` builds the node group "RC PS4 Deferred BRDF" (`GROUP_VERSION` 2).
+
+Inputs: albedo (`_c` RGB), self-lit mask (`_c` alpha), specular F0 (`_g` RGB), gloss (`_g` alpha), normal, specular scale, gloss scale, emissive intensity. Outputs: shader and Blender roughness.
+
+Construction:
+- Gloss is `sqrt(saturate(gloss² × gloss scale))`; roughness is `2^(-2.75 × gloss)`.
+- Diffuse is a Diffuse BSDF with roughness 0 (Lambert) coloured by `_c`.
+- Specular is a metallic Principled BSDF with GGX and white specular tint, which gives Schlick on single-scatter GGX. The F90 term is exact: the lobe is fed `F0 / F90` and weighted by `F90`.
+- Diffuse and specular are added, then self-lit (Emission of `_c` with strength `_c.a × intensity`) is added.
+
+Functions:
+- `convert_material(mat, ...)` rebuilds one material that has `_c` and `_g` images. It sets image colourspaces and alpha mode, removes other nodes, keeps UV and mapping nodes feeding the images, wires the group, adds a Normal Map node for `_n` (or a Geometry normal when there is none) and writes `rc_shader` and `rc_shader_evidence` properties on the material. Without an `emissive_intensity` it uses 4.0 when `_c` alpha holds a sparse authored mask, else 0.
+- `convert_all(emissive_by_material=None, reconvert=False, **kwargs)` converts every eligible material and skips ones already converted unless `reconvert=True`. Pass per-material K from `emissive_constants_from_reports`.
+- Backups: before converting, each material is copied to `"<name> | pre-RC-game-shader"` with a fake user and an `rc_backup_of` property. `restore_backups()` swaps every original back. Image colourspace changes apply to the shared image, so a restored backup also sees them.
+- Glass, energy and VFX materials are skipped by `convert_all`.
+
+Validate a converted material by asserting the group's inputs, image colourspaces and links through the active Material Output after reopening the file. Node names and a plausible render are not evidence.
+
+### Known gaps
+
+- Reflections (the reflection probe term) are not modelled, so reflective dark parts render darker than in game.
+- Diffuse uses Lambert; the game uses Oren-Nayar with σ² = s. Blender's Oren-Nayar parameterisation differs, and the difference matters only for gloss below about 0.3.
+- Per-material specular and gloss scales default to 1.0 unless read from a graph's parameter table.
+- Bloom, lens dirt and film grain of the final composite are not part of the material shading.
+
+## Graph families
+
+`_g` is not coloured F0 in every graph. The pipeline classifies each referenced graph by canonical source path and decoded SHA-256 in `rc2016/shaders/families.py`, and `apply_preflight_material` applies a front-end only to an exact registered identity. It never infers a family from a name. Unregistered graphs get an explicitly labelled source-colour-only preview, or the viewer graph rule below. Source-identical graphs reuse the interpretation; instance values stay material-specific.
+
+Parameter tables come from `.materialgraph` section `0x45C4F4C0` (records of u16 byte offset, u16 size, u32 key; a new table starts where the offset returns to 0). Table 0 is the main G-buffer shader's constant-buffer layout and section `0xA59F667B` holds the graph defaults in that layout. Parameters are read by key hash, not by dword position.
+
+| Family | G-buffer writer | `_g` reading | Self-lit |
+|---|---|---|---|
+| Common graph (`convert_material`) | cached | RGB = F0, alpha = gloss | `_c.a × K`, key `0x66EFA55B` |
+| `basic_normal_gloss` | `5ebdeca4` | R = gloss, G = grey specular | none |
+| `basic_normal_coloredgloss_emissive` | `c4828176` | RGB F0, alpha gloss | `_c.a × K`, key `0x06F19114` |
+| `basic_incandescence` | `5dbcccb7` / `42254271` | R = gloss, G = grey specular | `_g.B × K`, key `0x5FD56522` |
+| `basic_colored_spec_emmisive_in_c_alpha` | `89638dfb` (native GCN decode) | RGB F0, alpha gloss | `_c.a × K`, key `0xF8C61683` |
+| `skin_emissive` | `0x567fe897` | R = gloss, G = grey specular, Fresnel-boosted | `_c.a × K` from table 1 |
+
+Deferred families use specular scale key `0x62835AF9` and gloss scale key `0x24F4CA4C` (`apply_deferred_family`).
+
+Skin (`apply_skin_emissive`, group `SKIN_GROUP_NAME`, `SKIN_GROUP_VERSION` 3):
+- Fresnel-boosted gloss and specular, and a Fresnel albedo tint of `(0.745404, 0.644480, 0.603827)`.
+- Albedo `_c × lerp(P5, tint, F)` is clamped to [0, 1] (node "Skin albedo UNORM clamp") because MRT1 is UNORM; some graphs use P5 above 1. The lighting pass multiplies self-lit by the same stored albedo. `rc2016/shaders/validation.py` asserts the clamp.
+- The native pixel shader also samples a skin ramp and adds a diffuse term tinted `(0.637597, 0.116971, 0.122139)`. That term and the complete forward light and shadow response are not reproduced, so recognition stays partial and materials carry `game_equivalence = False`.
+- `apply_native_skin_normal` connects the decoded normal `normalize(2R-1, 2G-1, 1-x²-y²)` to both the BRDF and the skin group's material normal input. The secondary-normal blend (keys `0x59011FBD`, `0xB7ABB64A`) is applied only when it resolves; otherwise `rc_shader_frontend_limitation` is set.
+- Stage assignments from native GCN: `7D3F5FA6` and `D7749B42` are vertex shaders; `BED06840` and `AE7244FE` are forward pixel shaders.
+
+Per-family decodes (decoded writers, native skin and `character_glass` GCN) come from the research notes, which are not included.
+
+### Viewer graph rules
+
+For graphs without a registered family, `apply_viewer_graph_rule` builds the asset viewer's per-graph reading on the shared deferred BRDF (rules from `viewer_graph_rule` in `rc2016/formats/materials.py`; the GL implementation is in `rc2016/viewer/shading.py`, see [viewer](viewer.md)).
+- `g_mode` `grey`: F0 = grey specular × `_g.G`, gloss = `sqrt(sat(gloss × _g.R))`. `grey_skin`: F0 = grey `min(0.5, _g.G)`, gloss = `sqrt(sat(_g.R))`. `vehicle`: packed constants. Otherwise coloured F0 = specular × `_g.rgb`, gloss = `sqrt(sat(gloss × _g.a²))`.
+- No `_g` means no specular, as in the viewer.
+- Self-lit = `_c.rgb × (_g.B or _c.a) × K` with the viewer's effective K. Normal x, y = 2RG − 1 with the viewer's z.
+- Each term in `rule['ported']` uses the same math, order and frozen values as the GL shader and is built as a node named `VR <term> <param>`. Terms in `rule['unported']` are recorded on the material. The forward unlit screen rule (`mo_neb_amb_screen_01`) is built at t = 0.
+- These materials carry `shader_preview_status = viewer_graph_rule_frontend` and `game_equivalence = False`.
+
+### Character glass
+
+`character_glass` (character visors, and glass graphs that share the shader) is decoded from its native forward pixel shader `34D5B21C`, which has no cached SPIR-V. `apply_character_glass` builds group "RC PS4 character_glass forward" (`GLASS_GROUP_VERSION` 3):
+
+```
+out   = Transparent(1 - alpha·A) + alpha · (Diffuse(B·(1 + k·F·T·E)) + GGX(tint, rough))
+alpha = (1.001 - N·V)^P8 · (P10 + sat(P11 + sat(4·(1 - N·V)^P13)))
+F     = (1.001 - N·V)^P12,   T = sat(4·sqrt(1 - N·V))
 ```
 
-3. Install the view:
+- A = 0 for additive blend (SRC_ALPHA, ONE) and 1 for alpha-over (SRC_ALPHA, ONE_MINUS_SRC_ALPHA); it is taken from the material flags word (`character_glass_blend`), and the call fails if the flags are not a one-sided additive or alpha-over word.
+- E is the captured Veldin ambient radiance `c0` from `assets/game_view/rc_game_view.json`, or black if the file is unavailable.
+- The additive blend was confirmed on a captured `character_glass_02` draw. Hash-bound profiles for other glass recipes take precedence where they exist.
 
-```powershell
-& "C:\Program Files\Blender Foundation\Blender 5.0\blender.exe" -b --factory-startup --python install_rc_view.py -- "$PWD\rc_game_view"
+## Render state
+
+Blend and cull come from the `.material` flags word, not from names or guesses (`rc2016/pipeline/render_state.py`).
+
+- Every `.material` has a 36-byte section `0xE1275683`; the flags word is the u32 at byte 16.
+- Bits 0-1 select blend: 0 opaque, 1 additive alpha (SRC_ALPHA, ONE), 2 alpha over (SRC_ALPHA, ONE_MINUS_SRC_ALPHA), 3 not observed (`decode_flags` returns surface `None`). Bit 2 makes the material two-sided; otherwise back faces are culled.
+- Engine special passes override the flag. Decals (`mo_decal_*`) and fur shells (flag bit `0x80000`, which draws extra alpha-over passes) were captured with blends their flag does not predict.
+- `material_flags(material_path=None, data=None)` reads the word from decoded bytes, or by lower-cased archive path from `material_flags.json.gz`, a census of every `.material` in the game archive.
+- The rule was validated against draws in the capture. The captured depth, sampler and full blend state tables are in the research notes.
+
+## Lighting
+
+### Shared review lighting (default)
+
+`assets/lighting/shared_lighting.json` defines the review lighting for every scene. Editing it changes all new scenes.
+
+| Setting | Value |
+|---|---|
+| HDRI | `golden_gate_hills_1k.exr`, world strength 2 |
+| Separate lights | none |
+| View transform | Khronos PBR Neutral, look None |
+| Exposure | −1.0 |
+| Gamma | 1.0 |
+| Compositor | off |
+
+- The 1k file is a 4×4 box-filtered float copy of the 4k original, 6 MB. It is float RGB because the sun reaches about 9e4, beyond half float. Lighting energy is within 0.01% of the original and 25% test renders matched within noise.
+- `scene_defaults.load_shared_lighting` fails loudly if a key or the HDRI is missing. `apply_new_scene_defaults` and `apply_shared_lighting` apply it and record it on the scene as `scene["shared_lighting"]`. `check_shared_lighting` and the validators compare against that record, and `audit_scene` reports `lighting.differs_from_current_shared_file` for older scenes.
+- The pipeline default is `--lighting-source hdri`; `--lighting-config` selects another lighting file. The pipeline links the HDRI by absolute path; pack it in hand-delivered scenes.
+- This is neutral review lighting. It is not game lighting and must not be called game accurate.
+- Render defaults in `scene_defaults.py`: 3840 × 2560, Cycles with OptiX on GPU only, 96 samples, adaptive threshold 0.04, 5 total bounces (2 diffuse, 2 glossy, 4 transmission, 6 transparent, 0 volume), Light Tree, transparent film.
+
+### Captured game look (opt-in)
+
+`--lighting-source veldin` in the pipeline, or `game_look.apply_veldin_look(scene)`, replaces the lighting with values recovered from the Veldin capture. It requires a scene camera. Use it only when asked.
+
+Final composite (tonemap):
+
+```
+hdr  = scene × EXPOSURE
+u    = clamp(log2(max(hdr, 2^-8)) / 13 + 8/13)       13 stops, -8 to +5
+tone = saturate(LUT1D(u) + bloom)
+out  = LUT3D(sRGB_OETF(tone) · S + O)                 S = 0.96875, O = 0.015625
 ```
 
-4. Extract the model (from the project root). The root MUST be the `CUSA01073` subfolder; the parent contains two archive copies and the pipeline refuses it.
+Captured values (`assets/game_view/rc_game_view.json`):
+- Exposure ×4.5538, +2.187 stops. The tonemap is a 256-entry R16 1D table (`rc_tonemap.spi1d`) and a 32³ grade table (`rc_grade.cube`).
+- Validation of the modelled chain against the captured final image: median absolute error 0.0099 (bloom modelled; lens dirt and a 3% time-rotated film-grain lerp are not). The captured exposure is the error minimum: 0.021 at ×0.95, 0.0099 at ×1.00, 0.013 at ×1.05.
+- Key light colour (5.30, 4.48, 2.95), so Blender sun strength is π × 5.30 = 16.65. `apply_veldin_look` adds a sun with the captured colour and strength. The captured direction is relative to the game camera and is not used; the sun is placed on the camera's side at elevation 45° and azimuth offset 30° (overridable with `RC_SUN_ELEVATION_DEG` and `RC_SUN_AZIMUTH_OFFSET_DEG`). Other scene lights are hidden from render.
+- Ambient: frame flag dword 135 is `0x40`, bit 128 clear, so the game does not use the hemisphere fill constants (C0 about 1.0) in this frame. Diffuse ambient is the irradiance buffer times AO. A fit as `a + B·n` around the hero gives radiance c0 about (0.091, 0.074, 0.036), roughly 10 times below the unused fill. `apply_veldin_look` builds a world from that fit unless `RC_KEEP_WORLD=1`, and falls back to the hemisphere fill (`c0 + 1.5·c1·up`) only if the fit says the game uses it.
+- Only 13 G-buffer draws exist in the capture (the hero and held weapon); the remaining pre-lighting draws are depth and shadow only.
 
-```powershell
-.\scripts/run-pipeline.ps1 -ExtractedRoot "C:\Users\Tim\Documents\Bestanden\Downloads\Ratchet & Clank (EUR)\CUSA01073" -Model wpn_sheepinator -OutputRoot "$PWD\Claude_shading_fix\run" -ReuseCache
-```
+Fidelity check: a fit of the captured lit buffer as `albedo × (key × N·L + irradiance × AO)` over 254k G-buffer pixels gave key scale 0.985 / 1.063 / 1.098 (R/G/B), so π × colour and the fitted ambient are correct and exposure is applied once.
 
-5. Render:
+Why it is not the default: on a standalone model the camera-side unshadowed sun puts most surfaces at high N·L, where the tonemap shoulder flattens colour (18% grey at N·L = 1 gives sRGB 0.84). A purple and teal enemy rendered pink and cream.
 
-```powershell
-$env:OCIO = "$PWD\assets\game_view\ocio\config.ocio"
-& "C:\Program Files\Blender Foundation\Blender 5.0\blender.exe" -b "<model dir>\<model>.blend" --python Claude_shading_fix\render_game_look.py -- "$PWD\assets\game_view" "$PWD\Claude_shading_fix\render" 50 96
-```
+Compositor implementation (`game_view_compositor.py`): exposure, then `lg2` over [−8, +5], then `rc_tonemap.spi1d`, clamp, sRGB encode and `rc_grade.cube`, built as compositor nodes from packed float LUT images sampled with Map UV. The scene view transform is set to Raw, so no OCIO environment is needed and the result shows in renders and in the viewport (compositor "Always"). The Map UV node reads the UV's Z as a coverage mask, so it is set to 1. The game samples its grade as a 3D texture (trilinear); the compositor matches a trilinear cube to 1.6e-6 and the tetrahedral OCIO view to a maximum of 0.0035 (mean 1e-4).
 
-Pass the delivered blend explicitly, not `run\blender\*_candidate.blend`. Output is `render\<model>_game_look.png` (RGBA, transparent film) plus a `.blend` copy. Environment options:
-- `RC_SUN_ELEVATION_DEG` (default 45).
-- `RC_SUN_AZIMUTH_OFFSET_DEG` (default 30; the sun comes from the camera's side, with the captured colour and strength).
-- `RC_KEEP_WORLD=1` keeps the pipeline world.
+## Recovered data versus approximation
 
-## Validated results (Veldin capture, 2026-10-06)
+Recovered from the capture or native shader decode:
+- The deferred BRDF equations, gloss and roughness mapping, F0/F90 rule and the self-lit encoding.
+- Colourspaces from DXGI formats.
+- The render-state flags word and its blend and cull rule.
+- Veldin exposure, tonemap, grade, key light colour and ambient fit.
+- The decoded front-ends of the registered families and `character_glass`.
 
-- Exposure x4.5538 (+2.187 stops); 1D LUT 256 x R16, 3D LUT 32^3; the OCIO view matches the numpy game tonemap (median 0.0000, max 0.005).
-- Composite validation median absolute error 0.0099 (bloom modelled; lens dirt b6 x bloom x buf2[4] and a 3% time-rotated film-grain lerp are not modelled). The captured exposure is the error minimum: 0.021 at x0.95, 0.0099 at x1.00, 0.013 at x1.05.
-- Key light colour (5.30, 4.48, 2.95) gives Blender sun strength pi x 5.30 = 16.65. The captured direction is game-camera relative and is NOT used.
-- Ambient: frame flag buf0 dword 135 = 0x40 (bit 128 clear), so the game does not use the hemisphere fill C0/C1 in this frame; diffuse ambient = irradiance buffer (binding 12) x AO (binding 10). Fit around Ratchet: c0 about (0.091, 0.074, 0.036), roughly 10x below the unused fill constants (about 1.0). Reflections (binding 11) are not modelled, so reflective dark parts are darker than in game.
-- Self-lit: the G-buffer writes MRT1.a = 0.2 * log2(1 + x) and lighting decodes 2^(5a) - 1 = x = K * mask. For the Sheepinator, mask = `_c` alpha (existing body GCN trace, API-2 CB byte 0). K was identified via the capture: the emissive G-buffer shader 9350 (Ratchet) reads K from its material CB dword 5 = 8.0; in `hero_Ratchet_Body.material` the only 8.0 is key 0x66EFA55B, so the K key = 0x66EFA55B. `wpn_Sheepinator.material` has 0x66EFA55B = 5.0, so K = 5. `render_game_look.py` reads it from the pipeline's `materials/*.json` automatically. Confidence: the key-hash identity across materials is inferred from one match (no second material verified yet).
-- Pipeline patch applied: `rc2016/formats/materials.py` now picks the colourspace from the native DXGI format (sRGB for 29/72/75/78/91/93/99), so the Sheepinator `_g` (format 99) is delivered as sRGB; re-run validated.
-- G-buffer draws in this capture: only 13 (Ratchet + held weapon); the remaining roughly 585 pre-lighting draws are depth/shadow-only.
+Approximations:
+- Lambert instead of Oren-Nayar diffuse; no reflections; Principled GGX standing in for the game GGX/Smith lobe.
+- Skin and viewer-graph materials (`game_equivalence = False`).
+- The shared review lighting, which is neutral and not game lighting.
+- Presentation-tuned profiles in `rc2016/pipeline/material_profiles/` and per-weapon profiles are separate from this shading and are not game equations.
 
-## Open items
+Known gaps:
+- Glass, energy and VFX materials are forward-shaded and not covered by the deferred group. Only `character_glass` and the documented per-model recipes exist.
+- K is verified on two materials only; a capture with another weapon equipped would confirm further values.
+- Exposure is recovered for Veldin daytime only. Whether other levels use a different or adaptive exposure is unknown; the 1D and 3D tables are probably global.
+- The native skin ramp term and the full forward light and shadow response are not reproduced.
+- Mode 3 of the blend bits has no captured example.
 
-- Render state: `character_glass` takes its blend from the material flags word (the Blarg visor is alpha-over, applied 2026-10-07). The Sheepinator and Combuster glass recipes predate the decode; see [render_state/README.md](render_state/README.md).
-
-### Shader-family pipeline preflight (2026-10-06)
-
-New extraction builds classify each referenced graph by canonical source path **and decoded SHA-256** in `rc2016/shaders/families.py`. Material reports preserve shader stages/support scope and parameter-table offsets, raw instance overrides and graph defaults. `geometry.py` calls `rc_game_shader.apply_preflight_material`; the exact registered skin graph uses its decoded front-end automatically. Unknown unprofiled graphs receive an explicitly labelled source-colour-only preview. Existing validated presentation profiles and thin-glass recipes remain separate. The toolkit code hash participates in the pipeline cache fingerprint.
-
-The Toxic Crab native GCN audit corrected earlier stage assumptions: `7D3F5FA6` and `D7749B42` are vertex shaders; `BED06840` and `AE7244FE` are forward pixel shaders. BED06840's front-end uses a mapped normal, grey specular from `_g.G`, gloss from `_g.R`, and continuous `_c.a` self-lit. The normal is `normalize(2R-1, 2G-1, 1-x*x-y*y)`. Its second-normal blend is zero in this instance; other blend settings remain partial. `apply_native_skin_normal` connects the decoded normal to both the BRDF and the skin group's `Material normal` input. Cached-writer comparisons retain geometry-normal Fresnel.
-
-The full forward shader also samples `skin_ramp.R` and adds a diffuse term tinted by `(0.637597, 0.116971, 0.122139)`. This term and the complete forward light/shadow response are **not** reproduced by the current Cycles deferred BRDF. Recognition therefore remains `supported_partial`, with `game_equivalence=false`. Bounded material/ramp slices have independent 500-case numerical controls each; they do not validate full lighting or runtime selection. Sources, hashes, offsets and remaining work: [`NATIVE_SKIN_DECODE.md`](../Other%20models/enm_toxic_crab/evidence/NATIVE_SKIN_DECODE.md).
-
-Standard deferred families (2026-10-06): `basic_normal_gloss` (writer `5ebdeca4`), `basic_normal_coloredgloss_emissive` (`c4828176`) and `basic_incandescence` (`5dbcccb7`/`42254271`) are registered and applied by `apply_deferred_family`. Parameters are read by key, not dword: spec `0x62835AF9`, gloss `0x24F4CA4C`.
-- `basic_normal_gloss` and `basic_incandescence` use `_g.R` = gloss and `_g.G` = grey spec. Only `coloredgloss_emissive` matches the generic `_g` RGB-F0/alpha-gloss group.
-- Self-lit K is per graph. `coloredgloss_emissive` uses `0x06F19114`, not `0x66EFA55B`; incandescence uses `0x5FD56522` × `_g.B`.
-
-Evidence: [`../Other models/enm_blarg_space_commando/evidence/DEFERRED_FAMILIES_DECODE.md`](../Other%20models/enm_blarg_space_commando/evidence/DEFERRED_FAMILIES_DECODE.md).
-
-`character_glass` (Blarg visor; also the Sheepinator glass graph, whose hash-bound profile still takes precedence) is decoded from its native forward pixel shader `34D5B21C`, because it has no cached SPIR-V. `apply_character_glass` builds `Transparent + alpha × (Diffuse(B·(1+k·F·T·E)) + GGX(tint))`, with a Fresnel-curve alpha. The additive blend is taken from the captured `character_glass_02` draw. Evidence: [`../Other models/enm_blarg_space_commando/evidence/glass/CHARACTER_GLASS_DECODE.md`](../Other%20models/enm_blarg_space_commando/evidence/glass/CHARACTER_GLASS_DECODE.md).
-
-Do not infer that an entire material family is solved from one writer or a plausible render. Extend the registry after decoding and validating each distinct graph implementation; source-identical graphs reuse the interpretation while instance values remain material-specific.
-
-- Verify the K key on a second emissive material. Partly done offline: the Toxic Crab's `skin_emissive` graph's cached G-buffer writer `0x567fe897` reads K from the CB dword whose graph-table key is 0x66EFA55B (crab K = 2.0).
-- Graph-specific G-buffer front-ends: `_g` is not coloured F0 in every graph. `skin_emissive` uses `_g.R` = gloss and `_g.G` = grey specular with Fresnel-boosted gloss/spec and a Fresnel albedo tint (`rc_game_shader.apply_skin_emissive`; equations and parameter-table parsing in `Other models/enm_toxic_crab/README.md`). Check a graph's cached SPIR-V (via `.materialgraph` `OrbShdr` IDs, `Animation/pipeline/Research/Shaders/SourceGraphRuntimeJoin`) before converting a new graph family. `convert_all()` now skips materials that are already converted (pass `reconvert=True` to force).
-- Model reflections (binding 11).
-- A capture with the Sheepinator equipped would confirm K = 5 and the glass/energy forward shaders.
-
-
-## Lighting default changed to the neutral HDRI (2026-10-06)
-
-The Veldin look is **opt-in**, no longer the pipeline default. It is numerically faithful: a fit of the captured lit buffer (event 5256) as `albedo × (key × N·L + irradiance × AO)` over 254k G-buffer pixels gives key scale 0.985 / 1.063 / 1.098 (R/G/B), so π × colour and the fitted ambient are correct and exposure is applied once. On a standalone model, however, the camera-side unshadowed sun puts most surfaces at high N·L, where the tonemap shoulder flattens colour (18% grey at N·L = 1 → sRGB 0.84). The Alien Spitter came out pink/cream instead of purple/teal (`Other models/random_enemy_pipeline_20261006_213930/corrections/albedo_clamp_comparison/`).
-
-The default is now the shared review lighting in root `assets/lighting/shared_lighting.json` (`assets/lighting/golden_gate_hills_1k.exr` ×2, Khronos PBR Neutral, exposure −1.0), applied by `rc2016.pipeline.scene_defaults.apply_shared_lighting`. The 1k file is a 4×4 box filter of the 96 MB 4k original, float RGB (the sun reaches ~9e4, beyond half float), 6 MB; lighting energy is within 0.01% and 25% renders of the Spitter, Sheepinator and Blarg match the 4k within noise (mean |Δ| ≈ 0.005, mean colour within 0.001): `hdri_1k_check/`. The −1.0 exposure was picked from a −0.5/−1.0/−1.5 ladder on those three models.
-
-## Skin albedo clamp (2026-10-06)
-
-The skin front-end albedo `_c × lerp(P5, tint, F)` is clamped to [0,1] (`SKIN_GROUP_VERSION` 3), because MRT1 is `R8G8B8A8_SRGB` UNORM in the capture; P5 is 1.4 on the Spitter, so about 5% of its `_c` texels exceed 1. The lighting pass multiplies self-lit by the same stored albedo. Visual effect on the Spitter is negligible (A/B and C/D in the comparison folder). `shader_validation.py` asserts the clamp, so blends built before this fail re-validation until rebuilt.
-
-## Compositor game view (2026-10-06)
-
-`game_view_compositor.py` rebuilds the "RC PS4 Game" view (exposure → lg2 [-8,+5] → `rc_tonemap.spi1d` → clamp → sRGB → `rc_grade.cube`) as compositor nodes with packed float LUT images sampled by Map UV. Scenes use view transform `Raw`, so no OCIO environment or `Launch-Blender-RC-View.bat` is needed. `test_game_view_compositor.py` checks it: 1.6e-6 against the same chain with a trilinear cube; max 0.0035 (mean 1e-4) against the OCIO view, whose cube is tetrahedral. The game samples its grade as a 3D texture (trilinear). `game_look.apply_veldin_look()` and the opt-in pipeline mode `--lighting-source veldin` use it. Map UV reads the UV's Z as a coverage mask, so it is set to 1.
+Do not infer that a whole material family is solved from one writer or a plausible render. Decode and validate each distinct graph implementation before registering it.

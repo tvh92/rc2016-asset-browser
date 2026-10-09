@@ -1206,7 +1206,7 @@ def assemble_source_linked_proton_drum(selection,manifest,index,args,code_hash,p
         validation=auto/'validation.json';job_path=auto/'merge_job.json';script=ROOT/'rc2016/pipeline/weapons/proton_drum/merge.py'
         modelrows={r:dict(asset_id=ids[r],source_model_sha256=models[r],blend=results[r]['final'],blend_sha256=results[r]['final_sha256'],job=jobs[r]) for r in ids}
         contract=dict(config={'asset_id':pair['config']['asset_id'],'path':pair['config']['path'],'sha256':pair['config']['sha256']},models=modelrows,
-            clips=clips,unsupported_clips=unsupported,runner_sha256=file_hash(Path(__file__)),resolver_sha256=file_hash(ROOT/'rc2016/pipeline/variant_links.py'),merge_sha256=file_hash(script),contract_sha256=file_hash(script.parent/'proton_drum_contract.py'))
+            clips=clips,unsupported_clips=unsupported,runner_sha256=file_hash(Path(__file__)),resolver_sha256=file_hash(ROOT/'rc2016/pipeline/variant_links.py'),merge_sha256=file_hash(script),contract_sha256=file_hash(script.parent/'contract.py'))
         contract=json.loads(json.dumps(contract))
         merge={**{r+'_blend':results[r]['final'] for r in ids},**{r+'_sha':results[r]['final_sha256'] for r in ids},
             **{r+'_job':jobs[r] for r in ids},'models':models,'config':contract['config'],'clips':clips,'unsupported_clips':unsupported,

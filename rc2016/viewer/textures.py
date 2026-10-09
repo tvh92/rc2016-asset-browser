@@ -140,7 +140,7 @@ GRAPH_RULES = (
 )
 # Texture slot tables: 16-byte rows (path string offset u32, flags u32, slot hash u64), stored twice.
 GRAPH_SLOT_SECTION, MATERIAL_SLOT_SECTION = 0x1CAFE804, 0xB967FF7A
-# Blend/cull per material: .material section 0xE1275683, u32 at byte 16 (Claude_shading_fix/render_state).
+# Blend/cull per material: .material section 0xE1275683, u32 at byte 16 (rc2016.pipeline.render_state).
 MATERIAL_FLAGS_SECTION = 0xE1275683
 BLEND_MODES = {0: 'opaque', 1: 'additive', 2: 'alpha_over'}   # flags & 3; mode 3 has no captured example
 

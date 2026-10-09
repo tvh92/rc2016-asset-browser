@@ -3,7 +3,7 @@
 Runs on the viewport's legacy (compatibility) WGL context with GLSL 1.20, so
 the existing fixed-function matrix stack still drives the camera.
 
-Shading follows the project's RC PS4 deferred BRDF (``Claude_shading_fix``):
+Shading follows the game's deferred BRDF (rc2016.pipeline.game_shader; docs/shading.md):
 diffuse = _c; specular = GGX with Schlick Fresnel, F0 = _g.rgb,
 F90 = saturate(60 * F0), GGX alpha = 2^(-5.5 * gloss) (gloss = _g.a);
 diffuse and specular are added; self-lit = _c.rgb * _c.a * K. Graphs whose
@@ -530,7 +530,7 @@ GLASS_UNIFORMS = ("uSkin", "uBoneTex", "uBoneWidth", "uKind", "uA", "uB", "uC", 
                   "uScreenNoiseA", "uScreenNoiseB", "uScreenSrgbN", "uScreenSrgbA", "uScreenSrgbB")
 
 # Level viewer: one draw per model and material for all its instances. The zone's row-vector
-# instance matrix arrives as four per-instance attributes (rows; Levels README), in texcoord
+# instance matrix arrives as four per-instance attributes (rows; docs/levels.md), in texcoord
 # 2-5's aliased slots, which no shader reads. Geometry and matrices stay in native Y-up space;
 # the camera matrix carries the presentation basis.
 INSTANCE_ATTRIBUTES = {"aInst0": 10, "aInst1": 11, "aInst2": 12, "aInst3": 13}

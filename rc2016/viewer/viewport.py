@@ -683,7 +683,7 @@ class ModelViewport(_TkFrame):
 
     # GPU vertex/index buffers (2026-10-09) ---------------------------------
     # Each mesh array is uploaded once on first use instead of being copied from
-    # client memory every frame (13 ms -> see README for the 550k-vertex prop).
+    # client memory every frame (13 ms for a 550k-vertex prop).
     # Without the GL 1.5 entry points every pointer falls back to client memory.
     GL_ARRAY_BUFFER, GL_ELEMENT_ARRAY_BUFFER, GL_STATIC_DRAW = 0x8892, 0x8893, 0x88E4
 

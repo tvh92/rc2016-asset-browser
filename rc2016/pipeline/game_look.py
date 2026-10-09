@@ -1,6 +1,6 @@
 """Captured Veldin game look for a scene: key light, ambient world, exposure and tonemap.
 
-Shared by render_game_look.py and the extractor pipeline (``--lighting-source veldin``).
+Used by the pipeline (``--lighting-source veldin``).
 The captured tonemap is installed as compositor nodes (game_view_compositor.py), so
 the .blend shows the game view in any Blender 5 without OCIO setup.
 """

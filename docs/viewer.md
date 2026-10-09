@@ -1,268 +1,306 @@
-# PS4 asset browser and result review
+# Asset browser and viewer
 
-The Windows extractor now loads the selected source model into an interactive 3D viewport inside its existing Tk interface. Model selection requires neither Blender nor saved proof renders. Blender is an optional tool for requested `.blend` deliveries, opening saved scenes, and isolated Cycles proofs.
+Reference for the Tk asset browser (`python -m rc2016`) and its Windows OpenGL viewer. The browser reads the game archive directly: selecting an asset decodes only that asset's bytes in a background worker. Blender is optional and only needed for FBX/USD/`.blend` export, the research Blender build, and isolated scene proofs.
 
-The latest user requirements are in `USER_STEERING.md`; they override the thumbnail proposal in the original `AGENT_PROMPT_20261007.md`.
+Related documents:
 
-## Launch
+- [levels](levels.md): level and zone decoding, the level viewer.
+- [pipeline](pipeline.md): the extraction pipeline, archive loading, the research Blender build.
+- [shading](shading.md): the game's deferred shading, lighting and tonemap, and the `RC PS4 Deferred BRDF` node group.
+- [animation](animation.md): animation container and sample formats, and how clips become Blender actions.
 
-Run from `C:/Users/Tim/Documents/Bestanden/Downloads/Models/PS4 models` with a regular Windows Python installation that includes Tkinter:
+Module map:
+
+| Module | Role |
+|---|---|
+| `rc2016/app/main.py` | Main window, scan and export batch runners, settings, Options window |
+| `rc2016/app/browser.py` | Model/Level/Flash UI views, 3D/Textures/Details notebook, model details |
+| `rc2016/app/catalog.py`, `rc2016/app/workers.py` | Read-only result catalog; coalesced background workers and owned-process cleanup |
+| `rc2016/viewer/loader.py` | `SourcePreviewLoader`: archive model to viewport payload |
+| `rc2016/viewer/viewport.py` | Windows OpenGL viewport (ctypes, no extra packages) |
+| `rc2016/viewer/shading.py` | GLSL 1.20 programs for Shaded mode and the glass/forward path |
+| `rc2016/viewer/textures.py` | Texture decoding/upload, material slot tables, `GRAPH_RULES`, texture export |
+| `rc2016/viewer/animation.py` | Clip library and skinning matrices |
+| `rc2016/levels/*` | Level panel and viewport ([levels](levels.md)) |
+| `rc2016/flash/tab.py`, `gfx.py`, `planet_maps.py` | Flash UI tab, SWF/GFX renderer, planet-map export |
+| `rc2016/export/models.py`, `blender_convert.py` | Portable export |
+
+## Launching
+
+Requirements: Windows with an OpenGL-capable GPU and a regular Python 3.11+ with Tkinter. The 3D view uses only the standard library (OpenGL through ctypes). Optional packages: Pillow (Textures tab, PNG export; imported lazily), NumPy (faster model preparation and texture un-tiling), `lz4` (faster archive decompression). If OpenGL initialisation fails, the view shows a placeholder explaining why.
 
 ```powershell
-& 'C:/Users/Tim/AppData/Local/Programs/Python/Python314/python.exe' -B rc2016/app/main.py
+python -m rc2016                  # asset browser
+python -m rc2016.levels.viewer    # standalone level viewer
+python -m rc2016.flash.planet_maps <source> <out>   # planet maps without the GUI
 ```
 
-Other users can use their own regular Windows Python. The interactive renderer uses Windows OpenGL through standard-library ctypes, without a web stack, Pillow, NumPy, Blender, or a thumbnail collection. The existing pipeline uses the repository's shared lighting configuration and bundled HDRI during CLI setup; keep those files with the project. The shipped executable/installer has not been rebuilt.
+1. Set **Source** to the extracted game folder (the one that holds the archive: `layout.csv`, `toc`, `dag`, `chunkmap.txt`, segments; for the EUR dump this is the `CUSA01073` folder, not its parent, which holds two archive copies). Set **Output** to a separate folder.
+2. Click **Scan**. It indexes the archive and writes the model index and `reports/asset_references.sqlite` into the output root. Leave the Blender path empty to just browse.
+3. Choose an asset type and select an item.
 
-Choose **Full archive pipeline**, set the extracted source root and a separate output root, and click Scan. Leave **Blender (optional)** empty to browse. The validated source root here is `C:/Users/Tim/Documents/Bestanden/Downloads/Ratchet & Clank (EUR)/CUSA01073`.
+The window opens maximised, follows Windows' app mode (light or dark, including the title bar), and has a UI scale of 75-200% that resizes fonts live. Dark mode and scale are stored in the settings file.
 
-Select one source row to load its actual geometry. Left drag orbits, right drag pans, the wheel zooms, and Reset view/double click restores framing. Source look and Highest/Lowest/All LOD selections use the native memberships. Archive metadata loads once; only selected model bytes and geometry decode in a background worker. The loader retains one decoded model and coalesces pending selections.
+## Asset types
 
-The viewport displays neutral shading in the source bind/rest pose. It does not reproduce game materials, playback, attachments, or runtime animation blending. Unsupported mesh layouts display the decoder reason and clear prior geometry. Windows/OpenGL initialization failure produces a clear placeholder. Loose-file transform mode has no native archive identity and explains that preview limitation.
+An **Asset type** selector (Model / Level / Flash UI) above the search row decides what the main area shows. Each type has a list on the left and a viewer on the right. Switching hides the other views without destroying them, so a loaded model, level or UI file stays loaded.
 
-The **Details** tab describes the selected model from the game files (`source_details`): archive path, ID, actors that use it, static or skinned with joint count, mesh records and looks, the vertices/triangles of the shown look/LOD, every material slot with its material file, texture count, and its animation sets and clip count (found through the output root's reference index), plus the packed source hash. A model that fails to decode shows the decoder's reason. When the output root holds a build of that model, its build/reopen status, integrity, limitations and clip support follow under "Build in the output root". COMPLETE is delivery coverage, not game accuracy. The Geometry / Source clips / Support list filters were removed on 2026-10-08: they read only saved build reports, so every unbuilt model was Unknown. Browsing does not approve backend cache reuse.
+| Type | Left | Right |
+|---|---|---|
+| Model (default) | Search/filter row and model tree | Notebook with **3D model**, **Textures**, **Details** |
+| Level | The archive's levels; a typed `.level` or `.zone` path plus **Load** below the list | Zone toggles, view options, level viewport ([levels](levels.md)) |
+| Flash UI | The archive's 53 `.gfx`/`.swf` files | Symbol list, canvas, frame and export controls |
 
-## 2026-10-09 portable export (Extract selected)
+The level list and the Flash UI list are read the first time their type is selected.
 
-**Extract selected** now exports portable files by default; Blender is optional. `model_export.py` (`ModelExporter`, `ExportOptions`) runs in the GUI process through its own `SourcePreviewLoader`, using the same decoders as the 3D view. The GUI runner is `ExportBatchRunner` in `rc2016_asset_browser_gui.py`. One folder per model in the output root:
-- `<model>.glb` (default), `<model>.gltf` + `.bin`, `<model>.obj` + `.mtl`: written directly. Native Y-up coordinates in game units (glTF's convention), game UVs, textures never flipped. GLB/glTF carry the skeleton (local TRS derived from `worlds()`, so either inheritance rule is reproduced), inverse binds, up to 8 influences (two JOINTS/WEIGHTS sets), and every playable clip as a glTF animation (additive clips standalone, as in the viewer). OBJ is the static rest pose.
-- `<model>.fbx`, `.usdc`, `.blend`: converted from the GLB by `blender_convert.py`. It runs in a background Blender with factory settings, `disable_bone_shape=True` (otherwise FBX/USD export the importer's bone-display Icosphere as a mesh) and a private user folder. The `.blend` gets `apply_new_scene_defaults()` and packed images. These files have glTF Principled materials, not the RC PS4 Deferred BRDF; the validated research scene is still available (below).
-- `textures/`: material PNGs (`_basecolor`, `_metal_rough`, `_normal`, `_emissive`, and for OBJ also `_roughness`/`_metallic`), optionally `textures/game_dds/` with the original DDS. Only material maps of the polygon-used slots are written.
-- `export.json`: source ID/path/hash, options, files, clips (and skipped clips with reasons), per-material texture sources and notes.
+## Model tree, search, used-by
 
-Materials follow the viewer's per-graph `_g` reading (`material_texture_paths`: grey, skin or coloured, spec/gloss scales, self-lit K and mask). The game's diffuse + F0/gloss is converted per pixel to metal/roughness with the Khronos specular-glossiness conversion; roughness = 2^(-2.75·gloss). Self-lit = `_c.rgb × mask` with `KHR_materials_emissive_strength` K. Normals are reconstructed from RG without a green flip, as in the validated Blender builds. Graph extras (tints, palettes, detail maps, rims, glass, animated terms) are not baked, and forward blend materials get a fixed 40% opacity. It is a portable approximation, not game equivalence.
+- The tree groups models by archive folder. A folder that holds one model and no subfolders is skipped (`folder_layout`). Selecting a folder selects every model inside it.
+- Models are named by the named actors whose files reference them (`actor_users()`, one level of parent actors included), read from `reports/asset_references.sqlite`. The numbered moby/tie/shrub assets of the first game's data carry no name anywhere in the game data (their own materials are numbered too), and almost none is used by a named actor.
+- The search box matches path, ID, actor names and animation-set names. Several words must all match.
+- The State filter (All, READY, EXPORTED, VERIFIED, STALE, NO ANIMSET, PREVIOUS) reflects saved builds in the output root; EXPORTED marks folders that hold an `export.json`. Browsing does not approve backend cache reuse.
 
-Checked on `npc_qwark_robot` (2026-10-09): all six formats written (6.5 s with Blender); the reopened `.blend` and re-imported FBX have 25 bones and 7 actions and deform; a Cycles proof shows the spring as grey metal (the research build shows it black, see below). The GUI flow (scan, select, clip picker, *Extract only this clip*, GLB + OBJ) was run end-to-end in a hidden test window, with screenshots checked by Claude only.
+## 3D view
 
-Options… (`AnimationExtractorApp._build_options_window`) holds the formats, textures/DDS, animations (all/none), LOD, skip-existing, Python/Blender paths, the advanced research-build switch, backend and clip prefixes, and UI scale; the export choices are saved in the settings file. To export one clip, pick it under the 3D view and tick **Extract only this clip** (`AssetBrowser.export_clip`); it applies to the model shown there. The Animation button opens a searchable folder list (`_open_clip_picker`) instead of cascaded Tk menus. The State filter gains **EXPORTED** (folders with an `export.json`).
+Select one source row to load its geometry. Archive metadata is loaded once; only the selected model's bytes and geometry are decoded, in a background worker that coalesces pending selections.
 
-**Full research Blender scene** (Options → Advanced) is the former behaviour (`PipelineBatchRunner`). With **Extract only this clip** ticked, the shown model gets its own CLI run with `--clip name:<clip>`, and the other selected models run without it.
+**Controls:** left drag orbits, right drag pans, the wheel zooms whenever the pointer is over the view, **Reset view** or double click restores framing. Redraws are scheduled once per idle pass (`_schedule_draw`) and redrawn after Tk's `<Expose>`/`<Map>`, because the view has no Tk background and Tk would otherwise paint over the GL output.
 
-**Viewer material rules in the research build** (2026-10-09): Blender may not show a material worse than the viewer.
-- `materials.viewer_graph_rule` stores the viewer's own reading of each material (`texture_preview.material_texture_paths`): `_g` layout, spec/gloss scales, effective K (for example K × `0x5FD56522` for emissive_detail), mask channel, and the exact `_c/_g/_n` paths.
-- `geometry._material` applies `rc_game_shader.apply_viewer_graph_rule` whenever no exact native translation or registered family applies. Before this, such materials got the colour-only preview. The front-end wires the RC PS4 Deferred BRDF the same way as the viewer's Shaded mode.
-- Since 2026-10-09 (rule schema v2) the front-end also builds every graph term the viewer draws, with the viewer's frozen values: colour pick, colour tint and its random/detail/world/world-normal variants, specular tint, arch emissive sequence, vehicle palettes, glow masks 1/2, two-colour metal, ground puddles, foliage/za normal z, za rim suppression, the forward screen, rock blend, and the basic_normal_gloss variant tint/rim/self-lit terms and detail normals. Constants are `VR <term> <param>` nodes; extra images are bound, hashed source textures. A term whose image is not bound stays in `rule['unported']` with a reason, also on the material as `rc_shader_frontend_limitation` with the approximations. Per-term status, test models and proofs: [`../Materials/ViewerTermsBlender/README.md`](../Materials/ViewerTermsBlender/README.md).
-- Precedence (2026-10-09): when no registered family applies and the viewer rule has no unported term, the viewer rule wins over a ready native translation (`materials.py` decides the `shader_status`, `geometry._material` follows it). Before this, 332 of 343 `mo_gbl_color_tint_01` materials used the translation, which rendered the battery cannon's black wall and tan coil white/grey. A partial viewer rule still gives way to the translation.
-- `shader_status` becomes `viewer_graph_rule_frontend`. `shader_validation._validate_viewer_rule_material` checks after reopening:
-  - the rule;
-  - BRDF → active output;
-  - `_c/_g` paths, hashes and native colourspaces;
-  - scales and K;
-  - every `VR` constant against the rule, and each ported term's constants and images reaching the output.
-- `run.py` hashes `texture_preview.py` into the implementation fingerprint, so a rule change invalidates reused builds.
-- Checked 2026-10-09 with research builds into a temporary root:
-  - **Qwark robot** (one clip): the spring is grey metal and the chest symbol glows (K 30). The eyes use K 50.
-  - **Toxic Crab:** its registered skin front-end is unchanged, with 36 clips.
-  - **Laser gate:** unchanged.
-  - **npc_brain_scientist:** registered and translated front-ends still win; the viewer rule covers the cornea and the coat.
-- All of these delivered and passed reopen validation. The renders were looked at by Claude only.
+**View modes** (`ModelViewport.MODES`): Shaded (default), Textured, Solid, Wireframe, Solid + wireframe.
 
-The 3D view's frame label is wide enough for `165/165 @ 30 fps`.
+**Look and LOD:** the source look and Highest / Lowest / All LOD selections use the model's native memberships.
 
-**Output-folder hygiene** (`run.py`): only `work/` and `reports/logs/` are created up front. The other working folders are created only for a real build, a `--list-models-json` scan prunes the unpacked actor files it indexed, and every run deletes its lock file and empty folders (`remove_empty_dirs`). `prune_intermediates` uses Windows extended-length paths, because unpacked asset names exceeded 260 characters in deep output roots. A scan now leaves only `reports/` (the archive index, needed to find animation sets).
+**Pose:** the model is drawn in its bind/rest pose until an animation is played. Attachments and runtime animation blending are not reproduced.
 
-**Qwark bot antenna bulb** (2026-10-09, `../Materials/QwarkBulb/README.md`): exact-graph rule `facing_glow` in `texture_preview.GRAPH_RULES`. White base (no albedo input) plus the writer's own red facing glow at the presentation amplitude CB0 dw115 = 0.5 (captured 0.01; blink timing not decoded). Viewer: `gl_shading` `uFacingGlow*`. Blender: the deferred BRDF plus a `VR facing glow emission` through an Add Shader, checked after reopening by `shader_validation`. glTF/OBJ: white base and the head-on emissive constant (0.497, 0.021, 0), since glTF has no view-dependent emission. Because the glow is added to a lit white surface, the bulb reads white with a pink-to-red rim in both the viewer and Cycles, not saturated red.
+**Unsupported layouts** show the decoder's reason and clear the previous geometry. Loose-file transform mode has no native archive identity and says so.
 
-## 2026-10-09 asset types
+**Textured mode** draws, per material slot, the `_c` texture that the material references directly (otherwise via its material graph), with the decoder's UV0 (V flipped back). The block-compressed data (BC1-BC7) is read in memory with the pipeline's header parser and un-tiler and uploaded unchanged via `glCompressedTexImage2D`, so the GPU decodes it. The streamed full-size mip is used when the built-in mip is under 512 px (`MIN_PREVIEW_SIZE`; about 0.25 s per 1024x1024 texture to un-tile). sRGB formats are uploaded as their UNORM twins, because the fixed-function path lights in display space. This mode is base colour only (no gloss, normal, self-lit mask, tint or shader); slots without a `_c` are grey. The numbered first-game mobys point at a 2x2 `default_pink_shader_c` and show pink.
 
-An **Asset type** selector (Model / Level / Flash UI, segmented buttons above the search row; `app.asset_type_var`, `AssetBrowser.show_asset_type`) chooses what the main area shows. Each type has its own list on the left and viewer on the right:
-- **Model** (default): the search/filter row and model tree on the left, unchanged; on the right the review notebook now has only **3D model**, **Textures** and **Details**.
-- **Level**: the archive's levels as a list (`LevelPanel.level_list`, `LevelPanel.levels`); selecting one loads it. A typed `.level`/`.zone` path plus **Load** sits under the list. The right side is the zone toggles, view options and level viewport.
-- **Flash UI**: the archive's 53 `.gfx`/`.swf` files (`FlashTab.file_list`); selecting one opens it. The right side is the symbol list, canvas, frame and export controls.
+**GPU buffers:** vertex, normal, UV, skin, rock-alpha and index arrays are uploaded once to GL buffers on first draw (`ModelViewport._vptr`). A new mesh frees the old buffers and bindings are reset after each frame. Without the GL 1.5 entry points every pointer falls back to client memory; both paths give identical framebuffers.
 
-Switching hides the other views without destroying them, so a loaded model, level or UI file stays loaded. The level list is read on the first switch to Level (as the old tab did on first visit); the Flash UI list is now also read on the first switch, which opens `ui/export/pause/map.gfx` as **Load list** did. The standalone `level_viewer.py` keeps the level list in its own side column. `smoke_level.py` switches through the selector.
+**GPU skinning** takes up to 8 influences. Bone matrices are read from a 1-row RGBA32F texture, because a uniform array failed to link above about 200 joints on NVIDIA (C6020). NVIDIA aliases built-in vertex attributes, so skin attributes use slots 1, 6, 7 and 9.
 
-## 2026-10-09 loading speed
+**Loading speed:**
 
-- First model selection opens the archive in ~0.5 s instead of ~2 s, using the pipeline's cached `layout.csv` (see `docs/pipeline.md`, "Archive loading speed"). LZ4 decoding uses the C `lz4` package when it is installed.
-- `prepare_viewport` builds the GL arrays with NumPy (`_prepare_viewport_numpy`) and falls back to the pure-Python `validate_mesh`, which also supplies the exact error message for an invalid payload. On 8 models (121–550,425 vertices, Highest/All LOD) the vertex/normal/index/UV/skin arrays, triangles, bounds and glass centres are byte-identical to the old path. `mesh_payload` output is unchanged. The model's section table comes from `animation_audit.section_table`, and `model_skeleton` no longer copies the rest of the file for each bone name; section tables match on 400 real models and skeletons on 69.
-- Orbit, pan and zoom redraw through `_schedule_draw`, so a frame is drawn once per idle pass rather than per mouse event. Each draw waits for the display refresh (~7 ms/frame even at 550k vertices), so fast drags used to queue up.
-- Measured loads: Toxic Crab 0.81 → 0.22 s, Sheepinator 0.94 → 0.12 s, `npc_brain_scientist` 1.3 → 0.5 s, 550k-vertex `gbl_prop_uiobject_deplanetizer_01` ~15 → 4.0 s. The remainder is mostly the shared native decoder (`native_model.decode_model`), which is unchanged.
-- **GPU buffers** (`ModelViewport._vptr`): every vertex, normal, UV, skin, rock-alpha and index array is uploaded once to a GL buffer on first draw. A new mesh frees the old buffers, and bindings are reset after each frame. Without the GL 1.5 entry points every pointer falls back to client memory, the former path. Buffer and client rendering give identical framebuffers in 35 cases: 6 models × 5 modes, plus posed skinned clips and the saucer glass. Frame cost without vsync on the 550k-vertex prop: Shaded 6.9 → 4.5 ms, Solid 5.4 → 2.5 ms, Wireframe 11.8 → 0.9 ms, Solid + wireframe 17.0 → 3.1 ms; models under ~20k vertices were already < 1 ms.
-- **Recent models** (`SourcePreviewLoader._recent`): the last 6 decoded models (≤ 1.5 M vertices in total) are kept with their animation libraries, so switching back or changing look/LOD takes ~0.02 s. The key includes the output root, because animation sets are found through it. Setting `loader.identity = None` from outside still forces a fresh decode, as proof scripts expect.
-- **Animations after the mesh**: the browser calls `load(..., defer_animation=True)`. A skinned model returns at once with `animation_pending=True` and "Loading animations…", then `load_animation()` builds its clip library on a separate `clip_list_work` worker, outside the loader's main lock. The clip menu and Details fill in only if the same model is still shown. Other callers keep the eager default. Deferred clips, animation sets and notes equal the eager path (Toxic Crab: 36 clips). In the real Tk app, the mesh shows first and the clips follow ~0.08 s later.
-- The `mesh_payload` triangle copy unpacks index triples directly (identical lists); the 550k-vertex prop now loads in 2.4 s with the vectorized decoder. Further gains need an array-based payload, which changes `mesh_payload`'s list contract (tests, proof scripts), so they need to be coordinated.
-- `smoke_gui.py` still expects `rk_sky_nebula_stars` to be unsupported, but flag `0x0020` sky meshes decode since 2026-10-09 (`native_model.py`). Its earlier steps pass, but the script now times out at that check.
+- The archive opens from the pipeline's cached parsed `layout.csv` (`.cache/shared_index`; see [pipeline](pipeline.md), "Archive loading speed"). With the optional `lz4` package, LZ4 blocks decode in C.
+- `prepare_viewport` builds the GL arrays with NumPy and falls back to the pure-Python `validate_mesh`, which also supplies the exact error message for an invalid payload. Both paths produce identical arrays.
+- The remaining time is mostly the shared native decoder (`rc2016.formats.native_model.decode_model`); a 550k-vertex prop loads in a few seconds and models under about 20k vertices draw in under 1 ms per frame.
+- **Recent models** (`SourcePreviewLoader._recent`): the last 6 decoded models (at most 1.5 million vertices in total) are kept with their animation libraries, so switching back or changing look or LOD is nearly instant. The key includes the output root, because animation sets are found through it. Setting `loader.identity = None` forces a fresh decode.
+- **Animations after the mesh:** the browser calls `load(..., defer_animation=True)`. A skinned model returns at once with `animation_pending=True` ("Loading animations..."), then `load_animation()` builds its clip library on a separate worker outside the loader's main lock. The clip menu and Details fill in only if the same model is still shown. Other callers keep the eager default.
 
-## 2026-10-08 usability pass
+## Shaded mode
 
-- **Blank 3D view fixed.** The WGL frame used to show nothing on screen even though `smoke_gui.py` passed: it reads pixels back from GL, so it never saw Tk repainting the frame background over the GL output. `ModelViewport` now has no Tk background and redraws after Tk's `<Expose>`/`<Map>` repaints (`_schedule_draw`). Checked visually on screen (source run).
-- **View modes:** Textured (default) / Solid / Wireframe / Solid + wireframe selector beside Reset view (`ModelViewport.set_mode`). Mouse wheel zooms whenever the pointer is over the view (Windows sends wheel events to the focused widget, so the viewport listens with `bind_all`).
-- **Textured mode** (`texture_preview.py`): per material slot, the `_c` texture the material references directly (else through its material graph), read in memory with the pipeline's own `parse_header`/`ps4_deswizzle_top` and uploaded unchanged as BC1–BC7 via `glCompressedTexImage2D`, so the GPU decodes it. The full streamed mip is used when the built-in one is under 512 px (~0.25 s per 1024² texture). sRGB formats upload as their UNORM twin because the fixed-function viewer lights in display space. Base colour only: no gloss, normal, self-lit mask, tint or shader; slots without a `_c` show grey. UVs are the decoder's UV0 with V flipped back. Checked on screen against `Other models/enm_toxic_crab/proofs/neutral_hdri_crop.png` (colours and placement match) and on the Sheepinator. The numbered rc1 mobys' materials point at the game's 2×2 `default_pink_shader_c`, so they show pink.
-- **Folder tree:** the model list is grouped by archive folder; a folder holding one model and no subfolders is skipped (`folder_layout`). Selecting a folder selects every model inside it.
-- **Used by / search:** `actor_users()` names a model by the named actors whose files reference it (one level of parent actors included), from `reports/asset_references.sqlite`; 1,955 of 6,949 models in CUSA01073. Numbered `rc1` mobys/ties/shrubs have no name anywhere in the game data (their own materials are numbered too); only 3 of 425 rc1 mobys are used by a named actor. The search box matches path, ID, actor and animset names; several words must all match.
-- **Dark mode** follows Windows' app mode (`AppsUseLightTheme`), including a dark title bar.
-- The packaged exe (`dist/`) runs the pipeline from this project folder with the installed Python (found automatically) and remembers folders in `%APPDATA%/PS4 Animation Extractor/settings.json`.
+Shaded (`rc2016/viewer/shading.py`) is one GLSL 1.20 program on the legacy WGL context. It follows the game's deferred BRDF (see [shading](shading.md)):
 
-## 2026-10-08 shaded view and animation playback
+- diffuse = `_c`;
+- specular = GGX with Schlick Fresnel, F0 from `_g`, F90 = sat(60 x F0), GGX alpha = 2^(-5.5 x gloss) (roughness = 2^(-2.75 x gloss)); diffuse and specular are added;
+- self-lit = `_c.rgb x _c.a x K`;
+- `_n` is read as an RG tangent normal without a green flip, with the tangent frame taken from screen-space UV derivatives.
 
-- **Shaded** (default view mode, `gl_shading.py`): one GLSL 1.20 program on the legacy WGL context. Diffuse `_c` + GGX/Schlick specular (F0, F90 = sat(60·F0), alpha = 2^(-5.5·gloss)), added; self-lit `_c.rgb·_c.a·K`; `_n` as an RG tangent map without a green flip, tangent frame from screen-space UV derivatives. `_g` channel meaning follows the graph's decoded writer (`texture_preview.GRAPH_RULES`, first matching prefix):
-  - `basic_skin/*`: R = gloss (sqrt), G = grey specular capped at 0.5. Treating skin `_g` as coloured F0 gave the known red pincers on Toxic Crab (see its README).
-  - `basic_normal_gloss` (and `_detail`, `_monitor_dep`, `_aniso`, which embed the same writer `5EBDECA4`) and `basic_incandescence`: grey F0 = spec·G, gloss = sqrt(sat(gloss·R)), no self-lit for the former; incandescence self-lit = `0x5FD56522`·`_g.B`. Other `basic_normal_gloss*` graphs have undecoded writers and keep the grey reading by name only, with K from their own graph table (`Animation/pipeline/Research/Materials/CorpusMismatchScan/summary.md`).
-  - `blarg_saucer_colorpick` (2026-10-08): the same grey layout, self-lit = `0x06F19114`·`_g.B`, and `_c.a` blends towards the 8×1 `_colorpick_c` palette (`Other models/enm_blarg_saucer/evidence/COLORPICK_DECODE.md`). It had been read as coloured F0 with K 22 on `_c.a`, which gave a gold-plated saucer with glowing stripes.
-  - `mo_gbl_color_tint_01` (2026-10-08, 305 materials on 1,616 models; `Animation/pipeline/Research/Materials/ColorTint01/COLOR_TINT_DECODE.md`): switch `0x7107A2D8` < 0.5 (every corpus material) reads `_g` as grey, otherwise as coloured; F0 × specular tint `0x6B591974`; no self-lit; albedo tinted towards colours A/B with the `_h` mask (unit 5). It had been read as coloured F0 without the tint, which made the trim pale and shiny. The separately decoded tint variants are listed below; unruled variants keep the generic reading.
-  - `jn_mo_gbl_color_tint_01_random_color`, `jn_color_tint_detail`, and `jn_gbl_color_tint_01_world_detail(_normal)` (2026-10-08; [decode](../Materials/ColorTintVariants/COLOR_TINT_VARIANTS_DECODE.md)): four exact graph rules read grey G/R with no self-lit, add source tint/palette/detail terms, fix instance palette magnitude at 0.5 and world origin at 0, and use sole new texture unit 9; parallax remains unruled. Bounded numerical/corpus controls, viewer tests and the Aridia pipe GPU proof pass.
-  - `za_basic_normal_gloss` (2026-10-08, 6 materials on 215 models; `Animation/pipeline/Research/Materials/ZaBasicNormalGloss/ZA_BASIC_NORMAL_GLOSS_DECODE.md`): cached writer `E08357DC` reads grey G/R, suppresses spec/gloss by the geometry-normal view-angle term (exponent `0x4D385B45`), clamps scales before the texture multiply, and has no self-lit.
-  - `basic_normal_two_color_gloss_metal` (2026-10-09): exact dotted rule uses source-traced forward diffuse/specular tint, grey G/R and rim gloss with declared viewer-light/SSR/fog/normal/AA assumptions. Both writers pass 2,048 output cases; all8 source materials and a visually inspected hidden battery-cannon proof pass. Runtime draw/CB/descriptor binding remains unproven (`Animation/pipeline/Research/Materials/TwoColorGlossMetal/TWO_COLOR_GLOSS_METAL_DECODE.md`).
-  - `mo_gbl_arch_emissive_sequence_01` (2026-10-08, 59 materials on 413 models; `Animation/pipeline/Research/Materials/ArchEmissiveSequence/ARCH_EMISSIVE_SEQUENCE_DECODE.md`): bounded `AAED778C` preview at CB0[99]=0 and zero instance interpolants, grey G F0, sqrt(sat(5R)) gloss, colour/base-mask albedo and sequence/mask glow; stale K and `_c` ignored in Shaded, Q on unit 8. Other native writers and runtime selection remain unvalidated.
-  - Six `basic_normal_gloss` variants now have exact rules (2026-10-08, 129 materials; [decode](../Materials/BasicNormalGlossVariants/BASIC_NORMAL_GLOSS_VARIANTS_DECODE.md)): `_emissive`, `_emissive_detail`, `_fresnel_detail`, `_emissive_colored_spec`, `_aniso_incan`, `_specfresnel_emissive` keep grey G/R but decode graph-specific tint, glow, rim and detail terms; detail uses unit 11, pulses show t=0, the remaining name fallback stays in place; two offscreen comparisons passed under viewer lighting.
-  - `mo_veh_random_color_01` (2026-10-08): [bounded decode](../Materials/VehicleRandomColor/VEHICLE_RANDOM_COLOR_DECODE.md); EB1AC2CD uses UV0.x for two linear palettes, a paint mask and view-dependent RGB tints, constant packed F0 (0,.0999756,.0999756), Q=1 gloss .948681 and no self-lit/flake samples; second palette uses unit 10. Forward flakes affect normal/gloss in a separate unimplemented slice; runtime pass selection remains unproven.
-  - `basic_parallax_occlusion` (2026-10-08, 19 materials on 102 models; [decode](../Materials/ParallaxOcclusion/PARALLAX_OCCLUSION_DECODE.md)): exact bounded rule reads grey G/R without a layout switch or self-lit and binds C/G/N by serialized slots; the source height-alpha march uses 16–64 default steps plus height shadows, so both are documented and omitted from the viewer. No new texture unit; 1,000-case controls, corpus audit, 40 tests and visually inspected corridor GPU proof pass.
-  - `jn_ground_puddles` (2026-10-08): [bounded forward decode](../Materials/GroundPuddles/GROUND_PUDDLES_DECODE.md); noise thresholds independently affect grey F0, gloss and diffuse attenuation, while CB0[99] scrolls only the ripple normal; all six exports audited, no nonzero deferred material writer found, so no viewer rule/unit 14 or model improvement proof was added.
-  - `jn_basic_normal_gloss_glow_mask` / `_02` (2026-10-08; [decode](../Materials/GlowMask/GLOW_MASK_DECODE.md)): separate cached-forward `2685144F` and native-deferred `CA81B14F` slices read grey G/R with K `0x06F19114`; first uses mask/tint/environment and offset parallax glow, `_02` uses `c.R*mask*K` with a vertex factor. All 19 materials checked; independent 1,200-case controls and toolbox/coral GPU proofs pass. Sole new texture unit 13; viewer ambient/TBN/instance substitutes remain explicit.
-  - `mo_blend_01` (2026-10-09; [decode](../Materials/RockBlend/ROCK_BLEND_DECODE.md)): resource-table writer `886AAC94` blends two source-resolved c/g/n layers through H, squared vertex alpha and sharpness; both G images read grey G/R, no self-lit. Sole new unit15; all11 material/control checks and GPU proof pass. The proof model has no source colour stream, so alpha is explicitly frozen to1; runtime input/optional vertex displacement stay unproven.
-  - `basic_foliage` ([decode](../Materials/Foliage/FOLIAGE_DECODE.md)): all four deferred writers use grey G/R, zero self-lit and no dedicated subsurface output; all 34 materials resolve by C/G/N slot identity, no layout switch or new texture unit. Viewer normal z uses 1-x²-y²; runtime alpha cutoff/dither and normal fade remain omitted.
-  - `mo_neb_amb_screen_01` (2026-10-09; [decode](../Materials/StaleSelfLitKeys/STALE_SELF_LIT_KEYS_DECODE.md)): cached forward `8716DC7A` previews source timeline/grid, mask, color/intensity and scroll noise at CB0[99]=0 with frozen cutoff/alpha/fog inputs, on existing units 0/1/2/4; all 10 materials checked and TV GPU proof reviewed. `C4828176` uses only `0x06F19114` (colored-gloss unchanged); hero D14A48D7 table-0 keys are source-proven, but variable intensity remains unruled pending runtime phase inputs.
-  - Other graphs: coloured F0 = spec·`_g.rgb`, gloss = sqrt(sat(gloss·a²)).
+The lighting is a fixed viewer rig (key, fill, sky/ground ambient, an ACES fit), not the game's lighting. The skin Fresnel lerp is not applied.
 
-  Specular/gloss scales (`0x62835AF9`/`0x24F4CA4C`) come from the material, else the graph default. K uses the self-lit key in the graph's own parameter table, because materials can store keys their graph never reads. Lighting is a fixed viewer rig (key, fill, sky/ground ambient, ACES fit): not game lighting. The skin Fresnel lerp is not applied.
-- **Glass / forward path** (2026-10-08). Graphs with a `forward` rule in `GRAPH_RULES` are drawn after every opaque batch, using a second program (`gl_shading.GLASS_FRAGMENT`, `Shading.glass_program`, `ModelViewport._draw_glass`):
-  - **Draw state:**
-    - Blend and cull come from the material's flags word (`.material` section `0xE1275683`, u32 at byte 16; `texture_preview.material_flags`/`blend_state`, the rule in `Claude_shading_fix/render_state/`). Additive is (`SRC_ALPHA`, `ONE`) and alpha-over is (`SRC_ALPHA`, `ONE_MINUS_SRC_ALPHA`). Bit 2 clear culls back faces; the decoded meshes are counter-clockwise front.
-    - Depth write is off, and the glass batches draw farthest first by their rest-pose centroid in view space (`split_forward`, `back_to_front`). Triangles within a batch are not sorted.
-  - **`character_glass`** (Blarg visor) follows the native `34D5B21C` decode (`Other models/enm_blarg_space_commando/evidence/glass/CHARACTER_GLASS_DECODE.md`): rim alpha, tinted reflection without Fresnel, and body colour × (1 + env rim).
-  - **`blarg_saucer_glass`** (saucer dome) follows the native `FEEC00CE` decode (`Other models/enm_blarg_saucer/evidence/GLASS_DECODE.md`).
-    - The writer binds textures by slot hash, not suffix: the palette `_colorpick_c` and `Patterns_cma` in the `_n` slot. The material's `glass_c`/`glass_g` are never read (Textured mode still shows `glass_c`).
-    - Alpha = sat(0.9 + rim), so the dome is at least 90% opaque: dark amber 0.4·palette × diffuse, grey F0 0.1 reflections, and a faint pattern normal. Before this, the dome drew opaque with its unbound `_c`.
-  - **Approximations:** the engine's light loop, probes, screen-space reflections and fog are replaced by the viewer rig, and colour is tonemapped per fragment before blending (the game blends HDR before its tonemap). Instance fade 0, `attr0.w` 1.
-  - **Other forward graphs** (VFX, energy, cornea, other glass families) have no rule yet and still draw opaque.
-  - **Proof:** `glass_proof.py` renders both models hidden and measures transmission (`glass_proof.json`). Dome pixels over the background pass 7.1% median (p90 9.8%; the decode allows at most 10%). Visor pixels pass 23.5% median (p90 44%) at the default top-down framing. Images: `Other models/enm_blarg_saucer/proofs/asset_browser_glass_20261008.png` and `Other models/enm_blarg_space_commando/proofs/asset_browser_visor_glass_20261008.png`. These were looked at by Claude only, not by a human.
-- **Animation playback** (`animation_preview.py`): animsets come from the actors that reference the model in the output's `asset_references.sqlite`, following their configs (attached actors not followed, like `index.related`). Clips are listed from `ordered_containers`, decoded on selection with `decode_clip`/`sample_transforms`, classified with `classify`; skin = `worlds(rows, frame, rule) @ inverse_bind` with the pipeline's inheritance rule (single candidate, else SSC0), conjugated into the preview basis. Additive-style clips play standalone. GPU skinning (8 influences) reads bones from a 1-row RGBA32F texture: a uniform array failed to link above ~200 joints (NVIDIA C6020 on Clank, 150 joints bucketed to 256). NVIDIA aliases built-in attributes, so skin attributes use slots 1, 6, 7, 9. Checked in hidden windows: Toxic Crab walk and Clank strafe walk deform plausibly; rest skinning is exact.
-- Blender proof tab hidden (controls still built). UI scale (75–200%) resizes the named fonts live and is saved in the settings file. The window opens maximised.
+### `_g` meaning per material graph
+
+The `_g` channel layout depends on the graph's decoded writer. `GRAPH_RULES` in `rc2016/viewer/textures.py` lists rules by graph path prefix; the first matching prefix wins. Graphs without a rule use the generic reading: coloured F0 = spec x `_g.rgb`, gloss = sqrt(sat(gloss x a^2)), where `a` is `_g.a`.
+
+The specular and gloss scales (keys `0x62835AF9` and `0x24F4CA4C`) come from the material, else from the graph default. K (self-lit strength) comes from the self-lit key in the graph's own parameter table, because materials can store keys their graph never reads (for example writer `C4828176` uses only `0x06F19114`). Self-lit keys by family: `0x66EFA55B` (default deferred), `0x06F19114` (coloured-gloss-emissive), `0xF8C61683` (emissive in `_c` alpha), `0x5FD56522` (incandescence).
+
+"Grey" below means F0 = grey spec x `_g.G` and gloss = sqrt(sat(gloss x `_g.R`)). Writer IDs are the hashes of the decoded shader writers; the decode notes are research material (not included here).
+
+| Graph (prefix) | Reading |
+|---|---|
+| `basic_skin/*` | R = gloss (sqrt), G = grey specular capped at 0.5. Coloured F0 would give red specular on skin |
+| `basic_normal_gloss`, `_detail`, `_monitor_dep`, `_aniso` (writer `5EBDECA4`) | Grey, no self-lit |
+| `basic_incandescence` | Grey; self-lit = `0x5FD56522` x `_g.B` |
+| `basic_normal_gloss_emissive`, `_emissive_detail`, `_fresnel_detail`, `_emissive_colored_spec`, `_aniso_incan`, `_specfresnel_emissive` | Six separately traced writers: grey, with graph-specific tint, glow, rim and detail terms; detail uses texture unit 11; pulses show t=0 |
+| other `basic_normal_gloss*` | Undecoded writers: grey by name only, K from the graph's own table |
+| `blarg_saucer_colorpick` (writer `66744D01`) | Grey; self-lit = `0x06F19114` x `_g.B`; `_c.a` blends towards the 8x1 `_colorpick_c` palette |
+| `mo_gbl_color_tint_01` (writer `BE8C3EE0`) | Switch `0x7107A2D8` < 0.5 (every corpus material) reads `_g` as grey, otherwise coloured; F0 x specular tint `0x6B591974`; no self-lit; albedo tinted towards colours A/B using the `_h` mask (unit 5) |
+| `jn_mo_gbl_color_tint_01_random_color`, `jn_color_tint_detail`, `jn_gbl_color_tint_01_world_detail`, `..._world_detail_normal` | Grey, no self-lit; tint, palette and detail terms; instance palette magnitude fixed at 0.5, world origin 0; unit 9. Parallax variants have no rule |
+| `za_basic_normal_gloss` (writer `E08357DC`) | Grey; spec and gloss suppressed by a geometry-normal view-angle term (exponent key `0x4D385B45`); scales clamped before the texture multiply; no self-lit |
+| `basic_normal_two_color_gloss_metal` (writers `1012E99D`/`EC1E7CD3`) | Grey, no self-lit; forward diffuse and specular tints and rim gloss, with viewer light, no SSR or fog, instance opacity 1 |
+| `mo_gbl_arch_emissive_sequence_01` (writer `AAED778C`) | Preview at CB0[99]=0 and zero instance interpolants; grey G as F0, gloss sqrt(sat(5R)), colour/base-mask albedo and sequence/mask glow; stale K and `_c` ignored; unit 8 |
+| `mo_veh_random_color_01` (writer `EB1AC2CD`) | UV0.x selects two linear palettes (second on unit 10), paint mask, view-dependent RGB tints; constant packed F0 (0, 0.0999756, 0.0999756), gloss 0.948681; no self-lit; flake samples not implemented |
+| `basic_parallax_occlusion` | Grey, no layout switch or self-lit; C/G/N bound by serialized slots; the source height march (16-64 steps) and height shadows are omitted |
+| `jn_basic_normal_gloss_glow_mask` (`2685144F`), `_02` (`CA81B14F`) | Grey, K `0x06F19114`; first: mask/tint/environment and offset-parallax glow; `_02`: `c.R x mask x K` with a vertex factor; unit 13 |
+| `mo_blend_01` (writer `886AAC94`) | Blends two source-resolved c/g/n layers through H, squared vertex alpha and sharpness; grey, no self-lit; unit 15; vertex alpha frozen to 1 |
+| `basic_foliage` | Four deferred writers: grey, no self-lit, no subsurface output; normal z = 1 - x^2 - y^2; runtime alpha cutoff, dither and normal fade omitted |
+| `mo_neb_amb_screen_01` (forward `8716DC7A`) | Source timeline/grid, mask, colour/intensity and scroll noise at CB0[99]=0 with frozen cutoff, alpha and fog; units 0/1/2/4 |
+| `jn_ground_puddles` (forward `DB75867B`) | Noise thresholds drive grey F0, gloss and diffuse attenuation; CB0[99] scrolls only the ripple normal |
+| `npc_qwark_robot_bulb` (exact graph, forward `0CD2AAFB`) | White base (no albedo input) plus the writer's red facing glow at amplitude CB0 dw115 = 0.5 (captured 0.01; blink timing not decoded). Reads as white with a pink-to-red rim, not saturated red |
+
+Limitations that apply across the table: viewer lighting, ambient, TBN and instance values are substitutes for the game's runtime inputs; time-driven terms show t=0; runtime draw, constant-buffer and descriptor binding is unproven for several writers (the two-colour metal, vehicle and screen graphs); variable-intensity hero materials are left unruled pending the runtime phase inputs. Texture units used by rules: 5 (tint mask), 8 (arch sequence), 9 (tint variants), 10 (second vehicle palette), 11 (basic_normal_gloss detail), 13 (glow mask), 15 (rock blend).
+
+### Glass and forward materials
+
+Graphs with a `forward` rule are drawn after every opaque batch with a second program (`GLASS_FRAGMENT`, `Shading.glass_program`, `ModelViewport._draw_glass`).
+
+- **Draw state** comes from the material's render-state flags word: `.material` section `0xE1275683`, u32 at byte 16 (`material_flags`, `blend_state`). Bits 0-1 select blend (0 opaque, 1 additive, 2 alpha-over; 3 has no captured example); bit 2 set means two-sided. Additive is (`SRC_ALPHA`, `ONE`), alpha-over is (`SRC_ALPHA`, `ONE_MINUS_SRC_ALPHA`). With bit 2 clear, back faces are culled (the decoded meshes are counter-clockwise front).
+- Depth write is off. Glass batches draw farthest first by their rest-pose centroid in view space (`split_forward`, `back_to_front`); triangles within a batch are not sorted.
+- **`character_glass`** (Blarg visor, writer `34D5B21C`): rim alpha, tinted reflection without Fresnel, and body colour x (1 + environment rim). Parameters are read from the material, else the graph default.
+- **`blarg_saucer_glass`** (saucer dome, writer `FEEC00CE`): the writer binds textures by slot hash, not suffix: the palette `_colorpick_c` and `Patterns_cma` in the `_n` slot. The material's `glass_c`/`glass_g` are never read (Textured mode still shows `glass_c`). Alpha = sat(0.9 + rim), so the dome is at least 90% opaque: dark amber 0.4 x palette x diffuse, grey F0 0.1 reflections, a faint pattern normal.
+- **Approximations:** the engine's light loop, probes, screen-space reflections and fog are replaced by the viewer rig. Colour is tonemapped per fragment before blending (the game blends HDR before tonemapping). Instance fade is 0 and `attr0.w` is 1.
+- Other forward graphs (VFX, energy, cornea, other glass families) have no rule and draw opaque.
+
+## Animation playback
+
+`rc2016/viewer/animation.py` builds the clip library:
+
+- Animation sets come from the actors that reference the model in `asset_references.sqlite`, following their configs. Attached actors are not followed.
+- Clips are listed from the ordered containers, decoded on selection (`decode_clip`, `sample_transforms`) and classified (`classify`).
+- Skin matrices = `worlds(rows, frame, rule) @ inverse_bind`, with the pipeline's inheritance rule (a single candidate, else SSC0), conjugated into the preview basis. Rest skinning is exact.
+- Additive-style clips play standalone, not on top of a base pose.
+- The clip picker is a searchable folder list opened by the Animation button. The frame label shows `frame/total @ fps`.
+
+See [animation](animation.md) for the clip and sample formats.
 
 ## Textures tab
 
-The **Textures** tab sits next to **3D model**. **Show** switches between two listings:
-- **This model:** every `.texture` that the selected model's materials reference, directly or as material-graph defaults (marked "graph default"), with the format, full size and material.
-- **Whole archive:** all 18,994 textures in the archive, including those no model uses, such as UI art, loading screens, skies, VFX and environment probes. Format and size fill in when a texture is viewed. **Filter** matches every word against the path. At most 3,000 rows are shown, so the filter narrows the rest.
+**Show** switches between two listings:
 
-Selecting a texture decodes it in a worker and previews it with a channel selector (RGB, RGBA over a checkerboard, R, G, B or Alpha). RGB is the default because alpha is usually mask data, such as the `_c` self-lit mask. The preview reuses the 3D view's decoded mip (at least 512 px). Array textures (38 in the corpus, mostly VFX `_3d` flipbooks) enable the **Slice** selector.
+- **This model:** every `.texture` referenced by the selected model's materials, directly or as material-graph defaults (marked "graph default"), with format, full size and material.
+- **Whole archive:** all 18,994 textures, including ones no model uses (UI art, loading screens, skies, VFX, environment probes). Format and size fill in when a texture is viewed. **Filter** matches every word against the path. At most 3,000 rows are shown (`TEXTURE_ROW_LIMIT`); the filter narrows the rest.
 
-**Export selected… / Export listed…** write any combination of the following into a chosen folder. Export listed covers every filter match, not only the 3,000 rows shown, and asks for confirmation above 200 textures.
+Selecting a texture decodes it in a worker and previews it with a channel selector (RGB, RGBA over a checkerboard, R, G, B, Alpha). RGB is the default, because alpha is usually mask data such as the `_c` self-lit mask. The preview reuses the 3D view's decoded mip (at least 512 px). Array textures (38 in the corpus, mostly VFX `_3d` flipbooks) enable the **Slice** selector.
+
+**Export selected... / Export listed...** write any combination of these into a chosen folder. Export listed covers every filter match, not only the 3,000 rows shown, and asks for confirmation above 200 textures.
+
 - **Original .texture:** the decompressed built asset, plus `<name>.texture.stream` exactly as archived when the texture has a stream.
-- **DDS:** the original block-compressed largest top mip with a DX10 header, the same as the pipeline's `decode_texture`.
-- **PNG:** the stored values without a colourspace conversion. R8G8 gets B = 0, and BC6H is clamped to 8-bit by Pillow.
+- **DDS:** the original block-compressed largest top mip with a DX10 header.
+- **PNG:** the stored values with no colourspace conversion. R8G8 gets B = 0 and BC6H is clamped to 8-bit by Pillow. Array textures export as one DX10 array DDS plus one PNG per slice (`<name>_sliceNN.png`).
 
-When two exported textures share a basename, the later one gets a `__2` suffix, and so on. A failed texture is logged and does not stop the others.
+Name collisions get a `__2`, `__3` suffix. A failed texture is logged and does not stop the others.
 
-**Flip vertically** is off by default and changes only the preview and PNG output. Unflipped means as stored in the game, top row first, which matches what the pipeline's Blender builds show. The builds never flip images; the decoder flips UV V instead (`v_blender = 1 − v_game`), so textures and Blender UVs line up without flipping. Original and DDS output is never flipped.
+**Flip vertically** is off by default and affects only the preview and PNG output. Unflipped means as stored (top row first). The pipeline's Blender builds never flip images; the decoder flips UV V instead (`v_blender = 1 - v_game`). Original and DDS output is never flipped.
 
-An array texture exports as one DX10 array DDS and one PNG per slice (`<name>_sliceNN.png`).
+Pillow has no BC1-BC3 sRGB decoder, so those blocks decode as their identical UNORM twins; no colourspace conversion is applied either way.
 
-Pillow decodes BC1–BC7 for the preview and PNG export. It is imported lazily, so the 3D view works without it, and `rc2016_asset_browser.spec` lists it as hidden imports for the exe. Pillow has no BC1–BC3 sRGB decoder, so those blocks decode as their identical UNORM twins. No colourspace conversion is applied either way.
+`rc2016/formats/texture.py` reads every texture in the archive: BC1/2/3 sRGB (DXGI 72/75/78) are accepted; non-power-of-two sizes (369 in the corpus) are stored padded to whole 8x8-block tiles, the layout the un-tiler assumes; array slices stored back to back are read by `ps4_deswizzle_slices`; un-tiling uses NumPy when available with output identical to the pure-Python fallback. A full decode of all archive textures through the export path completes without failures (research run, about 18 minutes).
 
-As of 2026-10-08, `rc2016/formats/texture.py` reads every texture in the archive:
-- It accepts BC1/2/3 sRGB (DXGI 72/75/78).
-- It no longer rejects non-power-of-two sizes. All 369 in the corpus are stored padded to whole 8×8-block tiles, the same layout the un-tiler already assumed, and their built sizes match exactly.
-- `ps4_deswizzle_slices` reads array slices stored back to back.
-- Un-tiling uses numpy when it is available, with output byte-identical to the pure-Python loop, which is kept as the fallback.
+Texture colourspace conventions (for exports and Blender): sRGB DXGI formats are 29, 72, 75, 78, 91, 93 and 99; everything else is data.
 
-On 2026-10-08, a full decode of all 18,994 archive textures (19,242 images including array slices) through the export path had no failures and took about 18 minutes.
+## Flash UI tab
 
-## Flash UI tab (menus and in-game maps)
+The game's menus are Scaleform GFX files: SWF with a `GFX` signature, version 12-24. The archive holds 53 of them, as types `gfx` and `swf` under `ui/export/`. They are vector art, so the Textures tab cannot show them.
 
-The game's menus are Scaleform GFX files: SWF with a `GFX` signature, version 12–24. The archive holds 53 of them, as types `gfx` and `swf` under `ui/export/`. They are vector art, so the Textures tab cannot show them.
+- The file list loads on first view (or with **Load list**) and opens `ui/export/pause/map.gfx`.
+- The symbol list shows the main timeline, sprites and shapes, filtered by default to exported or class names.
+- **Label** and **Frame** choose a timeline frame. **Background** (Checker, Dark, Light) changes only the preview.
+- **Export frame...** and **Export all labels...** write transparent PNGs at the chosen size. **+ original .gfx** also copies the file's exact bytes.
 
-The **Flash UI** asset type (`flash_tab.py`; a tab until 2026-10-09) works as follows:
-- The file list loads on first view (or with **Load list**) and opens `ui/export/pause/map.gfx` automatically.
-- The symbol list shows the main timeline, sprites and shapes, filtered to exported or class names by default.
-- **Label** and **Frame** choose a timeline frame. **Background** (Checker, Dark or Light) changes the preview only.
-- **Export frame…** and **Export all labels…** write transparent PNGs at the chosen size. **+ original .gfx** also copies the file's exact bytes.
+### Renderer (`rc2016/flash/gfx.py`)
 
-**In-game planet maps:** these are in `ui/export/pause/map.gfx`, symbol `Map_fla.map_image_asset_holder_6` (id 1253). It has one labelled frame per map: `kPokitaru`, `kMetropolis`, `kNebula`, `kAridia`, `kBatalia`, `kDeplanetizer`, `kGaspar`, `kKalebo`, `kNovalis`, `kPhoenix`, `kQuartu`, `kRilgar`, `kVeldin`, `kDeplanetizerExterior` and `kDeplanetizerNefarious`. They render in their authored grey. The game recolours and highlights map areas at runtime from ActionScript, which is not run. Each planet's `gp_map.zone` holds the map-section volumes and the map camera.
+A purpose-written renderer with no external dependencies. It parses:
 
-**Game-colour planet maps:** use **Export planet maps (game colours)…** in the tab, or run:
-
-```powershell
-python -m rc2016.flash.planet_maps "<...\CUSA01073>" "<output folder>" [--size 4096]
-```
-
-`map_export.py` writes one transparent PNG per map. Every named area of the `land` sprite is filled with the map script's visited colour, `#AFDAFF`. Areas marked `kSecret` in `configs/system/system_<planet>_map.config` are filled with its secret colour, `#AFFFE4`.
-
-How the sources fit together:
-- **Colours:** the script declares the fields `_visitedColor`, `_secretColor`, `_inaccessibleColor` and `_unvisitedColor`, and its constants include `0xAFDAFF`, `0xAFFFE4`, `0xA87373` and `0xFFFFFF`. The script was not decompiled. The pairing of fields to values comes from sampling an in-game Veldin screenshot, which matches those colours at partial opacity over the menu background.
-- **Secret areas:** config range ends map to instance names. For example, `kVEL_1_16b` becomes `area1_16b`, and `kMET_4_05c_secret` becomes `area4_05c_secret`.
-- **Ranges** are expanded by natural name order. The game's own section order was not decoded.
-- **Unresolved entry:** Gaspar's `kGAS_3_04c` has no matching shape in the Flash file.
-
-**Section lines:** the lines between sections are on by default; `--no-seams` turns them off. They are not drawn in the Flash file, where only 4 of 593 area shapes have strokes. In-game they are anti-aliasing seams, because each section is a separate shape. `render_with_seams` reproduces them by growing each area mask by half the line width. Pixels covered by two grown masks are darkened ×0.7, at a line width of about 1/800 of the long side, as measured on the screenshot. Outer edges stay clean. A full export with seams takes about 5 minutes.
-
-The 12 unnamed pieces across the maps, plus the template sprite #93, are omitted. They are stray dots under 3 px, plus two hairline slivers (7×0.1 px on Aridia, 0.5×66 px on Kalebo). They are not the section lines. On 2026-10-08, the Veldin export matched the in-game screenshot: green at the top tip and at the small south-west piece. Areas are exported opaque. The game blends them over the background at roughly 80% opacity, and switches visited, unvisited and inaccessible colours from save progress.
-
-**Renderer:** `gfx_render.py` was written for this project, because the online options did not fit. pyswf/py3swf are Python 2-era with extra dependencies, and JPEXS FFDec is a separate Java application. It parses the following:
-- DefineShape 1–4: solid, linear and radial fills, and line styles.
+- DefineShape 1-4: solid, linear and radial fills, line styles.
 - DefineSprite timelines with PlaceObject 1/2/3 and RemoveObject: matrices, colour transforms, clip-depth masks, frame labels.
 - SymbolClass/ExportAssets names, and ImportAssets resolved by file name against other archive UI files.
 
-Fills are built from SWF's left/right fill edges, chained into loops and drawn even-odd at 2× supersampling. On 2026-10-08, all 53 files parsed without tag errors and all 737 named symbols rendered.
+Fills are built from SWF's left/right fill edges, chained into loops and drawn even-odd at 2x supersampling. All 53 files parse and all 737 named symbols render.
 
-**Not drawn:**
-- Text fields and fonts.
-- Filters and blend modes.
-- Morph shapes.
-- ActionScript and its runtime colours.
-- Nested sprites' own animation: children show their first frame.
-- Bitmap fills, drawn as grey: 12 `DefineExternalImage2` (tag 1009) references across 8 files point to the original export's `.tga` names (such as `Loading_I1D.tga`), which the game substitutes at runtime.
+Not drawn: text fields and fonts; filters and blend modes; morph shapes; ActionScript and its runtime colours; nested sprites' own animation (children show their first frame); bitmap fills (drawn grey: 12 `DefineExternalImage2` references across 8 files point to original export `.tga` names that the game substitutes at runtime).
 
-## Saved results and optional Blender
+### Planet maps
 
-Saved results are read only from the GUI's output root, reloaded when it changes and after each batch. There is no result dropdown (removed 2026-10-08, along with Refresh results / Browse output… and the always-loaded CorpusRegression folder): selecting a source model adds its build to the Details tab when there is one. To inspect the regression runs, set the output root to e.g. `CorpusRegression/runs/r1`, as `smoke_gui.py` does. Large master and validation-report hashes are checked in a worker for the selected result. Mutated masters/receipts disable scene review; stale proof links fail provenance checks. No receipt is rewritten.
+The in-game planet maps are in `ui/export/pause/map.gfx`, symbol `Map_fla.map_image_asset_holder_6` (id 1253), which has one labelled frame per map: `kPokitaru`, `kMetropolis`, `kNebula`, `kAridia`, `kBatalia`, `kDeplanetizer`, `kGaspar`, `kKalebo`, `kNovalis`, `kPhoenix`, `kQuartu`, `kRilgar`, `kVeldin`, `kDeplanetizerExterior`, `kDeplanetizerNefarious`. They render in their authored grey; the game recolours areas at runtime from ActionScript, which is not run. Each planet's `gp_map.zone` holds the map-section volumes and the map camera.
 
-**Open Blender** uses an explicitly configured executable and separate path arguments. **Artifacts / logs** opens the result location. **Proof artifact** explicitly opens a verified existing proof; it never substitutes for the 3D model.
-
-The Optional Blender proofs tab reads actual saved scene controls only on request. It offers persistent source Actions with source FPS/frame bounds and exact recorded variant/LOD selectors. Unsupported selectors remain unavailable. Combined variant and LOD switching has no validated contract and is rejected. Additive clips are standalone source previews.
-
-Proofs use `review_blender.py`, a hash-pinned request, a new isolated `reviews/<UUID>/` directory, and a fresh Blender process with `--disable-autoexec`. The adapter never saves the delivered master or overwrites reports. It uses exact current embedded controls or the hash-verified sealed `legacy_controls.py` API for older retained scenes; unknown control text fails closed. It preserves the saved camera and records evaluated geometry/visibility at the selected frame. Current shared HDRI review lighting, transparent 960x640 RGBA, 32 samples, Cycles RTX 3060 OptiX with CPU disabled follow this workspace's proof requirements. Missing rendering prerequisites fail explicitly. No global preferences are saved.
-
-Master hashes are checked before and after. In-memory camera, visibility, animation, timeline, lighting, image metadata, GPU flags and render state are restored and compared. Proof provenance is separate from sealed delivery evidence. Static and two animated frame proofs passed after AnimationMemory completed. Variant acceptance targets the separately delivered combined `Fusion_Grenade_V1_V5_switchable.blend`, pinned by the sealed assembly receipt and hash-verified through catalog discovery. It passed (automated checks only); see `results.json`. `proof_acceptance.py` prepares the plan without launches by default; run it with `--run` only when the machine is free (check `tasklist | findstr blender.exe` first). The passing run was:
+**Export planet maps (game colours)...** in the tab, or:
 
 ```powershell
-& 'C:/Users/Tim/AppData/Local/Programs/Python/Python314/python.exe' -B Animation/pipeline/Research/AssetBrowserReview/proof_acceptance.py --run --resume Animation/pipeline/Research/AssetBrowserReview/reviews/acceptance_d8ed99765e24450f98ac57afb16c47e3/acceptance.json
+python -m rc2016.flash.planet_maps "<extracted game folder>" "<output folder>" [--size 4096] [--no-seams]
 ```
 
-The runner checks process availability before each sequential launch and records PNG alpha, restoration, animated deformation and source variant visibility.
+writes one transparent PNG per map (`rc2016/flash/planet_maps.py`).
 
-Scan, multiselect, batch, logs, cancel, transform mode and verified resume retain the existing CLI/backend lifecycle. New review work uses bounded background queues, one owned process, stale-result tokens, cancellation/reaping, and double-submit guards. Closing the UI cancels its review process. No unrelated Blender process is stopped.
+- Every named area of the `land` sprite is filled with the visited colour `#AFDAFF`. Areas marked `kSecret` in `configs/system/system_<planet>_map.config` get the secret colour `#AFFFE4`.
+- **Colours:** the map script declares `_visitedColor`, `_secretColor`, `_inaccessibleColor`, `_unvisitedColor`, and its constants include `0xAFDAFF`, `0xAFFFE4`, `0xA87373`, `0xFFFFFF`. The script was not decompiled; the pairing of fields to values comes from sampling an in-game screenshot (research notes, not included).
+- **Secret areas:** config range ends map to instance names (`kVEL_1_16b` becomes `area1_16b`, `kMET_4_05c_secret` becomes `area4_05c_secret`). Ranges are expanded by natural name order; the game's own section order was not decoded. Gaspar's `kGAS_3_04c` has no matching shape in the Flash file.
+- **Section lines** are on by default. They are not drawn in the Flash file (only 4 of 593 area shapes have strokes); in game they are anti-aliasing seams between separate shapes. `render_with_seams` grows each area mask by half the line width and darkens pixels covered by two grown masks by x0.7, at a line width of about 1/800 of the long side (measured on a screenshot). Outer edges stay clean. A full export with seams takes about 5 minutes.
+- 12 unnamed pieces across the maps plus the template sprite #93 are omitted (stray dots under 3 px and two hairline slivers; not the section lines).
+- Areas are exported opaque. The game blends them over the background at roughly 80% opacity and switches visited/unvisited/inaccessible colours from save progress.
 
-## Validation
+## Details tab
+
+`source_details` describes the selected model from the game files: archive path, ID, actors that use it, static or skinned (with joint count), mesh records and looks, vertices and triangles of the shown look/LOD, every material slot with its material file and texture count, its animation sets and clip count (found through the output root's reference index), and the packed source hash. A model that fails to decode shows the decoder's reason.
+
+When the output root holds a build of that model, its build and reopen status, integrity, limitations and clip support follow under "Build in the output root". COMPLETE there means delivery coverage, not game accuracy. Saved results are read only from the output root, reloaded when it changes and after each batch; large master and validation-report hashes are checked in a worker.
+
+## Portable export (Extract selected)
+
+**Extract selected** exports portable files by default and needs no Blender. `ModelExporter` and `ExportOptions` (`rc2016/export/models.py`) run in the GUI process with their own `SourcePreviewLoader`, so they use the same decoders as the 3D view. The GUI runner is `ExportBatchRunner` in `rc2016/app/main.py`.
+
+One folder per model in the output root:
+
+| Output | How |
+|---|---|
+| `<model>.glb` (default), `<model>.gltf` + `.bin`, `<model>.obj` + `.mtl` | Written directly |
+| `<model>.fbx`, `.usdc`, `.blend` | Converted from the GLB by `rc2016/export/blender_convert.py` in a background Blender |
+| `textures/` | Material PNGs: `_basecolor`, `_metal_rough`, `_normal`, `_emissive` (OBJ also `_roughness`/`_metallic`); optionally `textures/game_dds/` with the original DDS. Only material maps of polygon-used slots are written |
+| `export.json` | Source ID/path/hash, options, files, clips (and skipped clips with reasons), per-material texture sources and notes |
+
+**Coordinates and skeleton:** Y-up in game units (glTF's convention), game UVs, textures never flipped. GLB/glTF carry the skeleton (local TRS derived from `worlds()`, so either inheritance rule is reproduced), inverse binds, up to 8 influences (two JOINTS/WEIGHTS sets), and every playable clip as a glTF animation (additive clips standalone, as in the viewer). OBJ is the static rest pose.
+
+**Blender conversion** uses factory settings, `disable_bone_shape=True` (otherwise FBX/USD export the importer's bone-display icosphere as a mesh) and a private user folder. The `.blend` gets `apply_new_scene_defaults()` and packed images. These files carry glTF Principled materials, not the RC PS4 Deferred BRDF; use the research build for that.
+
+**Materials** follow the viewer's per-graph `_g` reading (`material_texture_paths`: grey, skin or coloured, spec/gloss scales, self-lit K and mask):
+
+- The game's diffuse and F0/gloss are converted per pixel to metal/roughness with the Khronos specular-glossiness conversion; roughness = 2^(-2.75 x gloss).
+- Self-lit = `_c.rgb x mask`, exported with `KHR_materials_emissive_strength` = K.
+- Normals are reconstructed from RG without a green flip.
+- Graph extras (tints, palettes, detail maps, rims, glass, animated terms) are not baked. Forward blend materials (alpha-over or additive) get a fixed 40% opacity. The bulb graph's facing glow becomes a constant emissive (0.497, 0.021, 0) with a white base, because glTF has no view-dependent emission.
+- This is a portable approximation, not game equivalence.
+
+**Options...** (in the main window) holds the formats, textures, game DDS, animations (all/none), LOD, skip-existing (keeps a folder whose `export.json` matches source and options), Python and Blender paths, the advanced research-build switch, backend and clip prefixes, and UI scale. Export choices are saved in the settings file.
+
+**Single clip:** pick a clip under the 3D view (the Animation button opens the searchable list) and tick **Extract only this clip**; it applies to the model shown there.
+
+## Research Blender build and viewer rules
+
+Options -> Advanced selects the full research Blender scene (`PipelineBatchRunner`; backend "Full archive pipeline"), which runs the pipeline in [pipeline](pipeline.md) and needs Blender. With **Extract only this clip** ticked, the shown model gets its own CLI run with `--clip name:<clip>` and the other selected models run without it.
+
+The Blender build must not show a material worse than the viewer, so the viewer's reading feeds it:
+
+- `rc2016.formats.materials.viewer_graph_rule` stores the viewer's reading of each material (from `rc2016.viewer.textures.material_texture_paths`): `_g` layout, spec/gloss scales, effective K (for example K x `0x5FD56522` for emissive-detail graphs), mask channel, and the exact `_c/_g/_n` paths.
+- `rc2016.pipeline.geometry._material` applies `rc2016.pipeline.game_shader.apply_viewer_graph_rule` whenever no exact native translation or registered family applies. The front-end wires the RC PS4 Deferred BRDF the same way as Shaded mode.
+- The front-end also builds the graph terms the viewer draws, with the viewer's frozen values: colour pick, colour tint and its variants, specular tint, arch emissive sequence, vehicle palettes, glow masks, two-colour metal, ground puddles, foliage and `za` normal z, `za` rim suppression, the forward screen, rock blend, and the `basic_normal_gloss` variant terms and detail normals. Constants are `VR <term> <param>` nodes; extra images are bound, hashed source textures. A term whose image is not bound stays in `rule['unported']` with a reason, also recorded on the material as `rc_shader_frontend_limitation`.
+- **Precedence:** when no registered family applies and the viewer rule has no unported term, the viewer rule wins over a ready native translation (`materials.py` decides `shader_status`, `geometry._material` follows). A partial viewer rule gives way to the translation.
+- `shader_status` becomes `viewer_graph_rule_frontend`. `rc2016.shaders.validation` checks after reopening: the rule; BRDF to active output; `_c/_g` paths, hashes and native colourspaces; scales and K; every `VR` constant against the rule; and each ported term's constants and images reaching the output.
+- `rc2016/pipeline/run.py` hashes `rc2016/viewer/textures.py` into the implementation fingerprint, so a rule change invalidates reused builds.
+- The bulb graph's facing glow is a `VR facing glow emission` through an Add Shader in Blender.
+
+Output-folder hygiene (`run.py`): only `work/` and `reports/logs/` are created up front; other folders only for a real build. A model-list scan prunes the unpacked actor files it indexed, and every run deletes its lock file and empty folders. `prune_intermediates` uses Windows extended-length paths, because unpacked asset names can exceed 260 characters. A scan leaves only `reports/` (the archive index, needed to find animation sets).
+
+### Optional Blender scene review
+
+For saved Blender scenes the output root can drive an isolated review (`rc2016/pipeline/review.py`, `rc2016/app/catalog.py`):
+
+- **Open Blender** uses an explicitly configured executable. **Artifacts / logs** opens the result location.
+- A proof uses a hash-pinned request, a new `reviews/<UUID>/` directory under `.cache/`, and a fresh Blender process with `--disable-autoexec`. It never saves the delivered master or overwrites reports, preserves the saved camera, and restores and compares in-memory state. It reads the scene's embedded controls (persistent source actions with source FPS and frame bounds, recorded variant/LOD selectors) or the sealed legacy-controls API for older scenes; unknown control text fails closed. Combined variant plus LOD switching has no validated contract and is rejected. Additive clips are standalone source previews.
+- Proofs use the shared review lighting, transparent 960x640 RGBA, 32 samples, Cycles OptiX with CPU disabled. Missing rendering prerequisites fail explicitly; no global preferences are saved.
+- Review work uses bounded background queues, one owned process, stale-result tokens, cancellation and double-submit guards. Closing the UI cancels its review process; unrelated Blender processes are never stopped.
+- The Blender proof controls are built but not shown in the notebook, and a proof never substitutes for the 3D model.
+- Catalog discovery lists a passed `runs/<run>/variant_assemblies/<name>/assembly_receipt.json` (schema `fusion-source-linked-assembly-cache-v1`, exactly one matching input) under its V1 source identity, labelled "(V1/V5 assembly)"; master and validation hashes are verified on selection.
+
+## Settings and caches
+
+- Settings: `%APPDATA%/RC2016 Asset Browser/settings.json` (source and output folders, UI scale, export options, Blender and Python paths). Settings saved under the former name `PS4 Animation Extractor` are copied once.
+- `<repo>/.cache/shared_index`: parsed `layout.csv` and the shared index sidecar.
+- `<repo>/.cache/source_preview`: the viewer's archive working cache.
+- `<repo>/.cache/reviews`: isolated Blender review runs.
+- Output root: `reports/asset_references.sqlite`, the model index, saved builds, `export.json` folders.
+
+## Tests
 
 ```powershell
-$py = 'C:/Users/Tim/AppData/Local/Programs/Python/Python314/python.exe'
-& $py -B Animation/pipeline/Research/AssetBrowserReview/validate.py
-& $py -B Animation/pipeline/Research/AssetBrowserReview/smoke_source.py
-& $py -B Animation/pipeline/Research/AssetBrowserReview/smoke_gui.py
-& $py -B Animation/pipeline/Research/AssetBrowserReview/glass_proof.py   # glass path: saucer dome + Blarg visor
+python -m unittest discover -s tests -t .
 ```
 
-`validate.py` records `tests.log` and `tests.json`: 46 tests, 45 passes, one historical fixture skip (`_Archive/2026-10-08_legacy_fbx_models/Weapons/COPY/Sheepinator/Source Archives` is absent). This does not erase the unchanged sealed CorpusRegression run's 72-test result. All 17 sealed phase-report hashes and its results hash remain unchanged.
-
-`source_smoke.json` verifies exact source hashes/counts for laser gate, Toxic Crab, bridge LOD subsets, and an expected unsupported sky. `scan_smoke.json` records a fresh canonical CLI scan of 6,949 models with a nonexistent Blender executable. `gui_smoke.json` records actual Tk widget instantiation and WGL framebuffer drawing, orbit/pan/zoom/reset, selection, and clearing unsupported geometry with the Blender field empty and no proof images used.
-
-`viewport_framebuffer.png` is a renderer test artifact, not a model thumbnail and never loaded by the interface. Programmatic widget/handler checks do not establish native mouse clicks, a full-window screenshot, or human visual review. Those remain untested; the desktop tool available here has browser-only access.
-
-User smoke sequence: launch, scan with Blender blank, select Toxic Crab, orbit/pan/zoom, change source LOD, select unsupported sky, and verify the previous mesh disappears. Browse a saved result and check limitations. Configure Blender only if desired, then request scene controls and a proof once the shared machine is free. Check clip/frame bounds, source variant visibility, cancel, and normal batch/resume controls.
-
-## Files and ownership
-
-`browser_ui.py` integrates filters, results and optional review controls. `source_preview.py` adapts the existing native decoder. `viewport.py` implements the Windows OpenGL viewport. `catalog.py` reads result schemas without writes. `workers.py` provides coalesced background work and owned-process cleanup. Its tested ThumbnailCache utility is unused by the browser. `review_blender.py` is the isolated optional scene-review adapter.
-
-The only existing entry point changed is `rc2016/app/main.py`. `gui_before.py.snapshot` and `baseline.json` preserve the starting GUI and sealed phase hashes. No CLI, source-animation internals, shader translators, raw sources, masters, or sibling research outputs were changed by this work. Shared animation integration belongs to AnimationMemory; recheck its final status/contracts before depending on new clip-selection APIs.
-
-Assembly-result discovery is implemented. `catalog.py` lists each passed `runs/<run>/variant_assemblies/<name>/assembly_receipt.json` under its single V1 source identity, labelled "(V1/V5 assembly)". Discovery requires the receipt schema `fusion-source-linked-assembly-cache-v1`, a passed status and exactly one input matching `GloveModelOverride`; the master and validation hashes are verified on selection. Its V1/V5 selectors come only from the optional Blender inspection, never from the catalog. `test_catalog.py` covers listing, hash mutation and fail-closed receipts, and the real sealed Fusion receipt is discovered with both hashes matching.
-
-Variant acceptance passed on the combined master. Blender was free, so the resume command ran and V1 and V5 proofs were both rendered with OPTIX, transparent RGBA, restored scene state and unchanged master hashes. The first attempt stopped at the shared builder HDRI check because the combined master packs its HDRI; the adapter now drops that pack in memory only after verifying the bytes match the shared file, and it never saves the master. The variant proof PNGs are automated-check evidence only (render device, RGBA alpha, restoration, hashes, source variant visibility); they have had no human visual review and do not establish game equivalence.
-
-The 2026-10-07 stop checkpoint in `handoff.md` and `results.json` (`historical_stop_checkpoint`) is case history only; its variant blocker is resolved. Exact reproduction commands are in `results.json` under `reproduce`.
+Data-dependent tests read the `RC2016_RESEARCH` environment variable and skip without it.
 
 ## Limitations
 
-- Neutral source rest geometry only: no browser playback or game material recreation.
-- Native mouse clicks, full-window screenshots and human visual review of the GUI remain untested.
-- Proof PNGs (static, animated, V1/V5) are automated-check evidence only; no human visual review.
-- One historical backend test fixture is absent (`_Archive/2026-10-08_legacy_fbx_models/Weapons/COPY/Sheepinator/Source Archives`).
-- Combined variant plus LOD switching has no validated contract and is rejected.
-- The exe was rebuilt 2026-10-08; its 3D view and tree were checked on screen only from the source run, not inside the exe window.
-
-## 2026-10-09 Level tab
-
-The **Level** asset type (`level_panel.py`; a tab until 2026-10-09) lists the archive's 17 levels on first visit, loads the chosen `.level` (or one `.zone`) with per-zone toggles, and draws it with the instanced `LevelViewport`. It opens its own archive instance and worker, reading the source root on the Tk thread. The same panel runs standalone from `R&C 2016 Level Viewer.lnk` / `level_viewer.py`. Details, results and gaps: `../Levels/README.md`, "Level viewer". Acceptance: `smoke_level.py` → `level_smoke.json`.
+- The 3D view shows the bind pose or a played clip, not attachments, runtime blending or the game's lighting and materials beyond the rules above.
+- Several graph rules rest on bounded decodes; runtime draw-time inputs (time, instance interpolants, constant-buffer binding) are frozen or unproven.
+- Forward materials other than the character glass, saucer dome, screen, puddle and bulb graphs draw opaque.
+- Portable exports approximate materials; they are not game-accurate.
+- Native mouse input and the packaged executable's window have been checked by hand only, not by automated tests.

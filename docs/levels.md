@@ -1,268 +1,205 @@
-# Level / zone placement spike (2026-10-08)
+# Levels, zones and the level viewer
 
-Goal: test whether levels can be rebuilt in Blender from the archive's own placement data,
-reusing the pipeline's validated model, material and texture output.
+Reference for the `.level` and `.zone` formats as decoded in `rc2016/levels/`, and for the level viewer built on them. The viewer reads levels, zones, models, materials and textures straight from the game archive; it does not use the export pipeline or Blender. See also [viewer](viewer.md) (model viewer, whose viewport, shading and material rules the level viewer reuses) and [pipeline](pipeline.md).
 
-## Archive facts (EUR, `Image0` asset archive)
+Blender level assembly (placing pipeline-built models as collection instances, a Blender sky dome port) was done in the research notes and is not included in this repository. Everything below was validated against the EUR `Image0` archive; corpus counts come from those research notes (not included).
 
-- `levels/` holds 18 levels and ~28k assets: 814 `.zone`, 232 `.zone_physics`, 68 `.zone_static`,
-  17 `.level`, 21,158 `.lightgrid`, 5,750 `.texture`.
-- A level is split into named zones per region (Novalis `default_region/`: `art_buildings`,
-  `art_terrain`, `art_sewers`, `gp_base`, `gp_crates`, `gp_ledges`, `vfx`, `lighting`, `nav`,
-  `sound`, …), each with an `_imposter` twin (distant stand-in, not yet examined).
-- `.zone_static` is a **"Zone Decal Built File"**: pre-clipped projected decal meshes (dirt,
-  scorch marks, screws), not terrain. Decoded (see Decals below).
-- Terrain is ordinary model placement: Novalis `art_terrain.zone` places `rp_novalis_level1_tfrag`
-  (terrain), `rp_nov_uniq_Distant_View_Landscape_01`, cave interiors and `rb_bat_mountains_*`.
-- `.level` ("Level Built File") lists the level's zones; decoded (see below).
+## Archive layout
 
-## Decoded: `.level` ([`level_zones.py`](level_zones.py))
+- `levels/` holds 18 level folders and about 28,000 assets: 814 `.zone`, 232 `.zone_physics`, 68 `.zone_static`, 17 `.level`, 21,158 `.lightgrid` and 5,750 `.texture`.
+- A level is split into named zones per region (Novalis `default_region/`: `art_buildings`, `art_terrain`, `art_sewers`, `gp_base`, `gp_crates`, `gp_ledges`, `vfx`, `lighting`, `nav`, `sound`, ...). Each has an `_imposter` twin (distant stand-in, not examined).
+- Terrain is ordinary model placement: Novalis `art_terrain.zone` places `rp_novalis_level1_tfrag` (terrain), `rp_nov_uniq_Distant_View_Landscape_01`, cave interiors and `rb_bat_mountains_*`.
+- `.zone_static` is a "Zone Decal Built File": pre-clipped projected decal meshes (dirt, scorch marks, screws), not terrain.
+- Zones carry no transform of their own; instance matrices are in world space.
+
+All of these are DAT1 containers (`1TAD` magic, section count at `+0x0C`, section table of `(tag, offset, size)` u32 triples from `+0x10`). Strings are referenced by absolute file offset.
+
+## `.level` format (`level_format.py`)
+
+`decode_level(data)` returns `zones`, `regions` and `spawn_names`. It raises `ValueError` if the zone list is absent.
 
 | Section | Content |
 | --- | --- |
-| `0x2BA33702` | `u32[n]` file offsets of zone paths (Novalis: 18; `_imposter` twins other than atmosphere not listed) |
+| `0x2BA33702` | `u32[n]` file offsets of zone asset paths (Novalis: 18; `_imposter` twins are not listed, except atmosphere) |
 | `0x4130D903` | `u32[n]` region paths (Global, OpenWorld, default_region, quest overlays `NOV_mis_1..3`) |
 | `0x2236C47A` | `u32[n]` checkpoint / spawn names |
 | `0x3395AEC1` | spawn records with world positions (not decoded) |
 
-Zones carry no transform of their own; instance matrices are world space. Novalis: 8 of 18 zones
-have a model-instance table (10,158 instances, 286 unique models); the rest are atmosphere,
-music, sound, nav, vfx, ambient and gameplay zones (`gp_crates`, `gp_ledges`, `gp_map` place
-actors, not models).
+In Novalis, 8 of the 18 zones have a model-instance table (10,158 instances, 286 unique models). The rest are atmosphere, music, sound, nav, vfx, ambient and gameplay zones; `gp_crates`, `gp_ledges` and `gp_map` place actors, not models.
 
-## Decoded: zone model-instance table ([`zone_instances.py`](zone_instances.py))
+Command line (also writes JSON per zone):
 
-DAT1 container; strings are referenced by **absolute file offset**.
+```
+python -m rc2016.levels.level_format <level asset path> <out dir> [--archive-root <asset_archive dir>]
+```
+
+It writes `<out>/<zone stem>_instances.json` for each zone with a model-instance table (including decals when a sibling `.zone_static` exists), `<out>/models.json` (union of model paths) and `<out>/level.json`. The built-in default archive root is a developer-specific path, so always pass `--archive-root`.
+
+## `.zone` model-instance table (`zone_format.py`)
+
+`decode_zone(data)` returns `models` (paths with `/` separators), `instances` and `models_used`. Zones without the three sections below raise `ValueError('Zone lacks instance sections ...')`.
 
 | Section | Content |
 | --- | --- |
-| `0xC6A5905E` | `u32[n_models]` file offsets of model path strings (backslash-separated) |
-| `0x6987F172` | `u32[n_inst]` offsets of instance records inside `0x06ABCAB2` |
+| `0xC6A5905E` | `u32[n_models]` file offsets of NUL-terminated model paths (backslash-separated in the file) |
+| `0x6987F172` | `u32[n_inst]` offsets of instance records, relative to the start of `0x06ABCAB2` |
 | `0x06ABCAB2` | data heap holding the instance records (and other, undecoded objects) |
-| `0x032D450A` | `(u32 string offset, 0xFFFFFFFF)` pairs → material paths (not needed for placement) |
+| `0x032D450A` | `(u32 string offset, 0xFFFFFFFF)` pairs pointing to material paths (not needed for placement, not decoded in code) |
 
-Instance record: `+0x00` float32 4×4 matrix, row-vector convention (rows 0–2 = local axes with
-scale, row 3 = translation, w column `(0,0,0,1)`), native Y-up game space; `+0x44` u32 record
-size (`0xB0` + optional tail, records 8-byte aligned, last tail may overrun an unpadded heap by
-<8 bytes); `+0x48` u64 per-instance id; `+0x58` u32 model index; `+0x5C` u32 flags (raw; values
-`0x440000`, `0x440020`, `0x740000`, … meaning unknown). Tail bytes kept raw.
+Instance record (offsets relative to the record):
 
-Evidence:
-- Novalis `art_buildings.zone`: 3,167 instances, all 136 listed models used, ids unique.
-- Every `.zone` in the archive that has the three sections decodes with all invariants holding
-  (size/stride, w column, index range, unique ids): **229 zones, 228,727 instances**; 585 zones
-  have no model-instance table (lighting, sound, nav, gameplay-only…). 3,999 matrices are
-  sheared (worst axis cosine 0.685) and 17,511 are mirrored, so placement must keep the full matrix.
-- `_distant` models (e.g. `tb_nov_bldg2_mid_window_distant`) are separate backdrop buildings
-  (median ~90 units from the nearest near-variant), not LODs stacked on near models; all are placed.
-- Visual: the proof render shows floor tiles tiling into continuous roofs and vegetation on the
-  ground, confirming matrix convention, presentation basis and model index.
+| Offset | Type | Meaning |
+| --- | --- | --- |
+| `+0x00` | float32[16] | 4x4 matrix, row-vector convention: rows 0-2 are the local axes including scale, row 3 is the translation, w column `(0,0,0,1)`. Native Y-up game space |
+| `+0x44` | u32 | record size: `0xB0` plus an optional tail; records are 8-byte aligned |
+| `+0x48` | u64 | per-instance id, unique within the zone |
+| `+0x58` | u32 | index into the `0xC6A5905E` model list |
+| `+0x5C` | u32 | flags, kept raw (values seen: `0x440000`, `0x440020`, `0x740000`, ...; meaning unknown) |
+| `+0xB0` | bytes | optional tail, kept raw as hex; not decoded |
 
-## Decoded: decals (`.zone` + `.zone_static`, [`zone_instances.py`](zone_instances.py) `decode_decals`)
+The decoder enforces these invariants and raises if any fails: size field is at least `0xB0` and inside the heap; size field matches the stride to the next record (rounded up to 8); the last record's tail may overrun an unpadded heap by fewer than 8 bytes (13 of the 229 zones); w column is `(0,0,0,1)`; model index is in range; ids are unique.
+
+Validation: every `.zone` in the archive that has the three sections decodes with all invariants holding, 229 zones and 228,727 instances. 585 zones have no model-instance table (lighting, sound, nav, gameplay-only). In Novalis `art_buildings.zone`, 3,167 instances use all 136 listed models. 3,999 matrices in the corpus are sheared (worst axis cosine 0.685) and 17,511 are mirrored, so placement must keep the full matrix (no TRS decomposition).
+
+`_distant` models (for example `tb_nov_bldg2_mid_window_distant`) are separate backdrop buildings placed by the zone (median about 90 units from the nearest near-variant), not LODs stacked on near models. All are placed.
+
+### Conventions
+
+- Geometry and instance matrices are native Y-up. Matrices are row-vector: `p' = p * M`, so the translation is `rows[3][:3]`. A column-vector consumer must transpose.
+- The presentation basis (Z-up, as in Blender) is `(x, y, z) -> (x, -z, y)`, applied once outside the matrices (the viewer puts it in its camera matrix).
+- A matrix with negative determinant of its upper 3x3 is mirrored; it reverses triangle winding and needs the normal matrix handled accordingly.
+
+## Decals (`.zone` + `.zone_static`, `decode_decals`)
+
+`decode_decals(zone_data, static_data)` returns decal meshes in native world space joined with their material paths. It returns `[]` when the zone has no decal section, and raises if a mesh index is out of range or reused, an index buffer is malformed, or any `.zone_static` mesh has no decal object.
 
 | Where | Content |
 | --- | --- |
-| `.zone` `0xBCF43558` | `u32[n]` heap offsets of 0x28C-byte decal objects: `+0x00` float32 4×4 projector matrix, `+0x48` inline material path, `+0x288` u32 mesh-record index |
-| `.zone_static` `0x657512BB` | 0x58-byte mesh records: u16 vertex count, u16 index count, u32 flags (`0xF12`/`0xE12`/`0xD12`, raw), u32 absolute data offset, `+0x40` bounding sphere (centre, R) |
-| `.zone_static` `0xCF30405E` | per mesh: n_v × 16-byte vertices (u16[3] position, u16 `1`, u32 normal, u32 tangent; 10:10:10:2 UNORM as in models), n_v × half2 UV, n_i × u16 triangle-list indices |
+| `.zone` `0xBCF43558` | `u32[n]` heap offsets of 0x28C-byte decal objects: `+0x00` float32 4x4 projector matrix (not used for geometry), `+0x48` inline NUL-terminated material path, `+0x288` u32 mesh-record index |
+| `.zone_static` `0x657512BB` | 0x58-byte mesh records: u16 vertex count, u16 index count, u32 flags (`0xF12` / `0xE12` / `0xD12`, raw), u32 absolute data offset, `+0x40` float32[4] bounding sphere (centre xyz, radius R) |
+| `.zone_static` `0xCF30405E` | per mesh: n_v x 16-byte vertices (u16[3] position, u16 `1`, u32 normal, u32 tangent; 10:10:10:2 UNORM as in models), then n_v half2 UVs, then n_i u16 triangle-list indices |
 
-Position = `centre + (u/65535·2 − 1)·R/√3`, a world-axis cube inscribed in the bounding sphere.
-Chosen because decoded face normals match the stored vertex normals: median |dot| 1.000 on 76
-Novalis building decals and 0.990 on 27 terrain decals, against ≈0.4 for every projector-frame
-variant (rows, columns, rotation only, sphere centre). Corpus: all 68 `.zone_static` files decode,
-every mesh record is claimed by exactly one decal object, 6,500 decals; median agreement 0.993,
-78% above 0.95. **Unresolved:** the other 22% (many are tiny 4–6-vertex quads where quantisation
-dominates; some flat screw decals have stored normals perpendicular to their surface). Decal
-materials are not part of any model and are not built by the pipeline; the assembler imports decal
-geometry with UVs, normals and the source material path, hidden (eye + render), with no material.
-Degenerate and zero-area triangles are dropped: Blender 5.0's
-`normals_split_custom_set_from_vertices` crashes (access violation in
-`mesh_normals_corner_custom_set`) on them.
+Position = `centre + (u / 65535 * 2 - 1) * R / sqrt(3)`: a world-axis cube inscribed in the bounding sphere. This frame was chosen because decoded face normals match the stored vertex normals (median |dot| 1.000 on 76 Novalis building decals, 0.990 on 27 terrain decals) against about 0.4 for every projector-frame variant tried (rows, columns, rotation only, sphere centre).
 
-## Assembly ([`assemble_zone.py`](assemble_zone.py))
+Corpus: all 68 `.zone_static` files decode, every mesh record is claimed by exactly one decal object, 6,500 decals; median normal agreement 0.993, 78% above 0.95. Unresolved: the other 22%. Many are tiny 4-6 vertex quads where quantisation dominates; some flat screw decals have stored normals perpendicular to their surface.
 
-Models are built with the ordinary pipeline (`run.py --model <path> … --skip-previews`); the
-assembler loads each model's mesh objects into an unlinked fake-user prototype collection
-(native Y-up, identity transform) and places one collection-instance empty per zone instance,
-parented to a root carrying the presentation basis, with the source matrix in
-`matrix_parent_inverse` (keeps shear/mirroring exactly; world matrices are asserted after
-evaluation). Materials are merged by `source_material_sha256`, images by DDS-hash name. Models
-whose pipeline validation failed are loaded from their unvalidated candidate blend and listed
-under `unvalidated` in the report.
+Decal materials are not part of any model and are not built; the level viewer does not draw decals.
 
-Instances of models whose path contains `collision` (e.g. `gbl_gp_hero_collision_01`) or
-`environment/template/` (`template_Square`, 152 instances in `lighting.zone`, assumed to be an editor
-helper) are kept but hidden (eye + `hide_render`). A `level.json` input assembles all its zones
-into one file (one collection per zone, shared prototypes). [`validate_assembly.py`](validate_assembly.py)
-reopen-checks any assembled file and can render a zone close-up without saving.
-[`build_models_parallel.py`](build_models_parallel.py) builds a model list in N parallel shards,
-skipping models that already have a final in the given roots.
+## Skybox and mesh flag `0x0020`
 
-### Build speed (2026-10-09)
+Atmosphere assets name their sky model first (`atm_novalis.atmosphere` -> `atmosphere/atm_Novalis/rk_sky_novalis_dome.model`). The rest of that 2.3 MB asset is mostly packed half-float tables (probably precomputed scattering; undecoded).
 
-Profile of one prop build (136 s): 86 s in the pure-Python `archive.lz4_block`, of which ~59 s
-came from the once-per-run Novalis light-grid inventory; Blender build + validation ~5 s. Changes:
-`lz4_block` rewritten with inlined reads and slice copies (byte-identical on 1,396 random assets
-and on 300 corrupted inputs, including identical error messages; ~3.5–4× faster), and the light-grid
-inventory now runs only for `--lighting-source novalis`. The runner is single-threaded, so
-zone models are built in parallel shards, each with its own `--output-root`
-(`models_s0` … `models_s4`); pass all roots to the assembler separated by `;`.
+- Mesh flag `0x0020` is set only on the 15 atmosphere sky / cloud / star / planet meshes. It does not change the vertex or index layout (the flagged Novalis dome has the same geometry as the unflagged Metropolis dome; stored normals match face normals, median |dot| 1.000). `SUPPORTED_MESH_FLAG_MASK` in `rc2016/formats/native_model.py` is `0x00F1`, so these models decode; the raw flags are kept and the render meaning (likely draw-at-infinity) is undecoded.
+- The Novalis dome is a hemisphere of radius 0.09: 1,486 vertices, 2,756 triangles, elevation 0.6-90 degrees. V tracks elevation, U wraps azimuth, no vertex colours. The game draws it around the camera.
+- Its material `atm_rk_sky_novalis_dome` uses `materialgraph/global/Rk_Sky_Dome`, whose fragment shader (`0x8d3c81d0`, from a shadPS4 cache) is a cloud-layer shader: two cloud layers (coverage and shading each) sampled from the dome texture, a scrolling distortion noise and two further masks, three RGB light colours plus a sun-direction term, alpha test of coverage against an interpolated threshold, then fog. The dome draws clouds only; the clear sky behind it comes from the atmosphere system (undecoded).
+- All 23 material constants the shader reads (constant-buffer dwords 0-22) map one-to-one onto the graph's parameter table. Not known: the five texture-slot bindings (inferred from sampling patterns), the per-frame engine constants (time, horizon / fog colour, sun direction) and the three vertex-shader outputs (alpha-test threshold, alpha multiplier, fog factor); the dome's vertex shader is not in the cache.
 
-## Result: Novalis `art_buildings.zone` (2026-10-09)
+The level viewer does not load atmosphere assets and draws no sky; its background is a flat clear colour.
 
-`RC_Output/LevelSpike_Novalis/novalis_art_buildings.blend` (154 MB, images packed, shared HDRI
-linked) with `novalis_art_buildings_proof.png` and `.report.json`. Reopened in a separate process:
-3,167 instances with unique ids, matrix error 0, 136 fake-user prototypes, 57 collision instances
-hidden and no other instance hidden, no unpacked images, no shared-lighting or `audit_scene()`
-mismatches. 133 models are validated pipeline finals; 3 are unvalidated candidates:
-`rp_nov_plant_bush_01`, `rp_nov_plant_flora_patch_01` (leaf textures missing after reopen) and
-`tb_nov_gate_bldg02` (one subset, `pasted__tb_nov_dome_metal_blue`, has a different normals hash
-after save/reopen). Materials in use: 59 translated deferred, 35 colour-only previews
-(10 with no base colour), 4 thin-glass approximations, 3 partial skin, 1 failed. 84 models built
-in 253 s with 5 parallel shards after the speed changes (≈1 min/model single-threaded before).
+## Level viewer
 
-## Result: whole Novalis level (2026-10-09)
+Two front ends share one implementation:
 
-`RC_Output/LevelSpike_Novalis/novalis_level.blend` (346 MB) with `novalis_level_proof.png`,
-`novalis_level_city_closeup.png` and `.report.json`; inputs in `level_data/`. 153 extra models
-built in 325 s (6 shards). Reopened: 10,151 of 10,158 instances placed (7 belong to the one missing
-model) with unique ids and matrix error 0, 285 prototypes, 110 decals, only collision/template
-instances and decals hidden, images packed, no lighting or audit mismatches. The close-up shows the
-city standing on the `tfrag` terrain with rocks, grass and blue mushroom trees, inside the
-distant-mountain ring.
+- Standalone window: `python -m rc2016.levels.viewer` (`rc2016/levels/viewer.py`).
+- The **Level** asset type in the asset browser (`rc2016/app/browser.py`), where the level list sits in the browser's left pane and the source root is the browser's.
 
-Model status: 276 validated finals, 9 unvalidated candidates, 1 missing.
-- Missing: `tb_sewer_pipe_large_end` — Blender 5.0 crashed while the pipeline set its custom normals
-  (same `mesh_normals_corner_custom_set` access violation as above), so no candidate exists.
-- Texture transport failures ("expected one reopened source image, found 0"): the terrain
-  `rp_novalis_level1_tfrag` (4 layer textures: `rp_pok_grass_tile_c`, `rp_nov_rock_single_c/_n/_g`),
-  `rp_nov_uniq_Distant_View_Landscape_01`, foliage `rp_nov_plant_Bush_01/02`,
-  `rp_nov_plant_Flora_Patch_01`, `rp_nov_plant_Tree_Leaves_Canopy_Small_01`,
-  `rp_nov_shrub_tree02_trunk_01`. Likely layered/foliage graphs whose extra textures the translator
-  leaves unconnected, so they are dropped on save.
-- `mo_gbl_amb_Volumetric_Sphere_01`: "No source materials survived reopen" (volumetric/VFX material).
-- `tb_nov_gate_bldg02`: normals hash changes on save/reopen.
-Materials in use: 125 translated deferred, 88 colour-only previews (24 without base colour),
-5 thin-glass approximations, 3 partial skin, 1 failed.
+### Modules
 
-## Skybox: cloud dome (2026-10-09)
+| Module | Role |
+| --- | --- |
+| `panel.py` | `LevelPanel` (Tk): level list, typed path entry, view mode, zone toggles, status line; `load_level` background loader |
+| `viewport.py` | `LevelViewport` (a `ModelViewport` subclass): instanced renderer, fly camera, PNG capture |
+| `scene.py` | Data only, no GL: archive access, `zone_scene`, `model_geometry`, `core_bounds`, material lookup |
+| `level_format.py`, `zone_format.py` | The decoders described above |
 
-[`sky_dome.py`](sky_dome.py) adds the level's cloud dome to an assembled level blend:
-`RC_Output/LevelSpike_Novalis/novalis_level_sky.blend` (362 MB; `novalis_level.blend` is left
-unchanged), proofs `novalis_sky_proof_toward_sun.png` / `_away.png`. The dome material is a port
-of fragment shader `0x8d3c81d0` (equations in the script docstring) with all 23 CB dwords from the
-material report and the decoded Novalis sun ray; the pipeline's preview material is kept as a fake
-user. The dome follows the scene camera (Copy Location) at radius 5,000 and is visible to camera
-rays only, so level lighting is unchanged. Reopened: material output = Mix(Transparent, Emission),
-UV layer `UV0` (the pipeline's name; an earlier build that assumed `UVMap` rendered no clouds),
-packed Non-Color images, 23 dwords, constraint and visibility intact; `validate_assembly.py` still
-passes. Visual: clouds take the material's orange tint `(1.0, 0.342, 0.089)` toward the sun and are
-white/grey away from it.
+### Loading
 
-Presentation values (not decoded): time 0, alpha multiplier 1, alpha-test threshold 0, fog factor 1
-(no fog), radiance scale 1. Not ported: the stars term (zero for Novalis, P22 = 0) and therefore the
-two textures it alone reads. The clear sky between clouds is still transparent: it comes from the
-atmosphere's undecoded tables. With mesh flag `0x0020` accepted, the other 14 atmosphere models
-(other levels' domes, clouds, stars, planets) should now decode too; only Novalis was built. The
-asset-browser smoke scripts in `Research/AssetBrowserReview/` that expect `rk_sky_nebula_stars` to be
-rejected (`smoke_source.py`, `smoke_gui.py`) are now stale evidence.
+`load_level` runs on a worker thread and posts events that the Tk thread applies; Tk and GL are touched only from the Tk thread. Order:
 
-### Findings behind it
+1. The zone list (`.level` -> zone paths; a single `.zone` path is treated as a one-zone level). `--zones` filters by short name or path.
+2. Each zone's instance table (`zone_scene`). Instances are grouped per model and per handedness (mirrored or not) as flat arrays of 16 floats per matrix. Zones without a model table are listed but disabled ("no models"); a zone that fails to decode is disabled as "unreadable" and the error is logged to stderr.
+3. Scene bounds from the translations of visible instances.
+4. Each unique model's geometry, most-placed first (`model_geometry`: Highest LOD, look 0, decoded with numpy; V is flipped back because the decoder flips it for Blender). The view fills in as models arrive.
+5. Materials and textures by material path, using the model viewer's Shaded rules (`rc2016.viewer.textures.material_textures`). Each material graph is parsed once and cached.
+6. A `done` event with timings.
 
-- `atm_novalis.atmosphere` names its sky model first: `atmosphere/atm_Novalis/rk_sky_novalis_dome.model`.
-  The rest of the 2.3 MB asset is mostly packed half-float tables (probably precomputed scattering;
-  undecoded).
-- Mesh flag `0x0020` is set only on the 15 atmosphere sky/cloud/star/planet meshes and does not
-  change the vertex layout (see the comment at `SUPPORTED_MESH_FLAG_MASK` in `native_model.py`);
-  the decoder now accepts it and the dome builds and validates. Dome: a hemisphere of radius 0.09
-  (1,486 vertices, 2,756 triangles, elevation 0.6–90°), V tracks elevation exactly, U wraps azimuth;
-  no vertex colours. The game draws it around the camera.
-- Material `atm_rk_sky_novalis_dome` uses `materialgraph/global/Rk_Sky_Dome`; its cached fragment
-  shader `0x8d3c81d0` (shadPS4 cache, verified SPIR-V) is a **cloud-layer** shader: it samples the
-  dome texture twice (`.xy` and `.zw` = two cloud layers: coverage + shading each, see channel sheet),
-  a scrolling distortion noise and two further masks, lights the clouds with three RGB colours and a
-  sun-direction term, alpha-tests coverage against an interpolated threshold and fogs the result. So
-  the dome draws clouds only; the clear sky behind it comes from the atmosphere system.
-- All 23 material constants the shader reads (CB dwords 0–22) map one-to-one onto the graph's
-  parameter table (keys and values from the material instance or graph defaults), e.g. dword 4–6
-  `0x4DBE5B8B` = (1.0, 0.342, 0.089).
-- Unknown: the five texture-slot bindings (inferred from sampling patterns only), the per-frame
-  engine constants (time `ssbo_1[99]`, a horizon/fog colour `[112..114]`, sun direction
-  `[128..130]`) and three vertex-shader outputs (alpha-test threshold, alpha multiplier, fog factor);
-  the dome's vertex shader is not in the shadPS4 cache.
+A new load cancels the previous one (generation counter; stale events are dropped). The panel opens its own `Archive` (not shared with other tabs) with `verify_repeats = False`, which reads only the first copy of repeated assets; the pipeline keeps that check on. The source root may be any folder that contains exactly one archive root (`locate`); it needs the level assets (the `Image0` tree). Both `CUSA01073` and `Image0` list the same 17 levels.
 
-## Level viewer (2026-10-09)
+### Rendering
 
-An interactive viewer outside Blender, built on the asset browser's WGL viewport and shading. It reads levels,
-zones, models, materials and textures straight from the archive: no pipeline builds or `.blend` files.
+- Geometry and instance matrices stay native Y-up. The presentation basis is applied once, in the camera matrix (`BASIS` in `viewport.py`), so the fly camera works in Z-up.
+- Each model has static vertex buffers (positions, normals, UVs, indices). Each (zone, handedness) group gets one instance buffer drawn with `glDrawElementsInstanced`; the four matrix rows are vertex attributes 10-13 (`INSTANCED_VERTEX` in `rc2016/viewer/shading.py`). Needs OpenGL 3.3 instancing; otherwise the view reports which entry point is missing.
+- Normals use the cofactor matrix times sign(det), so sheared and mirrored instances shade correctly. Mirrored groups draw with `glFrontFace(GL_CW)` so `gl_FrontFacing` keeps meaning "outside".
+- Draws are sorted by material, and each material's uniforms go through the model viewer's `_apply_material`. Zone toggles only filter instance groups; no buffers are rebuilt.
+- Forward-shaded (glass) materials draw after all opaque ones with material blend and cull state and no depth write. Instances are not depth-sorted.
+- Lighting is the model viewer's rig in view space (it turns with the camera). It is not game lighting.
+- Background is a flat colour; no sky, decals, lights or fog.
 
-- Launch: `R&C 2016 Level Viewer.lnk` in the project root (pythonw, from source), the asset browser's **Level**
-  tab, or [`level_viewer.py`](../AssetBrowserReview/level_viewer.py):
+### Modes
 
-  ```powershell
-  & 'C:/Users/Tim/AppData/Local/Programs/Python/Python314/python.exe' -B rc2016/levels/viewer.py [--level levels/veldin/veldin.level] [--zones art_buildings,art_terrain] [--source-root <root>] [--capture out.png]
-  ```
+`Shaded` (model-viewer material rules), `Textured`, `Solid`, `Wireframe`, `Solid + wireframe`. Batches without UV0 draw as Solid.
 
-  The standalone window defaults to the asset browser's saved source root and remembers its own root and
-  last level in `%APPDATA%/PS4 Animation Extractor/level_viewer.json`. `CUSA01073` and `Image0` both list
-  the same 17 levels. `--level` also takes a single `.zone`.
-- Files: [`level_panel.py`](../AssetBrowserReview/level_panel.py) (level picker, zone toggles, background loader;
-  shared by the window and the browser tab), [`level_viewport.py`](../AssetBrowserReview/level_viewport.py)
-  (renderer, fly camera), [`level_scene.py`](../AssetBrowserReview/level_scene.py) (decode),
-  [`smoke_level.py`](../AssetBrowserReview/smoke_level.py) (browser-tab acceptance, writes `level_smoke.json`),
-  `test_level_view.py`.
-- Loading: zone tables, then every unique model's geometry (most-placed first), then materials and textures by
-  material path; the view fills in as they arrive. Zones without a model table are listed but disabled.
-- Rendering: geometry (Highest LOD, look 0) and the zones' row-vector matrices stay native Y-up; the camera
-  matrix carries the presentation basis. Each model has static VBOs; each (zone, handedness) gets one instance
-  buffer, drawn with `glDrawElementsInstanced` (matrix rows as attributes 10–13, `gl_shading.INSTANCED_VERTEX`).
-  Normals use the cofactor matrix × sign(det), so sheared and mirrored instances shade correctly; mirrored
-  groups draw with `glFrontFace(GL_CW)` so `gl_FrontFacing` keeps its meaning. Draws are sorted by material and
-  each material's uniforms go through the model viewer's own `_apply_material`. Zone toggles only filter
-  instance groups.
-- Materials are the model viewer's Shaded rules (`texture_preview.material_textures`). Forward (glass)
-  materials draw after opaque ones without per-instance sorting. Lighting is the viewer rig in view space
-  (it turns with the camera): not game lighting.
-- Collision and `environment/template/` models start hidden, as in the assembler.
-- Overview framing uses the 2–98% quantiles of placements (`core_bounds`); full bounds framed mostly the
-  distant mountain ring. Far plane ≥ 30,000; near plane follows fly speed.
-- Controls: left drag look, right drag pan, WASD, Q/E down/up, Shift ×4, wheel dolly, Ctrl+wheel or `[` `]`
-  speed, F/Home/double click overview.
+### Hidden by default
 
-Results (RTX 3060, CPU frame time):
+Models whose path contains `collision` or `environment/template/` (for example `gbl_gp_hero_collision_01`, and `template_Square`, 152 instances in Novalis `lighting.zone`, assumed to be an editor helper) are loaded but not drawn. The **Show collision/template models** checkbox shows them. They are also excluded from the framing bounds.
 
-| Level | Models | Instances shown | Triangles | Draws | Load | Frame |
-| --- | --- | --- | --- | --- | --- | --- |
-| Novalis `art_buildings.zone` | 136 | 3,110 | 1.40 M | 428 | 11–12 s | ~10 ms |
-| Novalis (18 zones, 8 with models) | 286 | 9,891 | 13.4 M | 844 | 12–23 s → **2.5 s** | ~19–21 ms |
-| Veldin | 166 | 11,591 | 13.3 M | 430 | 6.5 s | ~11 ms |
+### Camera and controls
 
-Load speed-up (2026-10-09): Novalis 10.0 s → 2.5 s in `--capture` (the 12–23 s above included Tk/GL
-contention). Before: ~70% of decoding was `native_model.decode_model`'s per-vertex Python loop (plus a
-temp-file write and a second SHA-256 per model), ~30% material lookup with ~9,800 archive opens. Changes:
-`decode_model` unpacks vertices with numpy (bit-identical: all 286 Novalis models × All/Highest/source-position
-modes match the old output in Python 3.14 and Blender 5.0's Python) and takes `data=` and `as_arrays=`;
-`model_geometry` uses both and selects the LOD in the decoder (byte-identical buffers); the viewer's archive
-sets `verify_repeats = False` (reads only the first copy of repeated assets; the pipeline keeps the check);
-`texture_preview` caches each parsed material graph on the archive (235 materials share 55 graphs; results
-identical). Capture unchanged pixel for pixel. Rendering cost is unchanged: ~21 ms CPU per frame, mostly
-per-call ctypes overhead over 844 draws; that, not loading, is the case for a native renderer later.
+- Overview camera (`overview_camera`, reset with F or Home): frames the 2-98% quantile box of instance translations (`core_bounds`), from the south at pitch -35 degrees, yaw 90. Full bounds are not used because levels ring their play space with distant backdrops (Novalis mountains about 10x farther out than the city), which would frame mostly empty sky.
+- Far plane is at least 30,000 (20x the bounds diagonal if larger); the near plane follows fly speed (0.05 to 2.0). Vertical FOV 60 degrees.
+- Yaw 0 looks along +X in presentation space; positive pitch looks up; pitch is clamped to +-89 degrees.
 
-All 286 Novalis models decode here, including `tb_sewer_pipe_large_end`, which crashed Blender in the
-assembler. Proofs checked by eye: `level_viewer_art_buildings_*.png`, `level_viewer_novalis_level.png`,
-`level_viewer_veldin_level.png`. `smoke_level.py` passed in the browser tab: 17 levels listed, Novalis loaded with
-no errors, hiding `art_terrain` drops 9,891 → 5,510 instances and showing it restores them.
+| Input | Action |
+| --- | --- |
+| Left drag | Look |
+| Right drag | Pan |
+| W A S D | Move |
+| Q / E | Down / up |
+| Shift | Speed x4 |
+| Wheel | Dolly |
+| Ctrl+wheel, `[` `]`, `-` `+` | Fly speed |
+| F, Home | Reset to overview |
 
-Visible gaps: foliage shows as solid blobs (leaf cut-out not decoded), and large planes whose materials have no
-`_c` show flat white (Novalis, and Veldin's big ground/backdrop plane). Both are environment-shader work.
-Next: click-to-identify (step 3); later environment shaders, sky, decals.
+Zone list: per-zone checkbox with placed-instance count, **All** / **None** buttons. The status line shows load state, zone and model counts, failures, material and texture counts, visible instances and triangles, draw calls, CPU frame time and speed.
 
-## Known gaps
+### Command line
 
-- Environment materials: 88 of 222 fall back to colour-only previews (unsupported graphs); the
-  terrain's layer textures are missing (see above).
-- Decal materials are not built; decals are geometry only and hidden.
-- Not handled: gameplay actors (`gp_*` zones), `_imposter` zones, quest-overlay regions, VFX,
-  lights, collision volumes, `.level` spawn records.
-- Archive root: `Ratchet & Clank (EUR)` now contains both `CUSA01073/asset_archive` and
-  `Image0/asset_archive`, so the runner needs `--extracted-root ".../Ratchet & Clank (EUR)/Image0"`.
+```
+python -m rc2016.levels.viewer [--source-root <extracted game folder>]
+                               [--level <.level or .zone asset path>]
+                               [--zones a,b,...]
+                               [--mode Shaded|Textured|Solid|Wireframe|"Solid + wireframe"]
+                               [--capture out.png] [--camera x,y,z,yaw,pitch]
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--source-root` | Folder holding the extracted archive. Default: the viewer's own saved root, else the asset browser's saved source root |
+| `--level` | A `.level` or single `.zone` asset path, for example `levels/novalis/novalis.level`. Default: the last level used, else `levels/novalis/novalis.level` |
+| `--zones` | Comma-separated zone short names or paths; only these zones load |
+| `--mode` | Initial view mode (default `Shaded`) |
+| `--capture` | Load the level, write one frame as an RGB PNG and exit |
+| `--camera` | Camera `x,y,z` (presentation space, Z-up), yaw and pitch in degrees, applied after loading; alone it leaves the window open |
+
+`--capture` and `--camera` take effect when loading finishes. With `--capture` the settings file is not updated and the process prints the capture path, success flag, load timings and view stats.
+
+Settings are stored in `%APPDATA%/RC2016 Asset Browser/level_viewer.json` (source root and last level, saved on close). The browser's root is read from `settings.json` in the same folder.
+
+### Reference sizes
+
+Measured on an RTX 3060 (CPU frame time) in the research notes, for scale only:
+
+| Level | Models | Instances shown | Triangles | Draws | Frame |
+| --- | --- | --- | --- | --- | --- |
+| Novalis `art_buildings.zone` | 136 | 3,110 | 1.40 M | 428 | about 10 ms |
+| Novalis (18 zones, 8 with models) | 286 | 9,891 | 13.4 M | 844 | about 20 ms |
+| Veldin | 166 | 11,591 | 13.3 M | 430 | about 11 ms |
+
+Frame cost is dominated by per-call ctypes overhead over the draw calls, not GPU work. All 286 Novalis models decode, including `tb_sewer_pipe_large_end`.
+
+## Known limitations
+
+- Materials: foliage shows as solid blobs (leaf cut-out not decoded); large planes whose materials have no `_c` texture draw flat white (some Novalis surfaces, Veldin's large ground / backdrop plane). Terrain layer textures and other layered or foliage graphs are not fully translated. The research notes counted 88 of 222 Novalis environment materials as unsupported graphs (colour-only fallbacks in the Blender path).
+- Not handled: gameplay actors (`gp_*` zones), `_imposter` zones, quest-overlay regions, VFX, lights, collision volumes, `.level` spawn records (`0x3395AEC1`), decals, sky and atmosphere.
+- Undecoded instance fields: flags at `+0x5C`, the record tail, the heap's other objects, `0x032D450A` material overrides.
+- No click-to-identify of instances.

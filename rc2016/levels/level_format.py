@@ -31,8 +31,6 @@ from rc2016.levels.zone_format import INSTANCE_OFFSETS, MODEL_PATHS, decode_deca
 ZONE_LIST = 0x2BA33702
 REGION_LIST = 0x4130D903
 SPAWN_NAMES = 0x2236C47A
-DEFAULT_ARCHIVE = (r'C:\Users\Tim\Documents\Bestanden\Downloads\Ratchet & Clank (EUR)'
-                   r'\Image0\asset_archive\Image0\asset_archive')
 
 
 def string_list(data, table, tag):
@@ -53,9 +51,9 @@ def decode_level(data):
 
 def main():
     argv = sys.argv[1:]
-    archive_root = DEFAULT_ARCHIVE
-    if '--archive-root' in argv:
-        i = argv.index('--archive-root'); archive_root = argv[i + 1]; del argv[i:i + 2]
+    if '--archive-root' not in argv:
+        raise SystemExit('usage: python -m rc2016.levels.level_format --archive-root <asset_archive folder> <level path> <output folder>')
+    i = argv.index('--archive-root'); archive_root = argv[i + 1]; del argv[i:i + 2]
     level_path, out = argv[0], Path(argv[1])
     out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as scratch:

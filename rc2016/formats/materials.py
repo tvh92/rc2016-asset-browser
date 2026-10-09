@@ -31,7 +31,7 @@ RATCHET_BODY_GLOSS_SRGB=(
 # capture (G-buffer writer: specular/gloss bound as BC7_UNORM_SRGB, written to an
 # R8G8B8A8_SRGB target and read back as linear F0 by the lighting pass) shows the
 # hardware format, not the _c/_g/_n suffix, decides the transfer.  See
-# docs/shading_audit.md.  The Ratchet exception above is
+# docs/shading.md.  The Ratchet exception above is
 # now implied by this rule and kept only as a fail-closed regression anchor.
 SRGB_DXGI_FORMATS=frozenset({29,72,75,78,91,93,99})
 

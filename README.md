@@ -6,7 +6,7 @@ A Windows desktop tool for browsing, viewing and exporting the assets of **Ratch
 - **Textures:** every texture a model uses, or all ~19,000 in the archive, with channel preview and export to the original `.texture`, DDS or PNG.
 - **Levels:** loads a `.level` and shows its zones' model instances in a 3D level view. It also runs as a standalone level viewer.
 - **Flash UI:** renders the game's Scaleform menus and in-game planet maps, and exports them as PNG.
-- **Export:** glTF/GLB (skeleton and clips included) and OBJ without extra software. FBX, USD and `.blend` need Blender. An optional research build produces validated Blender scenes using the game's deferred BRDF.
+- **Export:** glTF/GLB (skeleton and clips included) and OBJ with no extra software. FBX, USD and `.blend` need Blender. An optional research pipeline builds validated Blender scenes using the game's deferred BRDF.
 
 **No game data is included.** You need your own dump of the game (CUSA01073 or another region), extracted so that the archive folder (`Image0`, with `toc`, `layout.csv` and the archive files) is on disk.
 
@@ -15,7 +15,7 @@ A Windows desktop tool for browsing, viewing and exporting the assets of **Ratch
 - Windows 10/11 with an OpenGL-capable GPU.
 - Python 3.11 or later from python.org, with Tkinter (tested on 3.14). The core viewer uses only the standard library.
 - Optional Python packages: `pillow` (Textures tab and PNG export), `numpy` (faster model loading and texture un-tiling), `lz4` (faster archive decompression).
-- Optional: Blender 5.0 for FBX/USD/`.blend` export and research builds.
+- Optional: Blender 5.0 for FBX/USD/`.blend` export and the research pipeline.
 
 ```bash
 py -m pip install pillow numpy lz4
@@ -34,7 +34,7 @@ Clone into a short path. Some file names are 64-character hashes, so a deep fold
 From the repository folder:
 
 ```bash
-py rc2016/app/main.py
+py -m rc2016
 ```
 
 1. Set **Source** to the extracted game folder and **Output** to an empty folder for exports and the asset index.
@@ -44,58 +44,64 @@ py rc2016/app/main.py
 
 Viewer controls: left-drag orbits, right-drag pans, the mouse wheel zooms, and double-click resets the view.
 
-The standalone level viewer:
+Other entry points:
 
 ```bash
-py rc2016/levels/viewer.py
+py -m rc2016.levels.viewer
 ```
 
-Use `pythonw` instead of `py` to launch without a console window.
+```bash
+py -m rc2016.flash.planet_maps "<extracted game folder>" "<output folder>"
+```
+
+```bash
+py rc2016/pipeline/run.py --help
+```
+
+Use `pyw` instead of `py` to launch the windows without a console. Settings are saved in `%APPDATA%\RC2016 Asset Browser`.
 
 ## Repository layout
 
 | Path | Contents |
 | --- | --- |
-| `rc2016/app/main.py` | Main window, scan/export batch runners, settings |
-| `Animation/pipeline/Research/AssetBrowserReview/` | Viewer: 3D viewport and GLSL shading, textures, levels, Flash UI, model export |
-| `Animation/pipeline/` | Shared decoders (archive, native model, textures, materials, clips) and the Blender research-build pipeline (`run.py`, `builder.py`) |
-| `Animation/pipeline/Research/Levels/` | `.level`/`.zone` decoders |
-| `Animation/animation_*.py` | Packed animation decoder and sampler |
-| `Claude_shading_fix/` | RC PS4 deferred BRDF for Blender and the captured game-look view |
-| `rc2016/pipeline/scene_defaults.py`, `assets/lighting/shared_lighting.json`, `assets/lighting/golden_gate_hills_1k.exr` | Blender scene defaults and the shared review lighting |
-| `Animation/pipeline/references/` | Third-party code used by the shader decoder (see below) |
+| `rc2016/app/` | Main window, browser UI, scan and export batch runners |
+| `rc2016/viewer/` | 3D viewport, GLSL shading, textures and material rules, animation playback |
+| `rc2016/levels/` | Level viewer and the `.level`/`.zone` decoders |
+| `rc2016/flash/` | Flash UI renderer and planet-map export |
+| `rc2016/export/` | glTF/GLB/OBJ export and Blender conversion |
+| `rc2016/formats/` | Decoders for the archive, asset index, models, skeletons, textures, materials and animation |
+| `rc2016/shaders/` | Materialgraph shader analysis (GCN decoding, translation, shader families) |
+| `rc2016/pipeline/` | Research Blender pipeline, the game's deferred BRDF for Blender, scene defaults, per-weapon assemblies |
+| `assets/` | Shared review lighting (settings and HDRI) and the captured game-view tables |
+| `docs/` | Reference documentation |
+| `tests/` | Unit tests |
+| `third_party/` | Third-party code (see below) |
+| `packaging/`, `scripts/` | PyInstaller spec and the PowerShell pipeline wrapper |
 
-The folder layout and names come from the larger research project this repository was split from. Imports and file paths depend on them, so keep the layout.
+Documentation:
 
-More detail:
-
-- [`docs/viewer.md`](docs/viewer.md): the viewer.
-- [`docs/pipeline.md`](docs/pipeline.md): the pipeline.
-- [`docs/levels.md`](docs/levels.md): levels.
-- [`docs/shading.md`](docs/shading.md): shading.
-
-These READMEs cite research evidence that is not part of this repository.
+- [Viewer and browser](docs/viewer.md)
+- [Levels](docs/levels.md)
+- [Research pipeline](docs/pipeline.md)
+- [Animation format](docs/animation.md)
+- [Shading and lighting](docs/shading.md)
 
 ## Tests
 
 ```bash
-py -m unittest tests.test_app tests.test_batch_isolation tests.test_pipeline_backend
+py -m unittest discover -s tests -t .
 ```
 
-```bash
-py -m unittest discover -s Animation/pipeline/Research/AssetBrowserReview -t . -p "test_*.py"
-```
-
-Tests that need game files skip when those files are not present.
+Tests that need game files skip unless the `RC2016_RESEARCH` environment variable points at a folder that has them.
 
 ## Packaging
 
-`packaging/asset_browser.spec` builds a single-file exe with PyInstaller (`pyinstaller --noconfirm --clean packaging/asset_browser.spec`, run from the repository root). The exe still runs the pipeline from a checkout of this repository.
+`packaging/asset_browser.spec` builds a single-file exe with PyInstaller (`pyinstaller --noconfirm --clean packaging/asset_browser.spec`, run from the repository root). The exe runs the pipeline from the repository checkout it sits in.
 
-## Third-party code
+## Third-party code and assets
 
-- `Animation/pipeline/references/ALERT/` (the `dat1lib` package only): [ALERT](https://github.com/Tkachov/ALERT) by Tkachov, GPL-3.0. See its `LICENSE.txt`.
-- `third_party/opengnm/gcn_types.h`: opengnm, MIT. See its `LICENSE`.
+- `third_party/ALERT/` (the `dat1lib` package only): [ALERT](https://github.com/Tkachov/ALERT) by Tkachov, GPL-3.0. See its `LICENSE.txt`. Used to read weapon config files for the research pipeline's V1/V5 weapon assemblies.
+- `third_party/opengnm/gcn_types.h`: opengnm, MIT. See its `LICENSE`. Provides the GCN opcode tables for the shader decoder.
 - `assets/lighting/golden_gate_hills_1k.exr`: a downscaled copy of *Golden Gate Hills* from [Poly Haven](https://polyhaven.com/a/golden_gate_hills), CC0.
 
 Ratchet & Clank is a trademark of Sony Interactive Entertainment. This is an unofficial fan tool for studying and preserving the game's assets, and it is not affiliated with Insomniac Games or Sony.

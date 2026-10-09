@@ -1,6 +1,6 @@
-"""Decode model-instance placements from an RC PS4 `.zone` asset (spike, 2026-10-08).
+"""Decode model-instance placements from an RC PS4 `.zone` asset.
 
-Layout established on Novalis `art_buildings.zone` (see README.md beside this file):
+Layout established on Novalis `art_buildings.zone` (docs/levels.md):
 
     0xC6A5905E  u32[n_models]   absolute file offsets of NUL-terminated model paths
     0x6987F172  u32[n_inst]     offsets of instance records inside section 0x06ABCAB2
