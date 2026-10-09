@@ -779,8 +779,8 @@ class RockBlendTests(unittest.TestCase):
 
 
 
-@unittest.skipUnless((MATERIALS / 'GroundPuddles/source_assets').is_dir(), 'source assets are not present')
 class GroundPuddlesTests(unittest.TestCase):
+    @unittest.skipUnless((MATERIALS / 'GroundPuddles/source_assets').is_dir(), 'source assets are not present')
     def test_exact_graph_and_all_source_material_slots_params(self):
         from pathlib import Path
         import json
