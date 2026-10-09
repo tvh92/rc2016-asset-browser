@@ -883,7 +883,7 @@ def assemble_source_linked_pyrocitor(selection,manifest,index,args,code_hash,pre
         candidate=auto/'Pyrocitor_V1_V5.candidate.blend'; final=args.output_root/'final'/'Pyrocitor_V1_V5_switchable.blend'
         validation=auto/'validation.json'; receipt_path=auto/'assembly_receipt.json'; job_path=auto/'merge_job.json'
         script=ROOT/'rc2016/pipeline/weapons/pyrocitor/merge.py'
-        contract={'merge_sha256':file_hash(script),'contract_sha256':file_hash(script.parent/'pyrocitor_contract.py'),
+        contract={'merge_sha256':file_hash(script),'contract_sha256':file_hash(script.parent/'contract.py'),
           'runner_sha256':file_hash(Path(__file__)),'resolver_sha256':file_hash(ROOT/'rc2016/pipeline/variant_links.py'),
           'config':{'asset_id':pair['config']['asset_id'],'path':pair['config']['path'],'sha256':pair['config']['sha256'],
             'edges':pair['config']['edges'],'fields':{f:pair['models'][f]['field_trace'] for f in ('DefaultSkinModels','UpgradedSkinModels')}},'models':inputs}
