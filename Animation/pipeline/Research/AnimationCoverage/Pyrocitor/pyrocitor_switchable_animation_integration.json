@@ -1,0 +1,1326 @@
+{
+  "schema": "pyrocitor-switchable-animation-integration-v1",
+  "status": "reopened_switchable_animation_integration_passed",
+  "separate_process_reopen": true,
+  "source_blend_sha256": "9308d1264245ece8e8b6fa4edf158e8b937a5ed399d5ca388b8f38acefcd5d77",
+  "proof_scope": "native main, hash-mapped V1 three-joint subset and native V5 nine-joint rig; Fire/Idle/Open; 0x1A61FAF6 excluded",
+  "source_models": {
+    "main": {
+      "asset_id": "7ad48452acac82c9edee",
+      "path": "equipment/weapon/wpn_pyrociter/wpn_pyrociter.model",
+      "packed_sha256": "ca051b54d065939d83e2606a95aa599ce04d67a14be5800029ff7842c6d0a756",
+      "decoded_sha256": "b652ff3c6e8ce6a5a1dce7677866cd562df56a42a547b199eaa9b9503523f4f8",
+      "joint_count": 6,
+      "joint_hashes": [
+        "0x0B11BAB9",
+        "0x3950A93C",
+        "0xDB1892A2",
+        "0x7ADD49E1",
+        "0x4DB8523A",
+        "0x5E0B11D2"
+      ],
+      "native_influence_inventory": {
+        "joint_hashes_used": [
+          "0x0B11BAB9"
+        ],
+        "sections": [
+          {
+            "section": 0,
+            "vertices": 2958,
+            "triangles": 3846,
+            "weighted_vertices": 2958,
+            "joint_hashes_used": [
+              "0x0B11BAB9"
+            ]
+          },
+          {
+            "section": 1,
+            "vertices": 148,
+            "triangles": 240,
+            "weighted_vertices": 148,
+            "joint_hashes_used": [
+              "0x0B11BAB9"
+            ]
+          },
+          {
+            "section": 2,
+            "vertices": 12,
+            "triangles": 8,
+            "weighted_vertices": 12,
+            "joint_hashes_used": [
+              "0x0B11BAB9"
+            ]
+          },
+          {
+            "section": 3,
+            "vertices": 15,
+            "triangles": 14,
+            "weighted_vertices": 15,
+            "joint_hashes_used": [
+              "0x0B11BAB9"
+            ]
+          }
+        ]
+      }
+    },
+    "v1": {
+      "asset_id": "7699113e93128f485d10",
+      "path": "equipment/weapon/wpn_pyrociter/bangle_set/wpn_pyrociter_bangle_v1_barrel/wpn_pyrociter_bangle_v1_barrel.model",
+      "packed_sha256": "a47bc3b3df85756086ef6fef96e358f62bc055815cae3a507ad8db273dde1150",
+      "decoded_sha256": "20c14e7d499263522446a6245e7acacb73b7f410f0a050fe51469020b8976d09",
+      "joint_count": 3,
+      "joint_hashes": [
+        "0x0B11BAB9",
+        "0x3950A93C",
+        "0xDB1892A2"
+      ],
+      "native_influence_inventory": {
+        "joint_hashes_used": [
+          "0x0B11BAB9",
+          "0x3950A93C",
+          "0xDB1892A2"
+        ],
+        "sections": [
+          {
+            "section": 0,
+            "vertices": 785,
+            "triangles": 932,
+            "weighted_vertices": 785,
+            "joint_hashes_used": [
+              "0x0B11BAB9",
+              "0x3950A93C",
+              "0xDB1892A2"
+            ]
+          }
+        ]
+      }
+    },
+    "v5": {
+      "asset_id": "86f736dced71288e7503",
+      "path": "equipment/weapon/wpn_pyrociter/bangle_set/wpn_pyrociter_bangle_v5_barrel/wpn_pyrociter_bangle_v5_barrel.model",
+      "packed_sha256": "ef0af73728cd8709186ad4b2e0dfaa1cf4ee08b3f45b29539403ec86b1334b8a",
+      "decoded_sha256": "4474f86943c3249e2fb9bec46b9184d62b5fa6f6c3f6c7f65f825ef66bccae0b",
+      "joint_count": 9,
+      "joint_hashes": [
+        "0x0B11BAB9",
+        "0x3950A93C",
+        "0x86851A83",
+        "0x3DD4C12F",
+        "0x9F23434F",
+        "0xDB1892A2",
+        "0x7ADD49E1",
+        "0x4DB8523A",
+        "0x5E0B11D2"
+      ],
+      "native_influence_inventory": {
+        "joint_hashes_used": [
+          "0x0B11BAB9",
+          "0x3950A93C",
+          "0x3DD4C12F",
+          "0x4DB8523A",
+          "0x5E0B11D2",
+          "0x7ADD49E1",
+          "0x86851A83",
+          "0x9F23434F",
+          "0xDB1892A2"
+        ],
+        "sections": [
+          {
+            "section": 0,
+            "vertices": 711,
+            "triangles": 946,
+            "weighted_vertices": 711,
+            "joint_hashes_used": [
+              "0x0B11BAB9",
+              "0x9F23434F"
+            ]
+          },
+          {
+            "section": 1,
+            "vertices": 517,
+            "triangles": 616,
+            "weighted_vertices": 517,
+            "joint_hashes_used": [
+              "0x9F23434F"
+            ]
+          },
+          {
+            "section": 2,
+            "vertices": 492,
+            "triangles": 836,
+            "weighted_vertices": 492,
+            "joint_hashes_used": [
+              "0x0B11BAB9",
+              "0x86851A83",
+              "0x3DD4C12F"
+            ]
+          },
+          {
+            "section": 3,
+            "vertices": 2840,
+            "triangles": 4144,
+            "weighted_vertices": 2840,
+            "joint_hashes_used": [
+              "0x3950A93C",
+              "0xDB1892A2",
+              "0x7ADD49E1",
+              "0x4DB8523A",
+              "0x5E0B11D2"
+            ]
+          },
+          {
+            "section": 4,
+            "vertices": 454,
+            "triangles": 768,
+            "weighted_vertices": 454,
+            "joint_hashes_used": [
+              "0x0B11BAB9",
+              "0x3950A93C",
+              "0xDB1892A2",
+              "0x4DB8523A",
+              "0x5E0B11D2"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "native_shared_bind_checks": [
+    {
+      "model": "v1",
+      "joint_hash": "0x0B11BAB9",
+      "joint_name": "a_body",
+      "main_parent_hash": null,
+      "variant_parent_hash": null,
+      "max_rest_world_delta": 0.0,
+      "max_inverse_bind_delta": 0.0
+    },
+    {
+      "model": "v1",
+      "joint_hash": "0x3950A93C",
+      "joint_name": "barrelBase",
+      "main_parent_hash": "0x0B11BAB9",
+      "variant_parent_hash": "0x0B11BAB9",
+      "max_rest_world_delta": 0.0,
+      "max_inverse_bind_delta": 0.0
+    },
+    {
+      "model": "v1",
+      "joint_hash": "0xDB1892A2",
+      "joint_name": "barrelTipBase",
+      "main_parent_hash": "0x3950A93C",
+      "variant_parent_hash": "0x3950A93C",
+      "max_rest_world_delta": 2.9802322387695312e-08,
+      "max_inverse_bind_delta": 2.9802322387695312e-08
+    },
+    {
+      "model": "v5",
+      "joint_hash": "0x0B11BAB9",
+      "joint_name": "a_body",
+      "main_parent_hash": null,
+      "variant_parent_hash": null,
+      "max_rest_world_delta": 0.0,
+      "max_inverse_bind_delta": 0.0
+    },
+    {
+      "model": "v5",
+      "joint_hash": "0x3950A93C",
+      "joint_name": "barrelBase",
+      "main_parent_hash": "0x0B11BAB9",
+      "variant_parent_hash": "0x0B11BAB9",
+      "max_rest_world_delta": 0.0,
+      "max_inverse_bind_delta": 0.0
+    },
+    {
+      "model": "v5",
+      "joint_hash": "0x4DB8523A",
+      "joint_name": "LF_barrel_V5",
+      "main_parent_hash": "0x3950A93C",
+      "variant_parent_hash": "0x3950A93C",
+      "max_rest_world_delta": 0.0,
+      "max_inverse_bind_delta": 0.0
+    },
+    {
+      "model": "v5",
+      "joint_hash": "0x5E0B11D2",
+      "joint_name": "RT_barrel_V5",
+      "main_parent_hash": "0x3950A93C",
+      "variant_parent_hash": "0x3950A93C",
+      "max_rest_world_delta": 8.742277657347586e-08,
+      "max_inverse_bind_delta": 8.742277657347586e-08
+    },
+    {
+      "model": "v5",
+      "joint_hash": "0x7ADD49E1",
+      "joint_name": "CTR_barrel_V5",
+      "main_parent_hash": "0x3950A93C",
+      "variant_parent_hash": "0x3950A93C",
+      "max_rest_world_delta": 0.0,
+      "max_inverse_bind_delta": 0.0
+    },
+    {
+      "model": "v5",
+      "joint_hash": "0xDB1892A2",
+      "joint_name": "barrelTipBase",
+      "main_parent_hash": "0x3950A93C",
+      "variant_parent_hash": "0x3950A93C",
+      "max_rest_world_delta": 2.9802322387695312e-08,
+      "max_inverse_bind_delta": 2.9802322387695312e-08
+    }
+  ],
+  "v1_mapping": {
+    "status": "proven_from_native_hash_parent_rest_inverse_bind_geometry_and_weights",
+    "v1_joint_count": 3,
+    "v1_hashes": [
+      "0x0B11BAB9",
+      "0x3950A93C",
+      "0xDB1892A2"
+    ],
+    "unmatched_channels": [
+      "0x1A61FAF6"
+    ]
+  },
+  "animset": {
+    "path": "equipment/weapon/wpn_pyrociter/wpn_pyrociter.animset",
+    "asset_id": "473a0e630c85158c0f8d",
+    "packed_sha256": "0cee8fa86b94243ce6199f6e67d2ac407b87f1ce291bf6c8de100c3ea2629a5f",
+    "decoded_sha256": "fc94dc61b4ac1a7070c8cde35fa391aeeaeca63cba2e1063dffc7f73f6befb0e"
+  },
+  "clips": [
+    {
+      "name": "Fire_wpn_Pyrociter",
+      "frames": 15,
+      "fps": 30,
+      "raw_sha256": "f8d859a051465a8656906ec066e3677de86b774355f428ce3848ae61582f38ff",
+      "sample_sha256": "c92d8bfc73d2aa13d978c736e7fa0a772f0e1174f65d758f9324e1d50af13f1e",
+      "timeline": {
+        "start": 1,
+        "end_inclusive": 15,
+        "nla_end": 15.0
+      }
+    },
+    {
+      "name": "Idle_wpn_Pyrociter",
+      "frames": 21,
+      "fps": 30,
+      "raw_sha256": "1d1dbf60485ce1e4502d2226792332de96affb194d5d67c6edc6763955d5e88c",
+      "sample_sha256": "9d540f0b7f943baa8dd5e722a70fc6f4d84de4271b705a866e0023071e91ad88",
+      "timeline": {
+        "start": 16,
+        "end_inclusive": 36,
+        "nla_end": 36.0
+      }
+    },
+    {
+      "name": "Open_wpn_Pyrociter",
+      "frames": 13,
+      "fps": 30,
+      "raw_sha256": "299816c754c94f995d2bda2292d410e351485c831ce3729f4af6d9e8ed7846f3",
+      "sample_sha256": "3b97209deee856326713253dcab9e9c394465266faba3837c0c98fab7dbaab05",
+      "timeline": {
+        "start": 37,
+        "end_inclusive": 49,
+        "nla_end": 49.0
+      }
+    }
+  ],
+  "per_rig_animation_checks": {
+    "main": {
+      "rig": "Source animation rig",
+      "bone_count": 6,
+      "direct_action": [
+        {
+          "clip": "Fire_wpn_Pyrociter",
+          "frames": 15,
+          "max_matrix_error": 4.76837158203125e-07,
+          "action_slot_identifier": "OBSource animation rig"
+        },
+        {
+          "clip": "Idle_wpn_Pyrociter",
+          "frames": 21,
+          "max_matrix_error": 2.384185791015625e-07,
+          "action_slot_identifier": "OBSource animation rig"
+        },
+        {
+          "clip": "Open_wpn_Pyrociter",
+          "frames": 13,
+          "max_matrix_error": 4.76837158203125e-07,
+          "action_slot_identifier": "OBSource animation rig"
+        }
+      ],
+      "nla_overview": [
+        {
+          "clip": "Fire_wpn_Pyrociter",
+          "frames": 15,
+          "max_matrix_error": 4.76837158203125e-07,
+          "held_end_matrix_error": 2.980232238769531e-07,
+          "action_slot_identifier": "OBSource animation rig"
+        },
+        {
+          "clip": "Idle_wpn_Pyrociter",
+          "frames": 21,
+          "max_matrix_error": 2.384185791015625e-07,
+          "held_end_matrix_error": 1.1920930376163597e-07,
+          "action_slot_identifier": "OBSource animation rig"
+        },
+        {
+          "clip": "Open_wpn_Pyrociter",
+          "frames": 13,
+          "max_matrix_error": 4.76837158203125e-07,
+          "held_end_matrix_error": 1.1920930376163597e-07,
+          "action_slot_identifier": "OBSource animation rig"
+        }
+      ],
+      "nla_boundaries_and_slots": [
+        {
+          "clip": "Fire_wpn_Pyrociter",
+          "bounds": [
+            1.0,
+            15.0,
+            1.0,
+            15.0
+          ],
+          "action_slot_identifier": "OBSource animation rig"
+        },
+        {
+          "clip": "Idle_wpn_Pyrociter",
+          "bounds": [
+            16.0,
+            36.0,
+            1.0,
+            21.0
+          ],
+          "action_slot_identifier": "OBSource animation rig"
+        },
+        {
+          "clip": "Open_wpn_Pyrociter",
+          "bounds": [
+            37.0,
+            49.0,
+            1.0,
+            13.0
+          ],
+          "action_slot_identifier": "OBSource animation rig"
+        }
+      ],
+      "matrix_comparisons": 588
+    },
+    "v1": {
+      "rig": "Source animation rig.001",
+      "bone_count": 3,
+      "direct_action": [
+        {
+          "clip": "Fire_wpn_Pyrociter",
+          "frames": 15,
+          "max_matrix_error": 4.76837158203125e-07,
+          "action_slot_identifier": "OBSource animation rig.001"
+        },
+        {
+          "clip": "Idle_wpn_Pyrociter",
+          "frames": 21,
+          "max_matrix_error": 2.384185791015625e-07,
+          "action_slot_identifier": "OBSource animation rig.001"
+        },
+        {
+          "clip": "Open_wpn_Pyrociter",
+          "frames": 13,
+          "max_matrix_error": 4.76837158203125e-07,
+          "action_slot_identifier": "OBSource animation rig.001"
+        }
+      ],
+      "nla_overview": [
+        {
+          "clip": "Fire_wpn_Pyrociter",
+          "frames": 15,
+          "max_matrix_error": 4.76837158203125e-07,
+          "held_end_matrix_error": 2.384185791015625e-07,
+          "action_slot_identifier": "OBSource animation rig.001"
+        },
+        {
+          "clip": "Idle_wpn_Pyrociter",
+          "frames": 21,
+          "max_matrix_error": 2.384185791015625e-07,
+          "held_end_matrix_error": 7.450580596923828e-09,
+          "action_slot_identifier": "OBSource animation rig.001"
+        },
+        {
+          "clip": "Open_wpn_Pyrociter",
+          "frames": 13,
+          "max_matrix_error": 4.76837158203125e-07,
+          "held_end_matrix_error": 7.450580596923828e-09,
+          "action_slot_identifier": "OBSource animation rig.001"
+        }
+      ],
+      "nla_boundaries_and_slots": [
+        {
+          "clip": "Fire_wpn_Pyrociter",
+          "bounds": [
+            1.0,
+            15.0,
+            1.0,
+            15.0
+          ],
+          "action_slot_identifier": "OBSource animation rig.001"
+        },
+        {
+          "clip": "Idle_wpn_Pyrociter",
+          "bounds": [
+            16.0,
+            36.0,
+            1.0,
+            21.0
+          ],
+          "action_slot_identifier": "OBSource animation rig.001"
+        },
+        {
+          "clip": "Open_wpn_Pyrociter",
+          "bounds": [
+            37.0,
+            49.0,
+            1.0,
+            13.0
+          ],
+          "action_slot_identifier": "OBSource animation rig.001"
+        }
+      ],
+      "matrix_comparisons": 294
+    },
+    "v5": {
+      "rig": "Source animation rig.002",
+      "bone_count": 9,
+      "direct_action": [
+        {
+          "clip": "Fire_wpn_Pyrociter",
+          "frames": 15,
+          "max_matrix_error": 4.76837158203125e-07,
+          "action_slot_identifier": "OBSource animation rig.002"
+        },
+        {
+          "clip": "Idle_wpn_Pyrociter",
+          "frames": 21,
+          "max_matrix_error": 2.384185791015625e-07,
+          "action_slot_identifier": "OBSource animation rig.002"
+        },
+        {
+          "clip": "Open_wpn_Pyrociter",
+          "frames": 13,
+          "max_matrix_error": 4.76837158203125e-07,
+          "action_slot_identifier": "OBSource animation rig.002"
+        }
+      ],
+      "nla_overview": [
+        {
+          "clip": "Fire_wpn_Pyrociter",
+          "frames": 15,
+          "max_matrix_error": 4.76837158203125e-07,
+          "held_end_matrix_error": 2.384185791015625e-07,
+          "action_slot_identifier": "OBSource animation rig.002"
+        },
+        {
+          "clip": "Idle_wpn_Pyrociter",
+          "frames": 21,
+          "max_matrix_error": 2.384185791015625e-07,
+          "held_end_matrix_error": 2.9802322387695312e-08,
+          "action_slot_identifier": "OBSource animation rig.002"
+        },
+        {
+          "clip": "Open_wpn_Pyrociter",
+          "frames": 13,
+          "max_matrix_error": 4.76837158203125e-07,
+          "held_end_matrix_error": 2.9802322387695312e-08,
+          "action_slot_identifier": "OBSource animation rig.002"
+        }
+      ],
+      "nla_boundaries_and_slots": [
+        {
+          "clip": "Fire_wpn_Pyrociter",
+          "bounds": [
+            1.0,
+            15.0,
+            1.0,
+            15.0
+          ],
+          "action_slot_identifier": "OBSource animation rig.002"
+        },
+        {
+          "clip": "Idle_wpn_Pyrociter",
+          "bounds": [
+            16.0,
+            36.0,
+            1.0,
+            21.0
+          ],
+          "action_slot_identifier": "OBSource animation rig.002"
+        },
+        {
+          "clip": "Open_wpn_Pyrociter",
+          "bounds": [
+            37.0,
+            49.0,
+            1.0,
+            13.0
+          ],
+          "action_slot_identifier": "OBSource animation rig.002"
+        }
+      ],
+      "matrix_comparisons": 882
+    }
+  },
+  "total_bone_matrix_comparisons": 1764,
+  "maximum_direct_matrix_error": 4.76837158203125e-07,
+  "maximum_nla_matrix_error": 4.76837158203125e-07,
+  "native_geometry_weights": {
+    "main": [
+      {
+        "section": 0,
+        "object": "wpn_pyrociter | subset 000 | wpn_Pyrociter",
+        "vertices": 2958,
+        "triangles": 3846,
+        "max_position_delta": 0.0,
+        "max_weight_delta": 0.0,
+        "weight_group_mismatches": 0,
+        "duplicate_native_joint_ids_coalesced": 0,
+        "mesh_rig_world_matrix_delta": 0.0
+      },
+      {
+        "section": 1,
+        "object": "wpn_pyrociter | subset 001 | pup_RCPS4_Explosive_Crate_Glass",
+        "vertices": 148,
+        "triangles": 240,
+        "max_position_delta": 0.0,
+        "max_weight_delta": 0.0,
+        "weight_group_mismatches": 0,
+        "duplicate_native_joint_ids_coalesced": 0,
+        "mesh_rig_world_matrix_delta": 0.0
+      },
+      {
+        "section": 2,
+        "object": "wpn_pyrociter | subset 002 | nc1_flamethrower_glass_bli",
+        "vertices": 12,
+        "triangles": 8,
+        "max_position_delta": 0.0,
+        "max_weight_delta": 0.0,
+        "weight_group_mismatches": 0,
+        "duplicate_native_joint_ids_coalesced": 0,
+        "mesh_rig_world_matrix_delta": 0.0
+      },
+      {
+        "section": 3,
+        "object": "wpn_pyrociter | subset 003 | gbl_prop_Guage_Face_Small_01",
+        "vertices": 15,
+        "triangles": 14,
+        "max_position_delta": 0.0,
+        "max_weight_delta": 0.0,
+        "weight_group_mismatches": 0,
+        "duplicate_native_joint_ids_coalesced": 0,
+        "mesh_rig_world_matrix_delta": 0.0
+      }
+    ],
+    "v1": [
+      {
+        "section": 0,
+        "object": "wpn_pyrociter_bangle_v1_barrel | subset 000 | wpn_Pyrociter",
+        "vertices": 785,
+        "triangles": 932,
+        "max_position_delta": 0.0,
+        "max_weight_delta": 0.0,
+        "weight_group_mismatches": 0,
+        "duplicate_native_joint_ids_coalesced": 0,
+        "mesh_rig_world_matrix_delta": 0.0
+      }
+    ],
+    "v5": [
+      {
+        "section": 0,
+        "object": "wpn_pyrociter_bangle_v5_barrel | subset 000 | wpn_Pyrociter",
+        "vertices": 711,
+        "triangles": 946,
+        "max_position_delta": 0.0,
+        "max_weight_delta": 0.0,
+        "weight_group_mismatches": 0,
+        "duplicate_native_joint_ids_coalesced": 0,
+        "mesh_rig_world_matrix_delta": 0.0
+      },
+      {
+        "section": 1,
+        "object": "wpn_pyrociter_bangle_v5_barrel | subset 001 | enm_Constructor_Bot_Tank_and_Gun",
+        "vertices": 517,
+        "triangles": 616,
+        "max_position_delta": 0.0,
+        "max_weight_delta": 0.0,
+        "weight_group_mismatches": 0,
+        "duplicate_native_joint_ids_coalesced": 0,
+        "mesh_rig_world_matrix_delta": 0.0
+      },
+      {
+        "section": 2,
+        "object": "wpn_pyrociter_bangle_v5_barrel | subset 002 | gdgt_Hydrodisplacer_Main",
+        "vertices": 492,
+        "triangles": 836,
+        "max_position_delta": 0.0,
+        "max_weight_delta": 0.0,
+        "weight_group_mismatches": 0,
+        "duplicate_native_joint_ids_coalesced": 0,
+        "mesh_rig_world_matrix_delta": 0.0
+      },
+      {
+        "section": 3,
+        "object": "wpn_pyrociter_bangle_v5_barrel | subset 003 | pasted__wpn_Pyrociter",
+        "vertices": 2840,
+        "triangles": 4144,
+        "max_position_delta": 0.0,
+        "max_weight_delta": 0.0,
+        "weight_group_mismatches": 0,
+        "duplicate_native_joint_ids_coalesced": 0,
+        "mesh_rig_world_matrix_delta": 0.0
+      },
+      {
+        "section": 4,
+        "object": "wpn_pyrociter_bangle_v5_barrel | subset 004 | pasted__gbl_prop_Grate_In_01",
+        "vertices": 454,
+        "triangles": 768,
+        "max_position_delta": 0.0,
+        "max_weight_delta": 0.0,
+        "weight_group_mismatches": 0,
+        "duplicate_native_joint_ids_coalesced": 0,
+        "mesh_rig_world_matrix_delta": 0.0
+      }
+    ]
+  },
+  "main_body_binding_and_motion": {
+    "joint_hashes_used": [
+      "0x0B11BAB9"
+    ],
+    "only_weighted_joint_is_a_body": true,
+    "source_a_body_motion": [
+      {
+        "clip": "Fire_wpn_Pyrociter",
+        "max_a_body_world_matrix_delta_from_rest": 0.0
+      },
+      {
+        "clip": "Idle_wpn_Pyrociter",
+        "max_a_body_world_matrix_delta_from_rest": 0.0
+      },
+      {
+        "clip": "Open_wpn_Pyrociter",
+        "max_a_body_world_matrix_delta_from_rest": 0.0
+      }
+    ]
+  },
+  "representative_skinned_vertex_checks": [
+    {
+      "model": "main",
+      "clip": "Fire_wpn_Pyrociter",
+      "source_frame": 8,
+      "overview_frame": 8,
+      "vertices_checked": 3133,
+      "max_evaluated_vertex_error": 0.0,
+      "max_deformation_from_bind": 0.0,
+      "deformed": false,
+      "nonzero_deformation_required": false,
+      "sections": [
+        {
+          "section": 0,
+          "vertices": 2958,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        },
+        {
+          "section": 1,
+          "vertices": 148,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        },
+        {
+          "section": 2,
+          "vertices": 12,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        },
+        {
+          "section": 3,
+          "vertices": 15,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        }
+      ]
+    },
+    {
+      "model": "main",
+      "clip": "Idle_wpn_Pyrociter",
+      "source_frame": 11,
+      "overview_frame": 26,
+      "vertices_checked": 3133,
+      "max_evaluated_vertex_error": 0.0,
+      "max_deformation_from_bind": 0.0,
+      "deformed": false,
+      "nonzero_deformation_required": false,
+      "sections": [
+        {
+          "section": 0,
+          "vertices": 2958,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        },
+        {
+          "section": 1,
+          "vertices": 148,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        },
+        {
+          "section": 2,
+          "vertices": 12,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        },
+        {
+          "section": 3,
+          "vertices": 15,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        }
+      ]
+    },
+    {
+      "model": "main",
+      "clip": "Open_wpn_Pyrociter",
+      "source_frame": 7,
+      "overview_frame": 43,
+      "vertices_checked": 3133,
+      "max_evaluated_vertex_error": 0.0,
+      "max_deformation_from_bind": 0.0,
+      "deformed": false,
+      "nonzero_deformation_required": false,
+      "sections": [
+        {
+          "section": 0,
+          "vertices": 2958,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        },
+        {
+          "section": 1,
+          "vertices": 148,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        },
+        {
+          "section": 2,
+          "vertices": 12,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        },
+        {
+          "section": 3,
+          "vertices": 15,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        }
+      ]
+    },
+    {
+      "model": "v1",
+      "clip": "Fire_wpn_Pyrociter",
+      "source_frame": 8,
+      "overview_frame": 8,
+      "vertices_checked": 785,
+      "max_evaluated_vertex_error": 1.1920928955078125e-07,
+      "max_deformation_from_bind": 0.058451175689697266,
+      "deformed": true,
+      "nonzero_deformation_required": true,
+      "sections": [
+        {
+          "section": 0,
+          "vertices": 785,
+          "max_evaluated_vertex_error": 1.1920928955078125e-07,
+          "max_source_pose_displacement": 0.058451175689697266
+        }
+      ]
+    },
+    {
+      "model": "v1",
+      "clip": "Idle_wpn_Pyrociter",
+      "source_frame": 11,
+      "overview_frame": 26,
+      "vertices_checked": 785,
+      "max_evaluated_vertex_error": 5.960464477539063e-08,
+      "max_deformation_from_bind": 0.025183796882629395,
+      "deformed": true,
+      "nonzero_deformation_required": true,
+      "sections": [
+        {
+          "section": 0,
+          "vertices": 785,
+          "max_evaluated_vertex_error": 5.960464477539063e-08,
+          "max_source_pose_displacement": 0.025183796882629395
+        }
+      ]
+    },
+    {
+      "model": "v1",
+      "clip": "Open_wpn_Pyrociter",
+      "source_frame": 7,
+      "overview_frame": 43,
+      "vertices_checked": 785,
+      "max_evaluated_vertex_error": 1.1920928955078125e-07,
+      "max_deformation_from_bind": 0.06616330146789551,
+      "deformed": true,
+      "nonzero_deformation_required": true,
+      "sections": [
+        {
+          "section": 0,
+          "vertices": 785,
+          "max_evaluated_vertex_error": 1.1920928955078125e-07,
+          "max_source_pose_displacement": 0.06616330146789551
+        }
+      ]
+    },
+    {
+      "model": "main",
+      "clip": "Fire_wpn_Pyrociter",
+      "source_frame": 8,
+      "overview_frame": 8,
+      "vertices_checked": 3133,
+      "max_evaluated_vertex_error": 0.0,
+      "max_deformation_from_bind": 0.0,
+      "deformed": false,
+      "nonzero_deformation_required": false,
+      "sections": [
+        {
+          "section": 0,
+          "vertices": 2958,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        },
+        {
+          "section": 1,
+          "vertices": 148,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        },
+        {
+          "section": 2,
+          "vertices": 12,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        },
+        {
+          "section": 3,
+          "vertices": 15,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        }
+      ]
+    },
+    {
+      "model": "main",
+      "clip": "Idle_wpn_Pyrociter",
+      "source_frame": 11,
+      "overview_frame": 26,
+      "vertices_checked": 3133,
+      "max_evaluated_vertex_error": 0.0,
+      "max_deformation_from_bind": 0.0,
+      "deformed": false,
+      "nonzero_deformation_required": false,
+      "sections": [
+        {
+          "section": 0,
+          "vertices": 2958,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        },
+        {
+          "section": 1,
+          "vertices": 148,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        },
+        {
+          "section": 2,
+          "vertices": 12,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        },
+        {
+          "section": 3,
+          "vertices": 15,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        }
+      ]
+    },
+    {
+      "model": "main",
+      "clip": "Open_wpn_Pyrociter",
+      "source_frame": 7,
+      "overview_frame": 43,
+      "vertices_checked": 3133,
+      "max_evaluated_vertex_error": 0.0,
+      "max_deformation_from_bind": 0.0,
+      "deformed": false,
+      "nonzero_deformation_required": false,
+      "sections": [
+        {
+          "section": 0,
+          "vertices": 2958,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        },
+        {
+          "section": 1,
+          "vertices": 148,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        },
+        {
+          "section": 2,
+          "vertices": 12,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        },
+        {
+          "section": 3,
+          "vertices": 15,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.0
+        }
+      ]
+    },
+    {
+      "model": "v5",
+      "clip": "Fire_wpn_Pyrociter",
+      "source_frame": 8,
+      "overview_frame": 8,
+      "vertices_checked": 5014,
+      "max_evaluated_vertex_error": 8.940696716308594e-08,
+      "max_deformation_from_bind": 0.0793834924697876,
+      "deformed": true,
+      "nonzero_deformation_required": true,
+      "sections": [
+        {
+          "section": 0,
+          "vertices": 711,
+          "max_evaluated_vertex_error": 5.960464477539063e-08,
+          "max_source_pose_displacement": 0.018881410360336304
+        },
+        {
+          "section": 1,
+          "vertices": 517,
+          "max_evaluated_vertex_error": 5.960464477539063e-08,
+          "max_source_pose_displacement": 0.0793834924697876
+        },
+        {
+          "section": 2,
+          "vertices": 492,
+          "max_evaluated_vertex_error": 2.9802322387695312e-08,
+          "max_source_pose_displacement": 0.023716121912002563
+        },
+        {
+          "section": 3,
+          "vertices": 2840,
+          "max_evaluated_vertex_error": 8.940696716308594e-08,
+          "max_source_pose_displacement": 0.07479679584503174
+        },
+        {
+          "section": 4,
+          "vertices": 454,
+          "max_evaluated_vertex_error": 8.940696716308594e-08,
+          "max_source_pose_displacement": 0.07479679584503174
+        }
+      ]
+    },
+    {
+      "model": "v5",
+      "clip": "Idle_wpn_Pyrociter",
+      "source_frame": 11,
+      "overview_frame": 26,
+      "vertices_checked": 5014,
+      "max_evaluated_vertex_error": 1.1920928955078125e-07,
+      "max_deformation_from_bind": 0.023170441389083862,
+      "deformed": true,
+      "nonzero_deformation_required": true,
+      "sections": [
+        {
+          "section": 0,
+          "vertices": 711,
+          "max_evaluated_vertex_error": 2.3188704836278747e-17,
+          "max_source_pose_displacement": 0.00017535686492919922
+        },
+        {
+          "section": 1,
+          "vertices": 517,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.00017535686492919922
+        },
+        {
+          "section": 2,
+          "vertices": 492,
+          "max_evaluated_vertex_error": 2.9802322387695312e-08,
+          "max_source_pose_displacement": 0.023170441389083862
+        },
+        {
+          "section": 3,
+          "vertices": 2840,
+          "max_evaluated_vertex_error": 1.1920928955078125e-07,
+          "max_source_pose_displacement": 0.013287484645843506
+        },
+        {
+          "section": 4,
+          "vertices": 454,
+          "max_evaluated_vertex_error": 5.960464477539063e-08,
+          "max_source_pose_displacement": 0.012763500213623047
+        }
+      ]
+    },
+    {
+      "model": "v5",
+      "clip": "Open_wpn_Pyrociter",
+      "source_frame": 7,
+      "overview_frame": 43,
+      "vertices_checked": 5014,
+      "max_evaluated_vertex_error": 1.1920928955078125e-07,
+      "max_deformation_from_bind": 0.03596538305282593,
+      "deformed": true,
+      "nonzero_deformation_required": true,
+      "sections": [
+        {
+          "section": 0,
+          "vertices": 711,
+          "max_evaluated_vertex_error": 2.9802322387695312e-08,
+          "max_source_pose_displacement": 0.0019488632678985596
+        },
+        {
+          "section": 1,
+          "vertices": 517,
+          "max_evaluated_vertex_error": 0.0,
+          "max_source_pose_displacement": 0.007786750793457031
+        },
+        {
+          "section": 2,
+          "vertices": 492,
+          "max_evaluated_vertex_error": 2.9802322387695312e-08,
+          "max_source_pose_displacement": 0.03350943326950073
+        },
+        {
+          "section": 3,
+          "vertices": 2840,
+          "max_evaluated_vertex_error": 1.1920928955078125e-07,
+          "max_source_pose_displacement": 0.03596538305282593
+        },
+        {
+          "section": 4,
+          "vertices": 454,
+          "max_evaluated_vertex_error": 5.960464477539063e-08,
+          "max_source_pose_displacement": 0.034635305404663086
+        }
+      ]
+    }
+  ],
+  "maximum_skinned_vertex_error": 1.1920928955078125e-07,
+  "variant_visibility_checks": {
+    "default_saved_state": {
+      "main": {
+        "collection_hide_viewport": false,
+        "collection_hide_render": false,
+        "objects": [
+          {
+            "name": "wpn_pyrociter | subset 002 | nc1_flamethrower_glass_bli",
+            "hide_set": false,
+            "hide_render": false
+          },
+          {
+            "name": "wpn_pyrociter | subset 000 | wpn_Pyrociter",
+            "hide_set": false,
+            "hide_render": false
+          },
+          {
+            "name": "wpn_pyrociter | subset 001 | pup_RCPS4_Explosive_Crate_Glass",
+            "hide_set": false,
+            "hide_render": false
+          },
+          {
+            "name": "wpn_pyrociter | subset 003 | gbl_prop_Guage_Face_Small_01",
+            "hide_set": false,
+            "hide_render": false
+          }
+        ]
+      },
+      "v1": {
+        "collection_hide_viewport": false,
+        "collection_hide_render": false,
+        "objects": [
+          {
+            "name": "wpn_pyrociter_bangle_v1_barrel | subset 000 | wpn_Pyrociter",
+            "hide_set": false,
+            "hide_render": false
+          }
+        ]
+      },
+      "v5": {
+        "collection_hide_viewport": false,
+        "collection_hide_render": false,
+        "objects": [
+          {
+            "name": "wpn_pyrociter_bangle_v5_barrel | subset 004 | pasted__gbl_prop_Grate_In_01",
+            "hide_set": true,
+            "hide_render": true
+          },
+          {
+            "name": "wpn_pyrociter_bangle_v5_barrel | subset 002 | gdgt_Hydrodisplacer_Main",
+            "hide_set": true,
+            "hide_render": true
+          },
+          {
+            "name": "wpn_pyrociter_bangle_v5_barrel | subset 000 | wpn_Pyrociter",
+            "hide_set": true,
+            "hide_render": true
+          },
+          {
+            "name": "wpn_pyrociter_bangle_v5_barrel | subset 001 | enm_Constructor_Bot_Tank_and_Gun",
+            "hide_set": true,
+            "hide_render": true
+          },
+          {
+            "name": "wpn_pyrociter_bangle_v5_barrel | subset 003 | pasted__wpn_Pyrociter",
+            "hide_set": true,
+            "hide_render": true
+          }
+        ]
+      }
+    },
+    "states_evaluated": [
+      "v1",
+      "v5"
+    ],
+    "switching": "ordinary hide_set eye state plus object hide_render; collections remain enabled"
+  },
+  "embedded_controls": {
+    "text": "Animation Controls.py",
+    "catalog": "Pyrociter Animation Catalog.json",
+    "synchronized_rigs": [
+      "Source animation rig",
+      "Source animation rig.001",
+      "Source animation rig.002"
+    ],
+    "selection_and_overview_passed": true
+  },
+  "preservation": {
+    "snapshot_sha256": "46391b45b8f47c3f5e150ab895db47c6d4de9a92a962ad9529ea0e39f1fc28ff",
+    "reopened_camera_world_material_image_source_metadata_exact": true,
+    "camera_world_material_image_counts": {
+      "materials": 10,
+      "images": 31,
+      "world_nodes": 3
+    },
+    "shared_render_defaults": {
+      "engine": "CYCLES",
+      "resolution": [
+        3840,
+        2560,
+        100
+      ],
+      "file_format": "PNG",
+      "color_mode": "RGBA",
+      "film_transparent": true,
+      "render_use_persistent_data": true,
+      "cycles": {
+        "device": "GPU",
+        "samples": 96,
+        "adaptive_threshold": 0.03999999910593033,
+        "use_adaptive_sampling": true,
+        "use_denoising": true,
+        "preview_samples": 32,
+        "use_preview_denoising": true,
+        "denoiser": "OPTIX",
+        "preview_denoiser": "OPTIX",
+        "max_bounces": 5,
+        "diffuse_bounces": 2,
+        "glossy_bounces": 2,
+        "transmission_bounces": 4,
+        "transparent_max_bounces": 6,
+        "volume_bounces": 0,
+        "use_light_tree": true
+      },
+      "camera": {
+        "name": "Source motion review camera",
+        "matrix_world": [
+          [
+            0.8479982614517212,
+            -0.21769344806671143,
+            0.4832271933555603,
+            1.1660428047180176
+          ],
+          [
+            0.5299990177154541,
+            0.34830936789512634,
+            -0.773163378238678,
+            -2.293402671813965
+          ],
+          [
+            5.234414857113734e-08,
+            0.9117511510848999,
+            0.41074302792549133,
+            0.928880512714386
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "constraints": [],
+        "type": "PERSP",
+        "location": [
+          1.1660428047180176,
+          -2.293402671813965,
+          0.928880512714386
+        ],
+        "rotation_euler": [
+          1.1475274562835693,
+          -5.234414857113734e-08,
+          0.5585994124412537
+        ],
+        "lens": 50.0,
+        "shift_x": 0.0,
+        "shift_y": 0.0
+      },
+      "world": "PS4 Novalis World",
+      "gpu": {
+        "compute_device_type": "OPTIX",
+        "devices": [
+          {
+            "name": "NVIDIA GeForce RTX 3060",
+            "type": "CUDA",
+            "use": false
+          },
+          {
+            "name": "AMD Ryzen 5 5600X 6-Core Processor",
+            "type": "CPU",
+            "use": false
+          },
+          {
+            "name": "NVIDIA GeForce RTX 3060",
+            "type": "OPTIX",
+            "use": true
+          }
+        ]
+      },
+      "mismatches": []
+    }
+  },
+  "unmatched_channels": [
+    {
+      "hash": "0x1A61FAF6",
+      "status": "unsupported; excluded from all rig Actions"
+    }
+  ],
+  "full_ten_channel_runtime_equivalence": "not claimed",
+  "proof_blend": {
+    "path": "C:\\Users\\Tim\\Documents\\Bestanden\\Downloads\\Models\\PS4 models\\Animation\\pipeline\\TestOutput\\pva0924\\Pyrocitor_anim_integration.blend",
+    "size_bytes": 21591478,
+    "sha256": "7fb40b80f98b7568f95de9941215922aad02f921d8780da0f33d313ba39aa0b3"
+  },
+  "blender_version": "5.0.0"
+}

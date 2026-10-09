@@ -1,0 +1,16 @@
+{
+  "schema": "ps4-model-profile-v1",
+  "model_sha256": "3a32519df59b812f098f1a4cb07f37e44c3a3c7d104fad160796165490174cfd",
+  "coordinate_units": "Unchanged source numeric units; no mesh position correction (second-model control measured 1.0656x, see SecondModelControl README).",
+  "source_to_blender_units": 1.0,
+  "inheritance": "segment_scale_compensation_bit0",
+  "profile_evidence": {
+    "basis": "Both inverse-bind-compatible rules fit the model; the animation data selects SSC0. In every clip with animated pincer-leg scale, the three bit-0 segments (upleg, midleg, loleg) carry the same local X stretch per frame (worst relative spread 3.1%) with Y = Z = 1/X (worst |X*Y-1| 0.032): the signature of a Maya stretchy-IK chain authored with segment scale compensation. Under SSC0 the world chain length grows by the keyed stretch (toxic_crab_death RT: keyed 1.506, chain 1.47); full inheritance compounds it (2.04).",
+    "consistency": "Bones without flag bit 0 (head, jaw, brows, eyes, pincer ball/claw) are the ones a rig leaves inheriting parent squash; the same SSC0 adapter rule is already used for every unambiguous clip and the Sheepinator profile.",
+    "script": "Other models/enm_toxic_crab/evidence/measure_stretch_chains.py",
+    "report": "Other models/enm_toxic_crab/evidence/stretch_chain_evidence.json",
+    "clips_resolved": 22,
+    "runtime_engine_semantics_verified": false,
+    "scope": "Selects the authored-rig interpretation for this exact source model; not a capture-verified in-game claim. The pincer-leg stretch (up to ~1.5x in death/knockback clips) is authored squash-and-stretch and is kept unedited."
+  }
+}

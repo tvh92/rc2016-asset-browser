@@ -1,0 +1,45 @@
+{
+  "schema": "ps4-model-profile-v1",
+  "model_sha256": "520efb3269063f2e6134b32596180bb93954e605f1d4fdcd307c8bc403271738",
+  "coordinate_units": "Unchanged source numeric units; the correction is local to this exact native mesh source and does not alter the skeleton or shared decoder divisor.",
+  "source_to_blender_units": 1.0,
+  "retired_native_mesh_position_correction": {
+    "schema": "ps4-native-mesh-position-correction-v1",
+    "source_sha256": "520efb3269063f2e6134b32596180bb93954e605f1d4fdcd307c8bc403271738",
+    "scale": 2.0,
+    "expected_mesh_count": 10,
+    "expected_mesh_indices": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "expected_bound_signature_sha256": "6523be221437479e2827c9e965cec70a84709adbfafbfc07b39c92658a6ffa4f",
+    "bound_signature_definition": "SHA-256 of ordered concatenation of the first 16 raw bytes of each selected 64-byte mesh record (center/radius candidate fields).",
+    "center_tolerance": 0.0003,
+    "radius_tolerance": 0.003,
+    "deformation_probe": {
+      "sample_sha256": "d8816bc65c45f0338496e5c2415db9ab10a002675b03fcbf83487a6b5ee4e508",
+      "animset_sha256": "2784b1349ec4c717966bd795f72b49f96fcc4209cd315eba36c2b8c071ccd949",
+      "frame": 9
+    },
+    "evidence": {
+      "investigation": "Animation/pipeline/Research/AnimationCoverage/BlargInheritanceComparison/ScaleRegistration/SourceFactorInvestigation/mesh_record_float_structural_pass.json",
+      "candidate_operation": "Multiply local native mesh vertex coordinates by 2 around the shared model origin; do not transform the rig or actions.",
+      "registration_before_rms": 0.805271023883875,
+      "registration_after_rms": 0.15289219927721,
+      "control_models": {
+        "toxic_crab_sha256": "3a32519df59b812f098f1a4cb07f37e44c3a3c7d104fad160796165490174cfd",
+        "helicopter_sha256": "fd5b81318ea5e808d06dc78b25f15a7a5337e797f52d693a7f8791bcf08d431c"
+      }
+    },
+    "retired": "2026-10-06",
+    "reason": "Superseded by the decoded per-model position shift (model header 0x283D0383 u32 at byte 32 = 11 for this model, i.e. int16/2048 = the 2x factor this profile applied). Kept as history; not applied."
+  }
+}

@@ -1,0 +1,88 @@
+{
+  "schema": "pyrocitor-gold-presentation-profile-v1",
+  "profile_id": "pyrocitor_canonical_material_recipe_set_2026-09-25_explicit_math_v2",
+  "canonical_scene": {
+    "path": "Weapons/FINAL/Pyrocitor/Pyrocitor_All_Versions_render_scene.blend",
+    "sha256": "0b45610457c253c00c9152d58a101ccbdae85a2d7f282a09784556a15be8258b"
+  },
+  "source_models": {
+    "main": {"sha256": "b652ff3c6e8ce6a5a1dce7677866cd562df56a42a547b199eaa9b9503523f4f8", "asset_id": "7ad48452acac82c9edee"},
+    "v1": {"sha256": "20c14e7d499263522446a6245e7acacb73b7f410f0a050fe51469020b8976d09", "asset_id": "7699113e93128f485d10"},
+    "v5": {"sha256": "4474f86943c3249e2fb9bec46b9184d62b5fa6f6c3f6c7f65f825ef66bccae0b", "asset_id": "86f736dced71288e7503"}
+  },
+  "materials": {
+    "pyro": {
+      "source_material_path": "material/equipment/weapon/wpn_pyrociter/wpn_pyrociter.material",
+      "source_material_asset_id": "80eb59ef9a3f8372d94f",
+      "source_material_sha256": "1670d5e11ce7799a67a17be8902ebfd0d0ec61c2ccca0e0ac1152106e8c653b5",
+      "canonical_hint": "Pyrocitor - Combuster baseline - experiment.001 - specular reflectance",
+      "canonical_recipe": "active output mixes Principled and diffuse-plus-glossy at 0.18; explicit Vector Math white-minus-_g SUBTRACT then _c-times-result MULTIPLY; gloss alpha to roughness; source normal retained on both branches",
+      "textures": {
+        "c": {"path":"textures/equipment/weapon/wpn_pyrociter/pyrociter_c.texture","sha256":"399a9e4b67584f2a2b45b7a9dd04cdfbae18aeaa73039b93e8be3ff7747113e1","colorspace":"sRGB"},
+        "g": {"path":"textures/equipment/weapon/wpn_pyrociter/pyrociter_g.texture","sha256":"b17901e129e4f4a0285a62349e1f5c0381c3d1abc770b4bd3c8d74341c306628","colorspace":"Non-Color"},
+        "n": {"path":"textures/equipment/weapon/wpn_pyrociter/pyrociter_n.texture","sha256":"fc6e65a34e33bec33c197af11151196b692b8f47de9fc73acf61c84750f28f06","colorspace":"Non-Color"}
+      }
+    },
+    "tank": {
+      "source_material_path": "material/character/enemy/enm_Constructor_Bot/enm_Constructor_Bot_Tank_and_Gun.material",
+      "source_material_asset_id": "348079c8ad38d440213a",
+      "source_material_sha256": "a8abdf1165441b8a2740c4bbc5d3247b552720bd6dd7a14d59a6510fa19f7224",
+      "canonical_hint": "Pyrocitor V5 - authored Constructor tank and gun.001 - experiment.001 - specular reflectance",
+      "canonical_recipe": "direct Principled source material with gloss-alpha roughness and 0.62 reflection floor",
+      "textures": {
+        "c": {"path":"textures/character/enemy/enm_constructor_bot/enm_constructor_bot_tank_and_gun_c.texture","sha256":"0a3167080108e1212c769dffe237886af9954671a687793cfb205158bdd6a397","colorspace":"sRGB"},
+        "g": {"path":"textures/character/enemy/enm_constructor_bot/enm_constructor_bot_tank_and_gun_g.texture","sha256":"eadf2307882ce9490883ab69412c0af6a46ec88d917fe0709d2551495a029f4e","colorspace":"Non-Color"},
+        "n": {"path":"textures/character/enemy/enm_constructor_bot/enm_constructor_bot_tank_and_gun_n.texture","sha256":"ddc57d6a2b13b6e97d2a5a91c34116d54dfded52a4995de0fb0ce0cfe16f723c","colorspace":"Non-Color"}
+      }
+    },
+    "hose": {
+      "source_material_path": "material/equipment/gadget/gdgt_Hydrodisplacer_Main/gdgt_Hydrodisplacer_Main.material",
+      "source_material_asset_id": "5323ca4974572bc6ee40",
+      "source_material_sha256": "8b73b69f3f45c5d7f2ed4a61ef552f901bb486b171163dc051fe0761226586a0",
+      "canonical_hint": "Pyrocitor V5 - authored Hydrodisplacer - experiment - specular reflectance",
+      "canonical_recipe": "direct Principled source material with gloss-alpha roughness and source normal",
+      "textures": {
+        "c": {"path":"textures/equipment/gadget/gdgt_hydrodisplacer/hydrodisplacer_main_c.texture","sha256":"e579b2b90d8582dbba889295c9b0573393406dcf9075dd474810b1ef7328f5a2","colorspace":"sRGB"},
+        "g": {"path":"textures/equipment/gadget/gdgt_hydrodisplacer/hydrodisplacer_main_g.texture","sha256":"03d5f08d2ccc2640e085b8a4711e58155f26a7264d9d98913b3c739b0abf431a","colorspace":"Non-Color"},
+        "n": {"path":"textures/equipment/gadget/gdgt_hydrodisplacer/hydrodisplacer_main_n.texture","sha256":"7a8d7b69fb25f61353ee1bf0f720b0d81c60280da537f57168e56a3d6a6479bb","colorspace":"Non-Color"}
+      }
+    },
+    "grate": {
+      "source_material_path": "material/environment/global/prop/gbl_prop_Grate_In_01/gbl_prop_Grate_In_01.material",
+      "source_material_asset_id": "36b878ae7b7628179499",
+      "source_material_sha256": "40597feadcb61e17839c2935160a74bedcb7db693a7bfc59123199f2c640aaf4",
+      "canonical_hint": "Pyrocitor V5 - authored grate - experiment.001 - specular reflectance",
+      "canonical_recipe": "source material with dark-hole/silver ramp, source-authored 1.0 UV tile, and roughness 0.40",
+      "textures": {
+        "c": {"path":"textures/environment/global/prop/gbl_prop_grate_in_01/gbl_prop_grate_in_01_c.texture","sha256":"1be283a68dcbcaabd93b511b35434ea59b13b557225d74b2796e6a70374087e0","colorspace":"sRGB"},
+        "g": {"path":"textures/environment/global/prop/gbl_prop_grate_in_01/gbl_prop_grate_in_01_g.texture","sha256":"d40da4baab97c19ccd599ad47165209dffc8f51649acc505f9ff4917b3b264af","colorspace":"Non-Color"},
+        "n": {"path":"textures/environment/global/prop/gbl_prop_grate_in_01/gbl_prop_grate_in_01_n.texture","sha256":"f72f218bc5e1bfe671e68b2de49294759d074c685157b2b5827ed58841d96b50","colorspace":"Non-Color"}
+      }
+    }
+  },
+  "sections": [
+    {"model_sha256":"b652ff3c6e8ce6a5a1dce7677866cd562df56a42a547b199eaa9b9503523f4f8","section":0,"source_material_index":1,"source_material_path":"material/equipment/weapon/wpn_pyrociter/wpn_pyrociter.material","source_material_sha256":"1670d5e11ce7799a67a17be8902ebfd0d0ec61c2ccca0e0ac1152106e8c653b5","recipe":"pyro"},
+    {"model_sha256":"20c14e7d499263522446a6245e7acacb73b7f410f0a050fe51469020b8976d09","section":0,"source_material_index":0,"source_material_path":"material/equipment/weapon/wpn_pyrociter/wpn_pyrociter.material","source_material_sha256":"1670d5e11ce7799a67a17be8902ebfd0d0ec61c2ccca0e0ac1152106e8c653b5","recipe":"pyro"},
+    {"model_sha256":"4474f86943c3249e2fb9bec46b9184d62b5fa6f6c3f6c7f65f825ef66bccae0b","section":0,"source_material_index":2,"source_material_path":"material/equipment/weapon/wpn_pyrociter/wpn_pyrociter.material","source_material_sha256":"1670d5e11ce7799a67a17be8902ebfd0d0ec61c2ccca0e0ac1152106e8c653b5","recipe":"pyro"},
+    {"model_sha256":"4474f86943c3249e2fb9bec46b9184d62b5fa6f6c3f6c7f65f825ef66bccae0b","section":1,"source_material_index":0,"source_material_path":"material/character/enemy/enm_Constructor_Bot/enm_Constructor_Bot_Tank_and_Gun.material","source_material_sha256":"a8abdf1165441b8a2740c4bbc5d3247b552720bd6dd7a14d59a6510fa19f7224","recipe":"tank"},
+    {"model_sha256":"4474f86943c3249e2fb9bec46b9184d62b5fa6f6c3f6c7f65f825ef66bccae0b","section":2,"source_material_index":1,"source_material_path":"material/equipment/gadget/gdgt_Hydrodisplacer_Main/gdgt_Hydrodisplacer_Main.material","source_material_sha256":"8b73b69f3f45c5d7f2ed4a61ef552f901bb486b171163dc051fe0761226586a0","recipe":"hose"},
+    {"model_sha256":"4474f86943c3249e2fb9bec46b9184d62b5fa6f6c3f6c7f65f825ef66bccae0b","section":3,"source_material_index":4,"source_material_path":"material/equipment/weapon/wpn_pyrociter/wpn_pyrociter.material","source_material_sha256":"1670d5e11ce7799a67a17be8902ebfd0d0ec61c2ccca0e0ac1152106e8c653b5","recipe":"pyro"},
+    {"model_sha256":"4474f86943c3249e2fb9bec46b9184d62b5fa6f6c3f6c7f65f825ef66bccae0b","section":4,"source_material_index":3,"source_material_path":"material/environment/global/prop/gbl_prop_Grate_In_01/gbl_prop_Grate_In_01.material","source_material_sha256":"40597feadcb61e17839c2935160a74bedcb7db693a7bfc59123199f2c640aaf4","recipe":"grate"}
+  ],
+  "unresolved_source_materials": [
+    {
+      "status": "unresolved",
+      "model_role": "main",
+      "model_sha256": "b652ff3c6e8ce6a5a1dce7677866cd562df56a42a547b199eaa9b9503523f4f8",
+      "section": 2,
+      "source_material_index": 3,
+      "source_material_path": "shaders/nc1_flamethrower_glass/nc1_flamethrower_glass.material",
+      "source_material_sha256": null,
+      "policy": "Do not assign a presentation recipe or replace the incoming material/mesh until the exact path resolves uniquely in the indexed archive and its source bytes are hashed.",
+      "lookup": "At build and reopen validation, query the run's reports/asset_index.sqlite by exact normalized path and match the same path in the main model's materials/manifest.json. The current expected result is zero archive records and a failed found-0 material lookup."
+    }
+  ],
+  "world": {"path":"golden_gate_hills_4k.exr","sha256":"e0d76ca478552cef5f6b03e40be4943a1f4a4908ba17e308e9598f802681215f","strength":2.0},
+  "color_management": {"view_transform":"Standard","look":"Medium High Contrast","exposure":-0.35,"gamma":1.0},
+  "render_proofs": {"percentage":25,"samples":32}
+}

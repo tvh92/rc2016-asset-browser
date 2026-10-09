@@ -1,0 +1,22 @@
+{
+  "schema": "rcps4-material-profile-v1",
+  "material_path": "material/character/enemy/enm_warbot_v3_visor_glass/sheepinator_glass.material",
+  "material_sha256": "27fd318694da220d97119c1474ac971eb276ad47a8b6a4591c555e192e94b9d8",
+  "evidence": "Animation/pipeline/evidence/legacy/Weapons/FINAL/Sheepinator/README.md",
+  "source_provenance": {
+    "material_section": "0xF2DC60EC @ file offset 240, key 0x24F4CA4C @ data offset 24 = Glossiness 0.8",
+    "materialgraph": "Animation/pipeline/NativeExample/decoded_sources/25b91930b5c6420e65c3/materialgraph/global/basic_glass/character_glass.materialgraph (SHA-256 be4eb2847693739c596cad28b11af11a98b261c60aa54ce42f72d60574a62a54)",
+    "compiled_consumer_trace": "Animation/pipeline/evidence/legacy/Weapons/FINAL/Sheepinator/Reconstruction/glass_glossiness_trace.json records CB0 byte 444 loads at shader offsets 13172 and 68432 with immediate V_MUL_F32 consumers at 13364 and 68624; source file offset 440 versus shader-buffer offset 444 and runtime upload layout remain unresolved",
+    "roughness_mapping": "strongly inferred: Blender roughness = 1 - source Glossiness",
+    "classification": 2,
+    "game_equivalence_classification": 4
+  },
+  "recipe": {
+    "kind": "thin_glass",
+    "tint": [0.02, 0.36, 0.50, 1.0],
+    "reflection_mix": 0.32,
+    "roughness": 0.2,
+    "source_glossiness": 0.8,
+    "backfaces_transparent": true
+  }
+}

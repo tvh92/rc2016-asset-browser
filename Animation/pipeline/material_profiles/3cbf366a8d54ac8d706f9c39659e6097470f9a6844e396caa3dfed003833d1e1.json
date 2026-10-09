@@ -1,0 +1,28 @@
+{
+  "schema": "rcps4-material-profile-v1",
+  "material_path": "material/equipment/weapon/wpn_sheepinator/wpn_sheepinator.material",
+  "material_sha256": "3cbf366a8d54ac8d706f9c39659e6097470f9a6844e396caa3dfed003833d1e1",
+  "evidence": "Animation/pipeline/evidence/legacy/Weapons/FINAL/Sheepinator/README.md",
+  "source_provenance": {
+    "material_section": "0xB967FF7A @ file offset 816 binds _c/_g/_n/detail textures; 0xF2DC60EC @ file offset 944 contains only opaque model parameters",
+    "materialgraph": "Animation/pipeline/NativeExample/decoded_sources/6046b3bca1afc2c8b065/required/materials/basic_normal_coloredgloss_emissive.materialgraph (SHA-256 a4001db8313fa440618b6c302196b4fd3041fc211032d2f348ef240e5be46f1c)",
+    "recovered_channels": "_c RGB base colour, _g RGB coloured gloss, _g alpha inverse roughness, _n tangent normal strength 1",
+    "shader_resource_binding": "shader_binding_trace.json maps body API resource slots 5/6/7 to instance _g/_n/_c by graph 0x1CAFE804 order and matching hashes; the 1052-byte variant's API slot 33 maps to remaining detail_dents by material-instance order. Descriptor bytes are not present in the graph binary.",
+    "equation_trace": "body_equation_trace.json and body_cfg_trace.json trace all four small body variants with operand-aware labels and all 10 forward-branch paths: _g/_c/_n remain separate export provenance, with zero _c/inverse-_g operations and no direct _c*(1-g) candidate; this is not a numeric or runtime decompile",
+    "reconstruction_equation": "strongly inferred from the named coloredgloss graph family and channel roles; not shader-decompiled",
+    "classification": 2,
+    "game_equivalence_classification": 4
+  },
+  "recipe": {
+    "kind": "ordinary_surface",
+    "reconstruction_mix": 0.18,
+    "roughness_minimum": 0.30,
+    "principled_specular_ior_level": 0.32,
+    "principled_base_hue_saturation": {
+      "hue": 0.5,
+      "saturation": 1.8,
+      "value": 2.8,
+      "factor": 1.0
+    }
+  }
+}

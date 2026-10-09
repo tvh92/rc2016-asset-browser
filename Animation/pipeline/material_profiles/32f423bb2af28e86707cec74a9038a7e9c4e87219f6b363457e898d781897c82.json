@@ -1,0 +1,46 @@
+{
+  "schema": "rcps4-material-profile-v1",
+  "material_path": "material/equipment/weapon/wpn_combuster_v5/wpn_combuster_v5.material",
+  "material_sha256": "32f423bb2af28e86707cec74a9038a7e9c4e87219f6b363457e898d781897c82",
+  "evidence": "Animation/pipeline/Research/Materials/CombusterBodyWashout27/README.md",
+  "evidence_class": "presentation_tuned",
+  "game_equivalence": false,
+  "source_provenance": {
+    "source_texture_bindings": "Source material reference extraction and DDS transport report; each listed C/G/N DDS hash is pinned.",
+    "blender_presentation": "Controlled factor/display renders and fresh-process candidate reopen documented in Animation/pipeline/Research/Materials/CombusterBodyWashout27/README.md",
+    "runtime_shader": "Compiled runtime equation and use of C alpha are unresolved."
+  },
+  "source_texture_bindings": [
+    {
+      "role": "base_color",
+      "path": "textures/equipment/weapon/wpn_combuster/wpn_combuster_v5_c.texture",
+      "dds_sha256": "22c34c54d800252ccdf7c262d9e72bce92991b4baf28f727d941992e27931a0f",
+      "colorspace": "sRGB"
+    },
+    {
+      "role": "colored_specular_gloss",
+      "path": "textures/equipment/weapon/wpn_combuster/wpn_combuster_v5_g.texture",
+      "dds_sha256": "1bbbc6872fe2dc229197a5ae8f011a21210d56e9276eca455583801d7c1ebcd5",
+      "colorspace": "Non-Color"
+    },
+    {
+      "role": "normal",
+      "path": "textures/equipment/weapon/wpn_combuster/wpn_combuster_v5_n.texture",
+      "dds_sha256": "0a26e8cf3dde11535060a426d1d04425c49af36a1f1b41a0faddc94b39a0a9eb",
+      "colorspace": "Non-Color"
+    }
+  ],
+  "recipe": {
+    "kind": "ordinary_surface",
+    "reconstruction_mix": 0.0,
+    "presentation_overrides": {
+      "disable_c_alpha_emission": true,
+      "principled_emission_strength": 0.0,
+      "principled_roughness": 0.48,
+      "principled_metallic": 0.0,
+      "retain_source_base_color": true,
+      "retain_source_normal": true
+    },
+    "presentation_name": "Combuster V5 shell reduced-washout presentation recipe"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "schema": "rcps4-material-profile-v1",
+  "material_path": "material/equipment/weapon/wpn_sheepinator_internal_energy/wpn_sheepinator_internal_energy.material",
+  "material_sha256": "5fb0a7483403c5a8b5d88b3d05c9f227e6b866a9e841a75ce6c6e1e2be3bd5cc",
+  "evidence": "Animation/pipeline/evidence/legacy/Weapons/FINAL/Sheepinator/README.md",
+  "source_provenance": {
+    "materialgraph": "Animation/pipeline/evidence/legacy/Weapons/FINAL/Sheepinator/Source Archives/Materials/wpn_sheepinator_internal_energy.materialgraph (SHA-256 697a8cc3ab623d51cf4f8c170c013f57616cfe97743c3805942d3dcdfe2fd3a7), section 0x1CAFE804 @ file offset 86512",
+    "referenced_noise": "fx_noisetile02, fx_graphic_noise_01, cloud_noise_01 are direct graph references; time uniforms are present in compiled 0x873D1E6C @ file offset 1088",
+    "shader_resource_binding": "shader_binding_trace.json associates energy API resource slots 5/6/7/8 with graph-order references fx_noisetile02, fx_graphic_noise_01, cloud_noise_01, fx_noisetile02; runtime descriptor bytes and semantic wiring remain unavailable",
+    "compiled_uniform_trace": "energy_uniform_trace.json follows API-0/SGPR52 byte-396 loads at 31212/73900 through immediate VOP consumers and all four texture-sample coordinate sets; explicit sample writes show no direct scalar-to-export path, while the scalar's time/opacity meaning and final alpha equation remain unresolved. energy_full_uniform_trace.json repeats the bounded result for full variants at 1232/43920. energy_joined_trace.json merges all four variants and proves zero direct byte-396-to-export paths with sample-derived MRT0 provenance; numeric alpha semantics remain unresolved",
+    "runtime_behavior": "compiled shader/VFX execution and parameter binding remain unresolved",
+    "native_cloud_evidence": "Animation/pipeline/evidence/legacy/Weapons/FINAL/Sheepinator/Reconstruction/native_cloud_verification.json: native texture SHA-256 924f1023f80db0f611561b385258c38217ccdbd6c5310ec9631818bd17dc23b4, RGBA8 format at file 68, top mip at 84 + 4194304; reproduces pipeline DDS SHA-256 2e637b0fafc34d7ffa248fd76f45e9e18242a4ba289736c1937c7a5290f07107. Legacy all-white DDS conflicts with native pixels. Spatial orientation and runtime use remain unresolved; recipe unchanged.",
+    "classification": 4
+  },
+  "recipe": {
+    "kind": "transparent_energy_layer",
+    "tint": [0.01, 0.36, 0.55, 1.0],
+    "minimum_opacity": 0.015,
+    "noise_opacity_scale": 0.065,
+    "noise_texture_tokens": ["fx_noisetile02", "cloud_noise_01"],
+    "backfaces_transparent": true
+  }
+}

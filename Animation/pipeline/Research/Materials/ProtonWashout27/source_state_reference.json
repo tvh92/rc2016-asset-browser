@@ -1,0 +1,575 @@
+{
+  "schema": "rcps4-proton-pipeline-state-reference-v1",
+  "evidence_class": "pipeline_validated_reference; game_equivalence=false",
+  "reference_blend_sha256": "cfe1f230d50cd5fc2163b7aff5637b967fc7b1300f9f39332230997d379f7568",
+  "state": {
+    "objects": [
+      {
+        "name": "wpn_thumper | subset 000 | wpn_Thumper_Art_wpn_Thumper_Glove_Glass",
+        "source_model_sha256": "f3726cb236698050adcbb133a86ba902d2bfe2c105a7359c59f462216127a432",
+        "source_subset_index": 0,
+        "vertices": 91,
+        "polygons": 141,
+        "positions_sha256": "2c4c584ad81df9f1633a61066cade780656305ae024fc1db03b576e81dafb44a",
+        "polygon_indices_sha256": "115bede5c60551889de8e25fad2bd2b8c57d46d2347dd044e5a9748e5a53e6b9",
+        "material_indices_sha256": "673447d8f0461a229a0e51adf4a2bb06dad16aade00b154d8a90304f0f1cfbbb",
+        "uv": [
+          {
+            "name": "UV0",
+            "count": 423,
+            "sha256": "f30acf5a030b158ebca4efd62910d403b1e360c7fb2b8285492a81ffbb188ae3"
+          }
+        ],
+        "vertex_groups": [
+          "a_body",
+          "LF_flap_base",
+          "RT_flap_base",
+          "CTR_flap_base",
+          "projectile_base",
+          "antenna_01",
+          "LF_flap_tip",
+          "RT_flap_tip",
+          "CTR_flap_tip",
+          "projectile_attach",
+          "antenna_02",
+          "antenna_03"
+        ],
+        "skin_weight_count": 91,
+        "skin_weights_sha256": "b01c2c6170539d69d09bfaa10fcaf4f20f5e41fc960a0b28bc58fe7b635cf97b",
+        "armature_modifiers": [
+          {
+            "name": "Exact source skin",
+            "object": "Source animation rig",
+            "show_viewport": true,
+            "show_render": true
+          }
+        ],
+        "materials": [
+          "wpn_Thumper_Art_wpn_Thumper_Glove_Glass"
+        ]
+      },
+      {
+        "name": "wpn_thumper | subset 001 | wpn_Thumper_Art_wpn_Thumper_Glove",
+        "source_model_sha256": "f3726cb236698050adcbb133a86ba902d2bfe2c105a7359c59f462216127a432",
+        "source_subset_index": 1,
+        "vertices": 6476,
+        "polygons": 10338,
+        "positions_sha256": "02c1a8bfc405660e553124207bd556d2fbb3ab024ec458f869e23975c4561592",
+        "polygon_indices_sha256": "d478df267af8a19384867908f9873cf74943ca85ff588ae1ac514de8f77c0fb5",
+        "material_indices_sha256": "e33a2e3a1e26fdd3979090c2b61b742b47c819bcf6ad46f4cc7e0c3f110c0501",
+        "uv": [
+          {
+            "name": "UV0",
+            "count": 31014,
+            "sha256": "5d79950b4da3531a2596294a7af24addcd6b3a7a126d8965aebbec3a4d70fdd9"
+          }
+        ],
+        "vertex_groups": [
+          "a_body",
+          "LF_flap_base",
+          "RT_flap_base",
+          "CTR_flap_base",
+          "projectile_base",
+          "antenna_01",
+          "LF_flap_tip",
+          "RT_flap_tip",
+          "CTR_flap_tip",
+          "projectile_attach",
+          "antenna_02",
+          "antenna_03"
+        ],
+        "skin_weight_count": 6746,
+        "skin_weights_sha256": "a557df092ff8f01b4b0987d1525f91b9aff19480830e20a4a4d4d43822e68efe",
+        "armature_modifiers": [
+          {
+            "name": "Exact source skin",
+            "object": "Source animation rig",
+            "show_viewport": true,
+            "show_render": true
+          }
+        ],
+        "materials": [
+          "wpn_Thumper_Art_wpn_Thumper_Glove"
+        ]
+      },
+      {
+        "name": "wpn_thumper_bangle_v1_pads | subset 000 | wpn_Thumper_Art_wpn_Thumper_Glove",
+        "source_model_sha256": "79c7fd3bfebfc3371318a3c2b23c3ea28e7e0593acf1691de0a1ae0b6b0bdad4",
+        "source_subset_index": 0,
+        "vertices": 486,
+        "polygons": 780,
+        "positions_sha256": "bebf741d51190ca5623ef85461ba8a0e822c633b2cea04164716f42abc571ce3",
+        "polygon_indices_sha256": "895d0fc53789c424d1a9e46b1ec22a106745dd8aaffbfde17299c4cd7cd4e5e5",
+        "material_indices_sha256": "863648b07f6bb668f8963d175e3594d49d502583517155c9ea8156b4bb5f0b00",
+        "uv": [
+          {
+            "name": "UV0",
+            "count": 2340,
+            "sha256": "6bd22391cc26ffd8801cc8a278b59e1557f6a8ca804c65f4ea218f29508c9461"
+          }
+        ],
+        "vertex_groups": [
+          "a_body",
+          "LF_flap_base",
+          "RT_flap_base",
+          "CTR_flap_base",
+          "LF_flap_tip",
+          "RT_flap_tip",
+          "CTR_flap_tip"
+        ],
+        "skin_weight_count": 486,
+        "skin_weights_sha256": "3aed0168c169fac2d4c48bec9d9ad510840df78372ad3cca9a8a5a78ae345a83",
+        "armature_modifiers": [
+          {
+            "name": "Exact source skin",
+            "object": "Source animation rig",
+            "show_viewport": true,
+            "show_render": true
+          }
+        ],
+        "materials": [
+          "wpn_Thumper_Art_wpn_Thumper_Glove.001"
+        ]
+      },
+      {
+        "name": "wpn_thumper_bangle_v5_pads | subset 000 | wpn_Thumper_V5",
+        "source_model_sha256": "7717b689b765b0a2a44afe2ba14670d42dff19cad39d75b9c20a3eb744bc6cbb",
+        "source_subset_index": 0,
+        "vertices": 1284,
+        "polygons": 2016,
+        "positions_sha256": "01098dd91c62341d5fa44a1189618f837d2636132b5f9baf2817d5bc3733f44b",
+        "polygon_indices_sha256": "3c406cc01fcd19b98a3b43f151f74b59bf5bfb4118a25b40e166269dd0593c28",
+        "material_indices_sha256": "05bf9d87a6313c41625d93de63e30bc39be25e54b472f17e99d78cf12fccb3da",
+        "uv": [
+          {
+            "name": "UV0",
+            "count": 6048,
+            "sha256": "ca822425f0ac70ff79cb685bdf08c1ceb8e2667fa6cfd9659085f2278be27fb7"
+          }
+        ],
+        "vertex_groups": [
+          "a_body",
+          "LF_flap_base",
+          "RT_flap_base",
+          "CTR_flap_base",
+          "LF_flap_tip",
+          "RT_flap_tip",
+          "CTR_flap_tip"
+        ],
+        "skin_weight_count": 1284,
+        "skin_weights_sha256": "edd3c558d5a9dc9094af674d39d82310d508865ae0a904d9860752059cc068cd",
+        "armature_modifiers": [
+          {
+            "name": "Exact source skin",
+            "object": "Source animation rig",
+            "show_viewport": true,
+            "show_render": true
+          }
+        ],
+        "materials": [
+          "wpn_Thumper_V5"
+        ]
+      }
+    ],
+    "actions": [
+      {
+        "name": "00000 | Activate_wpn_Thumper",
+        "frame_range": [
+          1.0,
+          16.0
+        ],
+        "users": 2
+      },
+      {
+        "name": "00003 | Deactivate_wpn_Thumper",
+        "frame_range": [
+          1.0,
+          16.0
+        ],
+        "users": 2
+      },
+      {
+        "name": "Original source rest pose",
+        "frame_range": [
+          1.0,
+          1.0
+        ],
+        "users": 1
+      },
+      {
+        "name": "Original source rest pose.001",
+        "frame_range": [
+          1.0,
+          1.0
+        ],
+        "users": 1
+      },
+      {
+        "name": "Original source rest pose.002",
+        "frame_range": [
+          1.0,
+          1.0
+        ],
+        "users": 1
+      }
+    ],
+    "nla": [
+      {
+        "object": "Source animation rig",
+        "track": "All Source Clips | sequential timeline",
+        "strips": [
+          {
+            "name": "0001 | Activate_wpn_Thumper",
+            "action": "00000 | Activate_wpn_Thumper",
+            "frame_start": 1.0,
+            "frame_end": 16.0
+          },
+          {
+            "name": "0002 | Deactivate_wpn_Thumper",
+            "action": "00003 | Deactivate_wpn_Thumper",
+            "frame_start": 17.0,
+            "frame_end": 32.0
+          }
+        ]
+      },
+      {
+        "object": "Source animation rig.001",
+        "track": "All Source Clips | sequential timeline",
+        "strips": []
+      },
+      {
+        "object": "Source animation rig.002",
+        "track": "All Source Clips | sequential timeline",
+        "strips": []
+      }
+    ],
+    "camera": {
+      "name": "Source motion review camera",
+      "type": "PERSP",
+      "matrix": [
+        [
+          0.847998321056366,
+          -0.21769335865974426,
+          0.4832271337509155,
+          1.0404822826385498
+        ],
+        [
+          0.5299988985061646,
+          0.3483092784881592,
+          -0.7731634974479675,
+          -1.9118494987487793
+        ],
+        [
+          5.735608965551364e-08,
+          0.9117512106895447,
+          0.41074293851852417,
+          0.9388900995254517
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "lens": 50.0,
+      "shift": [
+        0.0,
+        0.0
+      ],
+      "ortho_scale": 6.0
+    },
+    "world": {
+      "name": "PS4 Novalis World",
+      "image": {
+        "name": "Novalis game reflection environment",
+        "size": [
+          1024,
+          512
+        ],
+        "colorspace": "Non-Color",
+        "alpha_mode": "PREMUL",
+        "packed": true,
+        "packed_data_sha256": "77ff25b4da676980477cbdfcfa791cca75ccd502e7d4f3d50e50b86c7af6e76e",
+        "pixel_f32_sha256": "c089d1de2157ed8f52d7e1f7d1d1d00e6a46007225d565f22555168da2fed3e8"
+      },
+      "strength": 1.0
+    },
+    "collections": {
+      "PROTON_V1_PADS": [
+        {
+          "name": "wpn_thumper_bangle_v1_pads | subset 000 | wpn_Thumper_Art_wpn_Thumper_Glove",
+          "hide_get": false,
+          "hide_render": false
+        }
+      ],
+      "PROTON_V5_PADS": [
+        {
+          "name": "wpn_thumper_bangle_v5_pads | subset 000 | wpn_Thumper_V5",
+          "hide_get": true,
+          "hide_render": true
+        }
+      ]
+    },
+    "packed_images": [
+      {
+        "name": "0e0ba53e2a1d00c48a6033b71aa0b32214de198f381e047684d38ce3444853e9.dds",
+        "size": [
+          2,
+          2
+        ],
+        "colorspace": "Non-Color",
+        "alpha_mode": "CHANNEL_PACKED",
+        "packed": true,
+        "packed_data_sha256": "eedb8660761e599033f01dd45191e9b9c8cc33ce44374f7272e27b9dc72a9dc5",
+        "pixel_f32_sha256": "9628e545ed3ac074e5a6cbf542a642b62482fbfca9b4cb3ea4743a1874256e37"
+      },
+      {
+        "name": "0e0ba53e2a1d00c48a6033b71aa0b32214de198f381e047684d38ce3444853e9.dds.001",
+        "size": [
+          2,
+          2
+        ],
+        "colorspace": "Non-Color",
+        "alpha_mode": "CHANNEL_PACKED",
+        "packed": true,
+        "packed_data_sha256": "eedb8660761e599033f01dd45191e9b9c8cc33ce44374f7272e27b9dc72a9dc5",
+        "pixel_f32_sha256": "9628e545ed3ac074e5a6cbf542a642b62482fbfca9b4cb3ea4743a1874256e37"
+      },
+      {
+        "name": "0e0ba53e2a1d00c48a6033b71aa0b32214de198f381e047684d38ce3444853e9.dds.002",
+        "size": [
+          2,
+          2
+        ],
+        "colorspace": "Non-Color",
+        "alpha_mode": "CHANNEL_PACKED",
+        "packed": true,
+        "packed_data_sha256": "eedb8660761e599033f01dd45191e9b9c8cc33ce44374f7272e27b9dc72a9dc5",
+        "pixel_f32_sha256": "9628e545ed3ac074e5a6cbf542a642b62482fbfca9b4cb3ea4743a1874256e37"
+      },
+      {
+        "name": "282b480d605838599d23ba2793f1f764815a38c23952c5795b86a3bff74e5380.dds",
+        "size": [
+          512,
+          512
+        ],
+        "colorspace": "Non-Color",
+        "alpha_mode": "CHANNEL_PACKED",
+        "packed": true,
+        "packed_data_sha256": "4c2c9facd8630e32fc2d367b67d683574576c1a0a38c2d5afe99e3c5915efd88",
+        "pixel_f32_sha256": "d169a46ae226a757e9e9045ebf31cbf22b8d3b8fc69f1ce468002d3b877609ae"
+      },
+      {
+        "name": "4c7113eb69ad6ddbec417e7dbda79d26d08c78e042bbce2d397b9a83083ecc05.dds",
+        "size": [
+          1024,
+          1024
+        ],
+        "colorspace": "Non-Color",
+        "alpha_mode": "CHANNEL_PACKED",
+        "packed": true,
+        "packed_data_sha256": "50518cbc3461cde484edf01454e481fda7a5b6895d320b947890a53049be0c84",
+        "pixel_f32_sha256": "a954697eaacfadc57b1366e10a7a8b6a5b24c9d9e009f57a5cd9c6fee96cf52c"
+      },
+      {
+        "name": "4c7113eb69ad6ddbec417e7dbda79d26d08c78e042bbce2d397b9a83083ecc05.dds.001",
+        "size": [
+          1024,
+          1024
+        ],
+        "colorspace": "Non-Color",
+        "alpha_mode": "CHANNEL_PACKED",
+        "packed": true,
+        "packed_data_sha256": "50518cbc3461cde484edf01454e481fda7a5b6895d320b947890a53049be0c84",
+        "pixel_f32_sha256": "a954697eaacfadc57b1366e10a7a8b6a5b24c9d9e009f57a5cd9c6fee96cf52c"
+      },
+      {
+        "name": "56d54f8716a5037e72c594b61687eafadb3b2ac2cc7fd096dfa1684e06d029b0.dds",
+        "size": [
+          4,
+          4
+        ],
+        "colorspace": "Non-Color",
+        "alpha_mode": "CHANNEL_PACKED",
+        "packed": true,
+        "packed_data_sha256": "63a55c02807b3b0929ecb310a276ceee058d0c40704ef83bf31365d1e7ed7cdc",
+        "pixel_f32_sha256": "41cbc9b27768e35a8d17aa4ef89b8be61e8af0b756c2eae9439a3a27707868fe"
+      },
+      {
+        "name": "56d54f8716a5037e72c594b61687eafadb3b2ac2cc7fd096dfa1684e06d029b0.dds.001",
+        "size": [
+          4,
+          4
+        ],
+        "colorspace": "Non-Color",
+        "alpha_mode": "CHANNEL_PACKED",
+        "packed": true,
+        "packed_data_sha256": "63a55c02807b3b0929ecb310a276ceee058d0c40704ef83bf31365d1e7ed7cdc",
+        "pixel_f32_sha256": "41cbc9b27768e35a8d17aa4ef89b8be61e8af0b756c2eae9439a3a27707868fe"
+      },
+      {
+        "name": "56d54f8716a5037e72c594b61687eafadb3b2ac2cc7fd096dfa1684e06d029b0.dds.002",
+        "size": [
+          4,
+          4
+        ],
+        "colorspace": "Non-Color",
+        "alpha_mode": "CHANNEL_PACKED",
+        "packed": true,
+        "packed_data_sha256": "63a55c02807b3b0929ecb310a276ceee058d0c40704ef83bf31365d1e7ed7cdc",
+        "pixel_f32_sha256": "41cbc9b27768e35a8d17aa4ef89b8be61e8af0b756c2eae9439a3a27707868fe"
+      },
+      {
+        "name": "65bf28f54ac7835dc22e8e50bc149db501c3a69d97a0adb9b7977f5c072edf76.dds",
+        "size": [
+          1024,
+          1024
+        ],
+        "colorspace": "Non-Color",
+        "alpha_mode": "CHANNEL_PACKED",
+        "packed": true,
+        "packed_data_sha256": "5a98aab9de855987a3d58f50750c68dacc078c934d69f4ef5dbbc0f326e500ec",
+        "pixel_f32_sha256": "bf1778bc8eaf3b6c0ba8cccaebd405d6111877b598fec5d11e5bd99c26e76f44"
+      },
+      {
+        "name": "65bf28f54ac7835dc22e8e50bc149db501c3a69d97a0adb9b7977f5c072edf76.dds.001",
+        "size": [
+          1024,
+          1024
+        ],
+        "colorspace": "Non-Color",
+        "alpha_mode": "CHANNEL_PACKED",
+        "packed": true,
+        "packed_data_sha256": "5a98aab9de855987a3d58f50750c68dacc078c934d69f4ef5dbbc0f326e500ec",
+        "pixel_f32_sha256": "bf1778bc8eaf3b6c0ba8cccaebd405d6111877b598fec5d11e5bd99c26e76f44"
+      },
+      {
+        "name": "8557862ff0ece8a0716e7a46d75f58fbae99a61c52d536ddef28b1badde3d13b.dds",
+        "size": [
+          2,
+          2
+        ],
+        "colorspace": "sRGB",
+        "alpha_mode": "CHANNEL_PACKED",
+        "packed": true,
+        "packed_data_sha256": "fb079104b7983821344862711ee4ceab6910276fc0640e2e8d2af6ea2d534832",
+        "pixel_f32_sha256": "aa43564f11f410bc5b287276b01c86c5c9025809bbfbb38f46b67e1f2cc4f95c"
+      },
+      {
+        "name": "8557862ff0ece8a0716e7a46d75f58fbae99a61c52d536ddef28b1badde3d13b.dds.001",
+        "size": [
+          2,
+          2
+        ],
+        "colorspace": "sRGB",
+        "alpha_mode": "CHANNEL_PACKED",
+        "packed": true,
+        "packed_data_sha256": "fb079104b7983821344862711ee4ceab6910276fc0640e2e8d2af6ea2d534832",
+        "pixel_f32_sha256": "aa43564f11f410bc5b287276b01c86c5c9025809bbfbb38f46b67e1f2cc4f95c"
+      },
+      {
+        "name": "8557862ff0ece8a0716e7a46d75f58fbae99a61c52d536ddef28b1badde3d13b.dds.002",
+        "size": [
+          2,
+          2
+        ],
+        "colorspace": "sRGB",
+        "alpha_mode": "CHANNEL_PACKED",
+        "packed": true,
+        "packed_data_sha256": "fb079104b7983821344862711ee4ceab6910276fc0640e2e8d2af6ea2d534832",
+        "pixel_f32_sha256": "aa43564f11f410bc5b287276b01c86c5c9025809bbfbb38f46b67e1f2cc4f95c"
+      },
+      {
+        "name": "955daf0a0e8fb1277647d9f04c255bd01c9d7e188b95808de10efd2f7c4f6b57.dds",
+        "size": [
+          512,
+          512
+        ],
+        "colorspace": "Non-Color",
+        "alpha_mode": "CHANNEL_PACKED",
+        "packed": true,
+        "packed_data_sha256": "dcc7139a9eea88457050dc246e0c751a7cde64f42ac08ccd6958cd713b6f6728",
+        "pixel_f32_sha256": "c934175ef63133f819fa836fb8147b1130c8349a53869c9d9d80ed127ac843ff"
+      },
+      {
+        "name": "Novalis game reflection environment",
+        "size": [
+          1024,
+          512
+        ],
+        "colorspace": "Non-Color",
+        "alpha_mode": "PREMUL",
+        "packed": true,
+        "packed_data_sha256": "77ff25b4da676980477cbdfcfa791cca75ccd502e7d4f3d50e50b86c7af6e76e",
+        "pixel_f32_sha256": "c089d1de2157ed8f52d7e1f7d1d1d00e6a46007225d565f22555168da2fed3e8"
+      },
+      {
+        "name": "dee273b9504ce4e1e62b7ae4ae430a8605fa66d2417d338702ebe717166377b6.dds",
+        "size": [
+          512,
+          512
+        ],
+        "colorspace": "sRGB",
+        "alpha_mode": "CHANNEL_PACKED",
+        "packed": true,
+        "packed_data_sha256": "3ccbb9512f5eb0b8ea03206f9b8478ac4b2deff44bb1e8200878aa964a5e2ada",
+        "pixel_f32_sha256": "9920ae7881111c0977d0a34b029add59ab1892fb130241a8987cdc926e7d3c6e"
+      },
+      {
+        "name": "e4c58b62f08054988648d0ad3cfaa703466c0197fc6b7ed45ff8d25b9990730a.dds",
+        "size": [
+          512,
+          512
+        ],
+        "colorspace": "Non-Color",
+        "alpha_mode": "CHANNEL_PACKED",
+        "packed": true,
+        "packed_data_sha256": "fd599210a4d484e59ead14b9d22fdf87c545bf4d2358f147471da24e8f964095",
+        "pixel_f32_sha256": "42a09ffca495c2b753e04d574cfcb3b6f2253f0ba6e1d533710a2fdaa63b5528"
+      },
+      {
+        "name": "e60a63bc9e26ca3d403a1dcd3bbd5395e003296c6d6ef4bde00530fe4ad4cf9f.dds",
+        "size": [
+          1024,
+          1024
+        ],
+        "colorspace": "sRGB",
+        "alpha_mode": "CHANNEL_PACKED",
+        "packed": true,
+        "packed_data_sha256": "344d2dd50e3adae07f8fa2a05d143cc9de0906fbe497006fece0b7a61bf01023",
+        "pixel_f32_sha256": "12ce34f307b83ad20ca1791120d2f546b2527c44e580d275fdffc1d3fcbda90a"
+      },
+      {
+        "name": "e60a63bc9e26ca3d403a1dcd3bbd5395e003296c6d6ef4bde00530fe4ad4cf9f.dds.001",
+        "size": [
+          1024,
+          1024
+        ],
+        "colorspace": "sRGB",
+        "alpha_mode": "CHANNEL_PACKED",
+        "packed": true,
+        "packed_data_sha256": "344d2dd50e3adae07f8fa2a05d143cc9de0906fbe497006fece0b7a61bf01023",
+        "pixel_f32_sha256": "12ce34f307b83ad20ca1791120d2f546b2527c44e580d275fdffc1d3fcbda90a"
+      },
+      {
+        "name": "eb1007e8284a8e44329db74677f1af7b3005dae76928f7f68af78a9ceaeb9ae1.dds",
+        "size": [
+          512,
+          512
+        ],
+        "colorspace": "Non-Color",
+        "alpha_mode": "CHANNEL_PACKED",
+        "packed": true,
+        "packed_data_sha256": "c4ec2f8740b9d7e283904e676a3486712d0e4f7e9cbb8fef1a819dae6edafdfc",
+        "pixel_f32_sha256": "faaaa9a2bcd0cf10bac9f63931d694519717dfde7b6135d4c6d4938ada4b8fb4"
+      }
+    ],
+    "colour_management": [
+      "AgX",
+      "None",
+      0.0,
+      1.0
+    ]
+  }
+}

@@ -1,0 +1,228 @@
+{
+  "schema": "rcps4-proton-source-structure-presentation-profile-v1",
+  "evidence_class": "presentation_tuned",
+  "game_equivalence": false,
+  "parent_profile_sha256": "4e9d123c561d09e063636c8990d9bae5e95efc498f5ee77aedf5ed92e42f193c",
+  "source_structure_reference_sha256": "b9bfdeb94207bf0c0fcc3b2ab24b4c3fffba12018c309b74150b657dc73de852",
+  "source_structure_reference": "Animation/pipeline/Research/Materials/ProtonWashout27/source_structure_reference.json",
+  "source_blend": {
+    "reference_label": "historical native Proton source/structure baseline",
+    "sha256": "cfe1f230d50cd5fc2163b7aff5637b967fc7b1300f9f39332230997d379f7568"
+  },
+  "source_models": {
+    "main": {
+      "asset_id": "9ac3173ba918be13292b",
+      "sha256": "f3726cb236698050adcbb133a86ba902d2bfe2c105a7359c59f462216127a432"
+    },
+    "v1_pads": {
+      "asset_id": "d70fd1cb02acc9650b6b",
+      "sha256": "79c7fd3bfebfc3371318a3c2b23c3ea28e7e0593acf1691de0a1ae0b6b0bdad4"
+    },
+    "v5_pads": {
+      "asset_id": "7a795a33a3d2c78edd33",
+      "sha256": "7717b689b765b0a2a44afe2ba14670d42dff19cad39d75b9c20a3eb744bc6cbb"
+    }
+  },
+  "all_polygon_used_materials": {
+    "wpn_Thumper_Art_wpn_Thumper_Glove": {
+      "source_sha256": "2bf7cdaa2ec2177291364e68a8d03f12dc268292888dc24e9aa6c583caeb4561",
+      "path": "material/equipment/weapon/wpn_thumper_glove/wpn_thumper_glove.material",
+      "graph_sha256": "04505d29b484d547ae1445dad79b1ab7db084432bfee6f443c3df05c2c2eafa9",
+      "asset_id": "c5e81130f2559d255489"
+    },
+    "wpn_Thumper_Art_wpn_Thumper_Glove.001": {
+      "source_sha256": "2bf7cdaa2ec2177291364e68a8d03f12dc268292888dc24e9aa6c583caeb4561",
+      "path": "material/equipment/weapon/wpn_thumper_glove/wpn_thumper_glove.material",
+      "graph_sha256": "04505d29b484d547ae1445dad79b1ab7db084432bfee6f443c3df05c2c2eafa9",
+      "asset_id": "c5e81130f2559d255489"
+    },
+    "wpn_Thumper_Art_wpn_Thumper_Glove_Glass": {
+      "source_sha256": "4e6f27a36dcb6775b3ddd9ff452978062b3fd253c5512d80cffaae2b96624f70",
+      "path": "material/equipment/weapon/wpn_thumper_glove_glass/wpn_thumper_glove_glass.material",
+      "graph_sha256": "55dcc6e15732f447878c070ebadcafd5b9f561aa1e4732fc92b6f170bc0d2492",
+      "asset_id": "1b5a40f25f4fdd96d960"
+    },
+    "wpn_Thumper_V5": {
+      "source_sha256": "1a2c4b8c9e33d82889f8a8956cae4afee52e23b61a4c48a686e038689d4fb488",
+      "path": "material/equipment/weapon/wpn_thumper_v5/wpn_thumper_v5.material",
+      "graph_sha256": "12052e7516fa209eb617b59a5fe412f3f4cf34378c612d4b0ff60abf402bd6de",
+      "asset_id": "1ea7ac8a16b981f5c765"
+    }
+  },
+  "polygon_used_material_map": [
+    {
+      "object": "wpn_thumper_bangle_v5_pads | subset 000 | wpn_Thumper_V5",
+      "source_model_sha256": "7717b689b765b0a2a44afe2ba14670d42dff19cad39d75b9c20a3eb744bc6cbb",
+      "source_subset_index": 0,
+      "material_name": "wpn_Thumper_V5",
+      "faces": 2016,
+      "source_material_path": "material/equipment/weapon/wpn_thumper_v5/wpn_thumper_v5.material",
+      "source_material_sha256": "1a2c4b8c9e33d82889f8a8956cae4afee52e23b61a4c48a686e038689d4fb488",
+      "source_material_asset_id": "1ea7ac8a16b981f5c765"
+    },
+    {
+      "object": "wpn_thumper_bangle_v1_pads | subset 000 | wpn_Thumper_Art_wpn_Thumper_Glove",
+      "source_model_sha256": "79c7fd3bfebfc3371318a3c2b23c3ea28e7e0593acf1691de0a1ae0b6b0bdad4",
+      "source_subset_index": 0,
+      "material_name": "wpn_Thumper_Art_wpn_Thumper_Glove.001",
+      "faces": 780,
+      "source_material_path": "material/equipment/weapon/wpn_thumper_glove/wpn_thumper_glove.material",
+      "source_material_sha256": "2bf7cdaa2ec2177291364e68a8d03f12dc268292888dc24e9aa6c583caeb4561",
+      "source_material_asset_id": "c5e81130f2559d255489"
+    },
+    {
+      "object": "wpn_thumper | subset 000 | wpn_Thumper_Art_wpn_Thumper_Glove_Glass",
+      "source_model_sha256": "f3726cb236698050adcbb133a86ba902d2bfe2c105a7359c59f462216127a432",
+      "source_subset_index": 0,
+      "material_name": "wpn_Thumper_Art_wpn_Thumper_Glove_Glass",
+      "faces": 141,
+      "source_material_path": "material/equipment/weapon/wpn_thumper_glove_glass/wpn_thumper_glove_glass.material",
+      "source_material_sha256": "4e6f27a36dcb6775b3ddd9ff452978062b3fd253c5512d80cffaae2b96624f70",
+      "source_material_asset_id": "1b5a40f25f4fdd96d960"
+    },
+    {
+      "object": "wpn_thumper | subset 001 | wpn_Thumper_Art_wpn_Thumper_Glove",
+      "source_model_sha256": "f3726cb236698050adcbb133a86ba902d2bfe2c105a7359c59f462216127a432",
+      "source_subset_index": 1,
+      "material_name": "wpn_Thumper_Art_wpn_Thumper_Glove",
+      "faces": 10338,
+      "source_material_path": "material/equipment/weapon/wpn_thumper_glove/wpn_thumper_glove.material",
+      "source_material_sha256": "2bf7cdaa2ec2177291364e68a8d03f12dc268292888dc24e9aa6c583caeb4561",
+      "source_material_asset_id": "c5e81130f2559d255489"
+    }
+  ],
+  "source_material_manifests": {
+    "wpn_Thumper_Art_wpn_Thumper_Glove": "wpn_thumper_9ac3173b/materials/001_wpn_Thumper_Art_wpn_Thumper_Glove.json",
+    "wpn_Thumper_Art_wpn_Thumper_Glove.001": "wpn_thumper_bangle_v1_pads_d70fd1cb/materials/000_wpn_Thumper_Art_wpn_Thumper_Glove.json",
+    "wpn_Thumper_V5": "wpn_thumper_bangle_v5_pads_7a795a33/materials/000_wpn_Thumper_V5.json"
+  },
+  "glass_material_manifest": "wpn_thumper_9ac3173b/materials/000_wpn_Thumper_Art_wpn_Thumper_Glove_Glass.json",
+  "source_texture_bindings": {
+    "textures/equipment/weapon/wpn_thumper_glove/wpn_thumper_glove_c.texture": {
+      "material_sha256": "2bf7cdaa2ec2177291364e68a8d03f12dc268292888dc24e9aa6c583caeb4561",
+      "built_sha256": "1fd0793ba9c03bab21b019c7da6e0b58493fb3223e7e7b51a1466578a5086277",
+      "dds_sha256": "344d2dd50e3adae07f8fa2a05d143cc9de0906fbe497006fece0b7a61bf01023",
+      "source_top_mip_sha256": "11e1cb5c6e0673fcbdd6c662dc9f852d696d3ae9dbc2e3712ca9dc65eb92ab71",
+      "source_exact_top_mip": true
+    },
+    "textures/equipment/weapon/wpn_thumper_glove/wpn_thumper_glove_g.texture": {
+      "material_sha256": "2bf7cdaa2ec2177291364e68a8d03f12dc268292888dc24e9aa6c583caeb4561",
+      "built_sha256": "c5c784aa6601cb3c6ccda264f7d1b938c06bc31aa04cc4bab231d50d1cb1c32f",
+      "dds_sha256": "50518cbc3461cde484edf01454e481fda7a5b6895d320b947890a53049be0c84",
+      "source_top_mip_sha256": "a53f9b7e627218dba93107d058ac80ded26cb082683e4ed3f8905fff48784d65",
+      "source_exact_top_mip": true
+    },
+    "textures/equipment/weapon/wpn_thumper_glove/wpn_thumper_glove_n.texture": {
+      "material_sha256": "2bf7cdaa2ec2177291364e68a8d03f12dc268292888dc24e9aa6c583caeb4561",
+      "built_sha256": "5e97cd34718c9256294baa1526ac2168f9b62a1a892ea397b770fc4e373df8f1",
+      "dds_sha256": "5a98aab9de855987a3d58f50750c68dacc078c934d69f4ef5dbbc0f326e500ec",
+      "source_top_mip_sha256": "4a84aa51c89761d46fc0a7782bb0720646c8eaf7b0deea25fe2d65e126fdc9ec",
+      "source_exact_top_mip": true
+    },
+    "textures/equipment/weapon/wpn_thumper_glove/wpn_thumper_v5_c.texture": {
+      "material_sha256": "1a2c4b8c9e33d82889f8a8956cae4afee52e23b61a4c48a686e038689d4fb488",
+      "built_sha256": "d92d828902ca95f377a616877b80266ba5d270bc6df415517c57dab25d46a0d4",
+      "dds_sha256": "3ccbb9512f5eb0b8ea03206f9b8478ac4b2deff44bb1e8200878aa964a5e2ada",
+      "source_top_mip_sha256": "dc167cd41e094380ca29f810cef7156cc12fd8b86485bad3d6b92549d48fcd7d",
+      "source_exact_top_mip": true
+    },
+    "textures/equipment/weapon/wpn_thumper_glove/wpn_thumper_v5_g.texture": {
+      "material_sha256": "1a2c4b8c9e33d82889f8a8956cae4afee52e23b61a4c48a686e038689d4fb488",
+      "built_sha256": "d6ad81c45ffa982fb3a84db7a5cff0c0aeba0bcd757e51e17a6b34ec7265e4ca",
+      "dds_sha256": "fd599210a4d484e59ead14b9d22fdf87c545bf4d2358f147471da24e8f964095",
+      "source_top_mip_sha256": "90c6e2ccd13da8fbc6c44e83e30240e30ee77a9e914c27eaf15f961539a5dcaa",
+      "source_exact_top_mip": true
+    },
+    "textures/equipment/weapon/wpn_thumper_glove/wpn_thumper_v5_n.texture": {
+      "material_sha256": "1a2c4b8c9e33d82889f8a8956cae4afee52e23b61a4c48a686e038689d4fb488",
+      "built_sha256": "56833fd275bd0cd251481ae6dd7b1f332b110afb5102af38728309c2f2945d91",
+      "dds_sha256": "c4ec2f8740b9d7e283904e676a3486712d0e4f7e9cbb8fef1a819dae6edafdfc",
+      "source_top_mip_sha256": "57770891fbe441b2ab27f73d30e5a7a5a392284f1d7d5725c2cd8295fcc567d5",
+      "source_exact_top_mip": true
+    }
+  },
+  "auxiliary_glass_texture_bindings": {
+    "textures/visualeffect/noise/fx_noisetile02.texture": {
+      "source_top_mip_sha256": null,
+      "transport_status": "limited",
+      "dds_sha256": "dcc7139a9eea88457050dc246e0c751a7cde64f42ac08ccd6958cd713b6f6728",
+      "built_sha256": "fc77c1d7eecc6ffa9b6009d54cc0f2a777ad13764c6ab3cb27bcad94b6c44ebc",
+      "source_exact_top_mip": null
+    },
+    "textures/character/shared/patterns_cma.texture": {
+      "source_top_mip_sha256": "146f807ea21beabededcf7ab3f501367f12a1c491bd48f1c9f3ad7a964e7d0e6",
+      "transport_status": "passed",
+      "dds_sha256": "4c2c9facd8630e32fc2d367b67d683574576c1a0a38c2d5afe99e3c5915efd88",
+      "built_sha256": "b7b9c6a9596c8595da97f7110347f97e35e0b98ca2ca5655fc3a22cb917637ab",
+      "source_exact_top_mip": true
+    }
+  },
+  "camera_invariant": {
+    "name": "Source motion review camera",
+    "type": "PERSP",
+    "matrix": [
+      [
+        0.847998321,
+        -0.217693359,
+        0.483227134,
+        1.040482283
+      ],
+      [
+        0.529998899,
+        0.348309278,
+        -0.773163497,
+        -1.911849499
+      ],
+      [
+        5.7e-08,
+        0.911751211,
+        0.410742939,
+        0.9388901
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "lens": 50.0,
+    "shift": [
+      0.0,
+      0.0
+    ],
+    "ortho_scale": 6.0
+  },
+  "world_invariant": {
+    "name": "PS4 Novalis World",
+    "image": {
+      "name": "Novalis game reflection environment",
+      "size": [
+        1024,
+        512
+      ],
+      "colorspace": "Non-Color",
+      "alpha_mode": "PREMUL",
+      "packed": true,
+      "packed_data_sha256": "77ff25b4da676980477cbdfcfa791cca75ccd502e7d4f3d50e50b86c7af6e76e",
+      "pixel_f32_sha256": "c089d1de2157ed8f52d7e1f7d1d1d00e6a46007225d565f22555168da2fed3e8"
+    },
+    "strength": 1.0
+  },
+  "colour_management_invariant": [
+    "AgX",
+    "None",
+    0.0,
+    1.0
+  ],
+  "presentation": {
+    "mix_factor": 0.18,
+    "principled_specular_tint_source": "matching model-local _g RGB",
+    "hue_saturation": 2.0,
+    "view_transform": "Khronos PBR Neutral",
+    "look": "None",
+    "exposure": -0.5
+  },
+  "source_state_reference": "Animation/pipeline/Research/Materials/ProtonWashout27/source_state_reference.json",
+  "source_state_reference_sha256": "69ec1ea922b7de9cbc84547fb596169dea76faff2f1084b76a011e1e360f5449"
+}

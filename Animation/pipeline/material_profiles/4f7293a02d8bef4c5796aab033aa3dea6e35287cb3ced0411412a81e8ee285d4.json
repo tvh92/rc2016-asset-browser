@@ -1,0 +1,46 @@
+{
+  "schema": "rcps4-material-profile-v1",
+  "material_path": "material/equipment/weapon/wpn_combuster/wpn_combuster.material",
+  "material_sha256": "4f7293a02d8bef4c5796aab033aa3dea6e35287cb3ced0411412a81e8ee285d4",
+  "evidence": "Animation/pipeline/Research/Materials/CombusterBodyWashout27/README.md",
+  "evidence_class": "presentation_tuned",
+  "game_equivalence": false,
+  "source_provenance": {
+    "source_texture_bindings": "Source material reference extraction and DDS transport report; each listed C/G/N DDS hash is pinned.",
+    "blender_presentation": "Controlled factor/display renders and fresh-process candidate reopen documented in Animation/pipeline/Research/Materials/CombusterBodyWashout27/README.md",
+    "runtime_shader": "Compiled runtime equation and use of C alpha are unresolved."
+  },
+  "source_texture_bindings": [
+    {
+      "role": "base_color",
+      "path": "textures/equipment/weapon/wpn_combuster/wpn_combuster_c.texture",
+      "dds_sha256": "8d7114e72d351304687fe5c6c601995aaeb35b24b2038fdb41153d359bce19f7",
+      "colorspace": "sRGB"
+    },
+    {
+      "role": "colored_specular_gloss",
+      "path": "textures/equipment/weapon/wpn_combuster/wpn_combuster_g.texture",
+      "dds_sha256": "f431965bbaeb8fdf44ff50de6f703fe87276061fa5305ecd9d2e11b80c82bc37",
+      "colorspace": "Non-Color"
+    },
+    {
+      "role": "normal",
+      "path": "textures/equipment/weapon/wpn_combuster/wpn_combuster_n.texture",
+      "dds_sha256": "1b1afc707d0142cbe4dc3f8067547bd2e4d70f76be88350ae532c65e42b9575f",
+      "colorspace": "Non-Color"
+    }
+  ],
+  "recipe": {
+    "kind": "ordinary_surface",
+    "reconstruction_mix": 0.0,
+    "presentation_overrides": {
+      "disable_c_alpha_emission": true,
+      "principled_emission_strength": 0.0,
+      "principled_roughness": 0.48,
+      "principled_metallic": 0.0,
+      "retain_source_base_color": true,
+      "retain_source_normal": true
+    },
+    "presentation_name": "Combuster V1 body reduced-washout presentation recipe"
+  }
+}

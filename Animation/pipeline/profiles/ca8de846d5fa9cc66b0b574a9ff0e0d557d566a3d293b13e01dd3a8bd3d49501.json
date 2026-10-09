@@ -1,0 +1,14 @@
+{
+  "model_sha256": "ca8de846d5fa9cc66b0b574a9ff0e0d557d566a3d293b13e01dd3a8bd3d49501",
+  "inheritance": "segment_scale_compensation_bit0",
+  "profile_evidence": {
+    "basis": "Exact source model hash matches the previously validated workspace model; reuse its established adapter rule.",
+    "source": "Animation/pipeline/evidence/legacy/Weapons/FINAL/Sheepinator/Source Archives/wpn_sheepinator/wpn_sheepinator.model",
+    "implementation": "Animation/repair_weapon_deliveries.py using Animation/animation_blender.py world_samples",
+    "report": "Animation/pipeline/evidence/legacy/Weapons/Sheepinator/Audit/animation_repair_verification.json",
+    "prior_saved_matrix_error": 0.00000858306884765625,
+    "prior_frames_verified": 73,
+    "runtime_engine_semantics_verified": false,
+    "scope": "Numerical source reconstruction using the established bit-zero compensation interpretation; not an exact in-game behavioral claim."
+  }
+}

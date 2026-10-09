@@ -1,0 +1,2660 @@
+{
+  "schema": "rcps4-proton-native-presentation-source-structure-v1",
+  "source_blend_sha256": "cfe1f230d50cd5fc2163b7aff5637b967fc7b1300f9f39332230997d379f7568",
+  "materials": {
+    "wpn_Thumper_Art_wpn_Thumper_Glove": {
+      "path": "material/equipment/weapon/wpn_thumper_glove/wpn_thumper_glove.material",
+      "source_sha256": "2bf7cdaa2ec2177291364e68a8d03f12dc268292888dc24e9aa6c583caeb4561",
+      "asset_id": "c5e81130f2559d255489",
+      "nodes": [
+        {
+          "name": "DirectX tangent normal (source green retained)",
+          "type": "NORMAL_MAP",
+          "label": "",
+          "space": "TANGENT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Strength",
+              "default": 1.0
+            }
+          ]
+        },
+        {
+          "name": "Material Output",
+          "type": "OUTPUT_MATERIAL",
+          "label": "",
+          "inputs": [
+            {
+              "index": 2,
+              "name": "Displacement",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 3,
+              "name": "Thickness",
+              "default": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Principled / recovered reconstruction",
+          "type": "MIX_SHADER",
+          "label": "",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Factor",
+              "default": 1.0
+            }
+          ]
+        },
+        {
+          "name": "Recovered Diffuse plus Glossy",
+          "type": "ADD_SHADER",
+          "label": "",
+          "inputs": []
+        },
+        {
+          "name": "Recovered colored glossy",
+          "type": "BSDF_GLOSSY",
+          "label": "",
+          "inputs": [
+            {
+              "index": 2,
+              "name": "Anisotropy",
+              "default": 0.0
+            },
+            {
+              "index": 3,
+              "name": "Rotation",
+              "default": 0.0
+            },
+            {
+              "index": 5,
+              "name": "Tangent",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 6,
+              "name": "Weight",
+              "default": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Recovered diffuse",
+          "type": "BSDF_DIFFUSE",
+          "label": "",
+          "inputs": [
+            {
+              "index": 1,
+              "name": "Roughness",
+              "default": 0.0
+            },
+            {
+              "index": 3,
+              "name": "Weight",
+              "default": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Roughness = 1 - _g alpha",
+          "type": "MATH",
+          "label": "",
+          "operation": "SUBTRACT",
+          "use_clamp": false,
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Value",
+              "default": 1.0
+            },
+            {
+              "index": 2,
+              "name": "Value",
+              "default": 0.5
+            }
+          ]
+        },
+        {
+          "name": "Source texture 000 | base_color",
+          "type": "TEX_IMAGE",
+          "label": "textures/equipment/weapon/wpn_thumper_glove/wpn_thumper_glove_c",
+          "interpolation": "Linear",
+          "projection": "FLAT",
+          "extension": "REPEAT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "image": {
+            "packed_sha256": "344d2dd50e3adae07f8fa2a05d143cc9de0906fbe497006fece0b7a61bf01023",
+            "size": [
+              1024,
+              1024
+            ],
+            "colorspace": "sRGB",
+            "alpha_mode": "CHANNEL_PACKED"
+          }
+        },
+        {
+          "name": "Source texture 001 | colored_specular_gloss",
+          "type": "TEX_IMAGE",
+          "label": "textures/equipment/weapon/wpn_thumper_glove/wpn_thumper_glove_g",
+          "interpolation": "Linear",
+          "projection": "FLAT",
+          "extension": "REPEAT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "image": {
+            "packed_sha256": "50518cbc3461cde484edf01454e481fda7a5b6895d320b947890a53049be0c84",
+            "size": [
+              1024,
+              1024
+            ],
+            "colorspace": "Non-Color",
+            "alpha_mode": "CHANNEL_PACKED"
+          }
+        },
+        {
+          "name": "Source texture 002 | normal",
+          "type": "TEX_IMAGE",
+          "label": "textures/equipment/weapon/wpn_thumper_glove/wpn_thumper_glove_n",
+          "interpolation": "Linear",
+          "projection": "FLAT",
+          "extension": "REPEAT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "image": {
+            "packed_sha256": "5a98aab9de855987a3d58f50750c68dacc078c934d69f4ef5dbbc0f326e500ec",
+            "size": [
+              1024,
+              1024
+            ],
+            "colorspace": "Non-Color",
+            "alpha_mode": "CHANNEL_PACKED"
+          }
+        },
+        {
+          "name": "Source texture 003 | colored_specular_gloss",
+          "type": "TEX_IMAGE",
+          "label": "textures/default_pink_shader/default_pink_shader_g.texture",
+          "interpolation": "Linear",
+          "projection": "FLAT",
+          "extension": "REPEAT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "image": {
+            "packed_sha256": "eedb8660761e599033f01dd45191e9b9c8cc33ce44374f7272e27b9dc72a9dc5",
+            "size": [
+              2,
+              2
+            ],
+            "colorspace": "Non-Color",
+            "alpha_mode": "CHANNEL_PACKED"
+          }
+        },
+        {
+          "name": "Source texture 004 | normal",
+          "type": "TEX_IMAGE",
+          "label": "textures/default_pink_shader/default_pink_shader_n.texture",
+          "interpolation": "Linear",
+          "projection": "FLAT",
+          "extension": "REPEAT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "image": {
+            "packed_sha256": "63a55c02807b3b0929ecb310a276ceee058d0c40704ef83bf31365d1e7ed7cdc",
+            "size": [
+              4,
+              4
+            ],
+            "colorspace": "Non-Color",
+            "alpha_mode": "CHANNEL_PACKED"
+          }
+        },
+        {
+          "name": "Source texture 005 | base_color",
+          "type": "TEX_IMAGE",
+          "label": "textures/default_pink_shader/default_pink_shader_c.texture",
+          "interpolation": "Linear",
+          "projection": "FLAT",
+          "extension": "REPEAT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "image": {
+            "packed_sha256": "fb079104b7983821344862711ee4ceab6910276fc0640e2e8d2af6ea2d534832",
+            "size": [
+              2,
+              2
+            ],
+            "colorspace": "sRGB",
+            "alpha_mode": "CHANNEL_PACKED"
+          }
+        },
+        {
+          "name": "Source-channel Principled",
+          "type": "BSDF_PRINCIPLED",
+          "label": "",
+          "inputs": [
+            {
+              "index": 1,
+              "name": "Metallic",
+              "default": 0.0
+            },
+            {
+              "index": 3,
+              "name": "IOR",
+              "default": 1.5
+            },
+            {
+              "index": 4,
+              "name": "Alpha",
+              "default": 1.0
+            },
+            {
+              "index": 6,
+              "name": "Weight",
+              "default": 0.0
+            },
+            {
+              "index": 7,
+              "name": "Diffuse Roughness",
+              "default": 0.0
+            },
+            {
+              "index": 8,
+              "name": "Subsurface Weight",
+              "default": 0.0
+            },
+            {
+              "index": 9,
+              "name": "Subsurface Radius",
+              "default": [
+                1.0,
+                0.200000003,
+                0.100000001
+              ]
+            },
+            {
+              "index": 10,
+              "name": "Subsurface Scale",
+              "default": 0.050000001
+            },
+            {
+              "index": 11,
+              "name": "Subsurface IOR",
+              "default": 1.399999976
+            },
+            {
+              "index": 12,
+              "name": "Subsurface Anisotropy",
+              "default": 0.0
+            },
+            {
+              "index": 13,
+              "name": "Specular IOR Level",
+              "default": 0.5
+            },
+            {
+              "index": 14,
+              "name": "Specular Tint",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            {
+              "index": 15,
+              "name": "Anisotropic",
+              "default": 0.0
+            },
+            {
+              "index": 16,
+              "name": "Anisotropic Rotation",
+              "default": 0.0
+            },
+            {
+              "index": 17,
+              "name": "Tangent",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 18,
+              "name": "Transmission Weight",
+              "default": 0.0
+            },
+            {
+              "index": 19,
+              "name": "Coat Weight",
+              "default": 0.0
+            },
+            {
+              "index": 20,
+              "name": "Coat Roughness",
+              "default": 0.029999999
+            },
+            {
+              "index": 21,
+              "name": "Coat IOR",
+              "default": 1.5
+            },
+            {
+              "index": 22,
+              "name": "Coat Tint",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            {
+              "index": 23,
+              "name": "Coat Normal",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 24,
+              "name": "Sheen Weight",
+              "default": 0.0
+            },
+            {
+              "index": 25,
+              "name": "Sheen Roughness",
+              "default": 0.5
+            },
+            {
+              "index": 26,
+              "name": "Sheen Tint",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            {
+              "index": 29,
+              "name": "Thin Film Thickness",
+              "default": 0.0
+            },
+            {
+              "index": 30,
+              "name": "Thin Film IOR",
+              "default": 1.330000043
+            }
+          ]
+        },
+        {
+          "name": "White minus _g",
+          "type": "VECT_MATH",
+          "label": "",
+          "operation": "SUBTRACT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            {
+              "index": 2,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 3,
+              "name": "Scale",
+              "default": 1.0
+            }
+          ]
+        },
+        {
+          "name": "_c alpha emission threshold",
+          "type": "MATH",
+          "label": "",
+          "operation": "GREATER_THAN",
+          "use_clamp": false,
+          "inputs": [
+            {
+              "index": 1,
+              "name": "Value",
+              "default": 0.5
+            },
+            {
+              "index": 2,
+              "name": "Value",
+              "default": 0.5
+            }
+          ]
+        },
+        {
+          "name": "_c times (1 - _g)",
+          "type": "VECT_MATH",
+          "label": "",
+          "operation": "MULTIPLY",
+          "inputs": [
+            {
+              "index": 2,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 3,
+              "name": "Scale",
+              "default": 1.0
+            }
+          ]
+        }
+      ],
+      "links": [
+        {
+          "from_node": "Source texture 002 | normal",
+          "from_index": 0,
+          "from_socket": "Color",
+          "to_node": "DirectX tangent normal (source green retained)",
+          "to_index": 1,
+          "to_socket": "Color"
+        },
+        {
+          "from_node": "Principled / recovered reconstruction",
+          "from_index": 0,
+          "from_socket": "Shader",
+          "to_node": "Material Output",
+          "to_index": 0,
+          "to_socket": "Surface"
+        },
+        {
+          "from_node": "Source-channel Principled",
+          "from_index": 0,
+          "from_socket": "BSDF",
+          "to_node": "Principled / recovered reconstruction",
+          "to_index": 1,
+          "to_socket": "Shader"
+        },
+        {
+          "from_node": "Recovered Diffuse plus Glossy",
+          "from_index": 0,
+          "from_socket": "Shader",
+          "to_node": "Principled / recovered reconstruction",
+          "to_index": 2,
+          "to_socket": "Shader"
+        },
+        {
+          "from_node": "Recovered diffuse",
+          "from_index": 0,
+          "from_socket": "BSDF",
+          "to_node": "Recovered Diffuse plus Glossy",
+          "to_index": 0,
+          "to_socket": "Shader"
+        },
+        {
+          "from_node": "Recovered colored glossy",
+          "from_index": 0,
+          "from_socket": "BSDF",
+          "to_node": "Recovered Diffuse plus Glossy",
+          "to_index": 1,
+          "to_socket": "Shader"
+        },
+        {
+          "from_node": "Source texture 001 | colored_specular_gloss",
+          "from_index": 0,
+          "from_socket": "Color",
+          "to_node": "Recovered colored glossy",
+          "to_index": 0,
+          "to_socket": "Color"
+        },
+        {
+          "from_node": "Roughness = 1 - _g alpha",
+          "from_index": 0,
+          "from_socket": "Value",
+          "to_node": "Recovered colored glossy",
+          "to_index": 1,
+          "to_socket": "Roughness"
+        },
+        {
+          "from_node": "DirectX tangent normal (source green retained)",
+          "from_index": 0,
+          "from_socket": "Normal",
+          "to_node": "Recovered colored glossy",
+          "to_index": 4,
+          "to_socket": "Normal"
+        },
+        {
+          "from_node": "_c times (1 - _g)",
+          "from_index": 0,
+          "from_socket": "Vector",
+          "to_node": "Recovered diffuse",
+          "to_index": 0,
+          "to_socket": "Color"
+        },
+        {
+          "from_node": "DirectX tangent normal (source green retained)",
+          "from_index": 0,
+          "from_socket": "Normal",
+          "to_node": "Recovered diffuse",
+          "to_index": 2,
+          "to_socket": "Normal"
+        },
+        {
+          "from_node": "Source texture 001 | colored_specular_gloss",
+          "from_index": 1,
+          "from_socket": "Alpha",
+          "to_node": "Roughness = 1 - _g alpha",
+          "to_index": 1,
+          "to_socket": "Value"
+        },
+        {
+          "from_node": "Source texture 000 | base_color",
+          "from_index": 0,
+          "from_socket": "Color",
+          "to_node": "Source-channel Principled",
+          "to_index": 0,
+          "to_socket": "Base Color"
+        },
+        {
+          "from_node": "Roughness = 1 - _g alpha",
+          "from_index": 0,
+          "from_socket": "Value",
+          "to_node": "Source-channel Principled",
+          "to_index": 2,
+          "to_socket": "Roughness"
+        },
+        {
+          "from_node": "DirectX tangent normal (source green retained)",
+          "from_index": 0,
+          "from_socket": "Normal",
+          "to_node": "Source-channel Principled",
+          "to_index": 5,
+          "to_socket": "Normal"
+        },
+        {
+          "from_node": "Source texture 000 | base_color",
+          "from_index": 0,
+          "from_socket": "Color",
+          "to_node": "Source-channel Principled",
+          "to_index": 27,
+          "to_socket": "Emission Color"
+        },
+        {
+          "from_node": "_c alpha emission threshold",
+          "from_index": 0,
+          "from_socket": "Value",
+          "to_node": "Source-channel Principled",
+          "to_index": 28,
+          "to_socket": "Emission Strength"
+        },
+        {
+          "from_node": "Source texture 001 | colored_specular_gloss",
+          "from_index": 0,
+          "from_socket": "Color",
+          "to_node": "White minus _g",
+          "to_index": 1,
+          "to_socket": "Vector"
+        },
+        {
+          "from_node": "Source texture 000 | base_color",
+          "from_index": 1,
+          "from_socket": "Alpha",
+          "to_node": "_c alpha emission threshold",
+          "to_index": 0,
+          "to_socket": "Value"
+        },
+        {
+          "from_node": "Source texture 000 | base_color",
+          "from_index": 0,
+          "from_socket": "Color",
+          "to_node": "_c times (1 - _g)",
+          "to_index": 0,
+          "to_socket": "Vector"
+        },
+        {
+          "from_node": "White minus _g",
+          "from_index": 0,
+          "from_socket": "Vector",
+          "to_node": "_c times (1 - _g)",
+          "to_index": 1,
+          "to_socket": "Vector"
+        }
+      ],
+      "active_outputs": [
+        "Material Output"
+      ],
+      "graph_sha256": "04505d29b484d547ae1445dad79b1ab7db084432bfee6f443c3df05c2c2eafa9"
+    },
+    "wpn_Thumper_Art_wpn_Thumper_Glove.001": {
+      "path": "material/equipment/weapon/wpn_thumper_glove/wpn_thumper_glove.material",
+      "source_sha256": "2bf7cdaa2ec2177291364e68a8d03f12dc268292888dc24e9aa6c583caeb4561",
+      "asset_id": "c5e81130f2559d255489",
+      "nodes": [
+        {
+          "name": "DirectX tangent normal (source green retained)",
+          "type": "NORMAL_MAP",
+          "label": "",
+          "space": "TANGENT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Strength",
+              "default": 1.0
+            }
+          ]
+        },
+        {
+          "name": "Material Output",
+          "type": "OUTPUT_MATERIAL",
+          "label": "",
+          "inputs": [
+            {
+              "index": 2,
+              "name": "Displacement",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 3,
+              "name": "Thickness",
+              "default": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Principled / recovered reconstruction",
+          "type": "MIX_SHADER",
+          "label": "",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Factor",
+              "default": 1.0
+            }
+          ]
+        },
+        {
+          "name": "Recovered Diffuse plus Glossy",
+          "type": "ADD_SHADER",
+          "label": "",
+          "inputs": []
+        },
+        {
+          "name": "Recovered colored glossy",
+          "type": "BSDF_GLOSSY",
+          "label": "",
+          "inputs": [
+            {
+              "index": 2,
+              "name": "Anisotropy",
+              "default": 0.0
+            },
+            {
+              "index": 3,
+              "name": "Rotation",
+              "default": 0.0
+            },
+            {
+              "index": 5,
+              "name": "Tangent",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 6,
+              "name": "Weight",
+              "default": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Recovered diffuse",
+          "type": "BSDF_DIFFUSE",
+          "label": "",
+          "inputs": [
+            {
+              "index": 1,
+              "name": "Roughness",
+              "default": 0.0
+            },
+            {
+              "index": 3,
+              "name": "Weight",
+              "default": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Roughness = 1 - _g alpha",
+          "type": "MATH",
+          "label": "",
+          "operation": "SUBTRACT",
+          "use_clamp": false,
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Value",
+              "default": 1.0
+            },
+            {
+              "index": 2,
+              "name": "Value",
+              "default": 0.5
+            }
+          ]
+        },
+        {
+          "name": "Source texture 000 | base_color",
+          "type": "TEX_IMAGE",
+          "label": "textures/equipment/weapon/wpn_thumper_glove/wpn_thumper_glove_c",
+          "interpolation": "Linear",
+          "projection": "FLAT",
+          "extension": "REPEAT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "image": {
+            "packed_sha256": "344d2dd50e3adae07f8fa2a05d143cc9de0906fbe497006fece0b7a61bf01023",
+            "size": [
+              1024,
+              1024
+            ],
+            "colorspace": "sRGB",
+            "alpha_mode": "CHANNEL_PACKED"
+          }
+        },
+        {
+          "name": "Source texture 001 | colored_specular_gloss",
+          "type": "TEX_IMAGE",
+          "label": "textures/equipment/weapon/wpn_thumper_glove/wpn_thumper_glove_g",
+          "interpolation": "Linear",
+          "projection": "FLAT",
+          "extension": "REPEAT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "image": {
+            "packed_sha256": "50518cbc3461cde484edf01454e481fda7a5b6895d320b947890a53049be0c84",
+            "size": [
+              1024,
+              1024
+            ],
+            "colorspace": "Non-Color",
+            "alpha_mode": "CHANNEL_PACKED"
+          }
+        },
+        {
+          "name": "Source texture 002 | normal",
+          "type": "TEX_IMAGE",
+          "label": "textures/equipment/weapon/wpn_thumper_glove/wpn_thumper_glove_n",
+          "interpolation": "Linear",
+          "projection": "FLAT",
+          "extension": "REPEAT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "image": {
+            "packed_sha256": "5a98aab9de855987a3d58f50750c68dacc078c934d69f4ef5dbbc0f326e500ec",
+            "size": [
+              1024,
+              1024
+            ],
+            "colorspace": "Non-Color",
+            "alpha_mode": "CHANNEL_PACKED"
+          }
+        },
+        {
+          "name": "Source texture 003 | colored_specular_gloss",
+          "type": "TEX_IMAGE",
+          "label": "textures/default_pink_shader/default_pink_shader_g.texture",
+          "interpolation": "Linear",
+          "projection": "FLAT",
+          "extension": "REPEAT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "image": {
+            "packed_sha256": "eedb8660761e599033f01dd45191e9b9c8cc33ce44374f7272e27b9dc72a9dc5",
+            "size": [
+              2,
+              2
+            ],
+            "colorspace": "Non-Color",
+            "alpha_mode": "CHANNEL_PACKED"
+          }
+        },
+        {
+          "name": "Source texture 004 | normal",
+          "type": "TEX_IMAGE",
+          "label": "textures/default_pink_shader/default_pink_shader_n.texture",
+          "interpolation": "Linear",
+          "projection": "FLAT",
+          "extension": "REPEAT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "image": {
+            "packed_sha256": "63a55c02807b3b0929ecb310a276ceee058d0c40704ef83bf31365d1e7ed7cdc",
+            "size": [
+              4,
+              4
+            ],
+            "colorspace": "Non-Color",
+            "alpha_mode": "CHANNEL_PACKED"
+          }
+        },
+        {
+          "name": "Source texture 005 | base_color",
+          "type": "TEX_IMAGE",
+          "label": "textures/default_pink_shader/default_pink_shader_c.texture",
+          "interpolation": "Linear",
+          "projection": "FLAT",
+          "extension": "REPEAT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "image": {
+            "packed_sha256": "fb079104b7983821344862711ee4ceab6910276fc0640e2e8d2af6ea2d534832",
+            "size": [
+              2,
+              2
+            ],
+            "colorspace": "sRGB",
+            "alpha_mode": "CHANNEL_PACKED"
+          }
+        },
+        {
+          "name": "Source-channel Principled",
+          "type": "BSDF_PRINCIPLED",
+          "label": "",
+          "inputs": [
+            {
+              "index": 1,
+              "name": "Metallic",
+              "default": 0.0
+            },
+            {
+              "index": 3,
+              "name": "IOR",
+              "default": 1.5
+            },
+            {
+              "index": 4,
+              "name": "Alpha",
+              "default": 1.0
+            },
+            {
+              "index": 6,
+              "name": "Weight",
+              "default": 0.0
+            },
+            {
+              "index": 7,
+              "name": "Diffuse Roughness",
+              "default": 0.0
+            },
+            {
+              "index": 8,
+              "name": "Subsurface Weight",
+              "default": 0.0
+            },
+            {
+              "index": 9,
+              "name": "Subsurface Radius",
+              "default": [
+                1.0,
+                0.200000003,
+                0.100000001
+              ]
+            },
+            {
+              "index": 10,
+              "name": "Subsurface Scale",
+              "default": 0.050000001
+            },
+            {
+              "index": 11,
+              "name": "Subsurface IOR",
+              "default": 1.399999976
+            },
+            {
+              "index": 12,
+              "name": "Subsurface Anisotropy",
+              "default": 0.0
+            },
+            {
+              "index": 13,
+              "name": "Specular IOR Level",
+              "default": 0.5
+            },
+            {
+              "index": 14,
+              "name": "Specular Tint",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            {
+              "index": 15,
+              "name": "Anisotropic",
+              "default": 0.0
+            },
+            {
+              "index": 16,
+              "name": "Anisotropic Rotation",
+              "default": 0.0
+            },
+            {
+              "index": 17,
+              "name": "Tangent",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 18,
+              "name": "Transmission Weight",
+              "default": 0.0
+            },
+            {
+              "index": 19,
+              "name": "Coat Weight",
+              "default": 0.0
+            },
+            {
+              "index": 20,
+              "name": "Coat Roughness",
+              "default": 0.029999999
+            },
+            {
+              "index": 21,
+              "name": "Coat IOR",
+              "default": 1.5
+            },
+            {
+              "index": 22,
+              "name": "Coat Tint",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            {
+              "index": 23,
+              "name": "Coat Normal",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 24,
+              "name": "Sheen Weight",
+              "default": 0.0
+            },
+            {
+              "index": 25,
+              "name": "Sheen Roughness",
+              "default": 0.5
+            },
+            {
+              "index": 26,
+              "name": "Sheen Tint",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            {
+              "index": 29,
+              "name": "Thin Film Thickness",
+              "default": 0.0
+            },
+            {
+              "index": 30,
+              "name": "Thin Film IOR",
+              "default": 1.330000043
+            }
+          ]
+        },
+        {
+          "name": "White minus _g",
+          "type": "VECT_MATH",
+          "label": "",
+          "operation": "SUBTRACT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            {
+              "index": 2,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 3,
+              "name": "Scale",
+              "default": 1.0
+            }
+          ]
+        },
+        {
+          "name": "_c alpha emission threshold",
+          "type": "MATH",
+          "label": "",
+          "operation": "GREATER_THAN",
+          "use_clamp": false,
+          "inputs": [
+            {
+              "index": 1,
+              "name": "Value",
+              "default": 0.5
+            },
+            {
+              "index": 2,
+              "name": "Value",
+              "default": 0.5
+            }
+          ]
+        },
+        {
+          "name": "_c times (1 - _g)",
+          "type": "VECT_MATH",
+          "label": "",
+          "operation": "MULTIPLY",
+          "inputs": [
+            {
+              "index": 2,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 3,
+              "name": "Scale",
+              "default": 1.0
+            }
+          ]
+        }
+      ],
+      "links": [
+        {
+          "from_node": "Source texture 002 | normal",
+          "from_index": 0,
+          "from_socket": "Color",
+          "to_node": "DirectX tangent normal (source green retained)",
+          "to_index": 1,
+          "to_socket": "Color"
+        },
+        {
+          "from_node": "Principled / recovered reconstruction",
+          "from_index": 0,
+          "from_socket": "Shader",
+          "to_node": "Material Output",
+          "to_index": 0,
+          "to_socket": "Surface"
+        },
+        {
+          "from_node": "Source-channel Principled",
+          "from_index": 0,
+          "from_socket": "BSDF",
+          "to_node": "Principled / recovered reconstruction",
+          "to_index": 1,
+          "to_socket": "Shader"
+        },
+        {
+          "from_node": "Recovered Diffuse plus Glossy",
+          "from_index": 0,
+          "from_socket": "Shader",
+          "to_node": "Principled / recovered reconstruction",
+          "to_index": 2,
+          "to_socket": "Shader"
+        },
+        {
+          "from_node": "Recovered diffuse",
+          "from_index": 0,
+          "from_socket": "BSDF",
+          "to_node": "Recovered Diffuse plus Glossy",
+          "to_index": 0,
+          "to_socket": "Shader"
+        },
+        {
+          "from_node": "Recovered colored glossy",
+          "from_index": 0,
+          "from_socket": "BSDF",
+          "to_node": "Recovered Diffuse plus Glossy",
+          "to_index": 1,
+          "to_socket": "Shader"
+        },
+        {
+          "from_node": "Source texture 001 | colored_specular_gloss",
+          "from_index": 0,
+          "from_socket": "Color",
+          "to_node": "Recovered colored glossy",
+          "to_index": 0,
+          "to_socket": "Color"
+        },
+        {
+          "from_node": "Roughness = 1 - _g alpha",
+          "from_index": 0,
+          "from_socket": "Value",
+          "to_node": "Recovered colored glossy",
+          "to_index": 1,
+          "to_socket": "Roughness"
+        },
+        {
+          "from_node": "DirectX tangent normal (source green retained)",
+          "from_index": 0,
+          "from_socket": "Normal",
+          "to_node": "Recovered colored glossy",
+          "to_index": 4,
+          "to_socket": "Normal"
+        },
+        {
+          "from_node": "_c times (1 - _g)",
+          "from_index": 0,
+          "from_socket": "Vector",
+          "to_node": "Recovered diffuse",
+          "to_index": 0,
+          "to_socket": "Color"
+        },
+        {
+          "from_node": "DirectX tangent normal (source green retained)",
+          "from_index": 0,
+          "from_socket": "Normal",
+          "to_node": "Recovered diffuse",
+          "to_index": 2,
+          "to_socket": "Normal"
+        },
+        {
+          "from_node": "Source texture 001 | colored_specular_gloss",
+          "from_index": 1,
+          "from_socket": "Alpha",
+          "to_node": "Roughness = 1 - _g alpha",
+          "to_index": 1,
+          "to_socket": "Value"
+        },
+        {
+          "from_node": "Source texture 000 | base_color",
+          "from_index": 0,
+          "from_socket": "Color",
+          "to_node": "Source-channel Principled",
+          "to_index": 0,
+          "to_socket": "Base Color"
+        },
+        {
+          "from_node": "Roughness = 1 - _g alpha",
+          "from_index": 0,
+          "from_socket": "Value",
+          "to_node": "Source-channel Principled",
+          "to_index": 2,
+          "to_socket": "Roughness"
+        },
+        {
+          "from_node": "DirectX tangent normal (source green retained)",
+          "from_index": 0,
+          "from_socket": "Normal",
+          "to_node": "Source-channel Principled",
+          "to_index": 5,
+          "to_socket": "Normal"
+        },
+        {
+          "from_node": "Source texture 000 | base_color",
+          "from_index": 0,
+          "from_socket": "Color",
+          "to_node": "Source-channel Principled",
+          "to_index": 27,
+          "to_socket": "Emission Color"
+        },
+        {
+          "from_node": "_c alpha emission threshold",
+          "from_index": 0,
+          "from_socket": "Value",
+          "to_node": "Source-channel Principled",
+          "to_index": 28,
+          "to_socket": "Emission Strength"
+        },
+        {
+          "from_node": "Source texture 001 | colored_specular_gloss",
+          "from_index": 0,
+          "from_socket": "Color",
+          "to_node": "White minus _g",
+          "to_index": 1,
+          "to_socket": "Vector"
+        },
+        {
+          "from_node": "Source texture 000 | base_color",
+          "from_index": 1,
+          "from_socket": "Alpha",
+          "to_node": "_c alpha emission threshold",
+          "to_index": 0,
+          "to_socket": "Value"
+        },
+        {
+          "from_node": "Source texture 000 | base_color",
+          "from_index": 0,
+          "from_socket": "Color",
+          "to_node": "_c times (1 - _g)",
+          "to_index": 0,
+          "to_socket": "Vector"
+        },
+        {
+          "from_node": "White minus _g",
+          "from_index": 0,
+          "from_socket": "Vector",
+          "to_node": "_c times (1 - _g)",
+          "to_index": 1,
+          "to_socket": "Vector"
+        }
+      ],
+      "active_outputs": [
+        "Material Output"
+      ],
+      "graph_sha256": "04505d29b484d547ae1445dad79b1ab7db084432bfee6f443c3df05c2c2eafa9"
+    },
+    "wpn_Thumper_Art_wpn_Thumper_Glove_Glass": {
+      "path": "material/equipment/weapon/wpn_thumper_glove_glass/wpn_thumper_glove_glass.material",
+      "source_sha256": "4e6f27a36dcb6775b3ddd9ff452978062b3fd253c5512d80cffaae2b96624f70",
+      "asset_id": "1b5a40f25f4fdd96d960",
+      "nodes": [
+        {
+          "name": "Front surface / transparent backface",
+          "type": "MIX_SHADER",
+          "label": "",
+          "inputs": []
+        },
+        {
+          "name": "Material Output",
+          "type": "OUTPUT_MATERIAL",
+          "label": "",
+          "inputs": [
+            {
+              "index": 2,
+              "name": "Displacement",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 3,
+              "name": "Thickness",
+              "default": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Source texture 000 | additional",
+          "type": "TEX_IMAGE",
+          "label": "textures/visualeffect/noise/fx_noisetile02.texture",
+          "interpolation": "Linear",
+          "projection": "FLAT",
+          "extension": "REPEAT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "image": {
+            "packed_sha256": "dcc7139a9eea88457050dc246e0c751a7cde64f42ac08ccd6958cd713b6f6728",
+            "size": [
+              512,
+              512
+            ],
+            "colorspace": "Non-Color",
+            "alpha_mode": "CHANNEL_PACKED"
+          }
+        },
+        {
+          "name": "Source texture 001 | additional",
+          "type": "TEX_IMAGE",
+          "label": "textures/character/shared/patterns_cma.texture",
+          "interpolation": "Linear",
+          "projection": "FLAT",
+          "extension": "REPEAT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "image": {
+            "packed_sha256": "4c2c9facd8630e32fc2d367b67d683574576c1a0a38c2d5afe99e3c5915efd88",
+            "size": [
+              512,
+              512
+            ],
+            "colorspace": "Non-Color",
+            "alpha_mode": "CHANNEL_PACKED"
+          }
+        },
+        {
+          "name": "Source-channel Principled",
+          "type": "BSDF_PRINCIPLED",
+          "label": "",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Base Color",
+              "default": [
+                0.800000012,
+                0.800000012,
+                0.800000012,
+                1.0
+              ]
+            },
+            {
+              "index": 1,
+              "name": "Metallic",
+              "default": 0.0
+            },
+            {
+              "index": 2,
+              "name": "Roughness",
+              "default": 0.5
+            },
+            {
+              "index": 3,
+              "name": "IOR",
+              "default": 1.5
+            },
+            {
+              "index": 4,
+              "name": "Alpha",
+              "default": 1.0
+            },
+            {
+              "index": 5,
+              "name": "Normal",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 6,
+              "name": "Weight",
+              "default": 0.0
+            },
+            {
+              "index": 7,
+              "name": "Diffuse Roughness",
+              "default": 0.0
+            },
+            {
+              "index": 8,
+              "name": "Subsurface Weight",
+              "default": 0.0
+            },
+            {
+              "index": 9,
+              "name": "Subsurface Radius",
+              "default": [
+                1.0,
+                0.200000003,
+                0.100000001
+              ]
+            },
+            {
+              "index": 10,
+              "name": "Subsurface Scale",
+              "default": 0.050000001
+            },
+            {
+              "index": 11,
+              "name": "Subsurface IOR",
+              "default": 1.399999976
+            },
+            {
+              "index": 12,
+              "name": "Subsurface Anisotropy",
+              "default": 0.0
+            },
+            {
+              "index": 13,
+              "name": "Specular IOR Level",
+              "default": 0.5
+            },
+            {
+              "index": 14,
+              "name": "Specular Tint",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            {
+              "index": 15,
+              "name": "Anisotropic",
+              "default": 0.0
+            },
+            {
+              "index": 16,
+              "name": "Anisotropic Rotation",
+              "default": 0.0
+            },
+            {
+              "index": 17,
+              "name": "Tangent",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 18,
+              "name": "Transmission Weight",
+              "default": 0.0
+            },
+            {
+              "index": 19,
+              "name": "Coat Weight",
+              "default": 0.0
+            },
+            {
+              "index": 20,
+              "name": "Coat Roughness",
+              "default": 0.029999999
+            },
+            {
+              "index": 21,
+              "name": "Coat IOR",
+              "default": 1.5
+            },
+            {
+              "index": 22,
+              "name": "Coat Tint",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            {
+              "index": 23,
+              "name": "Coat Normal",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 24,
+              "name": "Sheen Weight",
+              "default": 0.0
+            },
+            {
+              "index": 25,
+              "name": "Sheen Roughness",
+              "default": 0.5
+            },
+            {
+              "index": 26,
+              "name": "Sheen Tint",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            {
+              "index": 27,
+              "name": "Emission Color",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            {
+              "index": 28,
+              "name": "Emission Strength",
+              "default": 0.0
+            },
+            {
+              "index": 29,
+              "name": "Thin Film Thickness",
+              "default": 0.0
+            },
+            {
+              "index": 30,
+              "name": "Thin Film IOR",
+              "default": 1.330000043
+            }
+          ]
+        },
+        {
+          "name": "Thin glass front blend",
+          "type": "MIX_SHADER",
+          "label": "",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Factor",
+              "default": 0.200000003
+            }
+          ]
+        },
+        {
+          "name": "Thin glass reflection",
+          "type": "BSDF_GLOSSY",
+          "label": "",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Color",
+              "default": [
+                0.039999999,
+                0.280000001,
+                0.360000014,
+                1.0
+              ]
+            },
+            {
+              "index": 1,
+              "name": "Roughness",
+              "default": 0.119999997
+            },
+            {
+              "index": 2,
+              "name": "Anisotropy",
+              "default": 0.0
+            },
+            {
+              "index": 3,
+              "name": "Rotation",
+              "default": 0.0
+            },
+            {
+              "index": 4,
+              "name": "Normal",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 5,
+              "name": "Tangent",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 6,
+              "name": "Weight",
+              "default": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Thin glass transparency",
+          "type": "BSDF_TRANSPARENT",
+          "label": "",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Color",
+              "default": [
+                0.039999999,
+                0.280000001,
+                0.360000014,
+                1.0
+              ]
+            },
+            {
+              "index": 1,
+              "name": "Weight",
+              "default": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Transparent back faces",
+          "type": "NEW_GEOMETRY",
+          "label": "",
+          "inputs": []
+        }
+      ],
+      "links": [
+        {
+          "from_node": "Transparent back faces",
+          "from_index": 6,
+          "from_socket": "Backfacing",
+          "to_node": "Front surface / transparent backface",
+          "to_index": 0,
+          "to_socket": "Factor"
+        },
+        {
+          "from_node": "Thin glass front blend",
+          "from_index": 0,
+          "from_socket": "Shader",
+          "to_node": "Front surface / transparent backface",
+          "to_index": 1,
+          "to_socket": "Shader"
+        },
+        {
+          "from_node": "Thin glass transparency",
+          "from_index": 0,
+          "from_socket": "BSDF",
+          "to_node": "Front surface / transparent backface",
+          "to_index": 2,
+          "to_socket": "Shader"
+        },
+        {
+          "from_node": "Front surface / transparent backface",
+          "from_index": 0,
+          "from_socket": "Shader",
+          "to_node": "Material Output",
+          "to_index": 0,
+          "to_socket": "Surface"
+        },
+        {
+          "from_node": "Thin glass transparency",
+          "from_index": 0,
+          "from_socket": "BSDF",
+          "to_node": "Thin glass front blend",
+          "to_index": 1,
+          "to_socket": "Shader"
+        },
+        {
+          "from_node": "Thin glass reflection",
+          "from_index": 0,
+          "from_socket": "BSDF",
+          "to_node": "Thin glass front blend",
+          "to_index": 2,
+          "to_socket": "Shader"
+        }
+      ],
+      "active_outputs": [
+        "Material Output"
+      ],
+      "graph_sha256": "55dcc6e15732f447878c070ebadcafd5b9f561aa1e4732fc92b6f170bc0d2492"
+    },
+    "wpn_Thumper_V5": {
+      "path": "material/equipment/weapon/wpn_thumper_v5/wpn_thumper_v5.material",
+      "source_sha256": "1a2c4b8c9e33d82889f8a8956cae4afee52e23b61a4c48a686e038689d4fb488",
+      "asset_id": "1ea7ac8a16b981f5c765",
+      "nodes": [
+        {
+          "name": "DirectX tangent normal (source green retained)",
+          "type": "NORMAL_MAP",
+          "label": "",
+          "space": "TANGENT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Strength",
+              "default": 1.0
+            }
+          ]
+        },
+        {
+          "name": "Material Output",
+          "type": "OUTPUT_MATERIAL",
+          "label": "",
+          "inputs": [
+            {
+              "index": 2,
+              "name": "Displacement",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 3,
+              "name": "Thickness",
+              "default": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Principled / recovered reconstruction",
+          "type": "MIX_SHADER",
+          "label": "",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Factor",
+              "default": 1.0
+            }
+          ]
+        },
+        {
+          "name": "Recovered Diffuse plus Glossy",
+          "type": "ADD_SHADER",
+          "label": "",
+          "inputs": []
+        },
+        {
+          "name": "Recovered colored glossy",
+          "type": "BSDF_GLOSSY",
+          "label": "",
+          "inputs": [
+            {
+              "index": 2,
+              "name": "Anisotropy",
+              "default": 0.0
+            },
+            {
+              "index": 3,
+              "name": "Rotation",
+              "default": 0.0
+            },
+            {
+              "index": 5,
+              "name": "Tangent",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 6,
+              "name": "Weight",
+              "default": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Recovered diffuse",
+          "type": "BSDF_DIFFUSE",
+          "label": "",
+          "inputs": [
+            {
+              "index": 1,
+              "name": "Roughness",
+              "default": 0.0
+            },
+            {
+              "index": 3,
+              "name": "Weight",
+              "default": 0.0
+            }
+          ]
+        },
+        {
+          "name": "Roughness = 1 - _g alpha",
+          "type": "MATH",
+          "label": "",
+          "operation": "SUBTRACT",
+          "use_clamp": false,
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Value",
+              "default": 1.0
+            },
+            {
+              "index": 2,
+              "name": "Value",
+              "default": 0.5
+            }
+          ]
+        },
+        {
+          "name": "Source texture 000 | colored_specular_gloss",
+          "type": "TEX_IMAGE",
+          "label": "textures/equipment/weapon/wpn_thumper_glove/wpn_thumper_v5_g.te",
+          "interpolation": "Linear",
+          "projection": "FLAT",
+          "extension": "REPEAT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "image": {
+            "packed_sha256": "fd599210a4d484e59ead14b9d22fdf87c545bf4d2358f147471da24e8f964095",
+            "size": [
+              512,
+              512
+            ],
+            "colorspace": "Non-Color",
+            "alpha_mode": "CHANNEL_PACKED"
+          }
+        },
+        {
+          "name": "Source texture 001 | base_color",
+          "type": "TEX_IMAGE",
+          "label": "textures/equipment/weapon/wpn_thumper_glove/wpn_thumper_v5_c.te",
+          "interpolation": "Linear",
+          "projection": "FLAT",
+          "extension": "REPEAT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "image": {
+            "packed_sha256": "3ccbb9512f5eb0b8ea03206f9b8478ac4b2deff44bb1e8200878aa964a5e2ada",
+            "size": [
+              512,
+              512
+            ],
+            "colorspace": "sRGB",
+            "alpha_mode": "CHANNEL_PACKED"
+          }
+        },
+        {
+          "name": "Source texture 002 | normal",
+          "type": "TEX_IMAGE",
+          "label": "textures/equipment/weapon/wpn_thumper_glove/wpn_thumper_v5_n.te",
+          "interpolation": "Linear",
+          "projection": "FLAT",
+          "extension": "REPEAT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "image": {
+            "packed_sha256": "c4ec2f8740b9d7e283904e676a3486712d0e4f7e9cbb8fef1a819dae6edafdfc",
+            "size": [
+              512,
+              512
+            ],
+            "colorspace": "Non-Color",
+            "alpha_mode": "CHANNEL_PACKED"
+          }
+        },
+        {
+          "name": "Source texture 003 | colored_specular_gloss",
+          "type": "TEX_IMAGE",
+          "label": "textures/default_pink_shader/default_pink_shader_g.texture",
+          "interpolation": "Linear",
+          "projection": "FLAT",
+          "extension": "REPEAT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "image": {
+            "packed_sha256": "eedb8660761e599033f01dd45191e9b9c8cc33ce44374f7272e27b9dc72a9dc5",
+            "size": [
+              2,
+              2
+            ],
+            "colorspace": "Non-Color",
+            "alpha_mode": "CHANNEL_PACKED"
+          }
+        },
+        {
+          "name": "Source texture 004 | normal",
+          "type": "TEX_IMAGE",
+          "label": "textures/default_pink_shader/default_pink_shader_n.texture",
+          "interpolation": "Linear",
+          "projection": "FLAT",
+          "extension": "REPEAT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "image": {
+            "packed_sha256": "63a55c02807b3b0929ecb310a276ceee058d0c40704ef83bf31365d1e7ed7cdc",
+            "size": [
+              4,
+              4
+            ],
+            "colorspace": "Non-Color",
+            "alpha_mode": "CHANNEL_PACKED"
+          }
+        },
+        {
+          "name": "Source texture 005 | base_color",
+          "type": "TEX_IMAGE",
+          "label": "textures/default_pink_shader/default_pink_shader_c.texture",
+          "interpolation": "Linear",
+          "projection": "FLAT",
+          "extension": "REPEAT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ],
+          "image": {
+            "packed_sha256": "fb079104b7983821344862711ee4ceab6910276fc0640e2e8d2af6ea2d534832",
+            "size": [
+              2,
+              2
+            ],
+            "colorspace": "sRGB",
+            "alpha_mode": "CHANNEL_PACKED"
+          }
+        },
+        {
+          "name": "Source-channel Principled",
+          "type": "BSDF_PRINCIPLED",
+          "label": "",
+          "inputs": [
+            {
+              "index": 1,
+              "name": "Metallic",
+              "default": 0.0
+            },
+            {
+              "index": 3,
+              "name": "IOR",
+              "default": 1.5
+            },
+            {
+              "index": 4,
+              "name": "Alpha",
+              "default": 1.0
+            },
+            {
+              "index": 6,
+              "name": "Weight",
+              "default": 0.0
+            },
+            {
+              "index": 7,
+              "name": "Diffuse Roughness",
+              "default": 0.0
+            },
+            {
+              "index": 8,
+              "name": "Subsurface Weight",
+              "default": 0.0
+            },
+            {
+              "index": 9,
+              "name": "Subsurface Radius",
+              "default": [
+                1.0,
+                0.200000003,
+                0.100000001
+              ]
+            },
+            {
+              "index": 10,
+              "name": "Subsurface Scale",
+              "default": 0.050000001
+            },
+            {
+              "index": 11,
+              "name": "Subsurface IOR",
+              "default": 1.399999976
+            },
+            {
+              "index": 12,
+              "name": "Subsurface Anisotropy",
+              "default": 0.0
+            },
+            {
+              "index": 13,
+              "name": "Specular IOR Level",
+              "default": 0.5
+            },
+            {
+              "index": 14,
+              "name": "Specular Tint",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            {
+              "index": 15,
+              "name": "Anisotropic",
+              "default": 0.0
+            },
+            {
+              "index": 16,
+              "name": "Anisotropic Rotation",
+              "default": 0.0
+            },
+            {
+              "index": 17,
+              "name": "Tangent",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 18,
+              "name": "Transmission Weight",
+              "default": 0.0
+            },
+            {
+              "index": 19,
+              "name": "Coat Weight",
+              "default": 0.0
+            },
+            {
+              "index": 20,
+              "name": "Coat Roughness",
+              "default": 0.029999999
+            },
+            {
+              "index": 21,
+              "name": "Coat IOR",
+              "default": 1.5
+            },
+            {
+              "index": 22,
+              "name": "Coat Tint",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            {
+              "index": 23,
+              "name": "Coat Normal",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 24,
+              "name": "Sheen Weight",
+              "default": 0.0
+            },
+            {
+              "index": 25,
+              "name": "Sheen Roughness",
+              "default": 0.5
+            },
+            {
+              "index": 26,
+              "name": "Sheen Tint",
+              "default": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            {
+              "index": 29,
+              "name": "Thin Film Thickness",
+              "default": 0.0
+            },
+            {
+              "index": 30,
+              "name": "Thin Film IOR",
+              "default": 1.330000043
+            }
+          ]
+        },
+        {
+          "name": "White minus _g",
+          "type": "VECT_MATH",
+          "label": "",
+          "operation": "SUBTRACT",
+          "inputs": [
+            {
+              "index": 0,
+              "name": "Vector",
+              "default": [
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            {
+              "index": 2,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 3,
+              "name": "Scale",
+              "default": 1.0
+            }
+          ]
+        },
+        {
+          "name": "_c alpha emission threshold",
+          "type": "MATH",
+          "label": "",
+          "operation": "GREATER_THAN",
+          "use_clamp": false,
+          "inputs": [
+            {
+              "index": 1,
+              "name": "Value",
+              "default": 0.5
+            },
+            {
+              "index": 2,
+              "name": "Value",
+              "default": 0.5
+            }
+          ]
+        },
+        {
+          "name": "_c times (1 - _g)",
+          "type": "VECT_MATH",
+          "label": "",
+          "operation": "MULTIPLY",
+          "inputs": [
+            {
+              "index": 2,
+              "name": "Vector",
+              "default": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            },
+            {
+              "index": 3,
+              "name": "Scale",
+              "default": 1.0
+            }
+          ]
+        }
+      ],
+      "links": [
+        {
+          "from_node": "Source texture 002 | normal",
+          "from_index": 0,
+          "from_socket": "Color",
+          "to_node": "DirectX tangent normal (source green retained)",
+          "to_index": 1,
+          "to_socket": "Color"
+        },
+        {
+          "from_node": "Principled / recovered reconstruction",
+          "from_index": 0,
+          "from_socket": "Shader",
+          "to_node": "Material Output",
+          "to_index": 0,
+          "to_socket": "Surface"
+        },
+        {
+          "from_node": "Source-channel Principled",
+          "from_index": 0,
+          "from_socket": "BSDF",
+          "to_node": "Principled / recovered reconstruction",
+          "to_index": 1,
+          "to_socket": "Shader"
+        },
+        {
+          "from_node": "Recovered Diffuse plus Glossy",
+          "from_index": 0,
+          "from_socket": "Shader",
+          "to_node": "Principled / recovered reconstruction",
+          "to_index": 2,
+          "to_socket": "Shader"
+        },
+        {
+          "from_node": "Recovered diffuse",
+          "from_index": 0,
+          "from_socket": "BSDF",
+          "to_node": "Recovered Diffuse plus Glossy",
+          "to_index": 0,
+          "to_socket": "Shader"
+        },
+        {
+          "from_node": "Recovered colored glossy",
+          "from_index": 0,
+          "from_socket": "BSDF",
+          "to_node": "Recovered Diffuse plus Glossy",
+          "to_index": 1,
+          "to_socket": "Shader"
+        },
+        {
+          "from_node": "Source texture 000 | colored_specular_gloss",
+          "from_index": 0,
+          "from_socket": "Color",
+          "to_node": "Recovered colored glossy",
+          "to_index": 0,
+          "to_socket": "Color"
+        },
+        {
+          "from_node": "Roughness = 1 - _g alpha",
+          "from_index": 0,
+          "from_socket": "Value",
+          "to_node": "Recovered colored glossy",
+          "to_index": 1,
+          "to_socket": "Roughness"
+        },
+        {
+          "from_node": "DirectX tangent normal (source green retained)",
+          "from_index": 0,
+          "from_socket": "Normal",
+          "to_node": "Recovered colored glossy",
+          "to_index": 4,
+          "to_socket": "Normal"
+        },
+        {
+          "from_node": "_c times (1 - _g)",
+          "from_index": 0,
+          "from_socket": "Vector",
+          "to_node": "Recovered diffuse",
+          "to_index": 0,
+          "to_socket": "Color"
+        },
+        {
+          "from_node": "DirectX tangent normal (source green retained)",
+          "from_index": 0,
+          "from_socket": "Normal",
+          "to_node": "Recovered diffuse",
+          "to_index": 2,
+          "to_socket": "Normal"
+        },
+        {
+          "from_node": "Source texture 000 | colored_specular_gloss",
+          "from_index": 1,
+          "from_socket": "Alpha",
+          "to_node": "Roughness = 1 - _g alpha",
+          "to_index": 1,
+          "to_socket": "Value"
+        },
+        {
+          "from_node": "Source texture 001 | base_color",
+          "from_index": 0,
+          "from_socket": "Color",
+          "to_node": "Source-channel Principled",
+          "to_index": 0,
+          "to_socket": "Base Color"
+        },
+        {
+          "from_node": "Roughness = 1 - _g alpha",
+          "from_index": 0,
+          "from_socket": "Value",
+          "to_node": "Source-channel Principled",
+          "to_index": 2,
+          "to_socket": "Roughness"
+        },
+        {
+          "from_node": "DirectX tangent normal (source green retained)",
+          "from_index": 0,
+          "from_socket": "Normal",
+          "to_node": "Source-channel Principled",
+          "to_index": 5,
+          "to_socket": "Normal"
+        },
+        {
+          "from_node": "Source texture 001 | base_color",
+          "from_index": 0,
+          "from_socket": "Color",
+          "to_node": "Source-channel Principled",
+          "to_index": 27,
+          "to_socket": "Emission Color"
+        },
+        {
+          "from_node": "_c alpha emission threshold",
+          "from_index": 0,
+          "from_socket": "Value",
+          "to_node": "Source-channel Principled",
+          "to_index": 28,
+          "to_socket": "Emission Strength"
+        },
+        {
+          "from_node": "Source texture 000 | colored_specular_gloss",
+          "from_index": 0,
+          "from_socket": "Color",
+          "to_node": "White minus _g",
+          "to_index": 1,
+          "to_socket": "Vector"
+        },
+        {
+          "from_node": "Source texture 001 | base_color",
+          "from_index": 1,
+          "from_socket": "Alpha",
+          "to_node": "_c alpha emission threshold",
+          "to_index": 0,
+          "to_socket": "Value"
+        },
+        {
+          "from_node": "Source texture 001 | base_color",
+          "from_index": 0,
+          "from_socket": "Color",
+          "to_node": "_c times (1 - _g)",
+          "to_index": 0,
+          "to_socket": "Vector"
+        },
+        {
+          "from_node": "White minus _g",
+          "from_index": 0,
+          "from_socket": "Vector",
+          "to_node": "_c times (1 - _g)",
+          "to_index": 1,
+          "to_socket": "Vector"
+        }
+      ],
+      "active_outputs": [
+        "Material Output"
+      ],
+      "graph_sha256": "12052e7516fa209eb617b59a5fe412f3f4cf34378c612d4b0ff60abf402bd6de"
+    }
+  },
+  "polygon_used_materials": [
+    {
+      "object": "wpn_thumper_bangle_v5_pads | subset 000 | wpn_Thumper_V5",
+      "source_model_sha256": "7717b689b765b0a2a44afe2ba14670d42dff19cad39d75b9c20a3eb744bc6cbb",
+      "source_subset_index": 0,
+      "material_name": "wpn_Thumper_V5",
+      "faces": 2016,
+      "source_material_path": "material/equipment/weapon/wpn_thumper_v5/wpn_thumper_v5.material",
+      "source_material_sha256": "1a2c4b8c9e33d82889f8a8956cae4afee52e23b61a4c48a686e038689d4fb488",
+      "source_material_asset_id": "1ea7ac8a16b981f5c765"
+    },
+    {
+      "object": "wpn_thumper_bangle_v1_pads | subset 000 | wpn_Thumper_Art_wpn_Thumper_Glove",
+      "source_model_sha256": "79c7fd3bfebfc3371318a3c2b23c3ea28e7e0593acf1691de0a1ae0b6b0bdad4",
+      "source_subset_index": 0,
+      "material_name": "wpn_Thumper_Art_wpn_Thumper_Glove.001",
+      "faces": 780,
+      "source_material_path": "material/equipment/weapon/wpn_thumper_glove/wpn_thumper_glove.material",
+      "source_material_sha256": "2bf7cdaa2ec2177291364e68a8d03f12dc268292888dc24e9aa6c583caeb4561",
+      "source_material_asset_id": "c5e81130f2559d255489"
+    },
+    {
+      "object": "wpn_thumper | subset 000 | wpn_Thumper_Art_wpn_Thumper_Glove_Glass",
+      "source_model_sha256": "f3726cb236698050adcbb133a86ba902d2bfe2c105a7359c59f462216127a432",
+      "source_subset_index": 0,
+      "material_name": "wpn_Thumper_Art_wpn_Thumper_Glove_Glass",
+      "faces": 141,
+      "source_material_path": "material/equipment/weapon/wpn_thumper_glove_glass/wpn_thumper_glove_glass.material",
+      "source_material_sha256": "4e6f27a36dcb6775b3ddd9ff452978062b3fd253c5512d80cffaae2b96624f70",
+      "source_material_asset_id": "1b5a40f25f4fdd96d960"
+    },
+    {
+      "object": "wpn_thumper | subset 001 | wpn_Thumper_Art_wpn_Thumper_Glove",
+      "source_model_sha256": "f3726cb236698050adcbb133a86ba902d2bfe2c105a7359c59f462216127a432",
+      "source_subset_index": 1,
+      "material_name": "wpn_Thumper_Art_wpn_Thumper_Glove",
+      "faces": 10338,
+      "source_material_path": "material/equipment/weapon/wpn_thumper_glove/wpn_thumper_glove.material",
+      "source_material_sha256": "2bf7cdaa2ec2177291364e68a8d03f12dc268292888dc24e9aa6c583caeb4561",
+      "source_material_asset_id": "c5e81130f2559d255489"
+    }
+  ],
+  "camera": {
+    "name": "Source motion review camera",
+    "type": "PERSP",
+    "matrix": [
+      [
+        0.847998321,
+        -0.217693359,
+        0.483227134,
+        1.040482283
+      ],
+      [
+        0.529998899,
+        0.348309278,
+        -0.773163497,
+        -1.911849499
+      ],
+      [
+        5.7e-08,
+        0.911751211,
+        0.410742939,
+        0.9388901
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "lens": 50.0,
+    "shift": [
+      0.0,
+      0.0
+    ],
+    "ortho_scale": 6.0
+  },
+  "world": {
+    "name": "PS4 Novalis World",
+    "image": {
+      "name": "Novalis game reflection environment",
+      "size": [
+        1024,
+        512
+      ],
+      "colorspace": "Non-Color",
+      "alpha_mode": "PREMUL",
+      "packed": true,
+      "packed_data_sha256": "77ff25b4da676980477cbdfcfa791cca75ccd502e7d4f3d50e50b86c7af6e76e",
+      "pixel_f32_sha256": "c089d1de2157ed8f52d7e1f7d1d1d00e6a46007225d565f22555168da2fed3e8"
+    },
+    "strength": 1.0
+  },
+  "colour_management": [
+    "AgX",
+    "None",
+    0.0,
+    1.0
+  ]
+}

@@ -1,0 +1,173 @@
+{
+  "source_capture": "C:\\Users\\Tim\\AppData\\Roaming\\shadPS4\\captures\\CUSA01073_capture.rdc",
+  "derivation": "build_rc_game_view.py v1",
+  "exposure_multiplier": 4.553783893585205,
+  "blender_exposure_stops": 2.187065827914875,
+  "lut3d_scale": 0.96875,
+  "lut3d_offset": 0.015625,
+  "screen_fade_weights": [
+    0.029999999329447746,
+    0.5
+  ],
+  "lut1d": {
+    "source_width": 256,
+    "format": "R16_UNORM",
+    "stops_min": -8,
+    "stops_max": 5,
+    "mid_grey_018_out": [
+      0.014100135469496514,
+      0.014100135469496514,
+      0.014100135469496514
+    ]
+  },
+  "lut3d": {
+    "size": [
+      32,
+      32,
+      32
+    ],
+    "format": "R8G8B8A8_UNORM",
+    "max_deviation_from_identity": 0.31524352681252266,
+    "note": "0 means the grade is a no-op for this frame"
+  },
+  "validation_vs_captured_frame": {
+    "pixels": 200000,
+    "modelled": [
+      "exposure",
+      "lut1d",
+      "bloom",
+      "srgb",
+      "lut3d"
+    ],
+    "median_abs_error": 0.009893186650123648,
+    "p90_abs_error": 0.021322033068269262,
+    "median_error_by_exposure_scale": {
+      "0.95": 0.021215105030476245,
+      "1.00": 0.009893186650123648,
+      "1.05": 0.012870725552651882
+    },
+    "note": "Lens dirt (b6 x bloom x buf2[4]) and the 3% film-grain lerp (b8, buf2[8..11]) are not modelled: both use BC7 textures and grain is time-rotated. They leave a ~0.01 residual; neither belongs in the Blender view."
+  },
+  "key_light": {
+    "colour_game": [
+      5.299502372741699,
+      4.484339237213135,
+      2.950819730758667
+    ],
+    "direction_view_space": [
+      0.5963594913482666,
+      0.5591928958892822,
+      -0.5758981704711914
+    ],
+    "blender_sun_strength_note": "Blender Sun strength = pi * colour (game BRDF omits 1/pi; see audit)"
+  },
+  "hemisphere_fill": {
+    "c0": [
+      0.97607421875,
+      1.078125,
+      0.672607421875
+    ],
+    "c1_times_normal": [
+      0.51708984375,
+      0.6494140625,
+      0.334716796875
+    ],
+    "blender_world_note": "world radiance = c0 + 1.5*c1*up; only used by the game when buf0 dword 135 has bit 128 set"
+  },
+  "capture_ambient": {
+    "lighting_flags_dword135": "0x40",
+    "hemisphere_fill_used_by_game": false,
+    "normal_space": "view (x right, y up, z towards camera) - see floor_mean_normal",
+    "floor_mean_normal": [
+      0.006000000052154064,
+      0.8399999737739563,
+      0.09000000357627869
+    ],
+    "frame": {
+      "pixels": 2063231,
+      "a": [
+        0.0819955497153401,
+        0.06894592120961082,
+        0.0352309962524933
+      ],
+      "B_view": [
+        [
+          0.002136767982083729,
+          0.016511209695952257,
+          -0.00820738266533035
+        ],
+        [
+          0.006634822680613944,
+          0.01279079502670856,
+          -0.007494961212828293
+        ],
+        [
+          0.005146212846769709,
+          0.003921567377967601,
+          -0.003165197956163214
+        ]
+      ],
+      "r2": [
+        0.27071669607450966,
+        0.2606815067902072,
+        0.15539470790561227
+      ],
+      "mean_irradiance": [
+        0.08568844944238663,
+        0.0731036514043808,
+        0.03732413798570633
+      ],
+      "mean_ao": 0.9126496911048889
+    },
+    "roi": {
+      "pixels": 74800,
+      "a": [
+        0.09108758310356908,
+        0.07377320567443525,
+        0.03645228427284787
+      ],
+      "B_view": [
+        [
+          -0.004815526709754901,
+          0.0028498903357858573,
+          -0.011501541143273054
+        ],
+        [
+          -0.004208345559937736,
+          0.0032885856297898888,
+          -0.009466097041729588
+        ],
+        [
+          -0.002797089386389307,
+          -0.0007909317518732164,
+          -0.005567096036183946
+        ]
+      ],
+      "r2": [
+        0.10559088464591249,
+        0.12294793926694692,
+        0.08632376655498653
+      ],
+      "mean_irradiance": [
+        0.0887184888124466,
+        0.0722283348441124,
+        0.03414251655340195
+      ],
+      "mean_ao": 0.8822730183601379
+    },
+    "blender_world": {
+      "source": "roi",
+      "radiance_c0": [
+        0.09108758310356908,
+        0.07377320567443525,
+        0.03645228427284787
+      ],
+      "radiance_c1_up": [
+        0.004274835503678786,
+        0.004932878444684833,
+        -0.0011863976278098246
+      ],
+      "note": "World radiance L(w) = c0 + c1_up * w_z (Lambert-exact for the fitted a + B_y*n_y). Horizontal B terms are view-dependent and dropped; AO is not baked in (Cycles computes its own occlusion)."
+    }
+  }
+}

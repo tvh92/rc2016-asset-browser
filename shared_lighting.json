@@ -1,0 +1,11 @@
+{
+  "schema": "ps4-shared-lighting-v1",
+  "description": "Neutral review lighting shared by every model scene. Edit this file to replace the lighting; blender_defaults.py, the pipeline and the validators all read it. Scenes record the values they were built with.",
+  "hdri": "golden_gate_hills_1k.exr",
+  "world_strength": 2.0,
+  "view_transform": "Khronos PBR Neutral",
+  "look": "None",
+  "exposure": -1.0,
+  "gamma": 1.0,
+  "use_compositing": false
+}

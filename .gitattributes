@@ -1,0 +1,3 @@
+# Store and check out every file byte-for-byte: the pipeline hashes its own
+# source files, so line-ending conversion would change those hashes.
+* -text
