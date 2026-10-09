@@ -101,13 +101,13 @@ The lighting is a fixed viewer rig (key, fill, sky/ground ambient, an ACES fit),
 
 ### `_g` meaning per material graph
 
-The `_g` channel layout depends on the graph's decoded writer. `GRAPH_RULES` in `rc2016/viewer/textures.py` lists rules by graph path prefix; the first matching prefix wins. Graphs without a rule use the generic reading: coloured F0 = spec x `_g.rgb`, gloss = sqrt(sat(gloss x a^2)), where `a` is `_g.a`.
+The `_g` channel layout depends on the graph's decoded writer. `GRAPH_RULES` in `rc2016/viewer/textures.py` registers decoded rules by exact full graph stems ending in a dot before the `.materialgraph` extension. These rules precede the retained skin, incandescence and `basic_normal_gloss` family fallbacks; the first matching entry wins. Graphs without a rule use the generic reading: coloured F0 = spec x `_g.rgb`, gloss = sqrt(sat(gloss x a^2)), where `a` is `_g.a`.
 
 The specular and gloss scales (keys `0x62835AF9` and `0x24F4CA4C`) come from the material, else from the graph default. K (self-lit strength) comes from the self-lit key in the graph's own parameter table, because materials can store keys their graph never reads (for example writer `C4828176` uses only `0x06F19114`). Self-lit keys by family: `0x66EFA55B` (default deferred), `0x06F19114` (coloured-gloss-emissive), `0xF8C61683` (emissive in `_c` alpha), `0x5FD56522` (incandescence).
 
 "Grey" below means F0 = grey spec x `_g.G` and gloss = sqrt(sat(gloss x `_g.R`)). Writer IDs are the hashes of the decoded shader writers; the decode notes are research material (not included here).
 
-| Graph (prefix) | Reading |
+| Graph | Reading |
 |---|---|
 | `basic_skin/*` | R = gloss (sqrt), G = grey specular capped at 0.5. Coloured F0 would give red specular on skin |
 | `basic_normal_gloss`, `_detail`, `_monitor_dep`, `_aniso` (writer `5EBDECA4`) | Grey, no self-lit |
@@ -120,10 +120,10 @@ The specular and gloss scales (keys `0x62835AF9` and `0x24F4CA4C`) come from the
 | `za_basic_normal_gloss` (writer `E08357DC`) | Grey; spec and gloss suppressed by a geometry-normal view-angle term (exponent key `0x4D385B45`); scales clamped before the texture multiply; no self-lit |
 | `basic_normal_two_color_gloss_metal` (writers `1012E99D`/`EC1E7CD3`) | Grey, no self-lit; forward diffuse and specular tints and rim gloss, with viewer light, no SSR or fog, instance opacity 1 |
 | `mo_gbl_arch_emissive_sequence_01` (writer `AAED778C`) | Preview at CB0[99]=0 and zero instance interpolants; grey G as F0, gloss sqrt(sat(5R)), colour/base-mask albedo and sequence/mask glow; stale K and `_c` ignored; unit 8 |
-| `mo_veh_random_color_01` (writer `EB1AC2CD`) | UV0.x selects two linear palettes (second on unit 10), paint mask, view-dependent RGB tints; constant packed F0 (0, 0.0999756, 0.0999756), gloss 0.948681; no self-lit; flake samples not implemented |
+| `mo_veh_random_color_01` (writer `EB1AC2CD`) | UV0.x selects two linear palettes (second on unit 10), paint mask, view-dependent RGB tints; constant packed F0 (0, 0.0999756, 0.0999756), gloss 0.948681; no self-lit; forward flake slice omitted |
 | `basic_parallax_occlusion` | Grey, no layout switch or self-lit; C/G/N bound by serialized slots; the source height march (16-64 steps) and height shadows are omitted |
 | `jn_basic_normal_gloss_glow_mask` (`2685144F`), `_02` (`CA81B14F`) | Grey, K `0x06F19114`; first: mask/tint/environment and offset-parallax glow; `_02`: `c.R x mask x K` with a vertex factor; unit 13 |
-| `mo_blend_01` (writer `886AAC94`) | Blends two source-resolved c/g/n layers through H, squared vertex alpha and sharpness; grey, no self-lit; unit 15; vertex alpha frozen to 1 |
+| `mo_blend_01` (writer `886AAC94`) | Blends two source-resolved c/g/n layers through H, squared vertex alpha and sharpness; grey, no self-lit; unit 15; source vertex alpha when available, otherwise 1 |
 | `basic_foliage` | Four deferred writers: grey, no self-lit, no subsurface output; normal z = 1 - x^2 - y^2; runtime alpha cutoff, dither and normal fade omitted |
 | `mo_neb_amb_screen_01` (forward `8716DC7A`) | Source timeline/grid, mask, colour/intensity and scroll noise at CB0[99]=0 with frozen cutoff, alpha and fog; units 0/1/2/4 |
 | `jn_ground_puddles` (forward `DB75867B`, no-normal `4A6CDAAA`) | Source noise thresholds drive grey F0, gloss and diffuse attenuation; t=0 ripple normal and environment-reflection blend; noise/ripple atlas on unit 14. The emissive sibling stays generic |
@@ -131,7 +131,7 @@ The specular and gloss scales (keys `0x62835AF9` and `0x24F4CA4C`) come from the
 
 Ground puddles use the exact graph path and serialized C/G/N/noise/ripple slots. Generic specular and gloss keys are ignored because neither source parameter table declares them. Noise is stationary; CB0[99] scrolls ripple V. Each sampled normal is normalized, then the puddle blend is left unnormalized. Its forward terminal composition retains the reflection-mix parameter and specular clamp, with the viewer rig supplying light/specular/environment inputs. Origin and instance-axis scales are frozen to zero and one, normal fade is zero, geometric AA and opacity are one, and SSR, fog attenuation and debug outputs are disabled. These are explicit preview inputs; runtime pass selection, descriptor bindings, face polarity and engine lighting are unverified. The atlas preserves native tile sizes with repeat gutters and uses linear top-mip sampling. The Blender mirror ports mask, D/F0/gloss and ripple-normal terms, then uses the deferred BRDF; it records that this GL forward reflection mix, specular clamp and fog composition are not reproduced.
 
-Limitations that apply across the table: viewer lighting, ambient, TBN and instance values are substitutes for the game's runtime inputs; time-driven terms show t=0; runtime draw, constant-buffer and descriptor binding is unproven for several writers (the two-colour metal, vehicle and screen graphs); variable-intensity hero materials are left unruled pending the runtime phase inputs. Texture units used by rules: 5 (tint mask), 8 (arch sequence), 9 (tint variants), 10 (second vehicle palette), 11 (basic_normal_gloss detail), 13 (glow mask), 15 (rock blend).
+Limitations that apply across the table: viewer lighting, ambient, TBN and instance values are substitutes for the game's runtime inputs; time-driven terms show t=0; runtime draw, constant-buffer and descriptor binding is unproven for several writers (the two-colour metal, vehicle and screen graphs); variable-intensity hero materials are left unruled pending the runtime phase inputs. Base textures use units 0/1/2, skinning uses vertex unit 3, and palettes use unit 4. Graph extras use units 5 (tint mask), 8 (arch sequence), 9 (tint variants), 10 (second vehicle palette), 11 (basic_normal_gloss detail), 13 (glow mask), 14 (puddle atlas) and 15 (rock blend).
 
 ### Glass and forward materials
 
@@ -260,13 +260,13 @@ One folder per model in the output root:
 
 Options -> Advanced selects the full research Blender scene (`PipelineBatchRunner`; backend "Full archive pipeline"), which runs the pipeline in [pipeline](pipeline.md) and needs Blender. With **Extract only this clip** ticked, the shown model gets its own CLI run with `--clip name:<clip>` and the other selected models run without it.
 
-The Blender build must not show a material worse than the viewer, so the viewer's reading feeds it:
+The research build consumes the viewer's material reading:
 
 - `rc2016.formats.materials.viewer_graph_rule` stores the viewer's reading of each material (from `rc2016.viewer.textures.material_texture_paths`): `_g` layout, spec/gloss scales, effective K (for example K x `0x5FD56522` for emissive-detail graphs), mask channel, and the exact `_c/_g/_n` paths.
-- `rc2016.pipeline.geometry._material` applies `rc2016.pipeline.game_shader.apply_viewer_graph_rule` whenever no exact native translation or registered family applies. The front-end wires the RC PS4 Deferred BRDF the same way as Shaded mode.
+- For materials without a profile, `rc2016.pipeline.geometry._material` applies `rc2016.pipeline.game_shader.apply_viewer_graph_rule` before native translation when preflight selects `viewer_graph_rule_frontend`, and tries it as a fallback after translation and registered family handling otherwise. The front-end wires its material terms into the shared deferred BRDF, with the closure limits described in [shading](shading.md).
 - The front-end also builds the graph terms the viewer draws, with the viewer's frozen values: colour pick, colour tint and its variants, specular tint, arch emissive sequence, vehicle palettes, glow masks, two-colour metal, ground puddles, foliage and `za` normal z, `za` rim suppression, the forward screen, rock blend, and the `basic_normal_gloss` variant terms and detail normals. Constants are `VR <term> <param>` nodes; extra images are bound, hashed source textures. A term whose image is not bound stays in `rule['unported']` with a reason, also recorded on the material as `rc_shader_frontend_limitation`.
 - **Precedence:** when no registered family applies and the viewer rule has no unported term, the viewer rule wins over a ready native translation (`materials.py` decides `shader_status`, `geometry._material` follows). A partial viewer rule gives way to the translation.
-- `shader_status` becomes `viewer_graph_rule_frontend`. `rc2016.shaders.validation` checks after reopening: the rule; BRDF to active output; `_c/_g` paths, hashes and native colourspaces; scales and K; every `VR` constant against the rule; and each ported term's constants and images reaching the output.
+- `shader_status` becomes `viewer_graph_rule_frontend`. `rc2016.shaders.validation` checks after reopening: the rule; BRDF to active output; `_c/_g` paths, hashes and native colourspaces; scales and K; every `VR` constant against the rule; and each ported term's constants and images reaching the output. These checks validate stored values and node wiring; they do not establish identical closures or rendered output.
 - `rc2016/pipeline/run.py` hashes `rc2016/viewer/textures.py` into the implementation fingerprint, so a rule change invalidates reused builds.
 - The bulb graph's facing glow is a `VR facing glow emission` through an Add Shader in Blender.
 
