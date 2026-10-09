@@ -131,8 +131,22 @@ For graphs without a registered family, `apply_viewer_graph_rule` builds the ass
 - `g_mode` `grey`: F0 = grey specular × `_g.G`, gloss = `sqrt(sat(gloss × _g.R))`. `grey_skin`: F0 = grey `min(0.5, _g.G)`, gloss = `sqrt(sat(_g.R))`. `vehicle`: packed constants. Otherwise coloured F0 = specular × `_g.rgb`, gloss = `sqrt(sat(gloss × _g.a²))`.
 - No `_g` means no specular, as in the viewer.
 - Self-lit = `_c.rgb × (_g.B or _c.a) × K` with the viewer's effective K. Normal x, y = 2RG − 1 with the viewer's z.
-- Each term in `rule['ported']` uses the same math, order and frozen values as the GL shader and is built as a node named `VR <term> <param>`. Terms in `rule['unported']` are recorded on the material. The forward unlit screen rule (`mo_neb_amb_screen_01`) is built at t = 0.
+- Each term in `rule['ported']` builds the viewer's material terms and frozen inputs as nodes named `VR <term> <param>`. Closure limitations are recorded separately on the material; `ported` does not imply identical rendered output. Terms in `rule['unported']` are recorded on the material. The forward unlit screen rule (`mo_neb_amb_screen_01`) is built at t = 0.
 - These materials carry `shader_preview_status = viewer_graph_rule_frontend` and `game_equivalence = False`.
+
+### Two-colour metal verification
+
+The exact `basic_normal_two_color_gloss_metal` rule preserves the source diffuse tint, grey specular strength, rim gloss and specular tint. In the viewport, the specular tint multiplies the accumulated lighting **after** GGX/F90. The Blender front-end instead multiplies F0 by the tint, because it cannot colour-multiply a closure; it records this approximation in `rc_shader_frontend_limitation`. Source material metadata parity does not establish closure or game equivalence.
+
+`tests/test_two_color_metal.py` checks the eight saved source instances when `RC2016_RESEARCH` points to the private workspace. It verifies slot identity, raw overrides and defaults, zero values, stale self-lit suppression, exact graph matching, viewport payload transport and Blender front-end metadata. No source assets are stored in the repository.
+
+The hidden Windows GPU proof reads the selected model directly from the archive and removes only the exact rule in memory for its baseline. It checks geometry and camera preservation, unaffected material payloads, shader compilation and source hashes, and writes PNGs and a JSON report to an explicit external folder:
+
+```powershell
+python scripts/prove_two_color_metal.py --source '<game-root>' --research '<research-root>' --output '<external-proof-folder>'
+```
+
+The proof uses viewer lighting, no SSR or fog attenuation, and fixed normal fade, geometric AA and instance opacity. It is a rendering check, not a captured runtime draw comparison.
 
 ### Character glass
 
