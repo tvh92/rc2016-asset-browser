@@ -76,6 +76,34 @@ def merge_ranges(batches):
     return merged
 
 
+def draw_items(models, level, visible_groups, use_overrides=True):
+    """[(material key, model, (first, count), groups)] sorted by material key, then model path.
+
+    A model's instance groups are (buffer, count, mirrored, changes), where ``changes`` holds the
+    group's effective material overrides ((slot index, material path), ...). Each batch draws its
+    slot's material per group; groups that agree on it share one item, so geometry stays shared and
+    an override changes only the instances that carry it. Adjacent batches of one model with the
+    same material and groups merge into one draw. Batches without UV0 draw untextured (key level 0)."""
+    ranges = {}
+    for model in models:
+        groups = visible_groups(model)
+        if not groups:
+            continue
+        changes = [dict(group[3]) if use_overrides and len(group) > 3 else {} for group in groups]
+        for batch in model["batches"]:
+            by_key = {}
+            for group, changed in zip(groups, changes):
+                material = (changed.get(batch[0]) or model["slots"].get(batch[0])) if batch[3] else None
+                by_key.setdefault((material or "", level if batch[3] else 0), []).append(group)
+            for key, selected in by_key.items():
+                ranges.setdefault((key, model["path"], tuple(g[0] for g in selected)),
+                                  (model, selected, []))[2].append((batch[1], batch[2]))
+    items = [(key, model, span, groups) for (key, _path, _ids), (model, groups, spans) in ranges.items()
+             for span in merge_ranges(sorted(spans))]
+    items.sort(key=lambda item: (item[0], item[1]["path"]))
+    return items
+
+
 def pick_colour(index):
     """RGB in 0..1 encoding draw id ``index`` (0 is the background) in 24 bits."""
     value = index + 1
@@ -155,6 +183,7 @@ class LevelViewport(ModelViewport):
         self._texture_names = {}   # texture path -> (GL id, sRGB) or None
         self._draw_list = None
         self.show_hidden = False
+        self.material_overrides = True   # per-instance material overrides from the zone records
         self.on_stats = None
         self.on_pick = None        # called with a model path (or None) after a click
         self.on_open = None        # called with a model path after a double click on it
@@ -237,6 +266,12 @@ class LevelViewport(ModelViewport):
         self._draw_list = None
         self._draw()
 
+    def set_material_overrides(self, enabled):
+        """Draw instances with (True) or without their per-instance material overrides."""
+        self.material_overrides = bool(enabled)
+        self._draw_list = None
+        self._draw()
+
     def _visible_groups(self, model):
         if model["hidden"] and not self.show_hidden:
             return ()
@@ -308,14 +343,16 @@ class LevelViewport(ModelViewport):
         self._models[path] = record
 
     def _store_instances(self, zone, path, groups):
-        """Keep one zone's instance rows; the GPU buffers merge every visible zone (_merge_groups)."""
+        """Keep one zone's instance rows, {(mirrored, material changes): rows}; the GPU buffers merge
+        every visible zone (_merge_groups)."""
         record = self._models[path]
-        for flip, rows in sorted(groups.items()):
-            record["zones"].append((zone, flip, rows))
+        for key, rows in sorted(groups.items()):
+            record["zones"].append((zone, key, rows))
         record["groups_for"] = None
 
     def _merge_groups(self):
-        """One instance buffer per model and handedness over the visible zones: [(buffer, count, mirrored)]."""
+        """One instance buffer per model, handedness and set of material changes over the visible zones:
+        [(buffer, count, mirrored, changes)]."""
         from array import array
         hidden = frozenset(self._hidden_zones)
         for model in self._models.values():
@@ -326,11 +363,11 @@ class LevelViewport(ModelViewport):
                 self._ext["glDeleteBuffers"](len(old), (ctypes.c_uint * len(old))(*old))
             self._delete_vaos([model])
             merged = {}
-            for zone, flip, rows in model["zones"]:
+            for zone, key, rows in model["zones"]:
                 if zone not in hidden:
-                    merged.setdefault(flip, array("f")).extend(rows)
-            model["groups"] = [(self._buffer(self.GL_ARRAY_BUFFER, rows), len(rows) // 16, flip)
-                               for flip, rows in sorted(merged.items())]
+                    merged.setdefault(key, array("f")).extend(rows)
+            model["groups"] = [(self._buffer(self.GL_ARRAY_BUFFER, rows), len(rows) // 16, flip, changes)
+                               for (flip, changes), rows in sorted(merged.items())]
             model["groups_for"] = hidden
         self._ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0)
 
@@ -339,17 +376,17 @@ class LevelViewport(ModelViewport):
         if names and self._ext:
             self._ext["glDeleteVertexArrays"](len(names), (ctypes.c_uint * len(names))(*names))
 
-    def _vao(self, model, index, group):
+    def _vao(self, model, group):
         """The vertex array object of one model and one of its instance buffers, built on first use:
         positions, normals and UVs (fixed-function arrays), indices, and the four matrix-row attributes."""
         vaos = model.setdefault("vaos", {})
-        vao = vaos.get(index)
+        vao = vaos.get(group[0])
         if vao is None:
             from rc2016.viewer.shading import INSTANCE_ATTRIBUTES
             gl, ext, sh = self._gl, self._ext, self._shading
             name = ctypes.c_uint(0)
             ext["glGenVertexArrays"](1, ctypes.byref(name))
-            vao = vaos[index] = name.value
+            vao = vaos[group[0]] = name.value
             ext["glBindVertexArray"](vao)
             gl.glEnableClientState(self.GL_VERTEX_ARRAY); gl.glEnableClientState(self.GL_NORMAL_ARRAY)
             gl.glEnableClientState(self.GL_TEXTURE_COORD_ARRAY)
@@ -384,23 +421,10 @@ class LevelViewport(ModelViewport):
         return {"Shaded": 2, "Textured": 1}.get(self._mode, 0)
 
     def _build_draw_list(self):
-        """[(material key, model, (first, count), instance groups)] sorted by material so uniforms change
-        once per material; a model's adjacent batches with one material merge into one draw."""
+        """Draw items sorted by material so uniforms change once per material (draw_items)."""
         self._merge_groups()
-        level = self._level()
-        ranges = {}
-        for model in self._models.values():
-            groups = self._visible_groups(model)
-            if not groups:
-                continue
-            for batch in model["batches"]:
-                material = model["slots"].get(batch[0]) if batch[3] else None
-                key = (material or "", level if batch[3] else 0)
-                ranges.setdefault((key, model["path"]), (model, groups, []))[2].append((batch[1], batch[2]))
-        items = [(key, model, span, groups) for (key, _path), (model, groups, spans) in ranges.items()
-                 for span in merge_ranges(sorted(spans))]
-        items.sort(key=lambda item: (item[0], item[1]["path"]))
-        self._draw_list = items
+        self._draw_list = draw_items(self._models.values(), self._level(), self._visible_groups,
+                                     self.material_overrides)
 
     def _setup_camera(self, width, height):
         gl = self._gl
@@ -551,8 +575,8 @@ class LevelViewport(ModelViewport):
         gl, ext = self._gl, self._ext
         first, count = span
         offset = ctypes.c_void_p(first * 12)
-        for index, group in enumerate(groups):
-            vao = self._vao(model, index, group)
+        for group in groups:
+            vao = self._vao(model, group)
             if self._bound_vao != vao:
                 ext["glBindVertexArray"](vao)
                 self._bound_vao = vao
@@ -761,4 +785,4 @@ class LevelViewport(ModelViewport):
         self.after(8, self._tick)
 
 
-__all__ = ["LevelViewport", "look_vectors", "merge_ranges", "overview_camera", "pick_colour", "pick_index", "png_bytes", "view_matrix"]
+__all__ = ["LevelViewport", "draw_items", "look_vectors", "merge_ranges", "overview_camera", "pick_colour", "pick_index", "png_bytes", "view_matrix"]

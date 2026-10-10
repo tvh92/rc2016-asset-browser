@@ -6,6 +6,7 @@ reads and decoding run on a background thread; Tk and GL are touched only from t
 """
 from __future__ import annotations
 
+from collections import Counter
 import queue
 import sys
 import threading
@@ -31,10 +32,22 @@ def zone_names(zones):
     return names
 
 
+def override_summary(overrides):
+    """Status text for instance material overrides: instances changed, and override entries that
+    were not applied (stale slot names, null or unlisted replacements, ambiguous or conflicting slots)."""
+    if not overrides or not overrides.get("outcomes"):
+        return ""
+    outcomes = overrides["outcomes"]
+    skipped = sum(n for k, n in outcomes.items() if k not in (level_scene.APPLIED, level_scene.SAME))
+    return (f" · material overrides on {overrides['instances']:,} instances"
+            + (f" ({skipped:,} entries not applied)" if skipped else ""))
+
+
 def load_level(get_archive, level_path, out, cancel, zone_filter=None):
     """Background loader. Posts, in order: ('zones', paths), ('zone', scene summary) per zone,
-    ('bounds', native bounds), ('model', path, geometry, hidden, [(zone, groups)]) per model,
-    ('materials', {path: entry}) batches, then ('done', timings). Errors: ('error', what, message)
+    ('bounds', native bounds), ('model', path, geometry, hidden, [(zone, groups)]) per model with
+    groups keyed by (mirrored, effective material changes), ('overrides', running totals) after each
+    model, ('materials', {path: entry}) batches, then ('done', timings). Errors: ('error', what, message)
     or ('fatal', message)."""
     started = time.perf_counter()
     try:
@@ -62,7 +75,7 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
             entry["count"] += model["count"]
             entry["zones"].append((zone, model["groups"]))
     out.put(("bounds", level_scene.core_bounds(points)))
-    geometries = []
+    geometries, overrides = [], dict(outcomes=Counter(), instances=0, models=set())
     for path, entry in sorted(models.items(), key=lambda item: -item[1]["count"]):
         if cancel.is_set():
             return
@@ -71,15 +84,30 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
         except Exception as exc:
             out.put(("error", path, f"{type(exc).__name__}: {exc}"))
             continue
+        zones, replacements = [], {}
+        for zone, groups in entry["zones"]:
+            groups, outcomes, changed = level_scene.effective_groups(geometry["materials"], groups)
+            zones.append((zone, groups))
+            overrides["outcomes"].update(outcomes)
+            overrides["instances"] += changed
+            for _flip, applied in groups:
+                replacements.update((material, None) for _slot, material in applied)
+        if replacements:
+            overrides["models"].add(path)
+        # Replacement materials load with the model's own (material_entries skips loaded paths).
+        geometry["override_materials"] = [dict(path=material) for material in replacements]
         geometries.append(geometry)
-        out.put(("model", path, geometry, entry["hidden"], entry["zones"]))
+        out.put(("model", path, geometry, entry["hidden"], zones))
+        out.put(("overrides", dict(outcomes=dict(overrides["outcomes"]), instances=overrides["instances"],
+                                   models=len(overrides["models"]))))
     geometry_seconds = time.perf_counter() - started
     done, cache = set(), {}
     for geometry in geometries:
         if cancel.is_set():
             return
         try:
-            entries = level_scene.material_entries(archive, geometry["materials"], done, cache)
+            entries = level_scene.material_entries(archive, geometry["materials"] + geometry["override_materials"],
+                                                   done, cache)
         except Exception as exc:
             out.put(("error", "materials", f"{type(exc).__name__}: {exc}"))
             continue
@@ -94,14 +122,16 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
             if texture and len(texture.get("pixels") or b"") > 65536:
                 cache[path] = {k: v for k, v in texture.items() if k != "pixels"}
     out.put(("done", dict(geometry_seconds=geometry_seconds, total_seconds=time.perf_counter() - started,
-                          models=len(geometries), materials=len(done))))
+                          models=len(geometries), materials=len(done),
+                          material_overrides=dict(outcomes=dict(overrides["outcomes"]), instances=overrides["instances"],
+                                                  models=len(overrides["models"])))))
 
 
 class LevelPanel:
     """Tk panel; ``source_root`` is a callable returning the current extracted source root."""
 
     def __init__(self, parent, tk, ttk, source_root, level=None, mode="Shaded", zone_filter=None, on_done=None,
-                 list_parent=None, on_open_model=None):
+                 list_parent=None, on_open_model=None, material_overrides=True):
         """``list_parent``: a separate frame for the level list (the asset browser's left pane);
         by default the list sits at the top of the panel's own side column (standalone window).
         ``on_open_model(model path)``: open a picked model elsewhere (the browser's Model tab)."""
@@ -142,8 +172,12 @@ class LevelPanel:
         self.lighting_note = ttk.Label(light, text="", foreground="gray", wraplength=240)
         self.lighting_note.grid(row=2, column=0, columnspan=2, sticky="w")
         self.hidden_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(side, text="Show collision/template models", variable=self.hidden_var,
-                        command=lambda: self.view.set_show_hidden(self.hidden_var.get())).grid(row=5, column=0, sticky="w", pady=4)
+        toggles = ttk.Frame(side); toggles.grid(row=5, column=0, sticky="w", pady=4)
+        ttk.Checkbutton(toggles, text="Show collision/template models", variable=self.hidden_var,
+                        command=lambda: self.view.set_show_hidden(self.hidden_var.get())).pack(anchor="w")
+        self.overrides_var = tk.BooleanVar(value=material_overrides)
+        ttk.Checkbutton(toggles, text="Instance material overrides", variable=self.overrides_var,
+                        command=lambda: self.view.set_material_overrides(self.overrides_var.get())).pack(anchor="w")
         head = ttk.Frame(side); head.grid(row=6, column=0, sticky="ew", pady=(8, 2))
         ttk.Label(head, text="Zones").pack(side="left")
         ttk.Button(head, text="None", width=5, command=lambda: self._set_all(False)).pack(side="right")
@@ -162,6 +196,7 @@ class LevelPanel:
         main.columnconfigure(0, weight=1); main.rowconfigure(0, weight=1)
         self.view = LevelViewport(main, width=420, height=300)
         self.view.grid(row=0, column=0, sticky="nsew")
+        self.view.material_overrides = bool(material_overrides)
         self.view.set_mode(mode)
         self.view.clear("Choose a level and click Load.")
         self.view.on_stats = self._show_stats
@@ -345,6 +380,8 @@ class LevelPanel:
             for zone, groups in zones:
                 self.view.add_instances(zone, path, groups)
             p["models"] += 1
+        elif kind == "overrides":
+            p["overrides"] = item[1]
         elif kind == "materials":
             self.view.add_materials(item[1])
         elif kind == "error":
@@ -370,9 +407,10 @@ class LevelPanel:
         if not p:
             return
         errors = f" · {len(p['errors'])} failed" if p.get("errors") else ""
+        overrides = override_summary(p.get("overrides"))
         self.status_var.set(
             f"{p['state']} · {p['zones_with_models']}/{p['zones']} zones with models · {p['models']} models{errors} · "
-            f"{stats['materials']} materials · {stats['textures']} textures · showing {stats['instances']:,} instances, "
+            f"{stats['materials']} materials · {stats['textures']} textures{overrides} · showing {stats['instances']:,} instances, "
             f"{stats['triangles']:,} triangles in {stats['draws']} draws · {stats['draw_ms']:.1f} ms/frame · "
             f"speed {stats['speed']:.1f}/s")
 

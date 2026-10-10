@@ -15,7 +15,7 @@ import tempfile
 from rc2016.formats.archive import Archive, decompress, locate
 
 from rc2016.levels.level_format import decode_level
-from rc2016.levels.zone_format import decode_zone
+from rc2016.levels.zone_format import decode_zone, name_crc32
 
 # The Blender assembler keeps these but hides them (docs/levels.md).
 HIDDEN_MARKERS = ('collision', 'environment/template/')
@@ -64,8 +64,12 @@ def zone_label(zone_path):
 
 
 def zone_scene(archive, zone_path):
-    """{'zone', 'models': [{'path', 'hidden', 'count', 'groups': {mirrored: array('f') of 16-float rows}}],
-    'instances', 'points'}: translations of the instances shown by default, native Y-up world space."""
+    """{'zone', 'models': [{'path', 'hidden', 'count', 'groups'}], 'instances', 'points'}: translations
+    of the instances shown by default, native Y-up world space.
+
+    ``groups`` is {(mirrored, overrides): array('f') of 16-float rows}, where ``overrides`` is the
+    instance's raw material-override entries as ((slot hash, material path or None, material hash), ...);
+    effective_groups() resolves them against the model's material slots."""
     try:
         zone = decode_zone(asset_bytes(archive, zone_path))
     except ValueError as exc:
@@ -79,12 +83,73 @@ def zone_scene(archive, zone_path):
     for instance in zone['instances']:
         rows = instance['matrix_rows']
         model = models[instance['model_index']]
-        model['groups'].setdefault(mirrored(rows), array('f')).extend(x for row in rows for x in row)
+        overrides = tuple((o['slot_hash'], o['material'], o['material_hash']) for o in instance['material_overrides'])
+        model['groups'].setdefault((mirrored(rows), overrides), array('f')).extend(x for row in rows for x in row)
         model['count'] += 1
         if not model['hidden']:
             points.append(tuple(rows[3][:3]))
     return dict(zone=zone_path, models=[m for m in models if m['count']], instances=len(zone['instances']),
                 points=points)
+
+
+# Outcomes of one override entry; only APPLIED (and SAME, which changes nothing) affect drawing.
+APPLIED, SAME = 'applied', 'same as default'
+NULL_MATERIAL, UNLISTED_MATERIAL = 'null replacement', 'replacement not in zone list'
+MISSING_SLOT, AMBIGUOUS_SLOT, CONFLICT = 'slot not in model', 'slot name ambiguous', 'slot overridden twice'
+
+
+def resolve_overrides(materials, overrides):
+    """One instance's effective material changes: ((slot index, material path), ...) sorted, plus the
+    outcome of each entry.
+
+    ``materials`` is the model's material table ({'index', 'name', 'path'}); an entry applies only when
+    its slot-name hash matches exactly one slot name and its replacement is a listed path. A slot that
+    two entries set to different materials is left unchanged."""
+    by_hash = {}
+    for material in materials:
+        if material.get('name') is not None:
+            by_hash.setdefault(f"{name_crc32(material['name']):08X}", []).append(material)
+    chosen, outcomes = {}, []
+    for slot_hash, path, material_hash in overrides:
+        hits = by_hash.get(slot_hash, [])
+        if path is None:
+            outcomes.append(NULL_MATERIAL if int(material_hash, 16) == 0 else UNLISTED_MATERIAL)
+        elif not hits:
+            outcomes.append(MISSING_SLOT)
+        elif len(hits) > 1:
+            outcomes.append(AMBIGUOUS_SLOT)
+        else:
+            chosen.setdefault(hits[0]['index'], []).append((path, len(outcomes)))
+            outcomes.append(APPLIED)
+    applied = []
+    defaults = {m['index']: (m.get('path') or '').lower() for m in materials}
+    for index, choices in chosen.items():
+        if len({p.lower() for p, _ in choices}) > 1:
+            for _p, position in choices:
+                outcomes[position] = CONFLICT
+        elif choices[0][0].lower() == defaults.get(index):
+            for _p, position in choices:
+                outcomes[position] = SAME
+        else:
+            applied.append((index, choices[0][0]))
+    return tuple(sorted(applied)), outcomes
+
+
+def effective_groups(materials, groups):
+    """Regroup zone_scene groups by (mirrored, effective material changes): instances whose overrides
+    resolve to the same changes share a group, instances without effective changes join the plain
+    group. Returns (groups, Counter of entry outcomes, number of instances with changed materials)."""
+    from collections import Counter
+    result, outcomes, changed = {}, Counter(), 0
+    for (flip, overrides), rows in groups.items():
+        applied, results = resolve_overrides(materials, overrides) if overrides else ((), [])
+        count = len(rows) // 16
+        for outcome in results:
+            outcomes[outcome] += count
+        if applied:
+            changed += count
+        result.setdefault((flip, applied), array('f')).extend(rows)
+    return result, outcomes, changed
 
 
 def core_bounds(points, trim=0.02):

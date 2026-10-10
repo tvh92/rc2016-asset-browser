@@ -13,6 +13,17 @@ Instance record (offsets relative to the record):
     +0x48  u64          per-instance id (unique within the zone)
     +0x58  u32          index into the 0xC6A5905E model list
     +0x5C  u32          flags (meaning unknown; kept raw)
+    +0x99  u8           number of material overrides
+    +0xA4  u32          record-relative offset of the material-override block, 0xFFFFFFFF if none;
+                        n x 12 bytes: u32 CRC32 of the material slot name, u64 CRC64 of the
+                        replacement material path (both normalised: lower case, '/' separators)
+
+    0x032D450A  (u32 path offset, u32 0xFFFFFFFF) pairs: the zone's replacement material paths
+
+Material overrides were validated on every main-game zone: 71,145 of 228,727 instances carry
+a block, all inside their records; every non-null replacement hash is a path in the same zone's
+0x032D450A list. Slot matching against the model is left to the caller (scene.py), because
+22% of the slot hashes name slots the placed model no longer has.
 
 Decals (projected, pre-clipped meshes) are split between the `.zone` and its `.zone_static`
 ("Zone Decal Built File"):
@@ -36,17 +47,23 @@ Usage: python zone_instances.py <decoded .zone file> <out.json> [<decoded .zone_
 """
 import json
 import math
+import re
 import struct
 import sys
 from pathlib import Path
 
+from rc2016.formats.container import game_crc32
+
 DATA_HEAP = 0x06ABCAB2
 INSTANCE_OFFSETS = 0x6987F172
 MODEL_PATHS = 0xC6A5905E
+OVERRIDE_MATERIALS = 0x032D450A
 DECAL_OFFSETS = 0xBCF43558
 DECAL_MESHES = 0x657512BB
 DECAL_RECORD_SIZE = 0x58
 RECORD_HEADER_SIZE = 0xB0
+OVERRIDE_ENTRY_SIZE = 12
+NO_BLOCK = 0xFFFFFFFF
 
 
 def sections(data):
@@ -55,6 +72,68 @@ def sections(data):
     count, = struct.unpack_from('<I', data, 12)
     return {label: (offset, size) for label, offset, size in
             (struct.unpack_from('<III', data, 16 + 12 * i) for i in range(count))}
+
+
+def _normalized(text):
+    return re.sub('/+', '/', text.lower().replace('\\', '/'))
+
+
+def name_crc32(text):
+    """CRC32 of a normalised name, as stored for material slot names."""
+    return game_crc32(_normalized(text))
+
+
+def _crc64_table():
+    table = []
+    for i in range(256):
+        value = i
+        for _ in range(8):
+            value = (value >> 1) ^ (0xC96C5795D7870F42 if value & 1 else 0)
+        table.append(value)
+    return table
+
+
+_CRC64 = _crc64_table()
+
+
+def path_crc64(path):
+    """Insomniac's 64-bit asset path hash: reflected CRC-64 with polynomial and seed
+    0xC96C5795D7870F42 over the normalised path, shifted right by 2 with the top bit set."""
+    value = 0xC96C5795D7870F42
+    for byte in _normalized(path).encode('ascii'):
+        value = (value >> 8) ^ _CRC64[(value ^ byte) & 0xFF]
+    return value >> 2 | 0x8000000000000000
+
+
+def override_materials(data, table=None):
+    """The zone's replacement material paths ('/' separators) from 0x032D450A; [] if absent."""
+    table = table or sections(data)
+    if OVERRIDE_MATERIALS not in table:
+        return []
+    off, size = table[OVERRIDE_MATERIALS]
+    if size % 8:
+        raise ValueError(f'material list size {size} is not a multiple of 8')
+    return [_cstring(data, struct.unpack_from('<I', data, off + i)[0]).replace('\\', '/')
+            for i in range(0, size, 8)]
+
+
+def _material_overrides(data, record, record_size, heap_end, by_hash):
+    """[{slot_hash, material_hash, material}] of one instance record (material None if unlisted)."""
+    count = data[record + 0x99]
+    block, = struct.unpack_from('<I', data, record + 0xA4)
+    if block == NO_BLOCK and count:
+        raise ValueError(f'{count} material overrides without a block')
+    if not count:   # in the game files a zero count always comes with 0xFFFFFFFF
+        return []
+    end = block + OVERRIDE_ENTRY_SIZE * count
+    if block < RECORD_HEADER_SIZE or block % 4 or end > record_size or record + end > heap_end:
+        raise ValueError(f'material override block {block:#x} x {count} outside the record')
+    result = []
+    for k in range(count):
+        slot, material = struct.unpack_from('<IQ', data, record + block + OVERRIDE_ENTRY_SIZE * k)
+        result.append(dict(slot_hash=f'{slot:08X}', material_hash=f'{material:016X}',
+                           material=by_hash.get(material)))
+    return result
 
 
 def _cstring(data, offset):
@@ -71,6 +150,10 @@ def decode_zone(data):
     models = [_cstring(data, o).replace('\\', '/') for o in struct.unpack_from(f'<{size // 4}I', data, off)]
     off, size = table[INSTANCE_OFFSETS]
     records = struct.unpack_from(f'<{size // 4}I', data, off)
+    replacements = override_materials(data, table)
+    by_hash = {}
+    for path in replacements:
+        by_hash.setdefault(path_crc64(path), path)
     instances, ids = [], set()
     for n, rel in enumerate(records):
         r = heap + rel
@@ -96,8 +179,9 @@ def decode_zone(data):
         instances.append(dict(
             index=n, id=f'{instance_id:016X}', model_index=model_index, flags=f'{flags:#010x}',
             matrix_rows=[list(matrix[i:i + 4]) for i in range(0, 16, 4)],
+            material_overrides=_material_overrides(data, r, record_size, heap + heap_size, by_hash),
             tail=data[r + RECORD_HEADER_SIZE:min(r + record_size, heap + heap_size)].hex()))
-    return dict(models=models, instances=instances,
+    return dict(models=models, instances=instances, override_materials=replacements,
                 models_used=len({i['model_index'] for i in instances}))
 
 

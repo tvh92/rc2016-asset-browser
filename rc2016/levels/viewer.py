@@ -61,6 +61,8 @@ def main(argv=None):
     parser.add_argument("--mode", default="Shaded", choices=LevelViewport.MODES)
     parser.add_argument("--capture")
     parser.add_argument("--camera", type=lambda s: tuple(float(x) for x in s.split(",")))
+    parser.add_argument("--no-material-overrides", action="store_true",
+                        help="draw instances without their per-instance material overrides")
     args = parser.parse_args(argv)
 
     import tkinter as tk
@@ -89,7 +91,8 @@ def main(argv=None):
             root.destroy()
 
     panel = LevelPanel(root, tk, ttk, source.get, level=args.level or settings["level"], mode=args.mode,
-                       zone_filter=args.zones, on_done=finished if (args.capture or args.camera) else None)
+                       zone_filter=args.zones, on_done=finished if (args.capture or args.camera) else None,
+                       material_overrides=not args.no_material_overrides)
     panel.frame.pack(side="top", fill="both", expand=True)
 
     def close():
