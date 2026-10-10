@@ -64,6 +64,8 @@ def main(argv=None):
     parser.add_argument("--no-material-overrides", action="store_true",
                         help="draw instances without their per-instance material overrides")
     parser.add_argument("--no-sky", action="store_true", help="draw the flat background instead of the level sky")
+    parser.add_argument("--no-native-translation", action="store_true",
+                        help="use only hand rules and generic/family material readings")
     args = parser.parse_args(argv)
 
     import tkinter as tk
@@ -93,7 +95,8 @@ def main(argv=None):
 
     panel = LevelPanel(root, tk, ttk, source.get, level=args.level or settings["level"], mode=args.mode,
                        zone_filter=args.zones, on_done=finished if (args.capture or args.camera) else None,
-                       material_overrides=not args.no_material_overrides, sky=not args.no_sky)
+                       material_overrides=not args.no_material_overrides, sky=not args.no_sky,
+                       native_translation=not args.no_native_translation)
     panel.frame.pack(side="top", fill="both", expand=True)
 
     def close():

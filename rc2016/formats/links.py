@@ -12,8 +12,8 @@ the archive once and stores the other edges in ``.cache/shared_index/links_<iden
 
 The identity covers the archive layout and the source of build_links and SCHEMA, so a different
 archive or a change to what is stored rebuilds the table; query changes do not. A full build reads about 20,000 assets and takes about half a minute.
-Shading-rule coverage is not stored: it is derived from the stored graph paths and the viewer's
-GRAPH_RULES when asked, so a new rule shows up without a rebuild.
+Exact/family coverage is derived from graph paths and GRAPH_RULES. Material-bound native
+translation eligibility is stored separately; its source inputs invalidate the table identity.
 """
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ CREATE TABLE graph_textures (graph TEXT, texture TEXT);
 CREATE TABLE zone_models (zone TEXT, model TEXT, instances INTEGER);
 CREATE TABLE level_zones (level TEXT, zone TEXT);
 CREATE TABLE errors (path TEXT, error TEXT);
+CREATE TABLE material_native (material TEXT PRIMARY KEY, translation_sha256 TEXT);
 CREATE INDEX model_materials_model ON model_materials(model);
 CREATE INDEX model_materials_material ON model_materials(material);
 CREATE INDEX material_refs_material ON material_refs(material);
@@ -46,16 +47,19 @@ CREATE INDEX level_zones_zone ON level_zones(zone);
 
 # Coverage kinds, from most to least specific (docs/viewer.md, "_g meaning per material graph").
 EXACT, FAMILY, GENERIC, NO_GRAPH = 'exact rule', 'family fallback', 'generic reading', 'no material graph'
-COVERAGE_KINDS = (EXACT, FAMILY, GENERIC, NO_GRAPH)
+NATIVE = 'native translation'
+COVERAGE_KINDS = (EXACT, NATIVE, FAMILY, GENERIC, NO_GRAPH)
 
 
-def rule_coverage(graphs):
+def rule_coverage(graphs, native_translation=None):
     """(kind, matched GRAPH_RULES prefix or None) for a material's graph paths.
 
-    Mirrors rc2016.viewer.textures._graph_rule (first matching rule wins). A prefix that ends in a
-    dot names one exact graph (a decoded writer); other prefixes are family fallbacks; no match is
-    the generic reading (coloured F0 + gloss alpha)."""
+    Pass a receipt selected by native_glsl.selected_translation to include the native route
+    after fully ported rule precedence. Otherwise mirrors textures._graph_rule: a prefix ending
+    in a dot names an exact graph, other prefixes are family fallbacks, and no match is generic."""
     from rc2016.viewer.textures import GRAPH_RULES
+    if native_translation and native_translation.get('status') == 'ready':
+        return NATIVE, native_translation.get('translation_sha256')
     if not graphs:
         return NO_GRAPH, None
     for prefix, _rule in GRAPH_RULES:
@@ -67,6 +71,9 @@ def rule_coverage(graphs):
 def links_path(archive):
     try:
         source = inspect.getsource(build_links) + SCHEMA
+        for module in ('viewer/native_glsl.py', 'viewer/textures.py', 'formats/materials.py',
+                       'shaders/bindings.py', 'shaders/translator.py', 'shaders/ir.py'):
+            source += (Path(__file__).parents[1] / module).read_text(encoding='utf-8')
     except OSError:   # frozen executable without sources
         source = 'frozen'
     identity = hashlib.sha256(f'{archive.layout_identity}:{source}'.encode()).hexdigest()
@@ -100,7 +107,7 @@ def build_links(archive, progress=None, cancel=None):
     from rc2016.levels.level_format import decode_level
     from rc2016.levels.zone_format import decode_zone
     jobs = [(kind, path) for kind in ('model', 'material', 'materialgraph', 'zone', 'level') for path in _paths(archive, kind)]
-    rows = {name: [] for name in ('model_materials', 'material_refs', 'graph_textures', 'zone_models', 'level_zones', 'errors')}
+    rows = {name: [] for name in ('model_materials', 'material_refs', 'graph_textures', 'zone_models', 'level_zones', 'errors', 'material_native')}
     for done, (kind, path) in enumerate(jobs):
         if cancel and cancel():
             return None
@@ -134,6 +141,11 @@ def build_links(archive, progress=None, cancel=None):
                 materials = [p for p in dict.fromkeys(found) if p.endswith('.material')]
                 rows['model_materials'] += [(path, m, i) for i, m in enumerate(materials)]
             elif kind == 'material':
+                from rc2016.viewer.native_glsl import selected_translation
+                try: native = selected_translation(archive, path)
+                except (ValueError, KeyError, IndexError, OSError): native = None
+                if native:
+                    rows['material_native'].append((path, native['translation_sha256']))
                 for target in dict.fromkeys(found):
                     if target.endswith('.texture'):
                         rows['material_refs'].append((path, target, 'texture'))
@@ -225,7 +237,8 @@ class AssetLinks:
         result = []
         for material in self.model_materials(model):
             graphs = self.material_graphs(material)
-            kind, rule = rule_coverage(graphs)
+            native = self._all('SELECT translation_sha256 FROM material_native WHERE material = ?', material)
+            kind, rule = rule_coverage(graphs, dict(status='ready', translation_sha256=native[0][0]) if native else None)
             result.append(dict(material=material, graphs=graphs, kind=kind, rule=rule))
         return result
 
@@ -234,8 +247,12 @@ class AssetLinks:
         graphs = {}
         for material, graph in self._all("SELECT material, target FROM material_refs WHERE kind = 'graph'"):
             graphs.setdefault(material, []).append(graph)
+        native = dict(self._all('SELECT material, translation_sha256 FROM material_native'))
         kinds, cache = {}, {}
         for model, material in self._all('SELECT model, material FROM model_materials'):
+            if material in native:
+                kinds.setdefault(model, set()).add(NATIVE)
+                continue
             key = tuple(graphs.get(material, ()))
             if key not in cache:
                 cache[key] = rule_coverage(list(key))[0]
@@ -246,4 +263,4 @@ class AssetLinks:
         return self._all('SELECT path, error FROM errors ORDER BY path')
 
 
-__all__ = ['AssetLinks', 'COVERAGE_KINDS', 'EXACT', 'FAMILY', 'GENERIC', 'NO_GRAPH', 'build_links', 'links_path', 'rule_coverage']
+__all__ = ['AssetLinks', 'COVERAGE_KINDS', 'EXACT', 'NATIVE', 'FAMILY', 'GENERIC', 'NO_GRAPH', 'build_links', 'links_path', 'rule_coverage']

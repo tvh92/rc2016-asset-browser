@@ -83,6 +83,8 @@ def drop_uploaded_pixels(cache, entries, uploaded):
     """
     uploaded.update(texture["path"] for entry in entries.values() for role in GL_TEXTURE_ROLES
                     if (texture := entry.get(role)))
+    uploaded.update(texture['path'] for entry in entries.values()
+                    for texture in entry.get('native_textures', {}).values())
     for key, texture in cache.items():
         if texture and texture.get("path") in uploaded and len(texture.get("pixels") or b"") > 65536:
             cache[key] = {k: v for k, v in texture.items() if k not in ("pixels", "slices")}
@@ -176,7 +178,7 @@ class LevelPanel:
     """Tk panel; ``source_root`` is a callable returning the current extracted source root."""
 
     def __init__(self, parent, tk, ttk, source_root, level=None, mode="Shaded", zone_filter=None, on_done=None,
-                 list_parent=None, on_open_model=None, material_overrides=True, sky=True):
+                 list_parent=None, on_open_model=None, material_overrides=True, sky=True, native_translation=True):
         """``list_parent``: a separate frame for the level list (the asset browser's left pane);
         by default the list sits at the top of the panel's own side column (standalone window).
         ``on_open_model(model path)``: open a picked model elsewhere (the browser's Model tab)."""
@@ -226,6 +228,9 @@ class LevelPanel:
         self.sky_var = tk.BooleanVar(value=sky)
         ttk.Checkbutton(toggles, text="Sky (atmosphere cloud dome)", variable=self.sky_var,
                         command=lambda: self.view.set_show_sky(self.sky_var.get())).pack(anchor="w")
+        self.native_translation_var = tk.BooleanVar(value=native_translation)
+        ttk.Checkbutton(toggles, text="Native translation", variable=self.native_translation_var,
+                        command=lambda: self.view.set_native_translation(self.native_translation_var.get())).pack(anchor="w")
         head = ttk.Frame(side); head.grid(row=6, column=0, sticky="ew", pady=(8, 2))
         ttk.Label(head, text="Zones").pack(side="left")
         ttk.Button(head, text="None", width=5, command=lambda: self._set_all(False)).pack(side="right")
@@ -246,6 +251,7 @@ class LevelPanel:
         self.view.grid(row=0, column=0, sticky="nsew")
         self.view.material_overrides = bool(material_overrides)
         self.view.show_sky = bool(sky)
+        self.view.native_translation = bool(native_translation)
         self.view.set_mode(mode)
         self.view.clear("Choose a level and click Load.")
         self.view.on_stats = self._show_stats

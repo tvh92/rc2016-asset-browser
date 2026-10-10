@@ -795,7 +795,8 @@ class DroppedPixelsTests(unittest.TestCase):
         cache = {p: {k: v for k, v in loaded(None, p).items() if k not in ('pixels', 'slices')} for p in names}
         materials = [dict(index=i, path=p) for i, p in enumerate(paths)]
         with patch.object(tp, 'material_texture_paths', side_effect=lambda _a, p: paths[p]), \
-                patch.object(tp, 'load_texture', side_effect=loaded) as load:
+                patch.object(tp, 'load_texture', side_effect=loaded) as load, \
+                patch('rc2016.viewer.native_glsl.selected_translation', return_value=None):
             rock, tint, puddle = (tp.material_textures(None, materials, cache)[i] for i in range(3))
         self.assertEqual(rock['_rock_volume']['source_paths'], ['mask', 'c2', 'g2', 'n2'])
         self.assertNotIn('unresolved_second_layer', rock['rock_blend'])

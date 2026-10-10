@@ -374,6 +374,8 @@ class ModelViewport(_TkFrame):
         self._payload = None
         self._redraw_pending = False
         self._mode = "Shaded"
+        self.native_translation = True
+        self.native_program_switches = 0
         self._gl_textures = None   # material slot -> {role: (GL id, sRGB)} + 'k', built lazily
         self._compressed_upload = None
         self._shading = None       # gl_shading.Shading once the context exists
@@ -554,6 +556,19 @@ class ModelViewport(_TkFrame):
             sh.glUniform3f(u["uSunDir"], *(float(x) for x in self._environment["sun_direction"]))
             sh.glUniform3f(u["uSunColour"], *(float(x) * strength for x in self._environment["sun"]))
 
+    def set_native_translation(self, enabled):
+        self.native_translation = bool(enabled)
+        if hasattr(self, '_draw_list'): self._draw_list = None
+        if hasattr(self, '_material_ops'): self._material_ops.clear()
+        self._schedule_draw()
+
+    def _surface_program(self, entry, level, instanced=False):
+        translation = entry.get('native_translation') if self.native_translation and level == 2 else None
+        if translation:
+            srgb = {api: texture[1] for api, texture in entry['native_textures'].items()}
+            return self._shading.native_program(translation, srgb, instanced)
+        return self._shading.instanced_program() if instanced else self._shading.program(self._bone_count or 1)[:2]
+
     def set_mode(self, mode):
         """Solid shading, wireframe (mesh only), or both."""
         if mode not in self.MODES:
@@ -565,6 +580,8 @@ class ModelViewport(_TkFrame):
         if self._gl_textures and self._make_current():
             ids = list({entry[role][0] for entry in self._gl_textures.values()
                         for role in ("_c", "_g", "_n", "_pick", "_h", "_bng_detail", "_vehicle_p2", "_tint_detail") if entry.get(role)})
+            ids.extend({texture[0] for entry in self._gl_textures.values() for texture in entry.get('native_textures', {}).values()})
+            ids = list(set(ids))
             ids.extend(entry['_rock_volume'][0] for entry in self._gl_textures.values() if entry.get('_rock_volume'))
             if ids:
                 self._gl.glDeleteTextures(len(ids), (ctypes.c_uint * len(ids))(*ids))
@@ -611,6 +628,23 @@ class ModelViewport(_TkFrame):
                 by_path[texture["path"]] = (name, bool(texture.get("srgb"))) if name else None
             if by_path[texture["path"]]:
                 uploaded[role] = by_path[texture["path"]]
+        if entry.get('native_translation'):
+            native = {}
+            normal_api = (entry['native_translation'].get('normal') or {}).get('api')
+            for api, texture in entry['native_textures'].items():
+                path = texture['path']
+                linear_rgb = bool(texture.get('srgb')) and api != normal_api
+                cache_key = (path, 'native_srgb' if linear_rgb else 'native_linear')
+                if cache_key not in by_path:
+                    name = self._upload_texture(texture, decode_srgb=linear_rgb)
+                    by_path[cache_key] = (name, linear_rgb) if name else None
+                if not by_path[cache_key]:
+                    self.shading_warning = 'Native texture upload failed: ' + path
+                    break
+                native[api] = by_path[cache_key]
+            else:
+                uploaded['native_translation'] = entry['native_translation']
+                uploaded['native_textures'] = native
         return uploaded
 
     def _upload_rock_volume(self, texture):
@@ -629,7 +663,7 @@ class ModelViewport(_TkFrame):
             gl.glDeleteTextures(1,ctypes.byref(name)); raise RuntimeError('RockBlend volume upload failed')
         return name.value
 
-    def _upload_texture(self, texture):
+    def _upload_texture(self, texture, decode_srgb=False):
         """One GL texture from GPU-ready blocks; 0 if the driver rejects the format."""
         gl = self._gl
         if self._compressed_upload is None:
@@ -647,11 +681,14 @@ class ModelViewport(_TkFrame):
             gl.glTexParameteri(self.GL_TEXTURE_2D, parameter, value)
         pixels = texture["pixels"]
         if texture.get("gl_format") and self._compressed_upload:
-            self._compressed_upload(self.GL_TEXTURE_2D, 0, texture["gl_format"], texture["width"],
+            srgb_formats = {72: 0x8C4D, 75: 0x8C4E, 78: 0x8C4F, 99: 0x8E8D}
+            internal = srgb_formats.get(texture.get('format'), texture['gl_format']) if decode_srgb else texture['gl_format']
+            self._compressed_upload(self.GL_TEXTURE_2D, 0, internal, texture["width"],
                                     texture["height"], 0, len(pixels), pixels)
         elif texture.get("gl_pixel_format"):
             gl.glPixelStorei(self.GL_UNPACK_ALIGNMENT, 1)
-            gl.glTexImage2D(self.GL_TEXTURE_2D, 0, texture["gl_pixel_format"], texture["width"], texture["height"],
+            internal = 0x8C43 if decode_srgb else texture['gl_pixel_format'] # SRGB8_ALPHA8: alpha remains linear
+            gl.glTexImage2D(self.GL_TEXTURE_2D, 0, internal, texture["width"], texture["height"],
                             0, texture["gl_pixel_format"], self.GL_UNSIGNED_BYTE, pixels)
         if gl.glGetError():
             # Driver rejected this format: show the material without it.
@@ -969,9 +1006,27 @@ class ModelViewport(_TkFrame):
             sh.glUniform3f(u["uColor"], 0.72, 0.74, 0.78)
             # Shaded: forward (glass) batches are drawn after every opaque one, see _draw_glass.
             opaque, glass = split_forward(batches, self._gl_textures) if level == 2 else (batches, [])
+            base_program, base_u = program, u
             for slot, first, count in opaque:
-                self._apply_material(u, (self._gl_textures or {}).get(slot) or {}, level)
+                entry = (self._gl_textures or {}).get(slot) or {}
+                next_program, next_u = self._surface_program(entry, level)
+                if next_program != program:
+                    program, u = next_program, next_u
+                    sh.glUseProgram(program); self._apply_lighting(u)
+                    sh.glUniform1i(u['uSkin'], int(skin))
+                    sh.glUniform1i(u['uBoneTex'], BONE_TEXTURE_UNIT)
+                    sh.glUniform1f(u['uBoneWidth'], float(4 * self._bone_count))
+                    sh.glUniform1i(u['uMode'], level)
+                    sh.glUniform3f(u['uColor'], 0.72, 0.74, 0.78)
+                    for unit, name in ((0,'uTexC'),(1,'uTexG'),(2,'uTexN'),(PICK_TEXTURE_UNIT,'uTexP'),
+                                      (TINT_MASK_TEXTURE_UNIT,'uTexH'),(ARCH_SEQUENCE_TEXTURE_UNIT,'uTexSequence'),
+                                      (BNG_DETAIL_TEXTURE_UNIT,'uTexBngDetail'),(VEHICLE_PALETTE_TEXTURE_UNIT,'uTexVehicleP2'),
+                                      (TINT_DETAIL_TEXTURE_UNIT,'uTexTintDetail')):
+                        sh.glUniform1i(u[name], unit)
+                self._apply_material(u, entry, level)
                 self._draw_range(index_array, first, count)
+            program, u = base_program, base_u
+            sh.glUseProgram(program)
             if glass:
                 self._draw_glass(index_array, glass, skin)
                 sh.glUseProgram(program)
@@ -992,7 +1047,7 @@ class ModelViewport(_TkFrame):
         self._shading.glActiveTexture(self.GL_TEXTURE0+14);self._gl.glBindTexture(self.GL_TEXTURE_2D,0)
         self._shading.glActiveTexture(self.GL_TEXTURE0 + 15); self._gl.glBindTexture(0x806F,0)
         from rc2016.viewer.shading import TINT_DETAIL_TEXTURE_UNIT, BONE_TEXTURE_UNIT, PICK_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, ARCH_SEQUENCE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT, GLOW_PARALLAX_TEXTURE_UNIT, PARALLAX_HEIGHT_TEXTURE_UNIT
-        for unit in (PARALLAX_HEIGHT_TEXTURE_UNIT, GLOW_PARALLAX_TEXTURE_UNIT, TINT_DETAIL_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, ARCH_SEQUENCE_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, PICK_TEXTURE_UNIT, BONE_TEXTURE_UNIT, 2, 1, 0):
+        for unit in (15, 7, PARALLAX_HEIGHT_TEXTURE_UNIT, GLOW_PARALLAX_TEXTURE_UNIT, TINT_DETAIL_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, ARCH_SEQUENCE_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, PICK_TEXTURE_UNIT, BONE_TEXTURE_UNIT, 2, 1, 0):
             self._shading.glActiveTexture(self.GL_TEXTURE0 + unit)
             self._gl.glBindTexture(self.GL_TEXTURE_2D, 0)
 
@@ -1000,6 +1055,15 @@ class ModelViewport(_TkFrame):
         """Bind one material's textures and set its uniforms on the current opaque program."""
         from rc2016.viewer.shading import TINT_DETAIL_TEXTURE_UNIT, PICK_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, ARCH_SEQUENCE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT, GLOW_PARALLAX_TEXTURE_UNIT, PARALLAX_HEIGHT_TEXTURE_UNIT
         gl, sh = self._gl, self._shading
+        if self.native_translation and level == 2 and entry.get('native_translation'):
+            from rc2016.viewer.native_glsl import TEXTURE_UNITS
+            # Same sorted API allocation as emit_surface; no DAG emission during a draw.
+            for index, api in enumerate(sorted(entry['native_textures'])):
+                unit = TEXTURE_UNITS[index]
+                sh.glActiveTexture(self.GL_TEXTURE0 + unit)
+                gl.glBindTexture(self.GL_TEXTURE_2D, entry['native_textures'][api][0])
+                sh.glUniform1i(u[f'uNativeTex{api}'], unit)
+            return
         for unit, role, has, srgb in ((PARALLAX_HEIGHT_TEXTURE_UNIT, "_parallax_height", "uHasParallaxHeight", None), (GLOW_PARALLAX_TEXTURE_UNIT, "_glow_parallax", "uHasGlowParallax", "uSrgbGlowParallax"), (TINT_DETAIL_TEXTURE_UNIT, "_tint_detail", "uHasTintDetail", "uSrgbTintDetail"), (0, "_c", "uHasC", "uSrgbC"), (1, "_g", "uHasG", "uSrgbG"), (2, "_n", "uHasN", None),
                                       (PICK_TEXTURE_UNIT, "_pick", "uHasP", "uSrgbP"),
                                       (TINT_MASK_TEXTURE_UNIT, "_h", "uHasH", None), (ARCH_SEQUENCE_TEXTURE_UNIT, "_sequence", "uHasSequence", None), (BNG_DETAIL_TEXTURE_UNIT, "_bng_detail", "uHasBngDetail", None),
