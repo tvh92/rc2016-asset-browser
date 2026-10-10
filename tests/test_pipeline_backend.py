@@ -40,7 +40,7 @@ class PipelineGuiBackendTests(unittest.TestCase):
                 except BaseException as exc:  # surfaced in the test thread below
                     errors.append(exc)
 
-            with patch("rc2016.app.main.PIPELINE_CLI", fake_cli):
+            with patch("rc2016.app.batch.PIPELINE_CLI", fake_cli):
                 thread = threading.Thread(target=run_batch, daemon=True)
                 thread.start()
                 deadline = time.monotonic() + 10
@@ -110,7 +110,7 @@ class PipelineGuiBackendTests(unittest.TestCase):
                 index_path.write_text('{"models":[{"id":"id1","path":"equipment/hero.model","available":true},{"id":"id2","path":"weapons/thing.model","available":true}]}', encoding="utf-8")
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-            with patch("rc2016.app.main.subprocess.run", side_effect=run) as called:
+            with patch("rc2016.app.batch.subprocess.run", side_effect=run) as called:
                 records = PipelineIndexScanner(source, output, py, blender).scan()
             self.assertEqual([r.archive_path for r in records], ["equipment/hero.model", "weapons/thing.model"])
             self.assertEqual(records[0].previous_status, "COMPLETE")

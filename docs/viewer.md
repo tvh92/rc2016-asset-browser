@@ -13,7 +13,10 @@ Module map:
 
 | Module | Role |
 |---|---|
-| `rc2016/app/main.py` | Main window, scan and export batch runners, settings, Options window |
+| `rc2016/app/main.py` | Entry point (`python -m rc2016`, `--scan`, packaged-exe backend); re-exports the app's public names |
+| `rc2016/app/window.py` | `AssetBrowserApp`: main window, Options window, scan and export wiring |
+| `rc2016/app/batch.py` | Model discovery, output verification, `BatchRunner`, `PipelineBatchRunner`, `ExportBatchRunner`, `PipelineIndexScanner` |
+| `rc2016/app/theme.py`, `rc2016/app/settings.py` | Dark theme, tooltips, UI scale, Tk runtime bootstrap; settings file, project paths, Python/Blender discovery |
 | `rc2016/app/browser.py` | Model/Level/Flash UI views, 3D/Textures/Details notebook, model details |
 | `rc2016/app/catalog.py`, `rc2016/app/workers.py` | Read-only result catalog; coalesced background workers and owned-process cleanup |
 | `rc2016/viewer/loader.py` | `SourcePreviewLoader`: archive model to viewport payload |
@@ -229,7 +232,7 @@ When the output root holds a build of that model, its build and reopen status, i
 
 ## Portable export (Extract selected)
 
-**Extract selected** exports portable files by default and needs no Blender. `ModelExporter` and `ExportOptions` (`rc2016/export/models.py`) run in the GUI process with their own `SourcePreviewLoader`, so they use the same decoders as the 3D view. The GUI runner is `ExportBatchRunner` in `rc2016/app/main.py`.
+**Extract selected** exports portable files by default and needs no Blender. `ModelExporter` and `ExportOptions` (`rc2016/export/models.py`) run in the GUI process with their own `SourcePreviewLoader`, so they use the same decoders as the 3D view. The GUI runner is `ExportBatchRunner` in `rc2016/app/batch.py`.
 
 One folder per model in the output root:
 

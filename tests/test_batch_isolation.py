@@ -36,7 +36,7 @@ class GuiBatchIsolationTest(unittest.TestCase):
         self.temp.cleanup()
 
     def run_batch(self, records, out, behavior):
-        import rc2016.app.main as gui
+        import rc2016.app.batch as gui
         original = gui.build_command
         gui.build_command = lambda _py, candidate, staging, _prefixes: [
             sys.executable, str(behavior[candidate.display_name]), str(staging),
@@ -51,7 +51,7 @@ class GuiBatchIsolationTest(unittest.TestCase):
         records = [candidate(self.root, n) for n in ("first", "middle", "last")]
         scripts = {n: child(self.root, n == "middle") for n in ("first", "middle", "last")}
         # Only the named middle candidate fails; each candidate otherwise gets a real child process.
-        import rc2016.app.main as gui
+        import rc2016.app.batch as gui
         original = gui.build_command
         gui.build_command = lambda _py, c, stage, _p: [sys.executable, str(scripts[c.display_name]), str(stage), str(c.model), str(c.animset), "fail" if c.display_name == "middle" else "success"]
         try:
@@ -65,7 +65,7 @@ class GuiBatchIsolationTest(unittest.TestCase):
     def test_cancel_at_completion_boundary_prevents_next_launch(self):
         records = [candidate(self.root, n) for n in ("first", "middle", "last")]
         script = child(self.root)
-        import rc2016.app.main as gui
+        import rc2016.app.batch as gui
         original = gui.build_command
         runner = None
         def command(_py, c, stage, _p):

@@ -2,7 +2,7 @@
 import argparse,ctypes,hashlib,json,struct,sys,time,zlib,os
 from pathlib import Path
 REPO=Path(__file__).resolve().parents[1];sys.path.insert(0,str(REPO))
-from rc2016.app.main import AnimationExtractorApp
+from rc2016.app.main import AssetBrowserApp
 from rc2016.viewer import textures as tp
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--source', required=True, type=Path, help='Validated game archive root')
@@ -36,7 +36,7 @@ LOCK=viewdir/'.shader_proof.lock'
 fd=os.open(LOCK,os.O_CREAT|os.O_EXCL|os.O_WRONLY);os.write(fd,b'TwoColorGlossMetal hidden GPU proof');os.close(fd)
 app=None;original=tp.GRAPH_RULES
 try:
-    app=AnimationExtractorApp();app.root.attributes('-alpha',0.0);app.root.geometry('1500x1000')
+    app=AssetBrowserApp();app.root.attributes('-alpha',0.0);app.root.geometry('1500x1000')
     app.source_var.set(str(args.source));app.blender_var.set('')
     output=args.research;app.output_var.set(str(output))
     loader=app.browser.source_loader;loader._ensure_archive(args.source)
