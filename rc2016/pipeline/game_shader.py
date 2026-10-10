@@ -1499,7 +1499,7 @@ def apply_viewer_graph_rule(mat, source):
                       % (facing['amplitude'], facing['amplitude_input'], facing['captured_amplitude']))
     if on('alpha_cut') and c is not None:
         # Foliage writers kill a fragment whose _c.a is below the interpolated vertex output attr0.z, which
-        # the vertex shader takes from the engine's per-instance record: the threshold is inferred (0.5).
+        # the vertex shader takes from the engine's per-instance record; use the shared material baseline.
         keep = P.ge(c.outputs['Alpha'], P.const('alpha cut threshold', terms['alpha_cut']))
         clear = nt.nodes.new('ShaderNodeBsdfTransparent'); clear.name = clear.label = 'VR alpha cut transparent'
         mix = nt.nodes.new('ShaderNodeMixShader'); mix.name = mix.label = 'VR alpha cut mix'; mix.location = (950, 0)
@@ -1507,7 +1507,8 @@ def apply_viewer_graph_rule(mat, source):
         L.new(out.inputs['Surface'].links[0].from_socket, mix.inputs[2]); L.new(mix.outputs[0], out.inputs['Surface'])
         out.location = (1150, 0)
         limits.append('leaf cut-out: _c.a < %g is transparent; the game reads this threshold from a per-instance '
-                      'engine record, so the value is inferred, not decoded' % float(terms['alpha_cut']))
+                      'engine record; uses the decoded material baseline (inferred 0.5 only if state is missing); '
+                      'runtime draw cut/fade and flag-8 override omitted' % float(terms['alpha_cut']))
     if view_terms:
         limits.append('view-dependent terms (%s) use the Cycles Incoming vector, which is the camera direction only for camera rays'
                       % ', '.join(view_terms))

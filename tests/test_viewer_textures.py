@@ -51,8 +51,8 @@ def slot_rows(rows):
     return b''.join(struct.pack('<IIQ', name, 1, slot) for name, slot in rows)
 
 
-def flags(word):
-    return bytes(16) + struct.pack('<I', word) + bytes(16)
+def flags(word, alpha_base=0, alpha_reference=0):
+    return bytes(16) + struct.pack('<I', word) + bytes((alpha_base, alpha_reference)) + bytes(14)
 
 
 class TexturePreviewTests(unittest.TestCase):
@@ -134,7 +134,8 @@ class TexturePreviewTests(unittest.TestCase):
         blob = dat1(['t/default_c.texture', 't/default_g.texture', 't/default_n.texture'],
                     lambda at: [(tp.GRAPH_SLOT_SECTION, slot_rows(list(zip(at, (c, g, n)))))])
         material = dat1([graph, 't/spec_named_c.texture', 't/albedo_no_suffix.texture'],
-                       lambda at: [(tp.MATERIAL_SLOT_SECTION, slot_rows([(at[1], g), (at[2], c)]))])
+                       lambda at: [(tp.MATERIAL_SLOT_SECTION, slot_rows([(at[1], g), (at[2], c)])),
+                                   (tp.MATERIAL_FLAGS_SECTION, flags(0x230, alpha_reference=89))])
         archive = FakeArchive({'m/leaf.material': ('material', material), graph: ('materialgraph', blob)})
         params = dict(parameters=[], unsupported_parameters=[
             dict(key_hash=0x62835AF9, size=4, raw_hex=struct.pack('<f', 0.0).hex()),
@@ -152,8 +153,8 @@ class TexturePreviewTests(unittest.TestCase):
         self.assertEqual(paths['g_mode'], 'grey'); self.assertEqual(paths['k'], 0.0)
         self.assertEqual(paths['spec'], 0.0); self.assertEqual(paths['gloss'], 1.0)
         self.assertTrue(entry['foliage']); self.assertEqual(entry['_g']['path'], paths['_g'])
-        self.assertEqual(paths['alpha_cut'], tp.FOLIAGE_ALPHA_CUTOFF)
-        self.assertEqual(entry['alpha_cut'], tp.FOLIAGE_ALPHA_CUTOFF)
+        self.assertEqual(paths['alpha_cut'], 0.3490196168422699)  # Novalis grass: CPU float32(89/255)
+        self.assertEqual(entry['alpha_cut'], paths['alpha_cut'])
 
     def test_leaf_cutout_is_exact_per_graph_and_off_for_other_graphs(self):
         base = 'materialgraph/environment/global/plant/gbl_plant_tree_foliage_transparent_01/'
@@ -169,20 +170,41 @@ class TexturePreviewTests(unittest.TestCase):
         self.assertEqual(tp._graph_rule([graphs[1]]), dict(alpha_cut=True))
         # The split-face sibling and other foliage graphs have no decoded writer here.
         self.assertEqual(tp._graph_rule(['materialgraph/global/basic_foliage_split_face_texture/basic_foliage_split_face_texture.materialgraph']), {})
-        self.assertEqual(tp.FOLIAGE_ALPHA_CUTOFF, 0.5)   # inferred default, see the constant's comment
+        self.assertEqual(tp.FOLIAGE_ALPHA_CUTOFF_FALLBACK, 0.5)  # only missing/truncated material state
 
     def test_tree_material_reads_alpha_cut_without_changing_generic_roles(self):
         from unittest.mock import patch
         graph = 'materialgraph/environment/global/plant/gbl_plant_tree_foliage_transparent_01/rp_nov_plant_tree_foliage_transparent.materialgraph'
         blob = dat1(['t/leaf_c.texture', 't/leaf_n.texture'], lambda at: [])
-        material = dat1([graph, 't/leaf_c.texture'], lambda at: [(tp.MATERIAL_FLAGS_SECTION, flags(0x23C))])
+        material = dat1([graph, 't/leaf_c.texture'], lambda at: [(tp.MATERIAL_FLAGS_SECTION, flags(0x23C, alpha_reference=104))])
         archive = FakeArchive({'m/leaf.material': ('material', material), graph: ('materialgraph', blob)})
         with patch.object(tp, 'load_texture', side_effect=lambda _, p: dict(path=p, pixels=b'', format=61)):
             paths = tp.material_texture_paths(archive, 'm/leaf.material')
             entry = tp.material_textures(archive, [dict(index=0, path='m/leaf.material')], {})[0]
-        self.assertEqual(paths['alpha_cut'], 0.5); self.assertEqual(entry['alpha_cut'], 0.5)
+        self.assertEqual(paths['alpha_cut'], 0.4078431725502014); self.assertEqual(entry['alpha_cut'], paths['alpha_cut'])
         self.assertEqual(paths['g_mode'], 'colored'); self.assertNotIn('foliage', paths)
         self.assertEqual(tp.blend_state(0x23C), dict(blend='opaque', two_sided=True))   # opaque, two-sided: alpha test, no blend
+
+    def test_foliage_cutoff_material_bytes_sum_clamp_zero_and_loader_floor(self):
+        # CPU trace receipts: static-mesh material bytes, including nonzero byte20 and zero.
+        cases = [(0x230, 0, 107, 0.41960787773132324),
+                 (0x23C, 0, 112, 0.4392157196998596),
+                 (0x234, 45, 0, 0.1764705926179886),
+                 (0x230, 231, 0, 0.9058824181556702),
+                 (0x230, 200, 200, 1.), (0x230, 0, 255, 1.),
+                 (0x230, 0, 0, 0.), (1, 0, 0, 0.01568627543747425),
+                 (0x81, 0, 0, 0.)]
+        for word, base, reference, expected in cases:
+            with self.subTest(flags=word, base=base, reference=reference):
+                data = b'1TAD' + dat1([], lambda at: [(tp.MATERIAL_FLAGS_SECTION, flags(word, base, reference))])
+                self.assertEqual(tp._foliage_alpha_cutoff(data), expected)
+
+    def test_foliage_cutoff_missing_truncated_and_out_of_bounds_state_falls_back(self):
+        for section in (None, bytes(20), bytes(21)):
+            data = b'1TAD' + dat1([], lambda at: [] if section is None else [(tp.MATERIAL_FLAGS_SECTION, section)])
+            self.assertEqual(tp._foliage_alpha_cutoff(data), tp.FOLIAGE_ALPHA_CUTOFF_FALLBACK)
+        data = b'1TAD' + dat1([], lambda at: [(tp.MATERIAL_FLAGS_SECTION, flags(0x230, 0, 89))])
+        self.assertEqual(tp._foliage_alpha_cutoff(data[:-1]), tp.FOLIAGE_ALPHA_CUTOFF_FALLBACK)
 
     def test_glow_mask_graphs_are_distinct_and_bind_serialized_slots(self):
         from unittest.mock import patch
