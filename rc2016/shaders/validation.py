@@ -428,6 +428,8 @@ def _viewer_expected_constants(rule):
         e.update({"facing glow albedo": f["albedo"], "facing glow bias": f["bias"], "facing glow exponent": f["exponent"],
                   "facing glow a scale": f["a_scale"], "facing glow a offset": f["a_offset"],
                   "facing glow amplitude": f["amplitude"], "facing glow g scale": f["g_scale"]})
+    if "alpha_cut" in ported:
+        e["alpha cut threshold"] = terms["alpha_cut"]
     if "screen" in ported:
         p = terms["screen"]["params"]
         e.update({"screen grid": p["grid"], "screen alpha base": p["alpha_base"], "screen mask strength": p["mask_strength"],
@@ -487,6 +489,8 @@ def _viewer_required(rule, has_n):
     if "facing_glow" in ported:
         names += ["facing glow albedo", "facing glow bias", "facing glow exponent", "facing glow a scale",
                   "facing glow a offset", "facing glow amplitude", "facing glow g scale"]
+    if "alpha_cut" in ported:
+        names.append("alpha cut threshold"); req("_c")
     if "screen" in ported:
         names += ["screen alpha base", "screen mask strength", "screen colour A", "screen colour B", "screen intensity A",
                   "screen intensity B"] + (["screen grid"] if tex.get("_n") else [])
@@ -556,13 +560,21 @@ def _validate_viewer_rule_material(source, material):
     brdf = _from_node(output.inputs["Surface"])
     facing = "facing_glow" in ported
     extra = ()
+    if "alpha_cut" in ported:   # Surface = Mix(Transparent, shader, _c.a >= threshold)
+        mix = brdf
+        assert mix and mix.type == "MIX_SHADER" and mix.name == "VR alpha cut mix", "Leaf cut-out is not the surface mix"
+        clear = _from_node(mix.inputs[1])
+        assert clear and clear.type == "BSDF_TRANSPARENT" and clear.name == "VR alpha cut transparent",             "Leaf cut-out hole is not a transparent shader"
+        assert mix.inputs[0].is_linked and any(node.type == "TEX_IMAGE" and str(node.get("source_texture_path", "")).lower() ==
+            (rule["textures"].get("_c") or "").lower() for node in _viewer_upstream(mix.inputs[0])), "Leaf cut-out factor does not read the _c alpha"
+        brdf, extra = _from_node(mix.inputs[2]), (mix.inputs[0],)
     if facing:   # Surface = Add(BRDF, facing-glow emission)
         add = brdf
         assert add and add.type == "ADD_SHADER" and add.name == "VR facing glow add", "Facing glow is not added at the output"
         emission = _from_node(add.inputs[1])
         assert emission and emission.type == "EMISSION" and emission.name == "VR facing glow emission" and \
             abs(emission.inputs["Strength"].default_value - 1.0) < 1e-6, "Facing glow emission is not the second Add input"
-        brdf, extra = _from_node(add.inputs[0]), tuple(emission.inputs)
+        brdf, extra = _from_node(add.inputs[0]), (*extra, *emission.inputs)
     assert brdf and brdf.type == "GROUP" and brdf.node_tree and brdf.node_tree.name == DEFERRED_GROUP, \
         "Deferred BRDF is not the active Material Output surface"
     upstream = _viewer_upstream(*brdf.inputs, *extra)

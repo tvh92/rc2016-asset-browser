@@ -431,7 +431,7 @@ def classify_absent_texture(path, refs, material_data, graph_datas):
 # Viewer reading keys that change the result beyond the generic _g/self-lit front-end
 # ('screen' is the viewer's forward 'screen' entry; 'bng'/'bng_detail' the basic_normal_gloss variants).
 VIEWER_RULE_EXTRAS=('pick','tint','spec_tint','arch_sequence','vehicle','glow','two_color_metal','puddles',
-    'foliage','za_fresnel_power','screen','rock_blend','bng','bng_detail','facing_glow','parallax')
+    'foliage','za_fresnel_power','screen','rock_blend','bng','bng_detail','facing_glow','parallax','alpha_cut')
 # Terms rc_game_shader.apply_viewer_graph_rule builds (same GLSL math as gl_shading.FRAGMENT/GLASS_FRAGMENT).
 VIEWER_RULE_BUILT=frozenset(VIEWER_RULE_EXTRAS)-{'parallax'}
 # Extra source images each term samples (texture_preview.material_texture_paths roles).
@@ -507,7 +507,7 @@ def viewer_graph_rule(archive, material_path, bound_paths=None):
         else:ported.append(key);continue
         unported.append(key)
     terms={key:paths[key] for key in ('pick','tint','spec_tint','arch_sequence','vehicle','glow','two_color_metal',
-        'puddles','za_fresnel_power','rock_blend','bng','facing_glow','parallax') if key in paths and key in present+['bng']}
+        'puddles','za_fresnel_power','rock_blend','bng','facing_glow','parallax','alpha_cut') if key in paths and key in present+['bng']}
     if forward:terms['screen']=forward
     linear_z=bool(bng) or any(key in present for key in VIEWER_LINEAR_Z_TERMS) or bool((paths.get('tint') or {}).get('variant'))
     rule=dict(applies=True,schema='rcps4-viewer-graph-rule-v2',
