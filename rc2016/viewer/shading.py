@@ -245,6 +245,18 @@ vec3 ggx(vec3 N, vec3 V, vec3 L, vec3 F0, vec3 F90, float a) {
     vec3 F = F0 + (F90 - F0) * pow(1.0 - max(dot(V, H), 0.0), 5.0);
     return D * G * F / max(4.0 * NdL * NdV, 1e-4) * NdL;
 }
+// Shared surface lighting: hand rules and native DAGs use identical closures.
+vec3 deferredDiffuse(vec3 N, vec3 albedo) {
+    return albedo * (max(dot(N, rigKey()), 0.0) * keyColour()
+        + max(dot(N, rigFill()), 0.0) * fillColour() + ambientLight(N)) / PI * diffuseScale();
+}
+vec3 deferredSpecular(vec3 N, vec3 V, vec3 F0, float gloss) {
+    vec3 F90 = clamp(60.0 * F0, 0.0, 1.0);
+    float a = pow(2.0, -5.5 * gloss);
+    return ggx(N,V,rigKey(),F0,F90,a)*keyColour()
+        + ggx(N,V,rigFill(),F0,F90,a)*fillColour()
+        + envSpecular(N,V,F0,F90,a,ambientLight(N));
+}
 // DB75867B material and terminal terms; frozen runtime leaves are stored in metadata.
 vec3 puddleShade(vec3 G, vec3 V, vec3 c, vec2 g) {
     vec3 wp = -vTintWorldPos; // CB0[28..30] origin frozen to zero; native Y-up
@@ -493,7 +505,7 @@ void main() {
         albedo = glowMask * (uGlowColour + uGlowP.z * ambient);
     }
     albedo *= parallaxShadowWeight; // source MRT1 shadow AFTER tint, not specular
-    vec3 color = albedo * (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
+    vec3 color = deferredDiffuse(N, albedo);
     if (uMode == 2) {
         vec4 g = uHasG ? texture2D(uTexG, materialUV) : vec4(0.0);
         vec3 gl = uSrgbG ? linear(g.rgb) : g.rgb;
@@ -522,8 +534,7 @@ void main() {
             vec3 F90 = clamp(60.0 * F0, 0.0, 1.0);
             float a = pow(2.0, -5.5 * gloss);
             // Two-color T multiplies the accumulated specular lighting after GGX/F90.
-            color += metalSpecTint * (ggx(N, V, L1, F0, F90, a) * C1 + ggx(N, V, L2, F0, F90, a) * C2);
-            color += metalSpecTint * envSpecular(N, V, F0, F90, a, ambient);
+            color += metalSpecTint * deferredSpecular(N, V, F0, gloss);
         }
         if (uGlowKind == 1) { // %7398-7440: mask and offset parallax R, K=0x06F19114
             float p = uHasGlowParallax ? texture2D(uTexGlowParallax, glowParallaxUV).r : 0.0;
@@ -872,6 +883,19 @@ class Shading:
         if size not in self.programs:
             self.programs[size] = (*self._link(VERTEX, FRAGMENT, dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE), OPAQUE_UNIFORMS), size)
         return self.programs[size]
+
+    def native_program(self, translation, srgb, instanced=False):
+        from rc2016.viewer.native_glsl import fragment_source
+        from rc2016.viewer.native_glsl import EMITTER_VERSION
+        vertex = INSTANCED_VERTEX if instanced else VERTEX
+        key = ('native', EMITTER_VERSION, instanced, translation['translation_sha256'],
+               tuple(sorted(srgb.items())), FRAGMENT, vertex)
+        if key not in self.programs:
+            surface = fragment_source(translation, srgb)
+            names = (*OPAQUE_UNIFORMS, *(s['uniform'] for s in surface['samplers']))
+            attributes = INSTANCE_ATTRIBUTES if instanced else dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE)
+            self.programs[key] = self._link(vertex, surface['source'], attributes, names)
+        return self.programs[key]
 
     def glass_program(self):
         """The forward (glass) program: same vertex shader and attributes, GLASS_FRAGMENT."""

@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 REST_POSE = 'Rest pose (no animation)'
 
 
-def source_details(payload, used_by=''):
+def source_details(payload, used_by='', native_translation=True):
     """Details tab text for one decoded source model, read from the game files only."""
     lines = [payload['source_path'], f"Asset ID: {payload['model_id']}"]
     if used_by:
@@ -32,7 +32,14 @@ def source_details(payload, used_by=''):
     for i, m in enumerate(materials):
         lines.append(f"  {m.get('index', i)}: {m.get('name') or '(unnamed)'}" + (f" — {m['path']}" if m.get('path') else ' — no material file'))
         if m.get('rule_kind'):
-            lines.append('      ' + rule_text(m))
+            shown = m
+            if not native_translation and m.get('rule_kind') == 'native translation':
+                from rc2016.formats.links import rule_coverage
+                kind, rule = rule_coverage(m.get('graphs') or [])
+                shown = dict(m, rule_kind=kind, rule=rule)
+            lines.append('      ' + rule_text(shown))
+            for limitation in m.get('native_limitations', ()):
+                lines.append('        ' + limitation)
     textures = payload.get('texture_list') or []
     graph = sum(1 for t in textures if t.get('via_graph'))
     lines.append(f"Textures: {len(textures)}" + (f" ({graph} graph defaults)" if graph else '') + ' — listed in the Textures tab')
@@ -51,6 +58,8 @@ def rule_text(material):
     stem = lambda path: path.rsplit('/', 1)[-1].rsplit('.', 1)[0]
     graphs = ', '.join(stem(g) for g in material.get('graphs') or []) or 'none'
     kind = material['rule_kind']
+    if kind == 'native translation':
+        return f"shading: native translation — bounded deferred surface of graph {graphs}; game equivalence false"
     if kind == 'exact rule':
         return f'shading: exact rule — decoded writer of graph {graphs}'
     if kind == 'family fallback':
@@ -205,6 +214,9 @@ class AssetBrowser:
         mode_box=ttk.Combobox(native,textvariable=self.view_mode,values=self.viewport.MODES,state='readonly',width=17)
         mode_box.pack(side='left',padx=4)
         mode_box.bind('<<ComboboxSelected>>',lambda _e:self.viewport.set_mode(self.view_mode.get()))
+        self.native_translation_var=self.tk.BooleanVar(value=True)
+        ttk.Checkbutton(native,text='Native translation',variable=self.native_translation_var,
+                        command=self._native_translation_changed).pack(side='left',padx=4)
         self.lighting_var=self.tk.StringVar(value=self.viewport.LIGHTINGS[0]);self.tonemap_var=self.tk.StringVar(value=self.viewport.TONEMAPS[0])
         light_row=ttk.Frame(view);light_row.grid(row=2,column=0,sticky='ew',pady=(0,6))
         lighting_controls(ttk,light_row,self.viewport,self.lighting_var,self.tonemap_var)
@@ -748,7 +760,7 @@ class AssetBrowser:
         if not payload or (payload['model_id'],payload['source_path'])!=(clips['model_id'],clips['source_path']):return
         payload.update(clips=clips['clips'],animsets=clips['animsets'],animation_note=clips['animation_note'],animation_pending=False)
         self._set_clips(payload)
-        self.source_text=source_details(payload,getattr(self.selected_record,'used_by','') or '')
+        self.source_text=source_details(payload,getattr(self.selected_record,'used_by','') or '',self.viewport.native_translation)
         self._render_details()
 
     def _fill_clip_menu(self,clips):
@@ -972,6 +984,13 @@ class AssetBrowser:
         self.description.configure(state='normal');self.description.delete('1.0','end')
         self.description.insert('1.0',message);self.description.configure(state='disabled')
 
+    def _native_translation_changed(self):
+        self.viewport.set_native_translation(self.native_translation_var.get())
+        if self.source_payload:
+            self.source_text = source_details(self.source_payload, getattr(self.selected_record,'used_by','') or '',
+                                              self.viewport.native_translation)
+            self._render_details()
+
     def _render_details(self):
         # Source facts from the game files first; a saved build in the output root, when present, below.
         parts=[self.source_text or 'Loading the model from the game files…']
@@ -1094,7 +1113,7 @@ class AssetBrowser:
                             self.clip_list_work.submit(self.source_loader.load_animation,self.source_selection[0],
                                                        payload['model_id'],payload['source_path'],self.source_output_root)
                         self._set_texture_list(payload)
-                        self.source_text=source_details(payload,getattr(self.selected_record,'used_by','') or '')
+                        self.source_text=source_details(payload,getattr(self.selected_record,'used_by','') or '',self.viewport.native_translation)
                         self._request_placements(payload['source_path'])
                         self._render_details()
                         if self.viewport.shading_error:self.model_info.set(self.model_info.get()+'\n'+self.viewport.shading_error)

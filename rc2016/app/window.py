@@ -80,6 +80,7 @@ HELP = {
         "NO ANIMSET: no animation found for this model"),
     "shading": (
         "Filter by the viewer shading rule of the model's materials (Details lists it per slot):\n"
+        "Native translation: at least one material uses a bounded native deferred surface DAG.\n"
         "Generic reading: at least one material graph has no decoded rule, so _g is read as coloured "
         "F0 + gloss alpha; a to-do list for decoding.\n"
         "Family fallback: at least one graph only matches a family rule (basic_skin, "
@@ -88,7 +89,7 @@ HELP = {
         "Exact rules only: every material has a decoded writer rule.\n\n"
         "The first use indexes the archive's asset links (about half a minute, once)."),
 }
-SHADING_FILTERS = {"Generic reading": "generic reading", "Family fallback": "family fallback",
+SHADING_FILTERS = {"Native translation": "native translation", "Generic reading": "generic reading", "Family fallback": "family fallback",
                    "No material graph": "no material graph", "Exact rules only": None}
 
 

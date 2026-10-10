@@ -166,7 +166,7 @@ A new load cancels the previous one (generation counter; stale events are droppe
 - Each model keeps its instances per zone on the CPU and has one instance buffer per handedness and set of effective material changes, holding the instances of every visible zone. Toggling a zone rebuilds only the affected models' buffers.
 - Each (model, instance buffer) has a vertex array object (OpenGL 3.0) holding the position, normal and UV arrays, the index buffer and the four matrix-row attributes (10-13, `INSTANCED_VERTEX` in `rc2016/viewer/shading.py`) with divisor 1, so a draw binds one object. Instancing needs OpenGL 3.3; otherwise the view reports which entry point is missing.
 - Material overrides keep the model's one geometry upload. `draw_items` picks each batch's material per instance buffer (override or slot default); buffers that agree on it share a draw, so an override changes only the instances that carry it. Blend, cull and forward (glass) handling follow the effective material. **Instance material overrides** (on by default) switches them off for comparison.
-- Batches of one model with the same material and instance buffers that follow each other in the index buffer merge into one draw. Material uniforms and texture bindings are recorded once per material (`_Recorder` around `ModelViewport._apply_material`), and only the ones that differ from the current state are issued. `glFrontFace` is set only when handedness changes. Draws stay sorted by material.
+- Batches of one model with the same material and instance buffers that follow each other in the index buffer merge into one draw. Material uniforms and texture bindings are recorded once per material (`_Recorder` around `ModelViewport._apply_material`), and only the ones that differ from the current state are issued. `glFrontFace` is set only when handedness changes. Draws stay sorted by native program then material; recorded uniform locations and values are specific to the program.
 - Normals use the cofactor matrix times sign(det), so sheared and mirrored instances shade correctly. Mirrored groups draw with `glFrontFace(GL_CW)` so `gl_FrontFacing` keeps meaning "outside".
 - Forward-shaded (glass) materials draw after all opaque ones with material blend and cull state and no depth write. Instances are not depth-sorted.
 - Lighting and tonemap use the model viewer's selectors ([Lighting and tonemap](viewer.md#lighting-and-tonemap)). The Viewer rig is fixed to the world (rig right = +X, up = +Z, towards the viewer = -Y in Blender's Z-up world), so lighting does not shift while orbiting or flying. Shared HDRI lights the level from the shared review HDRI, with level directions taken through the presentation basis. This is not game lighting.
@@ -174,7 +174,7 @@ A new load cancels the previous one (generation counter; stale events are droppe
 
 ### Modes
 
-`Shaded` (model-viewer material rules), `Textured`, `Solid`, `Wireframe`, `Solid + wireframe`. Batches without UV0 draw as Solid.
+`Shaded` (model-viewer rules and eligible native translations), `Textured`, `Solid`, `Wireframe`, `Solid + wireframe`. Batches without UV0 draw as Solid.
 
 ### Hidden by default
 
@@ -199,7 +199,7 @@ Models whose path contains `collision` or `environment/template/` (for example `
 | Left click (no drag) | Identify the model under the pointer |
 | Double click | Open the identified model in the Model tab (asset browser) and load it; it does not reset the camera |
 
-Zone list: per-zone checkbox with placed-instance count, **All** / **None** buttons. The side column also has the **Lighting** (`Viewer rig` or `Shared HDRI`) and **Tonemap** (`ACES fit` or `Khronos PBR Neutral`) selectors, which work as in the model viewer ([Lighting and tonemap](viewer.md#lighting-and-tonemap)), and the **Show collision/template models**, **Instance material overrides** and **Sky (atmosphere cloud dome)** checkboxes. The status line shows load state, zone and model counts, failures, material and texture counts, the number of instances drawn with material overrides and of override entries not applied, the sky (cloud domes drawn, sky meshes not ported, captured clear sky or flat background), visible instances and triangles, draw calls, frame time (ms) and speed.
+Zone list: per-zone checkbox with placed-instance count, **All** / **None** buttons. The side column also has the **Lighting** (`Viewer rig` or `Shared HDRI`) and **Tonemap** (`ACES fit` or `Khronos PBR Neutral`) selectors, which work as in the model viewer ([Lighting and tonemap](viewer.md#lighting-and-tonemap)), and the **Show collision/template models**, **Instance material overrides**, **Native translation** and **Sky (atmosphere cloud dome)** checkboxes. Native translation is on by default, affects Shaded mode only and switches surface frontends without moving the camera. The status line shows load state, zone and model counts, failures, material and texture counts, the number of instances drawn with material overrides and of override entries not applied, the sky (cloud domes drawn, sky meshes not ported, captured clear sky or flat background), visible instances and triangles, draw calls, frame time (ms) and speed.
 
 ### Click to identify
 
@@ -213,7 +213,7 @@ python -m rc2016.levels.viewer [--source-root <extracted game folder>]
                                [--zones a,b,...]
                                [--mode Shaded|Textured|Solid|Wireframe|"Solid + wireframe"]
                                [--capture out.png] [--camera x,y,z,yaw,pitch]
-                               [--no-material-overrides] [--no-sky]
+                               [--no-material-overrides] [--no-native-translation] [--no-sky]
 ```
 
 | Option | Meaning |
@@ -225,6 +225,7 @@ python -m rc2016.levels.viewer [--source-root <extracted game folder>]
 | `--capture` | Load the level, write one frame as an RGB PNG and exit |
 | `--camera` | Camera `x,y,z` (presentation space, Z-up), yaw and pitch in degrees, applied after loading; alone it leaves the window open |
 | `--no-material-overrides` | Start with **Instance material overrides** off (for before/after captures with the same camera) |
+| `--no-native-translation` | Start with **Native translation** off (hand rules and generic/family readings) |
 | `--no-sky` | Start with **Sky** off (flat background) |
 
 `--capture` and `--camera` take effect when loading finishes. With `--capture` the settings file is not updated and the process prints the capture path, success flag, load timings (including the override outcome counts) and view stats.
@@ -243,11 +244,20 @@ Measured on an RTX 3060: median frame time including GPU work (`glFinish`), and 
 
 Draw counts include material overrides (without them: 424 and 829 for the two Novalis rows; Veldin has one overridden instance). Frame times were measured before overrides were drawn; the full Novalis level still captures at about 10 ms CPU time with them. The frames are rendered identically to drawing each zone separately (pixel-identical capture checked). Call overhead is about 7 ms per frame; the full Novalis and Veldin levels are bound by GPU work. All 286 Novalis models decode, including `tb_sewer_pipe_large_end`.
 
+Full-Novalis native-toggle comparison on an RTX 3060: 1216x873 viewport, camera `118,-418,345,90,-35`, Viewer rig / ACES fit, sky and material overrides enabled. Four alternating blocks measured 60 frames each after 10 warm-up frames, with `glFinish` after each draw:
+
+| Native translation | Frame median | CPU median | Opaque program selections |
+| --- | --- | --- | --- |
+| Off | 15.54 ms | 9.77 ms | 1 |
+| On | 15.66 ms | 10.13 ms | 10 |
+
+Both draw 989 batches and 13,418,448 triangles. The 0.12 ms frame difference is smaller than the variation between blocks (off medians 15.20-15.96 ms; on 15.44-15.90 ms). These paired measurements include the current sky and overrides; the earlier approximate 11 ms reference uses different conditions. The captured frame routes 9 effective materials across 4 graphs through translation; the base-material eligibility count is 9 across 5 graphs because visibility, UV availability and replacements affect actual draws. A control frame using the original fragment source is pixel-identical to the shared-BRDF hand path.
+
 For ranked structural candidates, dat1lib cross-checks and serialized schemas across the archive, see [corpus research](research.md). Inferred layouts remain hypotheses until independently decoded and validated.
 
 ## Known limitations
 
-- Materials: foliage is cut out by `_c` alpha ([leaf cut-out](viewer.md#leaf-cut-out)), but the threshold is inferred (0.5; the game reads it from a runtime per-instance record) and the near-camera fade, dither and normal fade are omitted; large planes whose materials have no `_c` texture draw flat white (some Novalis surfaces, Veldin's large ground / backdrop plane). Terrain layer textures and other layered or foliage graphs are not fully translated. The research notes counted 88 of 222 Novalis environment materials as unsupported graphs (colour-only fallbacks in the Blender path). In the viewer's rule coverage, the 235 materials of models placed in Novalis zones are 183 exact rule, 4 family fallback and 48 generic reading (see [rule coverage](viewer.md#rule-coverage)).
+- Materials: foliage is cut out by `_c` alpha ([leaf cut-out](viewer.md#leaf-cut-out)) at each material's decoded static-mesh threshold; runtime draw cut/fade, the near-camera fade, dither and normal fade are omitted. Large planes whose materials have no `_c` texture draw flat white (some Novalis surfaces, Veldin's large ground / backdrop plane). Terrain layer textures and other layered or foliage graphs are not fully translated. The research notes counted 88 of 222 Novalis environment materials as unsupported graphs (colour-only fallbacks in the Blender path). In the viewer's rule coverage, the 233 materials of models placed in Novalis zones are 183 exact rule, 9 native translation across 5 graphs, 4 family fallback and 37 generic reading (see [rule coverage](viewer.md#rule-coverage)).
 - Water: the `pok_uniq_water` replacement materials on the ocean and pool planes draw with the [water preview](viewer.md#glass-and-forward-materials), an approximation, not the game's water shader. Planes that two overrides stack at one position draw both layers.
 - Replacement materials go through the same rules as other materials; they are not included in the rule-coverage counts above (with overrides, 292 materials load for Novalis).
 - Material-override entries whose slot name the placed model lacks (22% of entries) are not applied. Whether the game applies them some other way (for example by slot position) is not known; they are counted on the status line.

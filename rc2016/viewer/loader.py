@@ -54,7 +54,7 @@ def mesh_payload(decoded, lod='Highest', look=0):
 
 def material_rules(archive, materials):
     """{material path: {'graphs', 'rule_kind', 'rule'}}: which viewer shading rule each material gets
-    (rc2016.formats.links.rule_coverage: exact rule, family fallback, generic reading)."""
+    (exact rule, selected native translation, family fallback or generic reading)."""
     from rc2016.formats.index import references
     from rc2016.formats.links import rule_coverage
     rules={}
@@ -68,8 +68,12 @@ def material_rules(archive, materials):
                     if not r.get('resolution_error') and r['path'].endswith('.materialgraph')]
         except (ValueError,KeyError,OSError):
             continue
-        kind,rule=rule_coverage(graphs)
-        rules[path]=dict(graphs=graphs,rule_kind=kind,rule=rule)
+        from rc2016.viewer.native_glsl import selected_translation
+        try: native = selected_translation(archive, path)
+        except (ValueError, KeyError, IndexError, OSError): native = None
+        kind,rule=rule_coverage(graphs, native)
+        rules[path]=dict(graphs=graphs,rule_kind=kind,rule=rule,
+                         native_limitations=native.get('limitations', []) if native else [])
     return rules
 
 

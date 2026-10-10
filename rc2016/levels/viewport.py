@@ -255,8 +255,10 @@ class LevelViewport(ModelViewport):
         for path, entry in entries.items():
             if path not in self._materials:
                 self._materials[path] = self._gl_entry(entry, self._texture_names)
-                for level in (0, 1, 2):
-                    self._material_ops.pop((path, level), None)
+                # Early frames can record an empty entry before its textures arrive.
+                # Invalidate every mode/program variant of that material.
+                for key in [k for k in self._material_ops if k[0] == path]:
+                    self._material_ops.pop(key)
         self._gl.glBindTexture(self.GL_TEXTURE_2D, 0)
         self._draw_list = None
         self._schedule_draw()
@@ -297,7 +299,8 @@ class LevelViewport(ModelViewport):
                     triangles=sum(t * n for t, n in counts),
                     materials=len(self._materials), textures=sum(1 for v in self._texture_names.values() if v),
                     draws=len(self._draw_list or ()), draw_ms=self.last_draw_ms, speed=self._speed,
-                    eye=self._eye, yaw=self._yaw, pitch=self._pitch)
+                    eye=self._eye, yaw=self._yaw, pitch=self._pitch,
+                    native_translation=self.native_translation, program_switches=self.native_program_switches)
 
     def clear(self, message="Loading level…"):
         if self._make_current():
@@ -441,6 +444,12 @@ class LevelViewport(ModelViewport):
         self._merge_groups()
         self._draw_list = draw_items(self._models.values(), self._level(), self._visible_groups,
                                      self.material_overrides)
+        # Keep all draws of one native program together, then retain material/model ordering.
+        def program_key(item):
+            key = item[0]; entry = self._materials.get(key[0]) or {}
+            t = entry.get('native_translation') if self.native_translation and key[1] == 2 else None
+            return (t['translation_sha256'] if t else '', key, item[1]['path'])
+        self._draw_list.sort(key=program_key)
 
     def _setup_camera(self, width, height):
         gl = self._gl
@@ -501,7 +510,8 @@ class LevelViewport(ModelViewport):
 
         The material's calls are recorded once ({location: (function, args)}, {(unit, target): texture});
         the dict-view differences against the state run in C, so an unchanged uniform costs nothing."""
-        ops = self._material_ops.get(key)
+        cache_key = (*key, self._active_surface_program)
+        ops = self._material_ops.get(cache_key)
         if ops is None:
             recorder = _Recorder(self._gl, self._shading)
             gl, sh = self._gl, self._shading
@@ -516,7 +526,7 @@ class LevelViewport(ModelViewport):
                     uniforms[op[1]] = (op[2], op[3])
                 else:
                     textures[(op[1], op[2])] = op[3]
-            ops = self._material_ops[key] = (uniforms, textures)
+            ops = self._material_ops[cache_key] = (uniforms, textures)
         gl, sh = self._gl, self._shading
         changed = ops[0].items() - self._uniform_state.items()
         for location, (name, args) in changed:
@@ -537,6 +547,9 @@ class LevelViewport(ModelViewport):
         gl, sh = self._gl, self._shading
         program, u = sh.instanced_program()
         sh.glUseProgram(program)
+        base_program, base_u = program, u
+        self._active_surface_program = program
+        self.native_program_switches = 1
         self._apply_lighting(u)
         for unit, name in ((TINT_DETAIL_TEXTURE_UNIT, "uTexTintDetail"), (0, "uTexC"), (1, "uTexG"), (2, "uTexN"),
                            (PICK_TEXTURE_UNIT, "uTexP"), (TINT_MASK_TEXTURE_UNIT, "uTexH"), (ARCH_SEQUENCE_TEXTURE_UNIT, "uTexSequence"),
@@ -559,6 +572,20 @@ class LevelViewport(ModelViewport):
                 if key[1] == 2 and entry.get("forward"):
                     glass.append(item)
                     continue
+                next_program, next_u = self._surface_program(entry, key[1], instanced=True)
+                if next_program != program:
+                    program, u = next_program, next_u
+                    sh.glUseProgram(program); self._apply_lighting(u)
+                    sh.glUniform3f(u['uColor'], 0.72, 0.74, 0.78)
+                    for unit, name in ((0,'uTexC'),(1,'uTexG'),(2,'uTexN'),(PICK_TEXTURE_UNIT,'uTexP'),
+                                      (TINT_MASK_TEXTURE_UNIT,'uTexH'),(ARCH_SEQUENCE_TEXTURE_UNIT,'uTexSequence'),
+                                      (BNG_DETAIL_TEXTURE_UNIT,'uTexBngDetail'),(VEHICLE_PALETTE_TEXTURE_UNIT,'uTexVehicleP2'),
+                                      (TINT_DETAIL_TEXTURE_UNIT,'uTexTintDetail'),(GLOW_PARALLAX_TEXTURE_UNIT,'uTexGlowParallax')):
+                        sh.glUniform1i(u[name], unit)
+                    self._active_surface_program = program
+                    self.native_program_switches += 1
+                    self._uniform_state, self._active_unit = {}, None
+                    current = None
                 if key != current:
                     mode_state = ("glUniform1i", (key[1],))
                     if self._uniform_state.get(u["uMode"]) != mode_state:
@@ -568,6 +595,8 @@ class LevelViewport(ModelViewport):
                     current = key
                 self._draw_span(model, span, groups)
             gl.glDisable(self.GL_POLYGON_OFFSET_FILL)
+            program, u = base_program, base_u
+            sh.glUseProgram(program)
             if glass:
                 self._draw_level_glass(glass)
                 sh.glUseProgram(program)

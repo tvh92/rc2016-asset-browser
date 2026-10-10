@@ -681,7 +681,7 @@ def texture_header(archive, texture_path: str) -> dict:
     if len(built) != 1:
         raise ValueError(f'Texture {texture_path} has {len(built)} built assets')
     info = parse_header(decompress(archive.bytes(built[0])[0])[0])
-    return {k: v for k, v in info.items() if k in ('format', 'hd_width', 'hd_height', 'sd_width', 'sd_height')}
+    return {k: v for k, v in info.items() if k in ('format', 'hd_width', 'hd_height', 'sd_width', 'sd_height', 'array_size')}
 
 
 # Pillow lacks the sRGB twins of BC1-BC3; their blocks are identical, only the
@@ -941,5 +941,24 @@ def material_textures(archive, materials: list[dict], cache: dict) -> dict[int, 
                     entry['rock_blend'] = dict(entry['rock_blend'], unresolved_second_layer=True, volume_error=str(exc))
             else:
                 entry['rock_blend'] = dict(entry['rock_blend'], unresolved_second_layer=True)
+        if material.get('path'):
+            from rc2016.viewer.native_glsl import selected_translation
+            try:
+                translated = selected_translation(archive, material['path'], paths)
+                if translated:
+                    native_textures = {}
+                    for binding in translated['texture_bindings']:
+                        path = binding['path']
+                        if path not in cache: cache[path] = load_texture(archive, path)
+                        # Native uploads use a separate sRGB/linear GL object. A hand
+                        # upload of this path may already have released its CPU pixels.
+                        texture = _with_pixels(archive, cache, path)
+                        if not texture or texture.get('array_size', 1) != 1:
+                            raise ValueError('Native source texture unavailable or not 2D: ' + path)
+                        native_textures[binding['api']] = texture
+                    entry['native_translation'] = translated
+                    entry['native_textures'] = native_textures
+            except (ValueError, KeyError, IndexError, OSError) as exc:
+                entry['native_error'] = str(exc)
         result[material['index']] = entry
     return result
