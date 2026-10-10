@@ -3,7 +3,7 @@ import math
 import unittest
 import zlib
 
-from rc2016.levels.panel import zone_names
+from rc2016.levels.panel import drop_uploaded_pixels, zone_names
 from rc2016.levels.scene import core_bounds, hidden_by_default, mirrored, zone_label
 from rc2016.levels.viewport import BASIS, look_vectors, overview_camera, png_bytes, view_matrix
 
@@ -77,6 +77,31 @@ class LevelSceneTests(unittest.TestCase):
         self.assertTrue(data.startswith(b"\x89PNG"))
         idat = data[data.index(b"IDAT") + 4:data.index(b"IEND") - 8]
         self.assertEqual(zlib.decompress(idat), b"\x00\x04\x05\x06\x00\x01\x02\x03")
+
+
+class LevelTextureCacheTests(unittest.TestCase):
+    def test_only_uploaded_large_textures_lose_their_pixels(self):
+        def texture(path, size):
+            pixels = bytes(size)
+            return dict(path=path, width=1, height=1, pixels=pixels, slices=[pixels], scales=[(1.0, 1.0)])
+        atlas_key = ("GroundPuddlesAtlas", "noise", "ripple")
+        cache = {"c": texture("c", 65537), "small": texture("small", 64), "mask": texture("mask", 65537),
+                 atlas_key: texture("GroundPuddlesAtlas:x", 65537), "missing": None}
+        uploaded = set()
+        drop_uploaded_pixels(cache, {"m/a.material": dict(_c=cache["c"], _g=cache["small"], _n=None,
+                                                          _rock_mask=cache["mask"], _puddle_atlas=cache[atlas_key])},
+                             uploaded)
+        self.assertEqual(uploaded, {"c", "small", "GroundPuddlesAtlas:x"})
+        self.assertEqual(cache["c"], dict(path="c", width=1, height=1, scales=[(1.0, 1.0)]))
+        self.assertEqual(cache[atlas_key]["path"], "GroundPuddlesAtlas:x")
+        self.assertNotIn("pixels", cache[atlas_key])
+        self.assertIn("pixels", cache["small"])
+        # Only sampled on the CPU so far: a later material may still upload it under a GL role.
+        self.assertIn("pixels", cache["mask"])
+        drop_uploaded_pixels(cache, {"m/b.material": dict(_c=cache["mask"])}, uploaded)
+        self.assertNotIn("pixels", cache["mask"])
+        self.assertNotIn("slices", cache["mask"])
+        self.assertIsNone(cache["missing"])
 
 
 if __name__ == "__main__":

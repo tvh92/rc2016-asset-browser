@@ -778,6 +778,33 @@ class RockBlendTests(unittest.TestCase):
         self.assertEqual(result['pixels'][8:16],bytes([1,1,2,255])*2)
 
 
+class DroppedPixelsTests(unittest.TestCase):
+    def test_cpu_sampled_sources_reload_after_a_caller_drops_their_pixels(self):
+        # The level loader drops 'pixels' and 'slices' of cached textures it has uploaded; RockBlend
+        # layers, tint palettes and puddle sources are sampled here again (Pokitaru KeyError 'pixels').
+        from unittest.mock import patch
+        base = {'_c': 'c', '_g': 'g', '_n': 'n'}
+        paths = {'m/rock.material': dict(base, rock_blend=dict(writer='886AAC94'), _rock_mask='mask',
+                                         _rock_c2='c2', _rock_g2='g2', _rock_n2='n2'),
+                 'm/tint.material': dict(base, tint=dict(variant=1, palette_u=0.5), _tint_palette='palette'),
+                 'm/puddle.material': dict(base, puddles=dict(params=[]), _puddle_noise='noise', _puddle_ripple='ripple')}
+        def loaded(_archive, path):
+            pixels = bytes([10, 20, 30, 255])
+            return dict(path=path, width=1, height=1, format=28, pixels=pixels, slices=[pixels], srgb=False)
+        names = ('c', 'g', 'n', 'mask', 'c2', 'g2', 'n2', 'palette', 'noise', 'ripple')
+        cache = {p: {k: v for k, v in loaded(None, p).items() if k not in ('pixels', 'slices')} for p in names}
+        materials = [dict(index=i, path=p) for i, p in enumerate(paths)]
+        with patch.object(tp, 'material_texture_paths', side_effect=lambda _a, p: paths[p]), \
+                patch.object(tp, 'load_texture', side_effect=loaded) as load:
+            rock, tint, puddle = (tp.material_textures(None, materials, cache)[i] for i in range(3))
+        self.assertEqual(rock['_rock_volume']['source_paths'], ['mask', 'c2', 'g2', 'n2'])
+        self.assertNotIn('unresolved_second_layer', rock['rock_blend'])
+        self.assertEqual(tint['tint']['palette_source'], 'palette')
+        self.assertEqual(puddle['_puddle_atlas']['width'], 6)
+        # Uploaded GL roles are not reloaded: the GL side already holds them by path.
+        self.assertEqual(sorted(c.args[1] for c in load.call_args_list),
+                         ['c2', 'g2', 'mask', 'n2', 'noise', 'palette', 'ripple'])
+        self.assertNotIn('pixels', rock['_c'])
 
 
 class GroundPuddlesTests(unittest.TestCase):

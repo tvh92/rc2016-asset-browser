@@ -793,11 +793,22 @@ def puddle_texture_atlas(noise, ripple):
             pixels_sha256=hashlib.sha256(t['pixels']).hexdigest()) for t in (noise,ripple)])
 
 
+def _with_pixels(archive, cache: dict, path):
+    """cache[path] for CPU sampling: reloaded when a caller dropped its 'pixels' (see material_textures)."""
+    texture = cache.get(path)
+    if texture and 'pixels' not in texture:
+        texture = cache[path] = load_texture(archive, path)
+    return texture
+
+
 def material_textures(archive, materials: list[dict], cache: dict) -> dict[int, dict]:
     """Material slot -> {'_c'/'_g'/'_n'/'_pick': texture or None, 'k', 'g_mode', 'self_lit', 'spec', 'gloss'[, 'pick']}.
 
     Missing or unloadable textures are None and that part is shaded without
     them. ``cache`` maps texture path -> loaded texture/None across models.
+    A caller may drop 'pixels' and 'slices' from cached textures it has
+    uploaded (the level loader does); sources sampled here on the CPU (tint
+    palette, screen timeline, puddle and RockBlend layers) are then reloaded.
     """
 
     result = {}
@@ -835,13 +846,13 @@ def material_textures(archive, materials: list[dict], cache: dict) -> dict[int, 
                     except (ValueError, KeyError, OSError): cache[path] = None
                 if role == '_tint_detail': entry[role] = cache.get(path)
                 elif cache.get(path):
-                    entry['tint']['palette_rgb'] = tint_palette_sample(cache[path], entry['tint']['palette_u'])
+                    entry['tint']['palette_rgb'] = tint_palette_sample(_with_pixels(archive, cache, path), entry['tint']['palette_u'])
                     entry['tint']['palette_source'] = path
         if paths.get('forward', {}).get('kind') == 'screen':
             path = paths.get('_screen_timeline')
             if path and path not in cache:
                 cache[path] = load_texture(archive, path)
-            timeline = cache.get(path)
+            timeline = _with_pixels(archive, cache, path)
             if not timeline: raise ValueError('Screen timeline source unavailable')
             # Linear filtering at normalized .5: exact RGBA8 source timeline, 512x1.
             q = tint_palette_sample(timeline, 0.5)[0]
@@ -860,7 +871,7 @@ def material_textures(archive, materials: list[dict], cache: dict) -> dict[int, 
             if not all(sources) or not entry.get('_g') or not entry.get('_c'):
                 raise ValueError('GroundPuddles source texture unavailable')
             key=('GroundPuddlesAtlas',*(t['path'] for t in sources))
-            if key not in cache: cache[key]=puddle_texture_atlas(*sources)
+            if key not in cache: cache[key]=puddle_texture_atlas(*(_with_pixels(archive,cache,t['path']) for t in sources))
             entry['_puddle_atlas']=cache[key]
             entry['puddles']=dict(entry['puddles'], scales=cache[key]['scales'])
             if not entry.get('_n'): entry['puddles']['writer']='4A6CDAAA'
@@ -872,7 +883,7 @@ def material_textures(archive, materials: list[dict], cache: dict) -> dict[int, 
                 if path and path not in cache:
                     try: cache[path] = load_texture(archive, path)
                     except (ValueError, KeyError, OSError): cache[path] = None
-                extra.append(cache.get(path))
+                extra.append(_with_pixels(archive, cache, path))
             if all(extra) and all(entry.get(role) for role in ('_c', '_g', '_n')):
                 try:
                     entry['_rock_volume'] = rock_texture_volume(extra)

@@ -14,6 +14,7 @@ import time
 
 from rc2016.levels import scene as level_scene
 from rc2016.levels.viewport import LevelViewport
+from rc2016.viewer.viewport import GL_TEXTURE_ROLES
 
 DEFAULT_LEVEL = "levels/novalis/novalis.level"
 HELP = ("Left drag look · right drag pan · WASD move · Q/E down/up · Shift faster · wheel dolly · "
@@ -68,6 +69,23 @@ def sky_summary(sky):
         parts.append(f"{len(sky['unsupported'])} sky mesh{'es' * (len(sky['unsupported']) != 1)} not ported")
     parts.append("captured clear sky" if sky["clear_sky"] else "flat background")
     return "sky: " + ", ".join(parts)
+
+
+def drop_uploaded_pixels(cache, entries, uploaded):
+    """Drop the decoded blocks of large cached textures that the GL side now holds.
+
+    ``uploaded`` accumulates the texture paths posted in GL_TEXTURE_ROLES; the GL side uploads each
+    once per path, so later materials reusing one need only its other fields (the puddle atlas is
+    cached under a tuple key and later materials need its path and 'scales'). Textures so far only
+    sampled on the CPU (RockBlend layers, puddle sources) keep their pixels, because a later
+    material may still upload one under a GL role; material_textures reloads any dropped source it
+    samples. 'slices' goes too: its first slice is the same block as 'pixels'.
+    """
+    uploaded.update(texture["path"] for entry in entries.values() for role in GL_TEXTURE_ROLES
+                    if (texture := entry.get(role)))
+    for key, texture in cache.items():
+        if texture and texture.get("path") in uploaded and len(texture.get("pixels") or b"") > 65536:
+            cache[key] = {k: v for k, v in texture.items() if k not in ("pixels", "slices")}
 
 
 def load_level(get_archive, level_path, out, cancel, zone_filter=None):
@@ -134,7 +152,7 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
         out.put(("overrides", dict(outcomes=dict(overrides["outcomes"]), instances=overrides["instances"],
                                    models=len(overrides["models"]))))
     geometry_seconds = time.perf_counter() - started
-    done, cache = set(), {}
+    done, cache, uploaded = set(), {}, set()
     for geometry in geometries:
         if cancel.is_set():
             return
@@ -147,13 +165,7 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
         done.update(entries)
         if entries:
             out.put(("materials", entries))
-        # The GL side owns uploaded textures (deduplicated by path), so drop large decoded blocks.
-        # Small ones stay: tint palettes are sampled again on the CPU by later materials.
-        # Keep the other fields: the puddle atlas is cached under a tuple key, and later
-        # materials need its own path (GL dedup) and 'scales'.
-        for path, texture in cache.items():
-            if texture and len(texture.get("pixels") or b"") > 65536:
-                cache[path] = {k: v for k, v in texture.items() if k != "pixels"}
+        drop_uploaded_pixels(cache, entries, uploaded)
     out.put(("done", dict(geometry_seconds=geometry_seconds, total_seconds=time.perf_counter() - started,
                           models=len(geometries), materials=len(done),
                           material_overrides=dict(outcomes=dict(overrides["outcomes"]), instances=overrides["instances"],

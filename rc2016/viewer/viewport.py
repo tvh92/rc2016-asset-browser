@@ -21,6 +21,11 @@ class MeshPayloadError(ValueError):
 # +X, rig y (up) is +Z and rig z (towards the viewer) is -Y, as seen from a camera looking along +Y.
 RIG_TO_WORLD = ((1.0, 0.0, 0.0), (0.0, 0.0, -1.0), (0.0, 1.0, 0.0))
 
+# texture_preview entry roles uploaded as 2D GL textures, deduplicated by texture path. Other textures
+# in an entry (tint palette, screen timeline, puddle and RockBlend sources) are only sampled on the CPU.
+GL_TEXTURE_ROLES = ("_c", "_g", "_n", "_pick", "_h", "_sequence", "_tint_detail", "_bng_detail", "_vehicle_p2",
+                    "_glow_parallax", "_puddle_atlas", "_parallax_height")
+
 
 def _mat3_mul(a, b):
     return tuple(tuple(sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)) for i in range(3))
@@ -597,7 +602,7 @@ class ModelViewport(_TkFrame):
             if key in entry: uploaded[key] = entry[key]
         if "bng" in entry:
             uploaded["bng"] = entry["bng"]
-        for role in ("_c", "_g", "_n", "_pick", "_h", "_sequence", "_tint_detail", "_bng_detail", "_vehicle_p2", "_glow_parallax", "_puddle_atlas", "_parallax_height"):
+        for role in GL_TEXTURE_ROLES:
             texture = entry.get(role)
             if not texture:
                 continue
