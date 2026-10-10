@@ -770,12 +770,23 @@ class LevelViewport(ModelViewport):
         gl.glPolygonMode(self.GL_FRONT_AND_BACK, self.GL_FILL)
         order = list(self._models)
         index = {path: i for i, path in enumerate(order)}
-        current = None
-        for _key, model, span, groups in self._draw_list:
+        current = cut_state = None
+        sh.glUniform1i(u["uTexC"], 0)
+        sh.glActiveTexture(self.GL_TEXTURE0)
+        for key, model, span, groups in self._draw_list:
             if model["path"] != current:
                 current = model["path"]
                 sh.glUniform3f(u["uPickColour"], *pick_colour(index[current]))
+            # Leaf cut-out: same `_c` alpha test as the drawn frame (no texture is bound in Solid mode).
+            entry = self._materials.get(key[0]) or {}
+            texture = entry.get("_c") if key[1] else None
+            state = (float(entry.get("alpha_cut", 0.0)), texture[0]) if texture and entry.get("alpha_cut") else (0.0, 0)
+            if state != cut_state:
+                cut_state = state
+                gl.glBindTexture(self.GL_TEXTURE_2D, state[1])
+                sh.glUniform1f(u["uPickCut"], state[0])
             self._draw_span(model, span, groups)
+        gl.glBindTexture(self.GL_TEXTURE_2D, 0)
         self._end_attributes()
         sh.glUseProgram(0)
         pixel = (ctypes.c_ubyte * 4)()

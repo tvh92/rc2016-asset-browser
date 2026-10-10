@@ -125,7 +125,13 @@ GRAPH_RULES = (
      dict(g_mode='grey', self_lit_key=None, rock_blend=True)),
     # FE32FE79/B01E7CB2 cached deferred outputs; Materials/Foliage/FOLIAGE_DECODE.md.
     ('materialgraph/global/basic_foliage/basic_foliage.',
-     dict(g_mode='grey', self_lit_key=None, foliage=True)),
+     dict(g_mode='grey', self_lit_key=None, foliage=True, alpha_cut=True)),
+    # Tree leaf graphs: alpha-tested deferred writers (opaque, two-sided materials) whose `_c` alpha is
+    # coverage only. Everything else keeps the generic reading: their g/n/cma/cmb terms are not decoded.
+    ('materialgraph/environment/global/plant/gbl_plant_tree_foliage_transparent_01/rp_nov_plant_tree_foliage_transparent.',
+     dict(alpha_cut=True)),
+    ('materialgraph/environment/global/plant/gbl_plant_tree_foliage_transparent_01/gbl_plant_tree_foliage_transparent_01.',
+     dict(alpha_cut=True)),
     # Cached forward 8716DC7A at t=0; Materials/StaleSelfLitKeys/STALE_SELF_LIT_KEYS_DECODE.md.
     ('materialgraph/environment/nebula/ambient/neb_amb_screen_01/mo_neb_amb_screen_01.',
      dict(self_lit_key=None, screen=True)),
@@ -136,10 +142,29 @@ GRAPH_RULES = (
     # DB75867B forward terminal, explicit viewer leaves; Materials/GroundPuddles/GROUND_PUDDLES_DECODE.md.
     ('materialgraph/environment/kalebo/jn_ground_puddles.',
      dict(g_mode='grey', self_lit_key=None, puddles=True)),
+    # Water PREVIEW, not a decode (family prefix, so rule coverage counts it as a fallback). The colour
+    # writers f4d47ece/5476807b (light loops, 63 samples) are not translated. Decoded: the alpha-over
+    # state, the textures by slot (water_tile_01n/02n), and from the normal pre-pass b9a5ef0f the
+    # world-planar UV (native x, z) scale literals of the two tiles. Body colour is key 0x1DAF77B8,
+    # an inferred role; opacity and gloss are presentation values (WATER_PRESENTATION).
+    ('materialgraph/visualeffect/environment/pokitaru/unique/pok_uniq_water/',
+     dict(forward='water', slots={'_n': 0x49A7866B69E7942C, '_pick': 0x49A7866B0D86F9E5}, params=(
+         ('body', 0x1DAF77B8, 3),))),
     # Forward colour pass 0CD2AAFB rel 12552-12672: white base + red facing glow; Materials/QwarkBulb/README.md.
     ('materialgraph/character/npc/npc_qwark_robot_bulb/npc_qwark_robot_bulb.',
      dict(self_lit_key=None, facing_glow=True)),
 )
+# Leaf cut-out (alpha test). The deferred foliage writers kill a fragment when its coverage, `_c`
+# alpha (basic_foliage FE32FE79/B01E7CB2; the tree graphs' 0476D929/6F0C1A0C), is below the
+# interpolated vertex output attr0.z. The vertex shaders read attr0.z from the engine's per-instance
+# record (byte 268 of a 272-byte record), which is runtime data, not a graph or material constant.
+# This default is therefore INFERRED, the conventional half coverage; it is not decoded game data.
+FOLIAGE_ALPHA_CUTOFF = 0.5
+# Water preview values that are not decoded (labelled presentation): opacity at normal incidence
+# (Fresnel raises it to 1 at grazing angles), F0 0.02 (water, IOR 1.33), gloss of the reflection.
+# The tile UV transforms are the pre-pass b9a5ef0f literals at time 0.
+WATER_PRESENTATION = dict(opacity=0.8, f0=0.02, gloss=0.9, normal_strength=0.5,
+                          uv_a=(0.095, 0.105, 0.248, 0.613), uv_b=(0.105, 0.095, 0.0, 0.0))
 # Texture slot tables: 16-byte rows (path string offset u32, flags u32, slot hash u64), stored twice.
 GRAPH_SLOT_SECTION, MATERIAL_SLOT_SECTION = 0x1CAFE804, 0xB967FF7A
 # Blend/cull per material: .material section 0xE1275683, u32 at byte 16 (rc2016.pipeline.render_state).
@@ -320,6 +345,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
             if path: result[role] = path
             else: result.pop(role, None)
         result['foliage'] = True
+    if rule.get('alpha_cut'):
+        result['alpha_cut'] = FOLIAGE_ALPHA_CUTOFF
     if rule.get('parallax_outputs'):
         result['parallax_normal'] = True
         # api5 is a separate height texture, sometimes also named _c; use C/G/N slot identities.
@@ -517,6 +544,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
             if path:
                 result[role] = path
         params = {name: vec3(key, (0.0, 0.0, 0.0)) if size == 3 else value(key, 0.0) for name, key, size in rule['params']}
+        if rule['forward'] == 'water':
+            params.update(WATER_PRESENTATION)
         result['forward'] = dict(kind=rule['forward'], params=params, **blend_state(material_flags(data)))
     if rule.get('facing_glow'):
         # No texture, parameter, vertex colour or instance input: albedo is 1.0 and the glow is
@@ -825,6 +854,8 @@ def material_textures(archive, materials: list[dict], cache: dict) -> dict[int, 
                 entry[key] = paths[key]
         if paths.get('foliage'):
             entry['foliage'] = True
+        if paths.get('alpha_cut'):
+            entry['alpha_cut'] = float(paths['alpha_cut'])
         if 'za_fresnel_power' in paths:
             entry['za_fresnel_power'] = paths['za_fresnel_power']
         for role in (*ROLES, *(('_parallax_height',) if paths.get('parallax') else ()), *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ())):

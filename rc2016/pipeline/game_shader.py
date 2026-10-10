@@ -1084,7 +1084,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 3
+VIEWER_RULE_FRONTEND_VERSION = 4
 
 
 def _viewer_rule_images(nt):
@@ -1156,7 +1156,7 @@ def apply_viewer_graph_rule(mat, source):
     gl_shading.FRAGMENT (colour pick, colour tint and its random/detail/world/world-normal
     variants, specular tint, arch emissive sequence, vehicle palettes, glow masks, two-colour
     metal, ground puddles, foliage/za normal z, za rim suppression, rock blend, basic_normal_gloss
-    variant tint/rim/self-lit terms and detail normals) or GLASS_FRAGMENT (screen). Constants are
+    variant tint/rim/self-lit terms and detail normals, leaf cut-out) or GLASS_FRAGMENT (screen). Constants are
     named 'VR <term> <param>' nodes. Terms in rule['unported'] are recorded on the material.
     Returns False when the rule does not apply or its anchor image is not in the material.
     """
@@ -1497,6 +1497,17 @@ def apply_viewer_graph_rule(mat, source):
         limits.append('facing glow: presentation amplitude %g for %s (captured %g; blink timing not decoded); fog, tint '
                       'volumes and instance flag bit 5 lighting terms omitted (v8 = v9 = 1)'
                       % (facing['amplitude'], facing['amplitude_input'], facing['captured_amplitude']))
+    if on('alpha_cut') and c is not None:
+        # Foliage writers kill a fragment whose _c.a is below the interpolated vertex output attr0.z, which
+        # the vertex shader takes from the engine's per-instance record: the threshold is inferred (0.5).
+        keep = P.ge(c.outputs['Alpha'], P.const('alpha cut threshold', terms['alpha_cut']))
+        clear = nt.nodes.new('ShaderNodeBsdfTransparent'); clear.name = clear.label = 'VR alpha cut transparent'
+        mix = nt.nodes.new('ShaderNodeMixShader'); mix.name = mix.label = 'VR alpha cut mix'; mix.location = (950, 0)
+        L.new(keep, mix.inputs[0]); L.new(clear.outputs[0], mix.inputs[1])
+        L.new(out.inputs['Surface'].links[0].from_socket, mix.inputs[2]); L.new(mix.outputs[0], out.inputs['Surface'])
+        out.location = (1150, 0)
+        limits.append('leaf cut-out: _c.a < %g is transparent; the game reads this threshold from a per-instance '
+                      'engine record, so the value is inferred, not decoded' % float(terms['alpha_cut']))
     if view_terms:
         limits.append('view-dependent terms (%s) use the Cycles Incoming vector, which is the camera direction only for camera rays'
                       % ', '.join(view_terms))

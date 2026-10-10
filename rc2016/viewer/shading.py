@@ -170,6 +170,7 @@ uniform vec4 uMetalP; // tint power, rim-gloss power, C texture scale, normal st
 uniform bool uParallax; uniform bool uParallaxNormal; uniform bool uHasParallaxHeight;
 uniform sampler2D uTexParallaxHeight; uniform vec4 uParallaxP; // H, face/grazing steps, fade
 uniform bool uFoliage; // FE32FE79/1E0AE45A close-range normal z weight
+uniform float uAlphaCut; // leaf cut-out: discard when _c.a < threshold (0 = off); threshold inferred, see textures.FOLIAGE_ALPHA_CUTOFF
 uniform bool uZaFresnel; uniform float uZaFresnelPower; // za_basic_normal_gloss geometry-normal rim suppression
 uniform bool uSelfLitG;       // self-lit mask from _g.B instead of _c.a
 uniform float uK;
@@ -327,6 +328,7 @@ void main() {
         }
     }
     vec4 c = uHasC ? texture2D(uTexC, materialUV) : vec4(uColor, 0.0);
+    if (uHasC && c.a < uAlphaCut) discard;
     vec3 albedo = (uMode >= 1 && uHasC) ? (uSrgbC ? linear(c.rgb) : c.rgb) : linear(uColor);
     if (uMode >= 1 && uFacingGlow) albedo = vec3(1.0); // 0CD2AAFB: no albedo input, v76-v78 = 1
     if (uMode == 2 && uPuddles && uHasPuddleAtlas) {
@@ -554,6 +556,9 @@ void main() {
 #   uA = pattern tiling, pattern normal strength, F0 base, gloss; uB.xyz = pick u, rim bias, rim exp.
 #   Pattern (_n slot) and palette (_pick) textures; instance fade b = 0, CB0[95] = attr0.w = 1,
 #   SSR weight 0, both lighting instance flags (32 diffuse, 64 specular) on.
+# uKind 4, water PREVIEW (pok_uniq_water family; textures.WATER_PRESENTATION), not a decode:
+#   uA = body colour, opacity; uB = F0, normal strength, gloss; uC/uD = tile A/B UV scale.xy, offset.zw
+#   applied to native world (x, z). Tiles: _n slot (water_tile_01n) and _pick slot (water_tile_02n).
 GLASS_FRAGMENT = """
 #version 120
 uniform sampler2D uScreenNoiseA; uniform sampler2D uScreenNoiseB;
@@ -563,6 +568,7 @@ uniform vec4 uA; uniform vec4 uB; uniform vec4 uC; uniform vec4 uD;
 uniform sampler2D uTexN; uniform bool uHasN;
 uniform sampler2D uTexP; uniform bool uHasP; uniform bool uSrgbP;
 varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
+varying vec3 vTintWorldPos;
 const float PI = 3.14159265;
 vec3 linear(vec3 c) { return pow(max(c, 0.0), vec3(2.2)); }
 float sat(float x) { return clamp(x, 0.0, 1.0); }
@@ -596,6 +602,26 @@ void main() {
         if (uSrgbP) na = screenLinear(na);
         if (uScreenSrgbB) nb = screenLinear(nb);
         color = (1.0 + mix(uB.w, uA.w, h)) * (1.0 - (1.0-na)*(1.0-nb)*(1.0-tint));
+    } else if (uKind == 4) {
+        vec2 xz = vTintWorldPos.xz;
+        vec2 d = vec2(0.0);
+        if (uHasN) d += texture2D(uTexN, xz * uC.xy + uC.zw).rg * 2.0 - 1.0;
+        if (uHasP) d += texture2D(uTexP, xz * uD.xy + uD.zw).rg * 2.0 - 1.0;
+        d *= uB.y;
+        // Tangent frame of the planar (x, z) mapping from screen derivatives, as for the patterned glass.
+        vec3 dp1 = dFdx(vPos), dp2 = dFdy(vPos); vec2 du1 = dFdx(xz), du2 = dFdy(xz);
+        vec3 p2 = cross(dp2, N), p1 = cross(N, dp1);
+        vec3 T = p2 * du1.x + p1 * du2.x, B = p2 * du1.y + p1 * du2.y;
+        float scale = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-20));
+        N = normalize(N + T * scale * d.x + B * scale * d.y);
+        float a = pow(2.0, -5.5 * sqrt(sat(uB.z)));
+        vec3 F0 = vec3(uB.x), F90 = vec3(1.0);
+        float F = uB.x + (1.0 - uB.x) * pow(1.0 - sat(dot(N, V)), 5.0);
+        vec3 ambient = ambientLight(N);
+        vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
+        vec3 S = ggx(N, V, L1, F0, F90, a) * C1 + ggx(N, V, L2, F0, F90, a) * C2 + envSpecular(N, V, F0, F90, a, ambient);
+        color = uA.rgb * Ld * (1.0 - F) + S;
+        alpha = mix(uA.w, 1.0, F);
     } else if (uKind == 2) {
         float rim = sat(4.0 * pow(om, uB.z));
         alpha = sat(uB.y + rim);
@@ -633,7 +659,7 @@ void main() {
 """
 FRAGMENT = FRAGMENT.replace("// @lighting\n", LIGHTING)
 GLASS_FRAGMENT = GLASS_FRAGMENT.replace("// @lighting\n", LIGHTING)
-GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3}
+GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4}
 
 
 def glass_uniforms(forward):
@@ -642,6 +668,9 @@ def glass_uniforms(forward):
     if forward["kind"] == "screen":
         return (3, (*p["colour_a"], p["intensity_a"]), (*p["colour_b"], p["intensity_b"]),
                 (p["alpha_base"], p["mask_strength"], p["grid"], 0.0), (0.0,) * 4)
+    if forward["kind"] == "water":
+        return (4, (*p["body"], p["opacity"]), (p["f0"], p["normal_strength"], p["gloss"], 0.0),
+                tuple(p["uv_a"]), tuple(p["uv_b"]))
     if forward["kind"] == "glass_patterned":
         return (2, (p["tiling"], p["normal_strength"], p["f0"], p["gloss"]),
                 (p["pick_u"], p["rim_bias"], p["rim_exp"], 0.0), (0.0,) * 4, (0.0,) * 4)
@@ -656,7 +685,7 @@ OPAQUE_UNIFORMS = (
     "uSrgbC", "uSrgbG", "uGMode", "uSpecScale", "uGlossScale", "uSelfLitG", "uK",
     "uTwoColorMetal", "uMetalDiffuseA", "uMetalDiffuseB", "uMetalSpecA", "uMetalSpecB", "uMetalP",
     "uParallax", "uParallaxNormal", "uHasParallaxHeight", "uTexParallaxHeight", "uParallaxP",
-    "uFoliage",
+    "uFoliage", "uAlphaCut",
     "uZaFresnel", "uZaFresnelPower",
     "uGlowKind", "uGlowColour", "uGlowP", "uTexGlowParallax", "uHasGlowParallax", "uSrgbGlowParallax", "uSrgbGlowMask",
     "uVehicle", "uTexVehicleP2", "uHasVehicleP2", "uSrgbVehicleP2", "uVehicleA", "uVehicleB", "uVehicleP",
@@ -694,10 +723,16 @@ void main() {
 }
 """
 # Level viewer click-to-identify: each model drawn in a flat id colour into the back buffer.
+# Leaf cut-out materials sample `_c` alpha so a click passes through their holes (uPickCut = 0: off).
 PICK_FRAGMENT = """
 #version 120
 uniform vec3 uPickColour;
-void main() { gl_FragColor = vec4(uPickColour, 1.0); }
+uniform sampler2D uTexC; uniform float uPickCut;
+varying vec2 vUV;
+void main() {
+    if (uPickCut > 0.0 && texture2D(uTexC, vUV).a < uPickCut) discard;
+    gl_FragColor = vec4(uPickColour, 1.0);
+}
 """
 # Level sky (rc2016/levels/sky.py), drawn around the camera before the level: native Y-up
 # positions (the modelview holds only the camera rotation), DirectX-convention UV0.
@@ -861,5 +896,5 @@ class Shading:
     def pick_program(self):
         """Level viewer click-to-identify: INSTANCED_VERTEX writing a flat id colour (uPickColour)."""
         if "pick" not in self.programs:
-            self.programs["pick"] = self._link(INSTANCED_VERTEX, PICK_FRAGMENT, INSTANCE_ATTRIBUTES, ("uPickColour",))
+            self.programs["pick"] = self._link(INSTANCED_VERTEX, PICK_FRAGMENT, INSTANCE_ATTRIBUTES, ("uPickColour", "uTexC", "uPickCut"))
         return self.programs["pick"]
