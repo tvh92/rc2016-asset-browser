@@ -156,10 +156,12 @@ GRAPH_RULES = (
 )
 # Leaf cut-out (alpha test). The deferred foliage writers kill a fragment when its coverage, `_c`
 # alpha (basic_foliage FE32FE79/B01E7CB2; the tree graphs' 0476D929/6F0C1A0C), is below the
-# interpolated vertex output attr0.z. The vertex shaders read attr0.z from the engine's per-instance
-# record (byte 268 of a 272-byte record), which is runtime data, not a graph or material constant.
-# This default is therefore INFERRED, the conventional half coverage; it is not decoded game data.
-FOLIAGE_ALPHA_CUTOFF = 0.5
+# interpolated vertex output attr0.z. CPU static-mesh builder 0x182a9b0 fills record byte 268
+# from material section E1275683 bytes 20/21: min((byte20 + byte21) * float32(1/255), 1)
+# at the no-LOD-fade baseline (writer 0x1841990). Levels/Foliage/README.md: Threshold recovery.
+# Runtime draw cut/fade and the special flag-8 override are omitted. Missing/truncated state
+# retains the INFERRED half-coverage preview fallback; it is not an engine default.
+FOLIAGE_ALPHA_CUTOFF_FALLBACK = 0.5
 # Water preview values that are not decoded (labelled presentation): opacity at normal incidence
 # (Fresnel raises it to 1 at grazing angles), F0 0.02 (water, IOR 1.33), gloss of the reflection.
 # The tile UV transforms are the pre-pass b9a5ef0f literals at time 0.
@@ -244,6 +246,22 @@ def _graph_info(archive, graph_id):
             defaults = {}
         cache[graph_id] = (textures, slots, keys, defaults)
     return cache[graph_id]
+
+
+def _foliage_alpha_cutoff(data):
+    """Decoded static-mesh baseline; malformed/missing state uses a labelled preview fallback."""
+    offset, size = _sections(data).get(MATERIAL_FLAGS_SECTION, (0, 0))
+    if size < 22:
+        return FOLIAGE_ALPHA_CUTOFF_FALLBACK
+    flags = struct.unpack_from('<I', data, offset + 16)[0]
+    base, reference = data[offset + 20:offset + 22]
+    # Material loader 0x1841c80 floors byte21 only for blended state without bit 0x80.
+    if flags & 3 and not flags & 0x80:
+        reference = max(reference, 4)
+    # Match scalar CPU float32 multiplication, including its rounding at alpha boundaries.
+    scale = struct.unpack('<f', struct.pack('<f', 1. / 255.))[0]
+    threshold = struct.unpack('<f', struct.pack('<f', (base + reference) * scale))[0]
+    return min(threshold, 1.)
 
 
 def material_texture_paths(archive, material_path: str) -> dict:
@@ -346,7 +364,7 @@ def material_texture_paths(archive, material_path: str) -> dict:
             else: result.pop(role, None)
         result['foliage'] = True
     if rule.get('alpha_cut'):
-        result['alpha_cut'] = FOLIAGE_ALPHA_CUTOFF
+        result['alpha_cut'] = _foliage_alpha_cutoff(data)
     if rule.get('parallax_outputs'):
         result['parallax_normal'] = True
         # api5 is a separate height texture, sometimes also named _c; use C/G/N slot identities.
