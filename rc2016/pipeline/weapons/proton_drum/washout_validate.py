@@ -6,10 +6,10 @@ PARSER_ARGS=sys.argv[sys.argv.index('--')+1:] if '--' in sys.argv else []
 import argparse
 parser=argparse.ArgumentParser();parser.add_argument('--candidate-dir',required=True);args=parser.parse_args(PARSER_ARGS)
 OUT=Path(args.candidate_dir).resolve()
-PROFILE_PATH=Path(__file__).with_name('source_structure_profile.json')
+PROFILE_PATH=Path(__file__).with_name('washout_structure_profile.json')
 PROFILE=json.loads(PROFILE_PATH.read_text(encoding='utf-8-sig'))
 PROFILE_SHA=hashlib.sha256(PROFILE_PATH.read_bytes()).hexdigest()
-STATE_REFERENCE_PATH=Path(__file__).with_name('source_state_reference.json')
+STATE_REFERENCE_PATH=Path(__file__).with_name('washout_state_reference.json')
 RECEIPT=json.loads((OUT/'application_receipt.json').read_text(encoding='utf-8-sig'))
 BLEND=Path(RECEIPT['candidate_path'])
 def file_sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
@@ -102,7 +102,7 @@ assert RECEIPT['reference_blend_sha256']==PROFILE['source_blend']['sha256']
 assert RECEIPT['input_assembly_sha256']!=RECEIPT['reference_blend_sha256']
 assert RECEIPT['input_assembly_sha256']!=RECEIPT['reference_blend_sha256']
 bpy.ops.wm.open_mainfile(filepath=str(BLEND));sc=bpy.context.scene
-reference=json.loads((Path(__file__).with_name('source_structure_reference.json')).read_text(encoding='utf-8-sig'))
+reference=json.loads((Path(__file__).with_name('washout_structure_reference.json')).read_text(encoding='utf-8-sig'))
 glass_name='wpn_Thumper_Art_wpn_Thumper_Glove_Glass'
 assert graph_data(bpy.data.materials[glass_name])=={k:reference['materials'][glass_name][k] for k in graph_data(bpy.data.materials[glass_name])},'Unmodified glass source graph changed'
 assert sc.get('material_presentation_profile_sha256')==PROFILE_SHA

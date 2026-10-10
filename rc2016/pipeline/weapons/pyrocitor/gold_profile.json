@@ -2,7 +2,7 @@
   "schema": "pyrocitor-gold-presentation-profile-v1",
   "profile_id": "pyrocitor_canonical_material_recipe_set_2026-09-25_explicit_math_v2",
   "canonical_scene": {
-    "path": "Weapons/FINAL/Pyrocitor/Pyrocitor_All_Versions_render_scene.blend",
+    "path": "_Archive/2026-10-08_legacy_fbx_models/Weapons/FINAL/Pyrocitor/Pyrocitor_All_Versions_render_scene.blend",
     "sha256": "0b45610457c253c00c9152d58a101ccbdae85a2d7f282a09784556a15be8258b"
   },
   "source_models": {

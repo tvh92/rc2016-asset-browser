@@ -8,6 +8,7 @@ ROOT=Path(__file__).resolve().parents[4]
 sys.path.insert(0,str(ROOT))
 from rc2016.common import load, dump, file_hash
 from rc2016.pipeline.scene_defaults import audit_scene, _configure_optix_gpu
+from rc2016.pipeline.weapons import research_file
 PROFILE_SCHEMA='pyrocitor-gold-presentation-profile-v1'
 
 def sha_bytes(data): return hashlib.sha256(data).hexdigest()
@@ -265,15 +266,15 @@ def build(job):
     profile=load(job['profile_path']); assert profile['schema']==PROFILE_SCHEMA
     assert file_hash(job['profile_path'])==job['profile_sha256']
     assert file_hash(job['source_blend'])==job['source_sha256']
-    assert file_hash(ROOT/profile['canonical_scene']['path'])==profile['canonical_scene']['sha256']
-    assert file_hash(ROOT/profile['world']['path'])==profile['world']['sha256']
+    assert file_hash(research_file(profile['canonical_scene']['path']))==profile['canonical_scene']['sha256']
+    assert file_hash(research_file(profile['world']['path']))==profile['world']['sha256']
     bpy.ops.wm.open_mainfile(filepath=job['source_blend']); scene=bpy.context.scene
     _configure_optix_gpu(bpy)
     before=scene_snapshot(scene)
     assert before['view_transform']=='AgX' and before['engine']=='CYCLES' and before['resolution']==[3840,2560,100]
     original_camera=before
     src_images=source_images(profile)
-    canonical=(ROOT/profile['canonical_scene']['path']).resolve()
+    canonical=(research_file(profile['canonical_scene']['path'])).resolve()
     mat_names=[entry['canonical_hint'] for entry in profile['materials'].values()]
     with bpy.data.libraries.load(str(canonical),link=False) as (src,dst):
         dst.materials=list(src.materials); dst.worlds=list(src.worlds)
@@ -321,7 +322,7 @@ def build(job):
     for row,(obj,mesh,material) in zip(unresolved,unresolved_refs):
         assert obj.data==mesh and obj.data.materials[0]==material,'Unresolved glass geometry/material was changed in memory'
         assert geometry_signature(obj)==row['mesh_geometry_sha256'],'Unresolved glass geometry changed in memory'
-    envfile=(ROOT/profile['world']['path']).resolve()
+    envfile=(research_file(profile['world']['path'])).resolve()
     world_img=bpy.data.images.load(str(envfile),check_existing=False)
     world_img.colorspace_settings.name='Linear Rec.709'; world_img['pyrocitor_gold_world_path']=profile['world']['path'];world_img['pyrocitor_gold_world_sha256']=profile['world']['sha256'];world_img.pack()
     world_env.image=world_img; world.use_fake_user=True; scene.world=world
@@ -348,8 +349,8 @@ def build(job):
 def validate(job):
     profile=load(job['profile_path']);assert file_hash(job['profile_path'])==job['profile_sha256']
     assert file_hash(job['source_blend'])==job['source_sha256']
-    assert file_hash(ROOT/profile['canonical_scene']['path'])==profile['canonical_scene']['sha256']
-    assert file_hash(ROOT/profile['canonical_scene']['path'])==job['canonical_scene_sha256']
+    assert file_hash(research_file(profile['canonical_scene']['path']))==profile['canonical_scene']['sha256']
+    assert file_hash(research_file(profile['canonical_scene']['path']))==job['canonical_scene_sha256']
     _configure_optix_gpu(bpy); bpy.ops.wm.open_mainfile(filepath=job['output_blend']);_configure_optix_gpu(bpy)
     scene=bpy.context.scene
     assert file_hash(job['output_blend'])==job['output_sha256']

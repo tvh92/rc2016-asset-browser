@@ -3,7 +3,7 @@ import bpy,hashlib,json,sys
 from array import array
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[4]
-PROFILE_PATH=Path(__file__).with_name('source_structure_profile.json')
+PROFILE_PATH=Path(__file__).with_name('washout_structure_profile.json')
 PROFILE=json.loads(PROFILE_PATH.read_text(encoding='utf-8-sig'))
 PROFILE_SHA=hashlib.sha256(PROFILE_PATH.read_bytes()).hexdigest()
 PARSER_ARGS=sys.argv[sys.argv.index('--')+1:] if '--' in sys.argv else []
@@ -12,8 +12,8 @@ parser=argparse.ArgumentParser();parser.add_argument('--input',required=True);pa
 INPUT=Path(args.input).resolve();SOURCE_ROOT=INPUT.parent.parent
 OUT_DIR=Path(args.output_dir).resolve() if args.output_dir else SOURCE_ROOT/'proton_presentation27';OUTPUT=OUT_DIR/'final'/'Proton_Drum_V1_V5_switchable_proton_presentation.blend'
 OUT_DIR.joinpath('final').mkdir(parents=True,exist_ok=True)
-REFERENCE_PATH=ROOT/PROFILE['source_structure_reference']
-STATE_REFERENCE_PATH=ROOT/PROFILE['source_state_reference']
+REFERENCE_PATH=PROFILE_PATH.with_name('washout_structure_reference.json')
+STATE_REFERENCE_PATH=PROFILE_PATH.with_name('washout_state_reference.json')
 
 def sha(data):return hashlib.sha256(data).hexdigest()
 def file_sha(path):return sha(Path(path).read_bytes())
@@ -95,7 +95,7 @@ def relative_manifest(old_relative):
 
 assert INPUT.is_file(),INPUT
 input_hash=file_sha(INPUT)
-assert PROFILE['parent_profile_sha256']==file_sha(Path(__file__).with_name('presentation_profile.json'))
+assert PROFILE['parent_profile_sha256']==file_sha(Path(__file__).with_name('washout_presentation_profile.json'))
 assert file_sha(REFERENCE_PATH)==PROFILE['source_structure_reference_sha256'],'Pinned source/structure reference changed'
 assert file_sha(STATE_REFERENCE_PATH)==PROFILE['source_state_reference_sha256'],'Pinned source state reference changed'
 reference=json.loads(REFERENCE_PATH.read_text(encoding='utf-8-sig'))

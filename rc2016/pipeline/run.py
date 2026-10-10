@@ -26,6 +26,7 @@ from rc2016.pipeline.variant_links import (assembly_receipt_fingerprint,
     resolve_fusion_wearable_pair,verify_assembly_receipt,resolve_pyrocitor_barrel_pair,resolve_proton_drum_pad_pair)
 from rc2016.pipeline.weapons.proton_drum.contract import receipt_fingerprint as proton_receipt_fingerprint, verify_receipt as verify_proton_receipt, assert_clip_mode as assert_proton_clip_mode, assert_unsupported_clip_mode as assert_proton_unsupported_clip_mode
 from rc2016.pipeline.weapons.combuster.contract import resolve_combuster_pair,receipt_fingerprint as combuster_receipt_fingerprint,verify_receipt as verify_combuster_receipt,assert_clip_coverage as assert_combuster_clip_coverage
+from rc2016.pipeline.weapons import research_file
 
 
 class Log:
@@ -993,12 +994,12 @@ def assemble_pyrocitor_source_animation(static_blend,static_hash,static_receipt,
 def assemble_pyrocitor_gold_presentation(animated_blend,animated_hash,animation_report,animation_receipt,args,manifest,v1_id,log):
     """Apply and reopen-validate the hash-bound Pyrocitor presentation profile."""
     research=ROOT/'rc2016/pipeline/weapons/pyrocitor'
-    profile_path=research/'pyrocitor_gold_profile.json'; script=research/'apply_pyrocitor_gold_profile.py'
+    profile_path=research/'gold_profile.json'; script=research/'gold_profile.py'
     profile=load(profile_path); profile_hash=file_hash(profile_path)
     if profile.get('schema')!='pyrocitor-gold-presentation-profile-v1': raise RuntimeError('Pyrocitor presentation profile schema changed')
-    canonical=ROOT/profile['canonical_scene']['path']
+    canonical=research_file(profile['canonical_scene']['path'])
     if file_hash(canonical)!=profile['canonical_scene']['sha256']: raise RuntimeError('Pinned canonical Pyrocitor scene hash changed')
-    world=ROOT/profile['world']['path']
+    world=research_file(profile['world']['path'])
     if file_hash(world)!=profile['world']['sha256']: raise RuntimeError('Pinned presentation HDRI hash changed')
     if file_hash(animated_blend)!=animated_hash: raise RuntimeError('Animated presentation input hash changed')
     auto=args.output_root/'variant_assemblies'/'pyrocitor_gold'; auto.mkdir(parents=True,exist_ok=True)
@@ -1078,11 +1079,11 @@ def proton_presentation_cache_valid(receipt,contract,blend,report):
 def assemble_proton_presentation(native_blend,native_hash,native_receipt,args,manifest,v1_id,log):
     """Create a separate, source/structure-bound Proton presentation delivery."""
     research=ROOT/'rc2016/pipeline/weapons/proton_drum'
-    profile_path=research/'source_structure_profile.json'
-    reference_path=research/'source_structure_reference.json'
-    state_reference_path=research/'source_state_reference.json'
-    apply_script=research/'apply_source_structure_profile.py'
-    validate_script=research/'validate_source_structure_candidate.py'
+    profile_path=research/'washout_structure_profile.json'
+    reference_path=research/'washout_structure_reference.json'
+    state_reference_path=research/'washout_state_reference.json'
+    apply_script=research/'washout_apply.py'
+    validate_script=research/'washout_validate.py'
     profile=load(profile_path);profile_hash=file_hash(profile_path)
     if profile.get('schema')!='rcps4-proton-source-structure-presentation-profile-v1' or profile.get('game_equivalence') is not False:
         raise RuntimeError('Proton presentation profile schema/evidence class is invalid')

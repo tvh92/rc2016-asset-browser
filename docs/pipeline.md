@@ -249,7 +249,7 @@ The model fingerprint also covers archive metadata hashes, the model profile, so
 - Animation: only the PS4 version-15 sampler is supported. Runtime scale-compensation flags, additive animation graphs, path/root-motion sections, timing flags and subframe interpolation are unproven or unsupported. Relative/additive clips are standalone previews (rest T + delta T, rest Q * delta Q, rest S * delta S) because the blend partner and weight are unknown.
 - Lighting: no runtime light data (light-grid irradiance words, authored light records) beyond what is listed above is decoded.
 - Weapon assemblies pin specific asset IDs and hashes; they apply only to those exact sources, and actor weapon selection and attachment transforms are not decoded.
-- Source-linked stage file names in `run.py`: the Pyrocitor assembly contract hashes `pyrocitor_contract.py`, the Pyrocitor gold stage loads `pyrocitor_gold_profile.json` and `apply_pyrocitor_gold_profile.py`, and the Proton presentation stage loads `source_structure_profile.json`, `source_structure_reference.json`, `source_state_reference.json`, `apply_source_structure_profile.py` and `validate_source_structure_candidate.py`. The files in `rc2016/pipeline/weapons/` use the names `contract.py`, `gold_profile.*` and `washout_*`, so those stages do not resolve their inputs until `run.py` is updated.
+- The Pyrocitor gold presentation stage loads its pinned canonical scene and HDRI from the private research workspace, so it needs `RC2016_RESEARCH`; both files are hash-checked.
 
 ## Provenance
 
