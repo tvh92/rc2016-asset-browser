@@ -373,7 +373,12 @@ def lower_deferred(program):
     if no_aa is not None:
         gloss=no_aa;limitations.append('Derivative/geometric specular-AA width is 1; gloss is the native flat-surface value.')
     normal=_native_normal(ir,exports['0'][:3])
-    if normal:limitations.append('Native tangent-normal slice is used with Blender UV tangents; original packed vertex TBN is not reconstructed.')
+    if normal:
+        limitations.append('Native tangent-normal slice is used with Blender UV tangents; original packed vertex TBN is not reconstructed.')
+        samples={ir.nodes[i]['sample'] for i in ir.reachable(exports['0'][:3])
+            if ir.nodes[i]['op']=='texture'}
+        if samples-{normal['sample']}:
+            limitations.append('Normal recovery retains one decoded texture slice; composition involving other samples in the native normal output is not reproduced.')
     else:limitations.append('No portable tangent-normal slice was recovered; geometry normal is used.')
     alpha=exports['1'][3]
     emission=ir.op('sub',ir.op('exp2',ir.op('mul',ir.const(5.),alpha)),ir.const(1.))

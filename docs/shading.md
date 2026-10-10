@@ -103,7 +103,7 @@ Validate a converted material by asserting the group's inputs, image colourspace
 
 `_g` is not coloured F0 in every graph. The pipeline classifies each referenced graph by canonical source path and decoded SHA-256 in `rc2016/shaders/families.py`, and `apply_preflight_material` applies a front-end only to an exact registered identity. It never infers a family from a name. Unregistered graphs get an explicitly labelled source-colour-only preview, or the viewer graph rule below. Source-identical graphs reuse the interpretation; instance values stay material-specific.
 
-Parameter tables come from `.materialgraph` section `0x45C4F4C0` (records of u16 byte offset, u16 size, u32 key; a new table starts where the offset returns to 0). Table 0 is the main G-buffer shader's constant-buffer layout and section `0xA59F667B` holds the graph defaults in that layout. Parameters are read by key hash, not by dword position.
+Parameter rows come from `.materialgraph` section `0x45C4F4C0` (u16 byte offset, u16 size, u32 key). The registered-family reader splits layouts where the offset returns to zero and reads the first layout's defaults. Native translation instead uses each 24-byte `0xBC93FB5E` record's parameter/resource counts to partition rows, including empty passes and layouts that start at a nonzero offset. Its padded CB size partitions the corresponding block in `0xA59F667B`; extents, alignment, overlap and complete consumption are checked. Instance overrides are bound by key hash within that pass's layout.
 
 | Family | G-buffer writer | `_g` reading | Self-lit |
 |---|---|---|---|
