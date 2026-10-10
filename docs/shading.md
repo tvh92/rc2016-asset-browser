@@ -25,7 +25,7 @@ The equations below were read from the SPIR-V of a RenderDoc capture of the game
 - Colourspace follows the native DXGI format, not the filename: sRGB for formats 29, 72, 75, 78, 91, 93 and 99, Non-Color for every other format. `rc2016/formats/materials.py` applies this; for example a `_g` stored as BC7 sRGB (format 99) is sRGB.
 - Normals are always Non-Color.
 - Roles by suffix:
-  - `_c`: base colour, normally BC7 sRGB. Its alpha is a self-lit mask, never ordinary transparency.
+  - `_c`: base colour, normally BC7 sRGB. Its alpha is a self-lit mask, never ordinary transparency. The one exception is the foliage writers (`basic_foliage`, the tree-leaf graphs), where it is read only as cut-out coverage compared with an alpha-test threshold and nothing else (see [viewer](viewer.md#leaf-cut-out)).
   - `_g`: normally BC7 sRGB, coloured specular F0 in RGB and gloss in alpha. This is a property of the common graph; some graphs use `_g` differently (see Graph families).
   - `_n`: DirectX tangent normal (BC5 RG, `z = 1 - x² - y²`, normalised), strength 1.0. Green is not flipped by default (`flip_normal_green=` exists on `convert_material`); the game takes the tangent sign from a vertex flag, so test a flip on a model with obvious bevels before using it.
 - Keep UV orientation. Do not add metallic masks or strong AO.
@@ -169,6 +169,7 @@ Blend and cull come from the `.material` flags word, not from names or guesses (
 
 - Every `.material` has a 36-byte section `0xE1275683`; the flags word is the u32 at byte 16.
 - Bits 0-1 select blend: 0 opaque, 1 additive alpha (SRC_ALPHA, ONE), 2 alpha over (SRC_ALPHA, ONE_MINUS_SRC_ALPHA), 3 not observed (`decode_flags` returns surface `None`). Bit 2 makes the material two-sided; otherwise back faces are culled.
+- Foliage with an opaque flags word is alpha-tested, not blended: the pixel shader rejects fragments whose `_c` alpha is below the interpolated `attr0.z`, which the engine supplies per instance (the viewer and Blender use an inferred 0.5).
 - Engine special passes override the flag. Decals (`mo_decal_*`) and fur shells (flag bit `0x80000`, which draws extra alpha-over passes) were captured with blends their flag does not predict.
 - `material_flags(material_path=None, data=None)` reads the word from decoded bytes, or by lower-cased archive path from `material_flags.json.gz`, a census of every `.material` in the game archive.
 - The rule was validated against draws in the capture. The captured depth, sampler and full blend state tables are in the research notes.
