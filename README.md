@@ -98,9 +98,13 @@ Tests that need game files skip unless the `RC2016_RESEARCH` environment variabl
 
 `packaging/asset_browser.spec` builds a single-file exe with PyInstaller (`pyinstaller --noconfirm --clean packaging/asset_browser.spec`, run from the repository root). The exe runs the pipeline from the repository checkout it sits in.
 
+## License
+
+This project is licensed under the GNU General Public License v3.0; see [`LICENSE`](LICENSE). It is GPL because it includes and runs ALERT's GPL-3.0 `dat1lib`.
+
 ## Third-party code and assets
 
-- `third_party/ALERT/` (the `dat1lib` package only): [ALERT](https://github.com/Tkachov/ALERT) by Tkachov, GPL-3.0. See its `LICENSE.txt`. Used to read weapon config files for the research pipeline's V1/V5 weapon assemblies.
+- `third_party/ALERT/` (the `dat1lib` package only): [ALERT](https://github.com/Tkachov/ALERT) by Tkachov, GPL-3.0. See its `LICENSE.txt`. Used to read weapon config files for the research pipeline's V1/V5 weapon assemblies, and by `rc2016/research/` for section-reader cross-checks and CRC hashing.
 - `third_party/opengnm/gcn_types.h`: opengnm, MIT. See its `LICENSE`. Provides the GCN opcode tables for the shader decoder.
 - `assets/lighting/golden_gate_hills_1k.exr`: a downscaled copy of *Golden Gate Hills* from [Poly Haven](https://polyhaven.com/a/golden_gate_hills), CC0.
 
