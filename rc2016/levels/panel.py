@@ -16,7 +16,7 @@ from rc2016.levels.viewport import LevelViewport
 
 DEFAULT_LEVEL = "levels/novalis/novalis.level"
 HELP = ("Left drag look · right drag pan · WASD move · Q/E down/up · Shift faster · wheel dolly · "
-        "Ctrl+wheel or [ ] speed · F overview")
+        "Ctrl+wheel or [ ] speed · F overview · click a model to identify it, double click to open it")
 
 
 def zone_names(zones):
@@ -101,11 +101,12 @@ class LevelPanel:
     """Tk panel; ``source_root`` is a callable returning the current extracted source root."""
 
     def __init__(self, parent, tk, ttk, source_root, level=None, mode="Shaded", zone_filter=None, on_done=None,
-                 list_parent=None):
+                 list_parent=None, on_open_model=None):
         """``list_parent``: a separate frame for the level list (the asset browser's left pane);
-        by default the list sits at the top of the panel's own side column (standalone window)."""
+        by default the list sits at the top of the panel's own side column (standalone window).
+        ``on_open_model(model path)``: open a picked model elsewhere (the browser's Model tab)."""
         self.tk, self.ttk, self.source_root = tk, ttk, source_root
-        self.zone_filter, self.on_done = zone_filter, on_done
+        self.zone_filter, self.on_done, self.on_open_model = zone_filter, on_done, on_open_model
         self.archive, self.archive_root, self.archive_lock = None, None, threading.Lock()
         self.events, self.cancel, self.generation = queue.Queue(), threading.Event(), 0
         self.zone_vars, self.zone_rows, self.progress = {}, {}, {}
@@ -127,15 +128,28 @@ class LevelPanel:
         box = ttk.Combobox(options, textvariable=self.mode_var, values=LevelViewport.MODES, state="readonly", width=17)
         box.pack(side="left", padx=4)
         box.bind("<<ComboboxSelected>>", lambda _e: self.view.set_mode(self.mode_var.get()))
+        light = ttk.Frame(side); light.grid(row=4, column=0, sticky="ew", pady=(6, 0))
+        self.lighting_var = tk.StringVar(value=LevelViewport.LIGHTINGS[0])
+        self.tonemap_var = tk.StringVar(value=LevelViewport.TONEMAPS[0])
+        ttk.Label(light, text="Lighting").grid(row=0, column=0, sticky="w")
+        lighting_box = ttk.Combobox(light, textvariable=self.lighting_var, values=LevelViewport.LIGHTINGS, state="readonly", width=12)
+        lighting_box.grid(row=0, column=1, sticky="w", padx=4)
+        lighting_box.bind("<<ComboboxSelected>>", lambda _e: self._lighting_changed())
+        ttk.Label(light, text="Tonemap").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        tonemap_box = ttk.Combobox(light, textvariable=self.tonemap_var, values=LevelViewport.TONEMAPS, state="readonly", width=19)
+        tonemap_box.grid(row=1, column=1, sticky="w", padx=4, pady=(4, 0))
+        tonemap_box.bind("<<ComboboxSelected>>", lambda _e: self.view.set_lighting(tonemap=self.tonemap_var.get()))
+        self.lighting_note = ttk.Label(light, text="", foreground="gray", wraplength=240)
+        self.lighting_note.grid(row=2, column=0, columnspan=2, sticky="w")
         self.hidden_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(side, text="Show collision/template models", variable=self.hidden_var,
-                        command=lambda: self.view.set_show_hidden(self.hidden_var.get())).grid(row=4, column=0, sticky="w", pady=4)
-        head = ttk.Frame(side); head.grid(row=5, column=0, sticky="ew", pady=(8, 2))
+                        command=lambda: self.view.set_show_hidden(self.hidden_var.get())).grid(row=5, column=0, sticky="w", pady=4)
+        head = ttk.Frame(side); head.grid(row=6, column=0, sticky="ew", pady=(8, 2))
         ttk.Label(head, text="Zones").pack(side="left")
         ttk.Button(head, text="None", width=5, command=lambda: self._set_all(False)).pack(side="right")
         ttk.Button(head, text="All", width=5, command=lambda: self._set_all(True)).pack(side="right", padx=4)
-        side.rowconfigure(6, weight=1)
-        holder = ttk.Frame(side); holder.grid(row=6, column=0, sticky="nsew")
+        side.rowconfigure(7, weight=1)
+        holder = ttk.Frame(side); holder.grid(row=7, column=0, sticky="nsew")
         holder.columnconfigure(0, weight=1); holder.rowconfigure(0, weight=1)
         self.zone_canvas = tk.Canvas(holder, highlightthickness=0, width=250)
         self.zone_canvas.grid(row=0, column=0, sticky="nsew")
@@ -144,15 +158,26 @@ class LevelPanel:
         self.zone_list = ttk.Frame(self.zone_canvas)
         self.zone_canvas.create_window((0, 0), window=self.zone_list, anchor="nw")
         self.zone_list.bind("<Configure>", lambda _e: self.zone_canvas.configure(scrollregion=self.zone_canvas.bbox("all")))
-        ttk.Label(side, text=HELP, wraplength=250, foreground="gray").grid(row=7, column=0, sticky="ew", pady=(8, 0))
+        ttk.Label(side, text=HELP, wraplength=250, foreground="gray").grid(row=8, column=0, sticky="ew", pady=(8, 0))
         main.columnconfigure(0, weight=1); main.rowconfigure(0, weight=1)
         self.view = LevelViewport(main, width=420, height=300)
         self.view.grid(row=0, column=0, sticky="nsew")
         self.view.set_mode(mode)
         self.view.clear("Choose a level and click Load.")
         self.view.on_stats = self._show_stats
+        self.view.on_pick = self._picked
+        self.view.on_open = self._open_model
+        self.view.on_lighting_changed = lambda: self.lighting_note.configure(text=self.view.lighting_note or "")
         self.status_var = tk.StringVar(value="")
         ttk.Label(main, textvariable=self.status_var, anchor="w", padding=(4, 3)).grid(row=1, column=0, sticky="ew")
+        picked = ttk.Frame(main); picked.grid(row=2, column=0, sticky="ew")
+        picked.columnconfigure(0, weight=1)
+        self.picked_var = tk.StringVar(value="Click a model in the view to identify it.")
+        ttk.Label(picked, textvariable=self.picked_var, anchor="w", padding=(4, 0, 4, 3)).grid(row=0, column=0, sticky="ew")
+        self.open_button = ttk.Button(picked, text="Open in Model tab", state="disabled",
+                                      command=lambda: self._open_model(self.view.selected))
+        if on_open_model:
+            self.open_button.grid(row=0, column=1, padx=4, pady=(0, 3))
         self.frame.after(50, self._poll)
 
     def _build_level_list(self, parent, height):
@@ -241,6 +266,23 @@ class LevelPanel:
         root = str(self.source_root() or "")
         threading.Thread(target=load_level, args=(lambda: self._archive(root), level, relay, cancel, self.zone_filter),
                          daemon=True).start()
+
+    def _lighting_changed(self):
+        if self.lighting_var.get() == "Shared HDRI":
+            self.tonemap_var.set("Khronos PBR Neutral")
+        self.view.set_lighting(self.lighting_var.get(), self.tonemap_var.get())
+
+    def _picked(self, path):
+        if not path:
+            self.picked_var.set("Nothing under the pointer.")
+            self.open_button.configure(state="disabled")
+            return
+        self.picked_var.set(f"{path} · {self.view.instance_count(path):,} visible instances (outlined)")
+        self.open_button.configure(state="normal")
+
+    def _open_model(self, path):
+        if path and self.on_open_model:
+            self.on_open_model(path)
 
     def _set_all(self, visible):
         for zone, var in self.zone_vars.items():

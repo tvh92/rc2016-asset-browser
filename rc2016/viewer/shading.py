@@ -11,12 +11,85 @@ decoded writers differ (grey _g, _g.B self-lit, spec/gloss scales, the Blarg
 saucer colour pick) are set per material from texture_preview.GRAPH_RULES. Normals use
 _n as an RG tangent map without a green flip (the Blender builder's
 convention), with the tangent frame taken from screen-space UV derivatives.
-The lights are a fixed viewer rig (key, fill, sky/ground ambient) with a
-simple filmic tonemap: a viewing aid, not the game's lighting.
+Lighting is either the fixed viewer rig (key, fill, sky/ground ambient) or the shared review
+HDRI as pre-blurred maps (rc2016/viewer/environment.py), with an ACES fit or Khronos PBR Neutral
+tonemap (LIGHTING below): viewing aids, not the game's lighting.
 """
 from __future__ import annotations
 
 import ctypes
+
+ENVIRONMENT_TEXTURE_UNIT = 6   # shared review HDRI: prefiltered radiance bands (environment.py)
+# Viewer lighting shared by FRAGMENT and GLASS_FRAGMENT. uLighting 0 is the fixed viewer rig: key and
+# fill lights plus a sky/ground hemisphere, in rig space; uLightFrame maps rig space to view space
+# (identity: the rig turns with the camera; the level viewer fixes it to the world). uLighting 1 is
+# the shared review HDRI in Blender world space (uViewToWorld): its sun as the key light (uSun*),
+# diffuse from 9 irradiance SH coefficients of the rest, specular from GGX-prefiltered bands and
+# Karis' analytic environment BRDF. All carry the world strength. The rig's diffuse keeps its
+# historical factor 2 (diffuseScale); the HDRI's is physical (albedo x E / pi). display() applies exposure and the tonemap: 0 the ACES fit, 1 Khronos PBR
+# Neutral with the sRGB transfer function (the view transform of the Blender review renders).
+LIGHTING = """
+uniform int uLighting; uniform mat3 uLightFrame; uniform mat3 uViewToWorld;
+uniform vec3 uSH[9]; uniform sampler2D uEnvTex; uniform vec3 uSunDir; uniform vec3 uSunColour;
+uniform int uTonemap; uniform float uExposure;
+vec3 rigKey() { return uLighting == 1 ? uSunDir * uViewToWorld : uLightFrame * normalize(vec3(-0.45, 0.65, 0.62)); }
+vec3 rigFill() { return uLightFrame * normalize(vec3(0.7, 0.1, 0.4)); }
+vec3 keyColour() { return uLighting == 1 ? uSunColour : vec3(2.6, 2.5, 2.35); }
+float diffuseScale() { return uLighting == 1 ? 1.0 : 2.0; }
+vec3 fillColour() { return uLighting == 1 ? vec3(0.0) : vec3(0.55, 0.6, 0.7); }
+vec3 irradiance(vec3 n) {
+    return max(uSH[0] * 0.282095 + uSH[1] * (0.488603 * n.y) + uSH[2] * (0.488603 * n.z) + uSH[3] * (0.488603 * n.x)
+        + uSH[4] * (1.092548 * n.x * n.y) + uSH[5] * (1.092548 * n.y * n.z) + uSH[6] * (0.315392 * (3.0 * n.z * n.z - 1.0))
+        + uSH[7] * (1.092548 * n.x * n.z) + uSH[8] * (0.546274 * (n.x * n.x - n.y * n.y)), 0.0);
+}
+// Diffuse is albedo * (lights + ambient) / PI * diffuseScale().
+vec3 ambientLight(vec3 N) {
+    if (uLighting == 1) return irradiance(uViewToWorld * N);
+    return mix(vec3(0.10, 0.09, 0.08), vec3(0.30, 0.33, 0.38), dot(N, uLightFrame[1]) * 0.5 + 0.5);
+}
+// Band i of the atlas (six bands, sharpest at the top) at Blender's equirectangular (u, v).
+vec3 envBand(float u, float v, float i) {
+    return texture2D(uEnvTex, vec2(u, (i + clamp(1.0 - v, 0.0078125, 0.9921875)) / 6.0)).rgb;
+}
+vec3 prefiltered(vec3 d, float r) {
+    float u = dot(d.xy, d.xy) > 1e-12 ? 0.5 - atan(d.y, d.x) / (2.0 * PI) : 0.0;
+    float v = atan(d.z, length(d.xy)) / PI + 0.5;
+    // environment.ROUGHNESS_LEVELS: 0.15, 0.3, 0.45, 0.6, 0.8, 1.0
+    float level = clamp(r <= 0.6 ? (r - 0.15) / 0.15 : 3.0 + (r - 0.6) / 0.2, 0.0, 5.0);
+    float i0 = floor(level);
+    return mix(envBand(u, v, i0), envBand(u, v, min(i0 + 1.0, 5.0)), level - i0);
+}
+// Environment specular for GGX alpha a; the rig's version is its sky/ground ambient term.
+vec3 envSpecular(vec3 N, vec3 V, vec3 F0, vec3 F90, float a, vec3 ambient) {
+    if (uLighting == 1) {
+        float r = sqrt(a), nv = max(dot(N, V), 1e-4);
+        vec4 k = r * vec4(-1.0, -0.0275, -0.572, 0.022) + vec4(1.0, 0.0425, 1.04, -0.04);
+        float b = min(k.x * k.x, exp2(-9.28 * nv)) * k.x + k.y;
+        vec2 ab = vec2(-1.04, 1.04) * b + k.zw;
+        return prefiltered(uViewToWorld * reflect(-V, N), r) * (F0 * ab.x + F90 * ab.y);
+    }
+    return (F0 + (F90 - F0) * pow(1.0 - max(dot(N, V), 0.0), 5.0)) * ambient * (1.0 - 0.6 * a);
+}
+float srgbEncode(float x) { return x <= 0.0031308 ? 12.92 * x : 1.055 * pow(x, 1.0 / 2.4) - 0.055; }
+vec3 display(vec3 color) {
+    color *= uExposure;
+    if (uTonemap == 1) {   // Khronos PBR Neutral: start compression 0.76, desaturation 0.15
+        float x = min(color.r, min(color.g, color.b));
+        color -= x < 0.08 ? x - 6.25 * x * x : 0.04;
+        float peak = max(color.r, max(color.g, color.b));
+        if (peak >= 0.76) {
+            float newPeak = 1.0 - 0.0576 / (peak - 0.52);
+            color *= newPeak / peak;
+            color = mix(color, vec3(newPeak), 1.0 - 1.0 / (0.15 * (peak - newPeak) + 1.0));
+        }
+        color = clamp(color, 0.0, 1.0);
+        return vec3(srgbEncode(color.r), srgbEncode(color.g), srgbEncode(color.b));
+    }
+    color = color * (2.51 * color + 0.03) / (color * (2.43 * color + 0.59) + 0.14);   // ACES fit
+    return pow(clamp(color, 0.0, 1.0), vec3(1.0 / 2.2));
+}
+"""
+LIGHTING_UNIFORMS = ("uLighting", "uLightFrame", "uViewToWorld", "uSH", "uEnvTex", "uSunDir", "uSunColour", "uTonemap", "uExposure")
 
 # Attribute locations for the two 4-wide skin influence sets. NVIDIA aliases the
 # built-ins to fixed slots (0 vertex, 2 normal, 3 colour, 4 secondary colour,
@@ -129,6 +202,7 @@ varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
 varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm;
 const float PI = 3.14159265;
 vec3 linear(vec3 c) { return pow(max(c, 0.0), vec3(2.2)); }
+// @lighting
 #ifdef GL_ARB_shader_texture_lod
 // 5FADAD33 rel764-920: positive counts, original IMAGE_SAMPLE_D UV gradients.
 vec2 parallaxUV(vec2 uv,vec2 D,int count,vec2 dx,vec2 dy) {
@@ -208,13 +282,13 @@ vec3 puddleShade(vec3 G, vec3 V, vec3 c, vec2 g) {
         float rw=clamp((m-.5*uPuddle1.z)/(1.0-uPuddle1.z),0.0,1.0);
         N=mix(baseN,rippleN,rw); // source rel1892..1900 has NO final normalization
     } else N*=face;
-    vec3 L1=normalize(vec3(-.45,.65,.62)),L2=normalize(vec3(.7,.1,.4));
-    vec3 C1=vec3(2.6,2.5,2.35),C2=vec3(.55,.6,.7);
-    vec3 E=mix(vec3(.10,.09,.08),vec3(.30,.33,.38),N.y*.5+.5);
-    vec3 Dl=(max(dot(N,L1),0.0)*C1+max(dot(N,L2),0.0)*C2+E)/PI*2.0;
+    vec3 L1=rigKey(),L2=rigFill();
+    vec3 C1=keyColour(),C2=fillColour();
+    vec3 E=ambientLight(N);
+    vec3 Dl=(max(dot(N,L1),0.0)*C1+max(dot(N,L2),0.0)*C2+E)/PI*diffuseScale();
     vec3 F90=clamp(60.0*F0,0.0,1.0);float aa=exp2(-5.5*gloss);
     vec3 S=ggx(N,V,L1,F0,F90,aa)*C1+ggx(N,V,L2,F0,F90,aa)*C2;
-    S+=(F0+(F90-F0)*pow(1.0-max(dot(N,V),0.0),5.0))*E*(1.0-.6*aa);
+    S+=envSpecular(N,V,F0,F90,aa,E);
     S=clamp(mix(S,F0*E,uPuddle3.x),0.0,1.0); // probe opacity=0, instance fade=0
     return S+D*Dl; // SSR off; fog=1; opacity=1; debug=0; no self-lit input
 }
@@ -246,7 +320,7 @@ void main() {
             // Finite-ray preview guard; source does not define a controlled overflow policy.
             if(abs(D.x)<=3.4e38 && abs(D.y)<=3.4e38) {
             materialUV=parallaxUV(vUV,D,count,pomDx,pomDy);
-            vec3 light=normalize(vec3(-0.45,0.65,0.62)); // viewer key replaces CB0[128..130]
+            vec3 light=rigKey(); // viewer key replaces CB0[128..130]
             vec2 ls=1.25*uParallaxP.x*uParallaxP.w*vec2(dot(pomT,light),-dot(pomB,light));
             parallaxShadowWeight=parallaxShadow(materialUV,ls,pomDx,pomDy);
             }
@@ -258,8 +332,7 @@ void main() {
     if (uMode == 2 && uPuddles && uHasPuddleAtlas) {
         vec3 g=texture2D(uTexG,vUV).rgb;if(uSrgbG)g=linear(g);
         vec3 color=puddleShade(normalize(vNrm),V,albedo,g.rg);
-        color=color*(2.51*color+.03)/(color*(2.43*color+.59)+.14);
-        gl_FragColor=vec4(pow(clamp(color,0.0,1.0),vec3(1.0/2.2)),1.0);return;
+        gl_FragColor=vec4(display(color),1.0);return;
     }
     if (uMode == 2 && uHasC && uHasP && !uVehicle && !uTint) {
         // blarg_saucer_colorpick writer: albedo + blend*a*albedo*(scale*a*pick - 1); the f16 G-buffer
@@ -408,9 +481,9 @@ void main() {
     }
     if (uBngKind == 3) albedo *= 1.0 + uBngP.x * bngGl.b * bngRimB;
     if (uBngKind == 6) albedo *= 1.0 - bngRimB;
-    vec3 L1 = normalize(vec3(-0.45, 0.65, 0.62)), L2 = normalize(vec3(0.7, 0.1, 0.4));
-    vec3 C1 = vec3(2.6, 2.5, 2.35), C2 = vec3(0.55, 0.6, 0.7);
-    vec3 ambient = mix(vec3(0.10, 0.09, 0.08), vec3(0.30, 0.33, 0.38), N.y * 0.5 + 0.5);
+    vec3 L1 = rigKey(), L2 = rigFill();
+    vec3 C1 = keyColour(), C2 = fillColour();
+    vec3 ambient = ambientLight(N);
     float glowMask = uHasH ? texture2D(uTexH, vUV).r : 0.0;
     if (uSrgbGlowMask) glowMask = linear(vec3(glowMask)).r;
     if (uMode == 2 && uGlowKind == 1) { // cached %7388-7412: _c.rgb is never sampled
@@ -418,7 +491,7 @@ void main() {
         albedo = glowMask * (uGlowColour + uGlowP.z * ambient);
     }
     albedo *= parallaxShadowWeight; // source MRT1 shadow AFTER tint, not specular
-    vec3 color = albedo * (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * 2.0;
+    vec3 color = albedo * (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
     if (uMode == 2) {
         vec4 g = uHasG ? texture2D(uTexG, materialUV) : vec4(0.0);
         vec3 gl = uSrgbG ? linear(g.rgb) : g.rgb;
@@ -448,8 +521,7 @@ void main() {
             float a = pow(2.0, -5.5 * gloss);
             // Two-color T multiplies the accumulated specular lighting after GGX/F90.
             color += metalSpecTint * (ggx(N, V, L1, F0, F90, a) * C1 + ggx(N, V, L2, F0, F90, a) * C2);
-            float NdV = max(dot(N, V), 0.0);
-            color += metalSpecTint * (F0 + (F90 - F0) * pow(1.0 - NdV, 5.0)) * ambient * (1.0 - 0.6 * a);
+            color += metalSpecTint * envSpecular(N, V, F0, F90, a, ambient);
         }
         if (uGlowKind == 1) { // %7398-7440: mask and offset parallax R, K=0x06F19114
             float p = uHasGlowParallax ? texture2D(uTexGlowParallax, glowParallaxUV).r : 0.0;
@@ -466,8 +538,7 @@ void main() {
             color += uFacingGlowP.x * vec3(2.0 * a * (1.0 + a), uFacingGlowQ.y * f * (1.0 + a), 0.0);
         }
     }
-    color = color * (2.51 * color + 0.03) / (color * (2.43 * color + 0.59) + 0.14);   // ACES fit
-    gl_FragColor = vec4(pow(clamp(color, 0.0, 1.0), vec3(1.0 / 2.2)), 1.0);
+    gl_FragColor = vec4(display(color), 1.0);
 }
 """
 
@@ -496,6 +567,7 @@ const float PI = 3.14159265;
 vec3 linear(vec3 c) { return pow(max(c, 0.0), vec3(2.2)); }
 float sat(float x) { return clamp(x, 0.0, 1.0); }
 float screenLinear(float x) { return x <= 0.04045 ? x / 12.92 : pow((x + 0.055) / 1.055, 2.4); }
+// @lighting
 vec3 ggx(vec3 N, vec3 V, vec3 L, vec3 F0, vec3 F90, float a) {
     vec3 H = normalize(L + V);
     float NdL = max(dot(N, L), 0.0), NdV = max(dot(N, V), 1e-4), NdH = max(dot(N, H), 0.0);
@@ -510,8 +582,8 @@ void main() {
     vec3 V = normalize(-vPos);
     float ndv = sat(dot(N, V));
     float om = max(1.0 - ndv, 1e-6);          // pow(0, 0) is undefined in GLSL
-    vec3 L1 = normalize(vec3(-0.45, 0.65, 0.62)), L2 = normalize(vec3(0.7, 0.1, 0.4));
-    vec3 C1 = vec3(2.6, 2.5, 2.35), C2 = vec3(0.55, 0.6, 0.7);
+    vec3 L1 = rigKey(), L2 = rigFill();
+    vec3 C1 = keyColour(), C2 = fillColour();
     vec3 color; float alpha;
     if (uKind == 3) { // 8716DC7A, time=0; cutoff=0, vertex alpha=fog fade=1
         vec2 uv = floor(vUV * uC.z) / uC.z;
@@ -539,28 +611,28 @@ void main() {
             vec2 xy = sat(uA.y) * (texture2D(uTexN, vUV * uA.x).rg * 2.0 - 1.0);
             N = normalize(T * scale * xy.x - B * scale * xy.y + N * (1.0 - dot(xy, xy)));
         }
-        vec3 ambient = mix(vec3(0.10, 0.09, 0.08), vec3(0.30, 0.33, 0.38), N.y * 0.5 + 0.5);
+        vec3 ambient = ambientLight(N);
         float a = pow(2.0, -5.5 * sqrt(sat(uA.w)));
-        vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * 2.0;
-        float nv = max(dot(N, V), 0.0);
+        vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
         vec3 S = ggx(N, V, L1, F0, F90, a) * C1 + ggx(N, V, L2, F0, F90, a) * C2
-               + (F0 + (F90 - F0) * pow(1.0 - nv, 5.0)) * ambient * (1.0 - 0.6 * a);
+               + envSpecular(N, V, F0, F90, a, ambient);
         color = S + 0.400295 * pick * Ld;
     } else {
         alpha = sat(pow(1.001 - ndv, uC.x) * (uC.z + sat(uC.w + sat(4.0 * pow(om, uD.y)))));
         vec3 tint = clamp(uB.w * clamp(uB.rgb / max(dot(vec3(0.2126, 0.7152, 0.0722), uB.rgb), 1e-6), 0.0, 1.0), 0.0, 1.0);
-        vec3 ambient = mix(vec3(0.10, 0.09, 0.08), vec3(0.30, 0.33, 0.38), N.y * 0.5 + 0.5);
+        vec3 ambient = ambientLight(N);
         float a = pow(2.0, -5.5 * sqrt(sat(uA.w)));
         vec3 X = uA.rgb * (1.0 + uC.y * pow(1.001 - ndv, uD.x) * ambient * sat(4.0 * sqrt(om)));   // E = viewer sky
-        vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * 2.0;
+        vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
         vec3 one = vec3(1.0);   // R carries no Fresnel: alpha holds the rim
-        vec3 R = tint * (ggx(N, V, L1, one, one, a) * C1 + ggx(N, V, L2, one, one, a) * C2 + ambient * (1.0 - 0.6 * a));
+        vec3 R = tint * (ggx(N, V, L1, one, one, a) * C1 + ggx(N, V, L2, one, one, a) * C2 + envSpecular(N, V, one, one, a, ambient));
         color = R + X * Ld;
     }
-    color = color * (2.51 * color + 0.03) / (color * (2.43 * color + 0.59) + 0.14);   // ACES fit, as FRAGMENT
-    gl_FragColor = vec4(pow(clamp(color, 0.0, 1.0), vec3(1.0 / 2.2)), alpha);
+    gl_FragColor = vec4(display(color), alpha);
 }
 """
+FRAGMENT = FRAGMENT.replace("// @lighting\n", LIGHTING)
+GLASS_FRAGMENT = GLASS_FRAGMENT.replace("// @lighting\n", LIGHTING)
 GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3}
 
 
@@ -592,10 +664,10 @@ OPAQUE_UNIFORMS = (
     "uTexP", "uHasP", "uSrgbP", "uPick", "uSpecTint", "uTint", "uTintA", "uTintB", "uTintP", "uTintM",
     "uTintVariant", "uTintPalette", "uTintPaletteBlend", "uTintDetailP", "uTintWorldOrigin",
     "uTexTintDetail", "uHasTintDetail", "uSrgbTintDetail", "uTexH", "uHasH", "uArchSequence", "uTexSequence", "uHasSequence", "uArchColour", "uArchP", "uArchPhase",
-    "uFacingGlow", "uFacingGlowP", "uFacingGlowQ")
+    "uFacingGlow", "uFacingGlowP", "uFacingGlowQ", *LIGHTING_UNIFORMS)
 GLASS_UNIFORMS = ("uSkin", "uBoneTex", "uBoneWidth", "uKind", "uA", "uB", "uC", "uD",
                   "uTexN", "uHasN", "uTexP", "uHasP", "uSrgbP",
-                  "uScreenNoiseA", "uScreenNoiseB", "uScreenSrgbN", "uScreenSrgbA", "uScreenSrgbB")
+                  "uScreenNoiseA", "uScreenNoiseB", "uScreenSrgbN", "uScreenSrgbA", "uScreenSrgbB", *LIGHTING_UNIFORMS)
 
 # Level viewer: one draw per model and material for all its instances. The zone's row-vector
 # instance matrix arrives as four per-instance attributes (rows; docs/levels.md), in texcoord
@@ -620,6 +692,12 @@ void main() {
     vPos = view.xyz; vNrm = gl_NormalMatrix * n; vUV = gl_MultiTexCoord0.xy;
     gl_Position = gl_ProjectionMatrix * view;
 }
+"""
+# Level viewer click-to-identify: each model drawn in a flat id colour into the back buffer.
+PICK_FRAGMENT = """
+#version 120
+uniform vec3 uPickColour;
+void main() { gl_FragColor = vec4(uPickColour, 1.0); }
 """
 
 
@@ -650,6 +728,8 @@ class Shading:
         "glUniform1f": (None, [ctypes.c_int, ctypes.c_float]),
         "glUniform3f": (None, [ctypes.c_int, ctypes.c_float, ctypes.c_float, ctypes.c_float]),
         "glUniform4f": (None, [ctypes.c_int, ctypes.c_float, ctypes.c_float, ctypes.c_float, ctypes.c_float]),
+        "glUniform3fv": (None, [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]),
+        "glUniformMatrix3fv": (None, [ctypes.c_int, ctypes.c_int, ctypes.c_ubyte, ctypes.c_void_p]),
         "glUniformMatrix4fv": (None, [ctypes.c_int, ctypes.c_int, ctypes.c_ubyte, ctypes.c_void_p]),
         "glVertexAttribPointer": (None, [ctypes.c_uint, ctypes.c_int, ctypes.c_uint, ctypes.c_ubyte, ctypes.c_int, ctypes.c_void_p]),
         "glEnableVertexAttribArray": (None, [ctypes.c_uint]),
@@ -722,3 +802,9 @@ class Shading:
             self.programs[key] = self._link(INSTANCED_VERTEX, GLASS_FRAGMENT if glass else FRAGMENT,
                                             INSTANCE_ATTRIBUTES, GLASS_UNIFORMS if glass else OPAQUE_UNIFORMS)
         return self.programs[key]
+
+    def pick_program(self):
+        """Level viewer click-to-identify: INSTANCED_VERTEX writing a flat id colour (uPickColour)."""
+        if "pick" not in self.programs:
+            self.programs["pick"] = self._link(INSTANCED_VERTEX, PICK_FRAGMENT, INSTANCE_ATTRIBUTES, ("uPickColour",))
+        return self.programs["pick"]

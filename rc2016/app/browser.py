@@ -28,9 +28,11 @@ def source_details(payload, used_by=''):
                  f"{len(payload.get('selected_mesh_indices') or [])} meshes, "
                  f"{len(payload['vertices']):,} vertices, {len(payload['triangles']):,} triangles")
     materials = payload.get('materials') or []
-    lines.append(f'Materials ({len(materials)}):')
-    lines += [f"  {m.get('index', i)}: {m.get('name') or '(unnamed)'}" + (f" — {m['path']}" if m.get('path') else ' — no material file')
-              for i, m in enumerate(materials)]
+    lines.append(f'Materials ({len(materials)}), with the viewer shading rule each one gets:')
+    for i, m in enumerate(materials):
+        lines.append(f"  {m.get('index', i)}: {m.get('name') or '(unnamed)'}" + (f" — {m['path']}" if m.get('path') else ' — no material file'))
+        if m.get('rule_kind'):
+            lines.append('      ' + rule_text(m))
     textures = payload.get('texture_list') or []
     graph = sum(1 for t in textures if t.get('via_graph'))
     lines.append(f"Textures: {len(textures)}" + (f" ({graph} graph defaults)" if graph else '') + ' — listed in the Textures tab')
@@ -42,6 +44,37 @@ def source_details(payload, used_by=''):
         lines.append('Animations: ' + (payload.get('animation_note') or ('none; static model' if not joints else 'none found')))
     lines.append(f"Packed source SHA-256: {payload.get('source_packed_sha256', '?')} ({payload.get('codec', '?')})")
     return '\n'.join(lines)
+
+
+def rule_text(material):
+    """'shading: exact rule (graph x)' and similar for a payload material with rule_kind."""
+    stem = lambda path: path.rsplit('/', 1)[-1].rsplit('.', 1)[0]
+    graphs = ', '.join(stem(g) for g in material.get('graphs') or []) or 'none'
+    kind = material['rule_kind']
+    if kind == 'exact rule':
+        return f'shading: exact rule — decoded writer of graph {graphs}'
+    if kind == 'family fallback':
+        return f"shading: family fallback ({material['rule'].rstrip('/')}*) — graph {graphs} has no rule of its own"
+    if kind == 'generic reading':
+        return f'shading: generic reading (coloured F0 + gloss alpha) — graph {graphs} has no decoded rule'
+    return 'shading: generic reading — the material names no material graph'
+
+
+def lighting_controls(ttk, parent, viewport, lighting_var, tonemap_var):
+    """Lighting and tonemap comboboxes for a viewport (the model and level viewers share them).
+    Choosing the shared HDRI also selects its view transform, Khronos PBR Neutral."""
+    def lighting_changed(_event=None):
+        if lighting_var.get() == 'Shared HDRI':
+            tonemap_var.set('Khronos PBR Neutral')
+        viewport.set_lighting(lighting_var.get(), tonemap_var.get())
+    ttk.Label(parent, text='Lighting').pack(side='left')
+    box = ttk.Combobox(parent, textvariable=lighting_var, values=viewport.LIGHTINGS, state='readonly', width=12)
+    box.pack(side='left', padx=4); box.bind('<<ComboboxSelected>>', lighting_changed)
+    box = ttk.Combobox(parent, textvariable=tonemap_var, values=viewport.TONEMAPS, state='readonly', width=19)
+    box.pack(side='left', padx=4); box.bind('<<ComboboxSelected>>', lambda _e: viewport.set_lighting(tonemap=tonemap_var.get()))
+    note = ttk.Label(parent, text='', foreground='#6b7280')
+    note.pack(side='left', padx=4)
+    viewport.on_lighting_changed = lambda: note.configure(text=viewport.lighting_note or '')
 
 
 def group_clips(labels):
@@ -133,6 +166,9 @@ class AssetBrowser:
         self.selected_record = None
         self.source_text = ''
         self.build_text = ''
+        self.placement_text = ''
+        from rc2016.app.links import LinkService
+        self.links = LinkService(app)   # archive-wide links: texture users, level placements, coverage
         tk, ttk = self.tk, self.ttk
         self.frame = ttk.LabelFrame(parent, text='Asset and result review', padding=8)
         parent.add(self.frame, weight=2)
@@ -169,7 +205,10 @@ class AssetBrowser:
         mode_box=ttk.Combobox(native,textvariable=self.view_mode,values=self.viewport.MODES,state='readonly',width=17)
         mode_box.pack(side='left',padx=4)
         mode_box.bind('<<ComboboxSelected>>',lambda _e:self.viewport.set_mode(self.view_mode.get()))
-        anim=ttk.Frame(view);anim.grid(row=2,column=0,sticky='ew',pady=(0,6))
+        self.lighting_var=self.tk.StringVar(value=self.viewport.LIGHTINGS[0]);self.tonemap_var=self.tk.StringVar(value=self.viewport.TONEMAPS[0])
+        light_row=ttk.Frame(view);light_row.grid(row=2,column=0,sticky='ew',pady=(0,6))
+        lighting_controls(ttk,light_row,self.viewport,self.lighting_var,self.tonemap_var)
+        anim=ttk.Frame(view);anim.grid(row=3,column=0,sticky='ew',pady=(0,6))
         anim.columnconfigure(3,weight=1)
         ttk.Label(anim,text='Animation').grid(row=0,column=0,padx=(0,4))
         self.clip_choice=tk.StringVar(value=REST_POSE)
@@ -193,8 +232,8 @@ class AssetBrowser:
         self.anim_work=LatestWork()
         self.animation=None;self.anim_frame=0;self.playing=False;self.play_job=None
         self.model_info=self.tk.StringVar(value='Select one source model. It loads directly; no Blender is needed.')
-        ttk.Label(view,textvariable=self.model_info,wraplength=410).grid(row=3,column=0,sticky='ew')
-        ttk.Label(view,text='Drag: orbit · Right drag: pan · Wheel: zoom\nShaded = game BRDF (_c, _g gloss, _n normals, self-lit) under fixed viewer lights, not game lighting',foreground='#6b7280').grid(row=4,column=0,sticky='w',pady=5)
+        ttk.Label(view,textvariable=self.model_info,wraplength=410).grid(row=4,column=0,sticky='ew')
+        ttk.Label(view,text='Drag: orbit · Right drag: pan · Wheel: zoom\nShaded = game BRDF (_c, _g gloss, _n normals, self-lit) under the viewer rig or the shared review HDRI (predicts the Blender review render), not game lighting',foreground='#6b7280',wraplength=520).grid(row=5,column=0,sticky='w',pady=5)
         result.columnconfigure(0,weight=1);result.rowconfigure(0,weight=1)
         self.description=app.ScrolledText(result,height=8,wrap='word',state='disabled',font='TkDefaultFont')
         self.description.grid(row=0,column=0,sticky='nsew')
@@ -238,7 +277,8 @@ class AssetBrowser:
         level_right=ttk.LabelFrame(self.level_view,text='Level viewer',padding=6)
         self.level_view.add(level_list,weight=1);self.level_view.add(level_right,weight=4)
         level_right.columnconfigure(0,weight=1);level_right.rowconfigure(0,weight=1)
-        self.level_panel=LevelPanel(level_right,tk,ttk,lambda:app.source_var.get().strip(),list_parent=level_list)
+        self.level_panel=LevelPanel(level_right,tk,ttk,lambda:app.source_var.get().strip(),list_parent=level_list,
+                                    on_open_model=self.open_model)
         self.level_panel.frame.grid(row=0,column=0,sticky='nsew')
         # Flash UI (flash_tab.py): the .gfx/.swf list on the left; reads the list on first show.
         from rc2016.flash.tab import FlashTab
@@ -327,11 +367,19 @@ class AssetBrowser:
         self.export_selected_button.pack(side='left',padx=(8,2))
         self.export_all_button=ttk.Button(export,text='Export listed…',command=lambda:self._export_textures(True),state='disabled')
         self.export_all_button.pack(side='left',padx=2)
+        users=ttk.Frame(tab);users.grid(row=5,column=0,sticky='ew',pady=(4,0));users.columnconfigure(1,weight=1)
+        ttk.Label(users,text='Used by').grid(row=0,column=0,padx=(0,4))
+        self.texture_users_var=tk.StringVar(value='');self.texture_user_paths=[]
+        self.texture_users_box=ttk.Combobox(users,textvariable=self.texture_users_var,state='disabled')
+        self.texture_users_box.grid(row=0,column=1,sticky='ew')
+        self.texture_open_button=ttk.Button(users,text='Open model',state='disabled',
+                                            command=lambda:self._open_texture_user())
+        self.texture_open_button.grid(row=0,column=2,padx=(4,0))
         self.texture_info=tk.StringVar(value='Select a source model to list its textures, or show the whole archive.')
-        ttk.Label(tab,textvariable=self.texture_info,wraplength=410).grid(row=5,column=0,sticky='ew',pady=(4,0))
+        ttk.Label(tab,textvariable=self.texture_info,wraplength=410).grid(row=6,column=0,sticky='ew',pady=(4,0))
         ttk.Label(tab,text='Unflipped = as stored in the game, top row first. The model builds do not flip images; they flip UV V instead.\n'
                   'Flip applies to the preview and PNG export. Original .texture and DDS are written unchanged, at full size.',
-                  foreground='#6b7280',wraplength=410).grid(row=6,column=0,sticky='w',pady=4)
+                  foreground='#6b7280',wraplength=410).grid(row=7,column=0,sticky='w',pady=4)
 
     # Listing
     def _archive_mode(self):
@@ -415,9 +463,53 @@ class AssetBrowser:
         if not focus:return
         path=self.texture_rows[int(focus)]['path']
         if self.texture_facts and self.texture_facts['path']==path:return
+        self._show_texture_users(path)
         self.texture_slice.set('1')
         self.texture_info.set('Decoding '+path+' …')
         self.texture_work.submit(self.source_loader.texture_image,path,0)
+
+    def _show_texture_users(self,path):
+        """Fill the Used by list with the models whose materials reference this texture."""
+        self.texture_user_paths=[]
+        self.texture_users_box.configure(values=(),state='disabled');self.texture_open_button.configure(state='disabled')
+        self.texture_users_var.set('Reading asset links…')
+        def show(links):
+            focus=self.texture_tree.focus()
+            if not focus or self.texture_rows[int(focus)]['path']!=path:return   # another texture was chosen meanwhile
+            if links is None:
+                self.texture_users_var.set(self.links.message);return
+            users=links.texture_users(path)
+            self.texture_user_paths=[u['model'] for u in users]
+            labels=[u['model']+(' (graph default)' if u['via_graph'] else '') for u in users]
+            self.texture_users_box.configure(values=labels,state='readonly' if users else 'disabled')
+            self.texture_users_var.set(labels[0] if labels else 'No model\'s materials reference this texture.')
+            self.texture_open_button.configure(state='normal' if users else 'disabled')
+            if len(users)>1:self.texture_users_box.set(f'{labels[0]}')
+        self.links.request(show,key='texture users')
+
+    def _open_texture_user(self):
+        index=self.texture_users_box.current()
+        paths=self.texture_user_paths
+        if paths:self.open_model(paths[index if 0<=index<len(paths) else 0])
+
+    def open_model(self,path):
+        """Show an archive model in the Model asset type: select it in the tree (which loads it) and
+        bring up the 3D model tab. Clears the search and filters when they hide it."""
+        app=self.app
+        record=next((r for r in app.records if getattr(r,'archive_path',None)==path),None)
+        if record is None:
+            self.app._append_log(f'{path} is not in the model list; scan the game folder first.','error');return False
+        app.asset_type_var.set('Model');self.show_asset_type('Model')
+        item=next((i for i,r in app.item_by_record.items() if r is record),None)
+        if item is None:
+            app.filter_var.set('');app.state_var.set('All')
+            if hasattr(app,'shading_var'):app.shading_var.set('All')
+            app.refresh_table()
+            item=next((i for i,r in app.item_by_record.items() if r is record),None)
+        if item is None:return False
+        app.table.selection_set(item);app.table.focus(item);app.table.see(item)
+        self.notebook.select(0)
+        return True
 
     def _texture_slice_changed(self):
         if not self.texture_facts or self.texture_facts['array_size']<2:return
@@ -839,6 +931,16 @@ class AssetBrowser:
         self.build_text=message
         self._render_details()
 
+    def _request_placements(self,path):
+        from rc2016.app.links import placement_lines
+        self.placement_text='Placed in levels: reading asset links…'
+        def show(links):
+            if not self.source_payload or self.source_payload['source_path']!=path:return
+            self.placement_text=('\n'.join(placement_lines(links.model_placements(path))) if links is not None
+                                 else 'Placed in levels: '+self.links.message)
+            self._render_details()
+        self.links.request(show,key='placements')
+
     def _choose_result(self,index):
         if index<0 or index>=len(self.refs):return
         self._reset('Checking selected result receipts and files…')
@@ -854,6 +956,7 @@ class AssetBrowser:
     def _render_details(self):
         # Source facts from the game files first; a saved build in the output root, when present, below.
         parts=[self.source_text or 'Loading the model from the game files…']
+        if self.source_text and self.placement_text:parts.append(self.placement_text)
         if self.build_text:parts.append('Build in the output root\n'+self.build_text)
         self._describe('\n\n'.join(parts))
 
@@ -973,6 +1076,7 @@ class AssetBrowser:
                                                        payload['model_id'],payload['source_path'],self.source_output_root)
                         self._set_texture_list(payload)
                         self.source_text=source_details(payload,getattr(self.selected_record,'used_by','') or '')
+                        self._request_placements(payload['source_path'])
                         self._render_details()
                         if self.viewport.shading_error:self.model_info.set(self.model_info.get()+'\n'+self.viewport.shading_error)
                         if getattr(self.viewport,'shading_warning',''):self.model_info.set(self.model_info.get()+'\n'+self.viewport.shading_warning)
@@ -981,6 +1085,7 @@ class AssetBrowser:
                     elif kind=='artifact':self._open(payload)
             except queue.Empty:pass
         self._drain_textures()
+        self.links.drain()
         self.flash_tab.drain()
         try:
             while True:
@@ -1008,4 +1113,5 @@ class AssetBrowser:
         self.meta_work.close();self.detail_work.close();self.artifact_work.close();self.source_work.close();self.anim_work.close();self.clip_list_work.close()
         self.texture_work.close();self.texture_list_work.close();self.flash_tab.close();self.level_panel.close()
         self.gallery.close()
+        self.links.close()
         self.cancel_review()

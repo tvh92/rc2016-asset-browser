@@ -1,4 +1,4 @@
-"""Level viewport: every instance of a zone drawn with one instanced call per model and material.
+"""Level viewport: all visible instances of a model drawn with one instanced call per material.
 
 Builds on ModelViewport's WGL context, texture upload and per-material uniforms. Geometry and
 instance matrices stay in native Y-up space (level_scene.py); the camera matrix applies the
@@ -65,11 +65,70 @@ def png_bytes(width, height, rgb_rows_bottom_up):
             + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
 
 
+def merge_ranges(batches):
+    """Merge (first, count) triangle ranges that follow each other; order is kept."""
+    merged = []
+    for first, count in batches:
+        if merged and merged[-1][0] + merged[-1][1] == first:
+            merged[-1] = (merged[-1][0], merged[-1][1] + count)
+        else:
+            merged.append((first, count))
+    return merged
+
+
+def pick_colour(index):
+    """RGB in 0..1 encoding draw id ``index`` (0 is the background) in 24 bits."""
+    value = index + 1
+    return ((value & 0xFF) / 255.0, ((value >> 8) & 0xFF) / 255.0, ((value >> 16) & 0xFF) / 255.0)
+
+
+def pick_index(rgb):
+    """Inverse of pick_colour for a read-back pixel (bytes); None for the background."""
+    value = rgb[0] | rgb[1] << 8 | rgb[2] << 16
+    return value - 1 if value else None
+
+
+class _Recorder:
+    """Stands in for the GL and shading objects while ModelViewport._apply_material runs once per
+    material: uniform, texture-unit and texture-binding calls are recorded, not issued; everything
+    else is read from the real objects."""
+    UNIFORMS = ("glUniform1i", "glUniform1f", "glUniform3f", "glUniform4f")
+
+    def __init__(self, gl, shading):
+        self.ops, self._unit = [], 0
+        recorder = self
+
+        class Proxy:
+            def __init__(self, real):
+                self._real = real
+
+            def __getattr__(self, name):
+                if name in recorder.UNIFORMS:
+                    return lambda location, *args: location != -1 and recorder.ops.append(("u", location, name, args))
+                if name == "glActiveTexture":
+                    return lambda unit: setattr(recorder, "_unit", unit)
+                if name == "glBindTexture":
+                    return lambda target, texture: recorder.ops.append(("t", recorder._unit, target, texture))
+                return getattr(self._real, name)
+        self.gl, self.shading = Proxy(gl), Proxy(shading)
+
+
 class LevelViewport(ModelViewport):
-    """Interactive level view. Add models and materials from the Tk thread as they decode."""
+    """Interactive level view. Add models and materials from the Tk thread as they decode.
+
+    Speed: frame time is dominated by Python-to-GL call overhead, not GPU work. Each model has one
+    instance buffer per handedness holding the instances of every visible zone (rebuilt when zones
+    are toggled), so each model batch is one instanced draw; batches of one model that share a
+    material and follow each other merge; each (model, instance buffer) pair has a vertex array
+    object, so a draw binds one object instead of eight buffers and pointers; and material uniforms
+    and texture bindings are recorded once per material and only re-issued where they differ from
+    the previous material's."""
     GL_ARRAY_BUFFER, GL_ELEMENT_ARRAY_BUFFER, GL_STATIC_DRAW = 0x8892, 0x8893, 0x88E4
     GL_CW, GL_CCW = 0x0900, 0x0901
     MODES = ("Shaded", "Textured", "Solid", "Wireframe", "Solid + wireframe")
+    # Native Y-up objects; the rig stays fixed to the world, so lighting does not turn with the camera.
+    OBJECT_TO_WORLD = ((1.0, 0.0, 0.0), (0.0, 0.0, -1.0), (0.0, 1.0, 0.0))
+    RIG_FIXED_TO_WORLD = True
     EXT = {
         "glGenBuffers": (None, [ctypes.c_int, ctypes.c_void_p]),
         "glDeleteBuffers": (None, [ctypes.c_int, ctypes.c_void_p]),
@@ -77,6 +136,9 @@ class LevelViewport(ModelViewport):
         "glBufferData": (None, [ctypes.c_uint, ctypes.c_ssize_t, ctypes.c_void_p, ctypes.c_uint]),
         "glVertexAttribDivisor": (None, [ctypes.c_uint, ctypes.c_uint]),
         "glDrawElementsInstanced": (None, [ctypes.c_uint, ctypes.c_int, ctypes.c_uint, ctypes.c_void_p, ctypes.c_int]),
+        "glGenVertexArrays": (None, [ctypes.c_int, ctypes.c_void_p]),
+        "glDeleteVertexArrays": (None, [ctypes.c_int, ctypes.c_void_p]),
+        "glBindVertexArray": (None, [ctypes.c_uint]),
     }
 
     def __init__(self, parent, **kwargs):
@@ -89,18 +151,25 @@ class LevelViewport(ModelViewport):
         self._hidden_zones = set()
         self._pending_materials = {}
         self._materials = {}       # material path -> uploaded entry
+        self._material_ops = {}    # (material path, level) -> recorded uniform/texture calls
         self._texture_names = {}   # texture path -> (GL id, sRGB) or None
         self._draw_list = None
         self.show_hidden = False
         self.on_stats = None
+        self.on_pick = None        # called with a model path (or None) after a click
+        self.on_open = None        # called with a model path after a double click on it
+        self.selected = None       # picked model path, outlined
         self.last_draw_ms = 0.0
         self._bounds_native = ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
         self._eye, self._yaw, self._pitch, self._speed = (0.0, -50.0, 20.0), 90.0, -20.0, 20.0
         self._far = 10000.0
         self._keys, self._release_pending = set(), {}
         self._last_tick = None
+        self._press = None
         self.bind("<ButtonPress-1>", self._begin_look)
         self.bind("<B1-Motion>", self._look)
+        self.bind("<ButtonRelease-1>", self._end_look)
+        self.bind("<Double-Button-1>", self._double_click)
         self.bind("<ButtonPress-3>", self._begin_pan)
         self.bind("<B3-Motion>", self._pan_drag)
         self.bind("<KeyPress>", self._key_down)
@@ -122,12 +191,17 @@ class LevelViewport(ModelViewport):
 
     def add_instances(self, zone, path, groups):
         """One zone's instances of an uploaded model: {mirrored: array('f') of 16-float rows}."""
-        self._gl_call(self._upload_instances, zone, path, groups)
+        self._gl_call(self._store_instances, zone, path, groups)
 
     def set_zone_visible(self, zone, visible):
         (self._hidden_zones.discard if visible else self._hidden_zones.add)(zone)
         self._draw_list = None
         self._draw()
+
+    def instance_count(self, path):
+        """Visible instances of a model, or 0."""
+        model = self._models.get(path)
+        return sum(g[1] for g in self._visible_groups(model)) if model else 0
 
     def _gl_call(self, function, *args):
         if not self._make_current() or self._ext is None and not self._load_ext():
@@ -148,6 +222,8 @@ class LevelViewport(ModelViewport):
         for path, entry in entries.items():
             if path not in self._materials:
                 self._materials[path] = self._gl_entry(entry, self._texture_names)
+                for level in (0, 1, 2):
+                    self._material_ops.pop((path, level), None)
         self._gl.glBindTexture(self.GL_TEXTURE_2D, 0)
         self._draw_list = None
         self._schedule_draw()
@@ -164,7 +240,7 @@ class LevelViewport(ModelViewport):
     def _visible_groups(self, model):
         if model["hidden"] and not self.show_hidden:
             return ()
-        return tuple(g for g in model["groups"] if g[3] not in self._hidden_zones)
+        return model["groups"]
 
     def stats(self):
         counts = [(m["triangles"], sum(g[1] for g in self._visible_groups(m))) for m in self._models.values()]
@@ -176,15 +252,18 @@ class LevelViewport(ModelViewport):
 
     def clear(self, message="Loading level…"):
         if self._make_current():
-            buffers = [name for m in self._models.values() for name in m["buffers"]]
+            buffers = [name for m in self._models.values() for name in m["buffers"] + [g[0] for g in m["groups"]]]
             if buffers:
                 self._ext["glDeleteBuffers"](len(buffers), (ctypes.c_uint * len(buffers))(*buffers))
+            self._delete_vaos(list(self._models.values()))
             textures = [v[0] for v in self._texture_names.values() if v]
             if textures:
                 self._gl.glDeleteTextures(len(textures), (ctypes.c_uint * len(textures))(*textures))
         self._models, self._materials, self._texture_names, self._draw_list = {}, {}, {}, None
+        self._material_ops = {}
         self._hidden_zones = set()
         self._pending, self._pending_materials = [], {}
+        self.selected = None
         self._error = message
         self._show_error(message)
 
@@ -204,6 +283,7 @@ class LevelViewport(ModelViewport):
         gl.glLoadMatrixf.argtypes = [ctypes.c_void_p]; gl.glMultMatrixf.argtypes = [ctypes.c_void_p]
         gl.glReadPixels.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p]
         gl.glFinish.argtypes = []
+        gl.glReadBuffer.argtypes = [ctypes.c_uint]
         self._ext = ext
         return True
 
@@ -221,18 +301,71 @@ class LevelViewport(ModelViewport):
                       vbo=self._buffer(self.GL_ARRAY_BUFFER, geometry["positions"]),
                       nbo=self._buffer(self.GL_ARRAY_BUFFER, geometry["normals"]),
                       tbo=self._buffer(self.GL_ARRAY_BUFFER, geometry["uvs"]),
-                      ibo=self._buffer(self.GL_ELEMENT_ARRAY_BUFFER, geometry["indices"]), groups=[])
+                      ibo=self._buffer(self.GL_ELEMENT_ARRAY_BUFFER, geometry["indices"]),
+                      zones=[], groups=[], groups_for=None)
         record["buffers"] = [record[k] for k in ("vbo", "nbo", "tbo", "ibo")]
         self._ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0); self._ext["glBindBuffer"](self.GL_ELEMENT_ARRAY_BUFFER, 0)
         self._models[path] = record
 
-    def _upload_instances(self, zone, path, groups):
+    def _store_instances(self, zone, path, groups):
+        """Keep one zone's instance rows; the GPU buffers merge every visible zone (_merge_groups)."""
         record = self._models[path]
         for flip, rows in sorted(groups.items()):
-            buffer = self._buffer(self.GL_ARRAY_BUFFER, rows)
-            record["groups"].append((buffer, len(rows) // 16, flip, zone))   # (buffer, count, mirrored, zone)
-            record["buffers"].append(buffer)
+            record["zones"].append((zone, flip, rows))
+        record["groups_for"] = None
+
+    def _merge_groups(self):
+        """One instance buffer per model and handedness over the visible zones: [(buffer, count, mirrored)]."""
+        from array import array
+        hidden = frozenset(self._hidden_zones)
+        for model in self._models.values():
+            if model["groups_for"] == hidden:
+                continue
+            old = [g[0] for g in model["groups"]]
+            if old:
+                self._ext["glDeleteBuffers"](len(old), (ctypes.c_uint * len(old))(*old))
+            self._delete_vaos([model])
+            merged = {}
+            for zone, flip, rows in model["zones"]:
+                if zone not in hidden:
+                    merged.setdefault(flip, array("f")).extend(rows)
+            model["groups"] = [(self._buffer(self.GL_ARRAY_BUFFER, rows), len(rows) // 16, flip)
+                               for flip, rows in sorted(merged.items())]
+            model["groups_for"] = hidden
         self._ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0)
+
+    def _delete_vaos(self, models):
+        names = [vao for model in models for vao in model.pop("vaos", {}).values()]
+        if names and self._ext:
+            self._ext["glDeleteVertexArrays"](len(names), (ctypes.c_uint * len(names))(*names))
+
+    def _vao(self, model, index, group):
+        """The vertex array object of one model and one of its instance buffers, built on first use:
+        positions, normals and UVs (fixed-function arrays), indices, and the four matrix-row attributes."""
+        vaos = model.setdefault("vaos", {})
+        vao = vaos.get(index)
+        if vao is None:
+            from rc2016.viewer.shading import INSTANCE_ATTRIBUTES
+            gl, ext, sh = self._gl, self._ext, self._shading
+            name = ctypes.c_uint(0)
+            ext["glGenVertexArrays"](1, ctypes.byref(name))
+            vao = vaos[index] = name.value
+            ext["glBindVertexArray"](vao)
+            gl.glEnableClientState(self.GL_VERTEX_ARRAY); gl.glEnableClientState(self.GL_NORMAL_ARRAY)
+            gl.glEnableClientState(self.GL_TEXTURE_COORD_ARRAY)
+            ext["glBindBuffer"](self.GL_ARRAY_BUFFER, model["vbo"]); gl.glVertexPointer(3, self.GL_FLOAT, 0, None)
+            ext["glBindBuffer"](self.GL_ARRAY_BUFFER, model["nbo"]); gl.glNormalPointer(self.GL_FLOAT, 0, None)
+            ext["glBindBuffer"](self.GL_ARRAY_BUFFER, model["tbo"]); gl.glTexCoordPointer(2, self.GL_FLOAT, 0, None)
+            ext["glBindBuffer"](self.GL_ELEMENT_ARRAY_BUFFER, model["ibo"])
+            ext["glBindBuffer"](self.GL_ARRAY_BUFFER, group[0])
+            for row in range(4):
+                location = INSTANCE_ATTRIBUTES[f"aInst{row}"]
+                sh.glEnableVertexAttribArray(location)
+                sh.glVertexAttribPointer(location, 4, self.GL_FLOAT, 0, 64, ctypes.c_void_p(16 * row))
+                ext["glVertexAttribDivisor"](location, 1)
+            ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0)
+            self._bound_vao = vao
+        return vao
 
     def _flush_pending(self):
         if self._pending and (self._ext or self._load_ext()):
@@ -251,18 +384,34 @@ class LevelViewport(ModelViewport):
         return {"Shaded": 2, "Textured": 1}.get(self._mode, 0)
 
     def _build_draw_list(self):
-        """[(material key, model, batch, instance groups)] sorted by material so uniforms change once per material."""
+        """[(material key, model, (first, count), instance groups)] sorted by material so uniforms change
+        once per material; a model's adjacent batches with one material merge into one draw."""
+        self._merge_groups()
         level = self._level()
-        items = []
+        ranges = {}
         for model in self._models.values():
             groups = self._visible_groups(model)
             if not groups:
                 continue
             for batch in model["batches"]:
                 material = model["slots"].get(batch[0]) if batch[3] else None
-                items.append(((material or "", level if batch[3] else 0), model, batch, groups))
+                key = (material or "", level if batch[3] else 0)
+                ranges.setdefault((key, model["path"]), (model, groups, []))[2].append((batch[1], batch[2]))
+        items = [(key, model, span, groups) for (key, _path), (model, groups, spans) in ranges.items()
+                 for span in merge_ranges(sorted(spans))]
         items.sort(key=lambda item: (item[0], item[1]["path"]))
         self._draw_list = items
+
+    def _setup_camera(self, width, height):
+        gl = self._gl
+        # Near plane follows fly speed: fine detail up close, less depth fighting when flying fast.
+        near = max(0.05, min(2.0, self._speed * 0.004))
+        top = near * math.tan(math.radians(FOV_DEGREES) * 0.5)
+        gl.glMatrixMode(self.GL_PROJECTION); gl.glLoadIdentity()
+        gl.glFrustum(-top * width / height, top * width / height, -top, top, near, self._far)
+        gl.glMatrixMode(self.GL_MODELVIEW)
+        gl.glLoadMatrixf((ctypes.c_float * 16)(*view_matrix(self._eye, self._yaw, self._pitch)))
+        gl.glMultMatrixf((ctypes.c_float * 16)(*BASIS))
 
     def _draw(self):
         if not self._make_current():
@@ -276,14 +425,7 @@ class LevelViewport(ModelViewport):
         if self._pending or self._pending_materials:
             self._flush_pending()
         if self._models and self._shading is not None and self._ext:
-            # Near plane follows fly speed: fine detail up close, less depth fighting when flying fast.
-            near = max(0.05, min(2.0, self._speed * 0.004))
-            top = near * math.tan(math.radians(FOV_DEGREES) * 0.5)
-            gl.glMatrixMode(self.GL_PROJECTION); gl.glLoadIdentity()
-            gl.glFrustum(-top * width / height, top * width / height, -top, top, near, self._far)
-            gl.glMatrixMode(self.GL_MODELVIEW)
-            gl.glLoadMatrixf((ctypes.c_float * 16)(*view_matrix(self._eye, self._yaw, self._pitch)))
-            gl.glMultMatrixf((ctypes.c_float * 16)(*BASIS))
+            self._setup_camera(width, height)
             if self._draw_list is None:
                 self._build_draw_list()
             try:
@@ -298,24 +440,64 @@ class LevelViewport(ModelViewport):
         if self.on_stats:
             self.on_stats(self.stats())
 
+    def _begin_attributes(self):
+        self._bound_vao = self._front = None
+
+    def _end_attributes(self):
+        self._ext["glBindVertexArray"](0)
+        self._gl.glFrontFace(self.GL_CCW)
+        self._bound_vao = self._front = None
+
+    def _material_state(self, u, key, entry):
+        """Issue only the uniform and texture calls of this material that differ from the current state.
+
+        The material's calls are recorded once ({location: (function, args)}, {(unit, target): texture});
+        the dict-view differences against the state run in C, so an unchanged uniform costs nothing."""
+        ops = self._material_ops.get(key)
+        if ops is None:
+            recorder = _Recorder(self._gl, self._shading)
+            gl, sh = self._gl, self._shading
+            self._gl, self._shading = recorder.gl, recorder.shading
+            try:
+                self._apply_material(u, entry, key[1])
+            finally:
+                self._gl, self._shading = gl, sh
+            uniforms, textures = {}, {}
+            for op in recorder.ops:
+                if op[0] == "u":
+                    uniforms[op[1]] = (op[2], op[3])
+                else:
+                    textures[(op[1], op[2])] = op[3]
+            ops = self._material_ops[key] = (uniforms, textures)
+        gl, sh = self._gl, self._shading
+        changed = ops[0].items() - self._uniform_state.items()
+        for location, (name, args) in changed:
+            getattr(sh, name)(location, *args)
+        self._uniform_state.update(changed)
+        changed = ops[1].items() - self._texture_state.items()
+        for (unit, target), texture in changed:
+            if self._active_unit != unit:
+                sh.glActiveTexture(unit)
+                self._active_unit = unit
+            gl.glBindTexture(target, texture)
+        self._texture_state.update(changed)
+
     def _draw_level(self):
-        from rc2016.viewer.shading import (ARCH_SEQUENCE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, INSTANCE_ATTRIBUTES, PICK_TEXTURE_UNIT,
+        from rc2016.viewer.shading import (ARCH_SEQUENCE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, PICK_TEXTURE_UNIT,
                                  TINT_DETAIL_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT,
                                  GLOW_PARALLAX_TEXTURE_UNIT)
         gl, sh = self._gl, self._shading
         program, u = sh.instanced_program()
         sh.glUseProgram(program)
+        self._apply_lighting(u)
         for unit, name in ((TINT_DETAIL_TEXTURE_UNIT, "uTexTintDetail"), (0, "uTexC"), (1, "uTexG"), (2, "uTexN"),
                            (PICK_TEXTURE_UNIT, "uTexP"), (TINT_MASK_TEXTURE_UNIT, "uTexH"), (ARCH_SEQUENCE_TEXTURE_UNIT, "uTexSequence"),
                            (BNG_DETAIL_TEXTURE_UNIT, "uTexBngDetail"), (VEHICLE_PALETTE_TEXTURE_UNIT, "uTexVehicleP2"),
                            (GLOW_PARALLAX_TEXTURE_UNIT, "uTexGlowParallax")):
             sh.glUniform1i(u[name], unit)
-        gl.glEnableClientState(self.GL_VERTEX_ARRAY); gl.glEnableClientState(self.GL_NORMAL_ARRAY)
-        gl.glEnableClientState(self.GL_TEXTURE_COORD_ARRAY)
-        locations = [INSTANCE_ATTRIBUTES[f"aInst{i}"] for i in range(4)]
-        for location in locations:
-            sh.glEnableVertexAttribArray(location)
-            self._ext["glVertexAttribDivisor"](location, 1)
+        self._begin_attributes()
+        # Uniform values persist in the program, but other code sets them too: start each frame afresh.
+        self._uniform_state, self._texture_state, self._active_unit = {}, {}, None
         mode = self._mode
         glass = []
         if mode != "Wireframe":
@@ -324,74 +506,76 @@ class LevelViewport(ModelViewport):
             sh.glUniform3f(u["uColor"], 0.72, 0.74, 0.78)
             current = None
             for item in self._draw_list:
-                key, model, batch, groups = item
+                key, model, span, groups = item
                 entry = self._materials.get(key[0]) or {}
                 if key[1] == 2 and entry.get("forward"):
                     glass.append(item)
                     continue
                 if key != current:
-                    sh.glUniform1i(u["uMode"], key[1])
-                    self._apply_material(u, entry, key[1])
+                    mode_state = ("glUniform1i", (key[1],))
+                    if self._uniform_state.get(u["uMode"]) != mode_state:
+                        self._uniform_state[u["uMode"]] = mode_state
+                        sh.glUniform1i(u["uMode"], key[1])
+                    self._material_state(u, key, entry)
                     current = key
-                self._draw_batch(model, batch, groups, locations)
+                self._draw_span(model, span, groups)
             gl.glDisable(self.GL_POLYGON_OFFSET_FILL)
             if glass:
-                self._draw_level_glass(glass, locations)
+                self._draw_level_glass(glass)
                 sh.glUseProgram(program)
-        if mode in ("Wireframe", "Solid + wireframe"):
+                self._texture_state, self._active_unit = {}, None
+        wire = mode in ("Wireframe", "Solid + wireframe")
+        if wire or self.selected in self._models:
             sh.glUniform1i(u["uMode"], 3)
-            sh.glUniform3f(u["uColor"], *((0.62, 0.78, 0.95) if mode == "Wireframe" else (0.12, 0.13, 0.15)))
             gl.glPolygonMode(self.GL_FRONT_AND_BACK, self.GL_LINE)
-            for _key, model, batch, groups in self._draw_list:
-                self._draw_batch(model, batch, groups, locations)
+            if wire:
+                sh.glUniform3f(u["uColor"], *((0.62, 0.78, 0.95) if mode == "Wireframe" else (0.12, 0.13, 0.15)))
+                for _key, model, span, groups in self._draw_list:
+                    self._draw_span(model, span, groups)
+            selected = self._models.get(self.selected)
+            if selected is not None and self._visible_groups(selected):
+                # Outline the picked model's instances; drawn over everything, like a selection.
+                sh.glUniform3f(u["uColor"], 1.0, 0.62, 0.1)   # display-space colour; mode 3 skips the tonemap
+                gl.glDisable(self.GL_DEPTH_TEST)
+                for first, count in merge_ranges([(b[1], b[2]) for b in selected["batches"]]):
+                    self._draw_span(selected, (first, count), self._visible_groups(selected))
+                gl.glEnable(self.GL_DEPTH_TEST)
             gl.glPolygonMode(self.GL_FRONT_AND_BACK, self.GL_FILL)
-        for location in locations:
-            self._ext["glVertexAttribDivisor"](location, 0)
-            sh.glDisableVertexAttribArray(location)
-        gl.glFrontFace(self.GL_CCW)
-        gl.glDisableClientState(self.GL_TEXTURE_COORD_ARRAY)
-        gl.glDisableClientState(self.GL_NORMAL_ARRAY); gl.glDisableClientState(self.GL_VERTEX_ARRAY)
-        self._ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0); self._ext["glBindBuffer"](self.GL_ELEMENT_ARRAY_BUFFER, 0)
-        self._bound_model = None
+        self._end_attributes()
         self._unbind_material_units()
         sh.glUseProgram(0)
 
-    _bound_model = _bound_group = None
+    _bound_vao = _front = None
 
-    def _draw_batch(self, model, batch, groups, locations):
-        gl, ext, sh = self._gl, self._ext, self._shading
-        if self._bound_model is not model:
-            ext["glBindBuffer"](self.GL_ARRAY_BUFFER, model["vbo"]); gl.glVertexPointer(3, self.GL_FLOAT, 0, None)
-            ext["glBindBuffer"](self.GL_ARRAY_BUFFER, model["nbo"]); gl.glNormalPointer(self.GL_FLOAT, 0, None)
-            ext["glBindBuffer"](self.GL_ARRAY_BUFFER, model["tbo"]); gl.glTexCoordPointer(2, self.GL_FLOAT, 0, None)
-            ext["glBindBuffer"](self.GL_ELEMENT_ARRAY_BUFFER, model["ibo"])
-            self._bound_model = model
-            self._bound_group = None
-        _slot, first, count, _uv = batch
+    def _draw_span(self, model, span, groups):
+        gl, ext = self._gl, self._ext
+        first, count = span
         offset = ctypes.c_void_p(first * 12)
-        for group in groups:
-            buffer, instances, flip, _zone = group
-            if self._bound_group is not group:
-                ext["glBindBuffer"](self.GL_ARRAY_BUFFER, buffer)
-                for row, location in enumerate(locations):
-                    sh.glVertexAttribPointer(location, 4, self.GL_FLOAT, 0, 64, ctypes.c_void_p(16 * row))
-                self._bound_group = group
+        for index, group in enumerate(groups):
+            vao = self._vao(model, index, group)
+            if self._bound_vao != vao:
+                ext["glBindVertexArray"](vao)
+                self._bound_vao = vao
             # Mirrored instances reverse the winding; keep gl_FrontFacing meaning "outside".
-            gl.glFrontFace(self.GL_CW if flip else self.GL_CCW)
-            ext["glDrawElementsInstanced"](self.GL_TRIANGLES, count * 3, self.GL_UNSIGNED_INT, offset, instances)
+            flip = group[2]
+            if self._front != flip:
+                gl.glFrontFace(self.GL_CW if flip else self.GL_CCW)
+                self._front = flip
+            ext["glDrawElementsInstanced"](self.GL_TRIANGLES, count * 3, self.GL_UNSIGNED_INT, offset, group[1])
 
-    def _draw_level_glass(self, items, locations):
+    def _draw_level_glass(self, items):
         """Forward materials after all opaque ones: material blend/cull state, no depth write.
         Instances are not depth-sorted (the model viewer sorts batches of one model only)."""
         from rc2016.viewer.shading import PICK_TEXTURE_UNIT, glass_uniforms
         gl, sh = self._gl, self._shading
         program, u = sh.instanced_program(glass=True)
         sh.glUseProgram(program)
+        self._apply_lighting(u)
         sh.glUniform1i(u["uTexN"], 2); sh.glUniform1i(u["uTexP"], PICK_TEXTURE_UNIT)
         gl.glBlendFunc.argtypes = [ctypes.c_uint, ctypes.c_uint]; gl.glDepthMask.argtypes = [ctypes.c_ubyte]
         gl.glCullFace.argtypes = [ctypes.c_uint]
         gl.glCullFace(self.GL_BACK)
-        for key, model, batch, groups in items:
+        for key, model, span, groups in items:
             entry = self._materials[key[0]]
             forward = entry["forward"]
             blended = forward.get("blend") != "opaque"
@@ -412,8 +596,64 @@ class LevelViewport(ModelViewport):
             sh.glUniform1i(u["uKind"], kind)
             for name, vector in zip(("uA", "uB", "uC", "uD"), vectors):
                 sh.glUniform4f(u[name], *(float(x) for x in vector))
-            self._draw_batch(model, batch, groups, locations)
+            self._draw_span(model, span, groups)
         gl.glDepthMask(1); gl.glDisable(self.GL_BLEND); gl.glDisable(self.GL_CULL_FACE)
+
+    # Picking -------------------------------------------------------------------------------
+    def pick(self, x, y):
+        """Model path under window pixel (x, y), or None: each visible model is drawn in an id colour
+        into the back buffer, one pixel is read, and the frame is redrawn."""
+        if not (self._models and self._make_current() and self._shading is not None and self._ext):
+            return None
+        gl, sh = self._gl, self._shading
+        width, height = max(1, self.winfo_width()), max(1, self.winfo_height())
+        if not (0 <= x < width and 0 <= y < height):
+            return None
+        if self._draw_list is None:
+            self._build_draw_list()
+        gl.glViewport(0, 0, width, height)
+        gl.glClearColor(0.0, 0.0, 0.0, 1.0)
+        gl.glClear(self.GL_COLOR_BUFFER_BIT | self.GL_DEPTH_BUFFER_BIT)
+        self._setup_camera(width, height)
+        program, u = sh.pick_program()
+        sh.glUseProgram(program)
+        self._begin_attributes()
+        gl.glPolygonMode(self.GL_FRONT_AND_BACK, self.GL_FILL)
+        order = list(self._models)
+        index = {path: i for i, path in enumerate(order)}
+        current = None
+        for _key, model, span, groups in self._draw_list:
+            if model["path"] != current:
+                current = model["path"]
+                sh.glUniform3f(u["uPickColour"], *pick_colour(index[current]))
+            self._draw_span(model, span, groups)
+        self._end_attributes()
+        sh.glUseProgram(0)
+        pixel = (ctypes.c_ubyte * 4)()
+        self._gl.glPixelStorei(0x0D05, 1)   # GL_PACK_ALIGNMENT
+        gl.glReadBuffer(0x0405)   # GL_BACK
+        gl.glReadPixels(x, height - 1 - y, 1, 1, 0x1907, self.GL_UNSIGNED_BYTE, pixel)   # GL_RGB
+        found = pick_index(bytes(pixel)[:3])
+        self._draw()
+        return order[found] if found is not None and found < len(order) else None
+
+    def select(self, path):
+        """Outline a model's instances (None clears it)."""
+        self.selected = path
+        self._draw()
+
+    def _end_look(self, event):
+        press, self._press = self._press, None
+        if press and abs(event.x - press[0]) <= 3 and abs(event.y - press[1]) <= 3:
+            path = self.pick(event.x, event.y)
+            self.select(path)
+            if self.on_pick:
+                self.on_pick(path)
+
+    def _double_click(self, event):
+        path = self.pick(event.x, event.y)
+        if path and self.on_open:
+            self.on_open(path)
 
     def capture_png(self, path):
         """Write the current frame (redrawn now) to a PNG; True on success."""
@@ -445,6 +685,7 @@ class LevelViewport(ModelViewport):
     def _begin_look(self, event):
         self.focus_set()
         self._drag = (event.x, event.y, self._yaw, self._pitch)
+        self._press = (event.x, event.y)   # a release without movement picks (_end_look)
 
     def _look(self, event):
         if self._drag and len(self._drag) == 4:
@@ -520,4 +761,4 @@ class LevelViewport(ModelViewport):
         self.after(8, self._tick)
 
 
-__all__ = ["LevelViewport", "look_vectors", "overview_camera", "view_matrix", "png_bytes"]
+__all__ = ["LevelViewport", "look_vectors", "merge_ranges", "overview_camera", "pick_colour", "pick_index", "png_bytes", "view_matrix"]

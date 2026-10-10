@@ -26,13 +26,16 @@ Module map:
 | `rc2016/viewer/shading.py` | GLSL 1.20 programs for Shaded mode and the glass/forward path |
 | `rc2016/viewer/textures.py` | Texture decoding/upload, material slot tables, `GRAPH_RULES`, texture export |
 | `rc2016/viewer/animation.py` | Clip library and skinning matrices |
+| `rc2016/viewer/environment.py` | Shared review HDRI as lighting maps: built-in EXR reader, sun extraction, diffuse SH and prefiltered specular |
+| `rc2016/formats/links.py` | Archive-wide asset links table (`build_links`, `AssetLinks`) and material rule coverage (`rule_coverage`) |
+| `rc2016/app/links.py` | Browser access to the links table: `LinkService` worker and callbacks, `placement_lines` |
 | `rc2016/levels/*` | Level panel and viewport ([levels](levels.md)) |
 | `rc2016/flash/tab.py`, `gfx.py`, `planet_maps.py` | Flash UI tab, SWF/GFX renderer, planet-map export |
 | `rc2016/export/models.py`, `blender_convert.py` | Portable export |
 
 ## Launching
 
-Requirements: Windows with an OpenGL-capable GPU and a regular Python 3.11+ with Tkinter. The 3D view uses only the standard library (OpenGL through ctypes). Optional packages: Pillow (Textures tab, PNG export; imported lazily), NumPy (faster model preparation and texture un-tiling), `lz4` (faster archive decompression). If OpenGL initialisation fails, the view shows a placeholder explaining why.
+Requirements: Windows with an OpenGL-capable GPU and a regular Python 3.11+ with Tkinter. The 3D view uses only the standard library (OpenGL through ctypes). Optional packages: Pillow (Textures tab, PNG export; imported lazily), NumPy (faster model preparation and texture un-tiling; required for the Shared HDRI lighting), `lz4` (faster archive decompression). If OpenGL initialisation fails, the view shows a placeholder explaining why.
 
 ```powershell
 python -m rc2016                  # asset browser
@@ -64,6 +67,7 @@ The level list and the Flash UI list are read the first time their type is selec
 - Models are named by the named actors whose files reference them (`actor_users()`, one level of parent actors included), read from `reports/asset_references.sqlite`. The numbered moby/tie/shrub assets of the first game's data carry no name anywhere in the game data (their own materials are numbered too), and almost none is used by a named actor.
 - The search box matches path, ID, actor names and animation-set names. Several words must all match.
 - The State filter (All, READY, EXPORTED, VERIFIED, STALE, NO ANIMSET, PREVIOUS) reflects saved builds in the output root; EXPORTED marks folders that hold an `export.json`. Browsing does not approve backend cache reuse.
+- The **Shading** filter (All, Generic reading, Family fallback, No material graph, Exact rules only) sits next to State and uses the links table ([Rule coverage](#rule-coverage)).
 
 ## 3D view
 
@@ -102,7 +106,37 @@ Shaded (`rc2016/viewer/shading.py`) is one GLSL 1.20 program on the legacy WGL c
 - self-lit = `_c.rgb x _c.a x K`;
 - `_n` is read as an RG tangent normal without a green flip, with the tangent frame taken from screen-space UV derivatives.
 
-The lighting is a fixed viewer rig (key, fill, sky/ground ambient, an ACES fit), not the game's lighting. The skin Fresnel lerp is not applied.
+The lighting is selected under the 3D view ([Lighting and tonemap](#lighting-and-tonemap)), not the game's lighting. The skin Fresnel lerp is not applied.
+
+### Lighting and tonemap
+
+Two selectors under the 3D view (and in the level panel's side column) choose the lighting and the tonemap:
+
+| Selector | Choices | Default |
+|---|---|---|
+| Lighting | `Viewer rig`, `Shared HDRI` | `Viewer rig` |
+| Tonemap | `ACES fit`, `Khronos PBR Neutral` | `ACES fit` |
+
+Choosing Shared HDRI also selects Khronos PBR Neutral; the tonemap can be changed back.
+
+- **Viewer rig** is the fixed key, fill and sky/ground ambient rig at 0 EV. In the model viewer the rig turns with the camera. In the level viewer it is fixed to the world (rig right = +X, up = +Z, towards the viewer = -Y in Blender's Z-up world, as seen by a camera looking along +Y), so lighting does not shift while orbiting or flying. Viewer rig with ACES fit is the rendering the gallery thumbnails use.
+- **Shared HDRI** takes the HDRI, world strength and exposure from `assets/lighting/shared_lighting.json`: the same file as the Blender review renders (`golden_gate_hills_1k.exr`, strength 2, exposure -1 EV). The viewer cannot path-trace, so `rc2016/viewer/environment.py` splits the map:
+  - texels brighter than luminance 20 (`SUN_THRESHOLD`) give their excess radiance to one directional sun light (energy-weighted direction, summed irradiance, so energy is conserved). It lights like a rig light and keeps the terminator sharp;
+  - diffuse from the rest is 9 spherical-harmonic irradiance coefficients (albedo x E / pi);
+  - specular from the rest is the radiance prefiltered with the GGX lobe at six roughness levels (perceptual roughness 0.15, 0.3, 0.45, 0.6, 0.8, 1.0; 128x64 equirectangular bands stacked in one RGB16F texture on texture unit 6), times Karis' analytic environment BRDF for F0 and F90.
+  
+  The HDRI is read by a small built-in OpenEXR reader (scanline; uncompressed, ZIPS or ZIP; HALF or FLOAT). NumPy is required in this mode. The maps are computed once on a worker thread (about a second) and cached in `<repo>/.cache/environment/<hdri hash>_v<version>.npz`. Until they are ready the view keeps the viewer rig and shows a note.
+- **Direction convention** (checked against Cycles renders of the HDRI: six directions each returned exactly the texel selected): Blender maps a world direction `d` to `u = 0.5 - atan2(d.y, d.x) / (2 pi)` and `v = atan2(d.z, hypot(d.x, d.y)) / pi + 0.5` (v = 0 is the bottom row; +X is the image centre). Model-viewer vertices are already in Blender's Z-up basis; level geometry is native Y-up and goes through the presentation basis.
+- **Khronos PBR Neutral** is GLSL (start compression 0.76, desaturation 0.15) followed by the sRGB transfer function. Exposure multiplies before the tonemap. ACES fit is the viewer's historical curve with gamma 2.2.
+
+Validation (agreement with the Blender review render, not game accuracy): a unit sphere rendered by the viewer and by Cycles, with the same camera, shared lighting, Khronos PBR Neutral and -1 EV:
+
+| Surface | Mean absolute difference | 95th percentile |
+|---|---|---|
+| Matte, albedo 0.47 (sRGB 0.72-0.78 grey) | 0.5/255 | 1/255 |
+| Glossy (diffuse 0.2 + GGX F0 0.039, gloss 0.6, added as the game BRDF) | 1.4/255 | 5/255 |
+
+Limitations of the lighting: no shadowing, ambient occlusion or interreflection. Cycles has them, so concave or occluded parts of real models differ. Forward and glass materials use the same lighting, with the tonemap applied per fragment before blending. The shared HDRI mode predicts the Blender review render; it is not game lighting.
 
 ### `_g` meaning per material graph
 
@@ -141,6 +175,21 @@ Limitations that apply across the table: viewer lighting, ambient, TBN and insta
 
 Parallax samples height alpha with the original UV gradients. Runtime fade, tangent interpolants and shadow-light direction are replaced by fade 1, a derivative tangent frame and the viewer key light. The source visibility is unclamped and can brighten albedo or become negative; no grazing-denominator clamp is added. Nonpositive or unrepresentable step counts, nonfinite parameters, singular rays and overflowing ray offsets disable POM as explicit preview guards. OpenGL contexts without `GL_ARB_shader_texture_lod` retain the channel-correct preview and display a capability warning. Blender builds the proven material terms at unshifted UVs and records the UV march and height visibility as unported; this does not establish node, runtime or game equivalence.
 
+### Rule coverage
+
+The Details tab lists, under each material slot, which rule matched the material:
+
+- **exact rule**: a `GRAPH_RULES` prefix ending in a dot, naming one decoded writer;
+- **family fallback**: a prefix naming a family (`basic_skin/`, `basic_normal_gloss*`, `basic_incandescence/`);
+- **generic reading**: no rule (coloured F0 with gloss alpha);
+- **no material graph**.
+
+The first matching rule wins, as in `_graph_rule`. `rc2016.formats.links.rule_coverage` and `material_rules` in `rc2016/viewer/loader.py` provide the classification; `rule_text` in `rc2016/app/browser.py` provides the wording.
+
+The model list's **Shading** filter uses the same classification (a model matches when any of its materials has that kind; Exact rules only requires every material to be exact). It reads the links table, built on first use.
+
+Viewer rule coverage on the EUR archive: of 6,864 models with materials, 5,650 have at least one exact-rule material, 2,114 at least one generic reading, 508 at least one family fallback, and 14 a material without a graph. The 233 materials of models placed in Novalis zones are 168 exact rule, 4 family fallback and 61 generic reading. This measures the viewer's rules, not game accuracy.
+
 ### Glass and forward materials
 
 Graphs with a `forward` rule are drawn after every opaque batch with a second program (`GLASS_FRAGMENT`, `Shading.glass_program`, `ModelViewport._draw_glass`).
@@ -149,7 +198,7 @@ Graphs with a `forward` rule are drawn after every opaque batch with a second pr
 - Depth write is off. Glass batches draw farthest first by their rest-pose centroid in view space (`split_forward`, `back_to_front`); triangles within a batch are not sorted.
 - **`character_glass`** (Blarg visor, writer `34D5B21C`): rim alpha, tinted reflection without Fresnel, and body colour x (1 + environment rim). Parameters are read from the material, else the graph default.
 - **`blarg_saucer_glass`** (saucer dome, writer `FEEC00CE`): the writer binds textures by slot hash, not suffix: the palette `_colorpick_c` and `Patterns_cma` in the `_n` slot. The material's `glass_c`/`glass_g` are never read (Textured mode still shows `glass_c`). Alpha = sat(0.9 + rim), so the dome is at least 90% opaque: dark amber 0.4 x palette x diffuse, grey F0 0.1 reflections, a faint pattern normal.
-- **Approximations:** the engine's light loop, probes, screen-space reflections and fog are replaced by the viewer rig. Colour is tonemapped per fragment before blending (the game blends HDR before tonemapping). Instance fade is 0 and `attr0.w` is 1.
+- **Approximations:** the engine's light loop, probes, screen-space reflections and fog are replaced by the selected viewer lighting (rig or shared HDRI). Colour is tonemapped per fragment before blending (the game blends HDR before tonemapping). Instance fade is 0 and `attr0.w` is 1.
 - Other forward graphs (VFX, energy, cornea, other glass families) have no rule and draw opaque.
 
 ## Animation playback
@@ -235,6 +284,26 @@ writes one transparent PNG per map (`rc2016/flash/planet_maps.py`).
 
 When the output root holds a build of that model, its build and reopen status, integrity, limitations and clip support follow under "Build in the output root". COMPLETE there means delivery coverage, not game accuracy. Saved results are read only from the output root, reloaded when it changes and after each batch; large master and validation-report hashes are checked in a worker.
 
+## Asset links
+
+`reports/asset_references.sqlite` records only actor -> model references. The asset links table adds the rest of the archive's reference graph. `rc2016/formats/links.py` (`build_links`, `AssetLinks`) builds it, and `rc2016/app/links.py` (`LinkService`) gives the browser access to it.
+
+| Link | Source |
+| --- | --- |
+| model -> material | material slots, in file order |
+| material -> texture | direct texture references |
+| material -> material graph | graph references |
+| graph -> texture | graph defaults |
+| zone -> model | the zone's model-instance table, with the instance count |
+| level -> zone | the `.level` zone list |
+
+The table is built once per archive on a worker thread (about 20 seconds, about 20,000 assets read, no failures on the EUR archive) and cached as `<repo>/.cache/shared_index/links_<identity>.sqlite`. The identity covers the archive layout and the source of `build_links` and its schema, so a different archive or a change to what is stored rebuilds it. Unreadable assets are recorded in the cache's `errors` table.
+
+- **Textures tab:** a **Used by** row under the export row lists the models whose materials reference the selected texture. It is marked "(graph default)" when only a material graph's default reaches the texture. **Open model** selects that model in the tree and shows the 3D model tab.
+- **Details tab:** "Placed in levels: N instances in Z zones of L levels", with one line per zone (`level · zone: count`, at most 12 lines, most instances first). A zone that no `.level` lists is marked as such.
+- **Level viewer:** a click identifies a model and **Open in Model tab** selects it in the tree (see [levels](levels.md)).
+- `AssetBrowser.open_model(path)` clears the search, State and Shading filters if they hide the model.
+
 ## Portable export (Extract selected)
 
 **Extract selected** exports portable files by default and needs no Blender. `ModelExporter` and `ExportOptions` (`rc2016/export/models.py`) run in the GUI process with their own `SourcePreviewLoader`, so they use the same decoders as the 3D view. The GUI runner is `ExportBatchRunner` in `rc2016/app/batch.py`.
@@ -307,6 +376,8 @@ The **Gallery** tab shows rendered thumbnails of the models selected in the tree
 - `<repo>/.cache/shared_index`: parsed `layout.csv` and the shared index sidecar.
 - `<repo>/.cache/source_preview`: the viewer's archive working cache.
 - `<repo>/.cache/reviews`: isolated Blender review runs.
+- `<repo>/.cache/environment`: shared HDRI lighting maps (`<hdri hash>_v<version>.npz`).
+- `<repo>/.cache/shared_index/links_*.sqlite`: archive-wide asset links, one per archive identity.
 - `<output root>/.cache/thumbnails`: gallery thumbnails and their index.
 - Output root: `reports/asset_references.sqlite`, the model index, saved builds, `export.json` folders.
 
@@ -320,7 +391,8 @@ Data-dependent tests read the `RC2016_RESEARCH` environment variable and skip wi
 
 ## Limitations
 
-- The 3D view shows the bind pose or a played clip, not attachments, runtime blending or the game's lighting and materials beyond the rules above.
+- The 3D view shows the bind pose or a played clip, not attachments or runtime blending. Lighting is the viewer rig or the shared review HDRI, with no shadows, ambient occlusion or interreflection; neither is the game's lighting. Materials follow the rules above.
+- The rule coverage and Shading filter describe the viewer's rules, not game accuracy.
 - Several graph rules rest on bounded decodes; runtime draw-time inputs (time, instance interpolants, constant-buffer binding) are frozen or unproven.
 - Forward materials other than the character glass, saucer dome, screen, puddle and bulb graphs draw opaque.
 - Portable exports approximate materials; they are not game-accurate.

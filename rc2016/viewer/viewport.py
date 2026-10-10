@@ -17,6 +17,36 @@ class MeshPayloadError(ValueError):
     pass
 
 
+# Viewer rig space -> Blender world (Z up) when the rig is fixed to the world: rig x (right) stays
+# +X, rig y (up) is +Z and rig z (towards the viewer) is -Y, as seen from a camera looking along +Y.
+RIG_TO_WORLD = ((1.0, 0.0, 0.0), (0.0, 0.0, -1.0), (0.0, 1.0, 0.0))
+
+
+def _mat3_mul(a, b):
+    return tuple(tuple(sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)) for i in range(3))
+
+
+def light_frames(modelview, object_to_world=None, rig_fixed_to_world=False):
+    """(view -> Blender world, rig -> view) as row-major 3x3 tuples.
+
+    ``modelview`` is GL's column-major modelview matrix (object -> view); ``object_to_world`` maps
+    object space to Blender world space (None: the object space is Blender's Z-up world, as the
+    model viewer's presentation-basis vertices). Uniform scale in the modelview is removed."""
+    rotation = [[modelview[j * 4 + i] for j in range(3)] for i in range(3)]   # object -> view, rows
+    scale = math.sqrt(sum(x * x for x in rotation[0])) or 1.0
+    view_to_object = tuple(tuple(rotation[j][i] / scale for j in range(3)) for i in range(3))   # transpose / s
+    view_to_world = _mat3_mul(object_to_world, view_to_object) if object_to_world else view_to_object
+    if not rig_fixed_to_world:
+        return view_to_world, ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    world_to_view = tuple(tuple(view_to_world[j][i] for j in range(3)) for i in range(3))
+    return view_to_world, _mat3_mul(world_to_view, RIG_TO_WORLD)
+
+
+def column_major3(matrix):
+    """Row-major 3x3 -> the 9 floats glUniformMatrix3fv reads without transposing."""
+    return [matrix[i][j] for j in range(3) for i in range(3)]
+
+
 def parallax_preview_parameters_valid(params):
     """Explicit preview policy for parameters whose native execution is undefined/uncontrolled."""
     values = [float(params.get(k, d)) for k, d in
@@ -290,6 +320,11 @@ class _PIXELFORMATDESCRIPTOR(ctypes.Structure):
 
 class ModelViewport(_TkFrame):
     """Interactive fixed-pipeline preview for decoded source triangles."""
+    LIGHTINGS = ("Viewer rig", "Shared HDRI")   # rc2016.viewer.environment.LIGHTINGS
+    TONEMAPS = ("ACES fit", "Khronos PBR Neutral")
+    # Object space -> Blender world (None: identity); the level viewer's objects are native Y-up.
+    OBJECT_TO_WORLD = None
+    RIG_FIXED_TO_WORLD = False   # the model viewer's rig turns with the camera
     GL_COLOR_BUFFER_BIT = 0x00004000
     GL_DEPTH_BUFFER_BIT = 0x00000100
     GL_DEPTH_TEST = 0x0B71
@@ -357,6 +392,11 @@ class ModelViewport(_TkFrame):
         self._yaw, self._pitch, self._zoom = 0.0, -65.0, 1.0
         self._pan = [0.0, 0.0]
         self._drag = None
+        self.lighting, self.tonemap = self.LIGHTINGS[0], self.TONEMAPS[0]
+        self.lighting_note = None   # why the shared HDRI is not shown yet, if it is not
+        self._environment = None   # environment.environment_maps() once read
+        self._environment_texture = None
+        self._environment_loading = False
         self._label = tk.Label(self, text=self._error, justify="center", anchor="center", wraplength=440)
         self._label.place(relx=0.5, rely=0.5, anchor="center", relwidth=1.0, relheight=1.0)
         self.bind("<Configure>", self._on_configure)
@@ -420,6 +460,94 @@ class ModelViewport(_TkFrame):
         """Back to the bind/rest pose."""
         self._bones, self._bone_count = None, 0
         self._draw()
+
+    def set_lighting(self, lighting=None, tonemap=None):
+        """Choose the lighting (LIGHTINGS) and tonemap (TONEMAPS). The shared HDRI's lighting maps are
+        read on a worker thread the first time; until then the view keeps the viewer rig."""
+        if lighting is not None:
+            if lighting not in self.LIGHTINGS:
+                raise ValueError(f"unknown lighting {lighting!r}")
+            self.lighting = lighting
+        if tonemap is not None:
+            if tonemap not in self.TONEMAPS:
+                raise ValueError(f"unknown tonemap {tonemap!r}")
+            self.tonemap = tonemap
+        if self.lighting == "Shared HDRI" and self._environment is None and not self._environment_loading:
+            self._environment_loading = True
+            self.lighting_note = "Reading the shared review HDRI…"
+            import threading
+            result = {}
+
+            def work():
+                try:
+                    from rc2016.viewer.environment import environment_maps
+                    result["maps"] = environment_maps()
+                except Exception as exc:   # missing NumPy or an unreadable HDRI: say so, keep the rig
+                    result["error"] = f"Shared HDRI unavailable: {type(exc).__name__}: {exc}"
+
+            def poll():
+                if "maps" not in result and "error" not in result:
+                    self.after(100, poll)
+                    return
+                self._environment_loading = False
+                self._environment = result.get("maps") or False
+                self.lighting_note = result.get("error")
+                self._schedule_draw()
+                if self.on_lighting_changed:
+                    self.on_lighting_changed()
+            threading.Thread(target=work, daemon=True).start()
+            self.after(100, poll)
+        elif self.lighting != "Shared HDRI":
+            self.lighting_note = None
+        self._schedule_draw()
+        if self.on_lighting_changed:
+            self.on_lighting_changed()
+
+    on_lighting_changed = None   # called after the lighting or its HDRI maps change
+
+    def _upload_environment(self):
+        """GL texture of the prefiltered bands (RGB16F, world strength applied), or None."""
+        if self._environment_texture is None and self._environment:
+            import numpy as np
+            gl = self._gl
+            bands = np.ascontiguousarray(self._environment["bands"] * self._environment["strength"], np.float32)
+            name = ctypes.c_uint(0)
+            gl.glGenTextures(1, ctypes.byref(name))
+            gl.glBindTexture(self.GL_TEXTURE_2D, name.value)
+            gl.glPixelStorei(self.GL_UNPACK_ALIGNMENT, 1)
+            gl.glTexImage2D(self.GL_TEXTURE_2D, 0, 0x881B, bands.shape[1], bands.shape[0], 0, 0x1907, self.GL_FLOAT,
+                            bands.ctypes.data_as(ctypes.c_void_p))   # GL_RGB16F from GL_RGB float
+            for parameter, value in ((self.GL_TEXTURE_MIN_FILTER, self.GL_LINEAR), (self.GL_TEXTURE_MAG_FILTER, self.GL_LINEAR),
+                                     (self.GL_TEXTURE_WRAP_S, self.GL_REPEAT), (self.GL_TEXTURE_WRAP_T, 0x812F)):   # CLAMP_TO_EDGE
+                gl.glTexParameteri(self.GL_TEXTURE_2D, parameter, value)
+            gl.glBindTexture(self.GL_TEXTURE_2D, 0)
+            self._environment_texture = name.value
+        return self._environment_texture
+
+    def _apply_lighting(self, u):
+        """Lighting and tonemap uniforms for the program in use (every opaque and glass program)."""
+        from rc2016.viewer.shading import ENVIRONMENT_TEXTURE_UNIT
+        gl, sh = self._gl, self._shading
+        hdri = self.lighting == "Shared HDRI" and bool(self._environment) and bool(self._upload_environment())
+        sh.glUniform1i(u["uLighting"], 1 if hdri else 0)
+        sh.glUniform1i(u["uTonemap"], self.TONEMAPS.index(self.tonemap))
+        sh.glUniform1f(u["uExposure"], 2.0 ** self._environment["exposure"] if hdri else 1.0)
+        modelview = (ctypes.c_float * 16)()
+        gl.glGetFloatv.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+        gl.glGetFloatv(self.GL_MODELVIEW_MATRIX, modelview)
+        view_to_world, rig = light_frames(list(modelview), self.OBJECT_TO_WORLD, self.RIG_FIXED_TO_WORLD)
+        sh.glUniformMatrix3fv(u["uViewToWorld"], 1, 0, (ctypes.c_float * 9)(*column_major3(view_to_world)))
+        sh.glUniformMatrix3fv(u["uLightFrame"], 1, 0, (ctypes.c_float * 9)(*column_major3(rig)))
+        sh.glUniform1i(u["uEnvTex"], ENVIRONMENT_TEXTURE_UNIT)
+        sh.glActiveTexture(self.GL_TEXTURE0 + ENVIRONMENT_TEXTURE_UNIT)
+        gl.glBindTexture(self.GL_TEXTURE_2D, self._environment_texture if hdri else 0)
+        sh.glActiveTexture(self.GL_TEXTURE0)
+        if hdri:
+            strength = self._environment["strength"]
+            coefficients = [float(x) * strength for x in self._environment["sh"].reshape(-1)]
+            sh.glUniform3fv(u["uSH"], 9, (ctypes.c_float * 27)(*coefficients))
+            sh.glUniform3f(u["uSunDir"], *(float(x) for x in self._environment["sun_direction"]))
+            sh.glUniform3f(u["uSunColour"], *(float(x) * strength for x in self._environment["sun"]))
 
     def set_mode(self, mode):
         """Solid shading, wireframe (mesh only), or both."""
@@ -789,6 +917,7 @@ class ModelViewport(_TkFrame):
         self.shading_warning = None
         program, u, size = sh.program(self._bone_count or 1)
         sh.glUseProgram(program)
+        self._apply_lighting(u)
         for unit, name in ((TINT_DETAIL_TEXTURE_UNIT, "uTexTintDetail"), (0, "uTexC"), (1, "uTexG"), (2, "uTexN"), (PICK_TEXTURE_UNIT, "uTexP"), (TINT_MASK_TEXTURE_UNIT, "uTexH"), (ARCH_SEQUENCE_TEXTURE_UNIT, "uTexSequence"), (BNG_DETAIL_TEXTURE_UNIT, "uTexBngDetail"), (VEHICLE_PALETTE_TEXTURE_UNIT, "uTexVehicleP2")):
             sh.glUniform1i(u[name], unit)
         skin = joint_array is not None and self._bones is not None
@@ -993,6 +1122,7 @@ class ModelViewport(_TkFrame):
         gl, sh = self._gl, self._shading
         program, u = sh.glass_program()
         sh.glUseProgram(program)
+        self._apply_lighting(u)
         sh.glUniform1i(u["uSkin"], 1 if skin else 0)
         if skin:
             sh.glUniform1i(u["uBoneTex"], BONE_TEXTURE_UNIT)
@@ -1077,9 +1207,10 @@ class ModelViewport(_TkFrame):
             except Exception:
                 pass
         self._hrc = self._hdc = self._gl = None
+        self._environment_texture = None
 
 
-__all__ = ["MeshPayloadError", "ModelViewport", "camera_fit", "mesh_bounds", "perspective_matrix", "validate_mesh"]
+__all__ = ["MeshPayloadError", "ModelViewport", "camera_fit", "light_frames", "mesh_bounds", "perspective_matrix", "validate_mesh"]
 
 
 

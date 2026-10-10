@@ -128,11 +128,12 @@ A new load cancels the previous one (generation counter; stale events are droppe
 ### Rendering
 
 - Geometry and instance matrices stay native Y-up. The presentation basis is applied once, in the camera matrix (`BASIS` in `viewport.py`), so the fly camera works in Z-up.
-- Each model has static vertex buffers (positions, normals, UVs, indices). Each (zone, handedness) group gets one instance buffer drawn with `glDrawElementsInstanced`; the four matrix rows are vertex attributes 10-13 (`INSTANCED_VERTEX` in `rc2016/viewer/shading.py`). Needs OpenGL 3.3 instancing; otherwise the view reports which entry point is missing.
+- Each model keeps its instances per zone on the CPU and has one instance buffer per handedness holding the instances of every visible zone. Toggling a zone rebuilds only the affected models' buffers.
+- Each (model, instance buffer) has a vertex array object (OpenGL 3.0) holding the position, normal and UV arrays, the index buffer and the four matrix-row attributes (10-13, `INSTANCED_VERTEX` in `rc2016/viewer/shading.py`) with divisor 1, so a draw binds one object. Instancing needs OpenGL 3.3; otherwise the view reports which entry point is missing.
+- Batches of one model with the same material that follow each other in the index buffer merge into one draw. Material uniforms and texture bindings are recorded once per material (`_Recorder` around `ModelViewport._apply_material`), and only the ones that differ from the current state are issued. `glFrontFace` is set only when handedness changes. Draws stay sorted by material.
 - Normals use the cofactor matrix times sign(det), so sheared and mirrored instances shade correctly. Mirrored groups draw with `glFrontFace(GL_CW)` so `gl_FrontFacing` keeps meaning "outside".
-- Draws are sorted by material, and each material's uniforms go through the model viewer's `_apply_material`. Zone toggles only filter instance groups; no buffers are rebuilt.
 - Forward-shaded (glass) materials draw after all opaque ones with material blend and cull state and no depth write. Instances are not depth-sorted.
-- Lighting is the model viewer's rig in view space (it turns with the camera). It is not game lighting.
+- Lighting and tonemap use the model viewer's selectors ([Lighting and tonemap](viewer.md#lighting-and-tonemap)). The Viewer rig is fixed to the world (rig right = +X, up = +Z, towards the viewer = -Y in Blender's Z-up world), so lighting does not shift while orbiting or flying. Shared HDRI lights the level from the shared review HDRI, with level directions taken through the presentation basis. This is not game lighting.
 - Background is a flat colour; no sky, decals, lights or fog.
 
 ### Modes
@@ -159,8 +160,14 @@ Models whose path contains `collision` or `environment/template/` (for example `
 | Wheel | Dolly |
 | Ctrl+wheel, `[` `]`, `-` `+` | Fly speed |
 | F, Home | Reset to overview |
+| Left click (no drag) | Identify the model under the pointer |
+| Double click | Open the identified model in the Model tab (asset browser) and load it; it does not reset the camera |
 
-Zone list: per-zone checkbox with placed-instance count, **All** / **None** buttons. The status line shows load state, zone and model counts, failures, material and texture counts, visible instances and triangles, draw calls, CPU frame time and speed.
+Zone list: per-zone checkbox with placed-instance count, **All** / **None** buttons. The side column also has the **Lighting** (`Viewer rig` or `Shared HDRI`) and **Tonemap** (`ACES fit` or `Khronos PBR Neutral`) selectors, which work as in the model viewer ([Lighting and tonemap](viewer.md#lighting-and-tonemap)). The status line shows load state, zone and model counts, failures, material and texture counts, visible instances and triangles, draw calls, frame time (ms) and speed.
+
+### Click to identify
+
+A left click without dragging identifies the model under the pointer. Each visible model is drawn into the back buffer in a 24-bit id colour and one pixel is read, so the result identifies the model, not the individual instance. The picked model's visible instances are outlined in orange, and the line under the status shows its path and visible instance count. Double click, or **Open in Model tab** (in the asset browser; the standalone viewer has no Model tab), selects the model in the Model tree and loads it.
 
 ### Command line
 
@@ -187,21 +194,20 @@ Settings are stored in `%APPDATA%/RC2016 Asset Browser/level_viewer.json` (sourc
 
 ### Reference sizes
 
-Measured on an RTX 3060 (CPU frame time) in the research notes, for scale only:
+Measured on an RTX 3060: median frame time including GPU work (`glFinish`), and CPU-only time, for scale only:
 
-| Level | Models | Instances shown | Triangles | Draws | Frame |
-| --- | --- | --- | --- | --- | --- |
-| Novalis `art_buildings.zone` | 136 | 3,110 | 1.40 M | 428 | about 10 ms |
-| Novalis (18 zones, 8 with models) | 286 | 9,891 | 13.4 M | 844 | about 20 ms |
-| Veldin | 166 | 11,591 | 13.3 M | 430 | about 11 ms |
+| Level | Models | Instances shown | Triangles | Draws | Frame | CPU |
+| --- | --- | --- | --- | --- | --- | --- |
+| Novalis `art_buildings.zone` | 136 | 3,110 | 1.40 M | 424 | about 7 ms | about 7 ms |
+| Novalis (18 zones, 8 with models) | 286 | 9,891 | 13.4 M | 829 | about 11 ms | about 7 ms |
+| Veldin | 166 | 11,591 | 13.3 M | 412 | about 13 ms | about 7 ms |
 
-Frame cost is dominated by per-call ctypes overhead over the draw calls, not GPU work. All 286 Novalis models decode, including `tb_sewer_pipe_large_end`.
+The frames are rendered identically to drawing each zone separately (pixel-identical capture checked). Call overhead is about 7 ms per frame; the full Novalis and Veldin levels are bound by GPU work. All 286 Novalis models decode, including `tb_sewer_pipe_large_end`.
 
 For ranked structural candidates, dat1lib cross-checks and serialized schemas across the archive, see [corpus research](research.md). Inferred layouts remain hypotheses until independently decoded and validated.
 
 ## Known limitations
 
-- Materials: foliage shows as solid blobs (leaf cut-out not decoded); large planes whose materials have no `_c` texture draw flat white (some Novalis surfaces, Veldin's large ground / backdrop plane). Terrain layer textures and other layered or foliage graphs are not fully translated. The research notes counted 88 of 222 Novalis environment materials as unsupported graphs (colour-only fallbacks in the Blender path).
+- Materials: foliage shows as solid blobs (leaf cut-out not decoded); large planes whose materials have no `_c` texture draw flat white (some Novalis surfaces, Veldin's large ground / backdrop plane). Terrain layer textures and other layered or foliage graphs are not fully translated. The research notes counted 88 of 222 Novalis environment materials as unsupported graphs (colour-only fallbacks in the Blender path). In the viewer's rule coverage, the 233 materials of models placed in Novalis zones are 168 exact rule, 4 family fallback and 61 generic reading (see [rule coverage](viewer.md#rule-coverage)).
 - Not handled: gameplay actors (`gp_*` zones), `_imposter` zones, quest-overlay regions, VFX, lights, collision volumes, `.level` spawn records (`0x3395AEC1`), decals, sky and atmosphere.
 - Undecoded instance fields: flags at `+0x5C`, the record tail, the heap's other objects, `0x032D450A` material overrides.
-- No click-to-identify of instances.

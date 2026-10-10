@@ -52,6 +52,27 @@ def mesh_payload(decoded, lod='Highest', look=0):
                 source_exact_geometry=True,game_equivalence=False,material_preview='neutral geometry inspection')
 
 
+def material_rules(archive, materials):
+    """{material path: {'graphs', 'rule_kind', 'rule'}}: which viewer shading rule each material gets
+    (rc2016.formats.links.rule_coverage: exact rule, family fallback, generic reading)."""
+    from rc2016.formats.index import references
+    from rc2016.formats.links import rule_coverage
+    rules={}
+    for material in materials:
+        path=material.get('path')
+        if not path or path in rules:continue
+        try:
+            ids=[k for k in archive.resolve(path) if archive.entries[k]['type']=='material']
+            if len(ids)!=1:continue
+            graphs=[r['path'] for r in references(decompress(archive.bytes(ids[0])[0])[0])
+                    if not r.get('resolution_error') and r['path'].endswith('.materialgraph')]
+        except (ValueError,KeyError,OSError):
+            continue
+        kind,rule=rule_coverage(graphs)
+        rules[path]=dict(graphs=graphs,rule_kind=kind,rule=rule)
+    return rules
+
+
 class SourcePreviewLoader:
     """One archive metadata instance and one selected decoded model; no corpus model decode."""
     def __init__(self):
@@ -264,6 +285,7 @@ class SourcePreviewLoader:
                     row.update(format=header['format'],format_name=FORMAT_NAMES.get(header['format'],str(header['format'])),width=full[0],height=full[1])
                 except (ValueError,KeyError,OSError) as error:
                     row.update(format_name='unreadable',error=str(error))
+            decoded['material_rules']=material_rules(self.archive,decoded['materials'])
             decoded['_archive_path']=source_path;decoded['animation_note']='';decoded['animsets']=[]
             cached=dict(decoded=decoded,data=data,animation=None,animation_built=False,build_lock=threading.Lock(),
                         vertices=sum(len(m['positions']) for m in decoded['meshes']))
@@ -279,7 +301,8 @@ class SourcePreviewLoader:
             kind='skinned' if self.current['joint_count'] else 'static',joint_count=self.current['joint_count'],
             looks=self.current['looks'],lod=lod,look=look,textures=self.current['textures'],
             texture_list=self.current['texture_list'],mesh_record_count=self.current['mesh_record_count'],
-            materials=[dict(index=m.get('index',i),name=m.get('name'),path=m.get('path')) for i,m in enumerate(self.current['materials'])],
+            materials=[dict(index=m.get('index',i),name=m.get('name'),path=m.get('path'),**self.current['material_rules'].get(m.get('path'),{}))
+                       for i,m in enumerate(self.current['materials'])],
             animsets=self.current['animsets'],
             clips=self.animation.labels() if self.animation else [],
             animation_note='Loading animations…' if pending else self.current['animation_note'],animation_pending=pending,

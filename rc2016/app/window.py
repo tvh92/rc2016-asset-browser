@@ -78,7 +78,18 @@ HELP = {
         "STALE: extracted before, but out of date\n"
         "PREVIOUS: listed in an earlier run's report\n"
         "NO ANIMSET: no animation found for this model"),
+    "shading": (
+        "Filter by the viewer shading rule of the model's materials (Details lists it per slot):\n"
+        "Generic reading: at least one material graph has no decoded rule, so _g is read as coloured "
+        "F0 + gloss alpha; a to-do list for decoding.\n"
+        "Family fallback: at least one graph only matches a family rule (basic_skin, "
+        "basic_normal_gloss*, basic_incandescence).\n"
+        "No material graph: a material names no graph.\n"
+        "Exact rules only: every material has a decoded writer rule.\n\n"
+        "The first use indexes the archive's asset links (about half a minute, once)."),
 }
+SHADING_FILTERS = {"Generic reading": "generic reading", "Family fallback": "family fallback",
+                   "No material graph": "no material graph", "Exact rules only": None}
 
 
 class AssetBrowserApp:
@@ -151,6 +162,7 @@ class AssetBrowserApp:
         self.filter_var = tk.StringVar()
         self.folder_mode = "auto"  # "auto", "expanded" or "collapsed"; see toggle_expand_all
         self.state_var = tk.StringVar(value="All")
+        self.shading_var = tk.StringVar(value="All")
         self.prefix_var = tk.StringVar()
         self.skip_verified_var = tk.BooleanVar(value=True)
         # Export options (Options… window), remembered in the settings file.
@@ -253,10 +265,16 @@ class AssetBrowserApp:
         self._tip(HELP["filter"], filter_label, filter_entry)
         self._tip(HELP["state"], state_label, state)
         state.bind("<<ComboboxSelected>>", lambda _event: self.refresh_table())
+        shading_label = ttk.Label(filters, text="Shading")
+        shading_label.grid(row=0, column=5, padx=(14, 8))
+        shading = ttk.Combobox(filters, textvariable=self.shading_var, state="readonly", values=("All", *SHADING_FILTERS), width=17)
+        shading.grid(row=0, column=6)
+        self._tip(HELP["shading"], shading_label, shading)
+        shading.bind("<<ComboboxSelected>>", lambda _event: self.refresh_table())
         select_button = ttk.Button(filters, text="Select visible", command=self.select_visible)
-        select_button.grid(row=0, column=5, padx=(14, 4))
+        select_button.grid(row=0, column=7, padx=(14, 4))
         self._tip(HELP["tree"], select_button)
-        ttk.Button(filters, text="Clear selection", command=self.clear_selection).grid(row=0, column=6)
+        ttk.Button(filters, text="Clear selection", command=self.clear_selection).grid(row=0, column=8)
 
         browser_split = ttk.Panedwindow(model_view, orient="horizontal")
         browser_split.grid(row=1, column=0, sticky="nsew")
@@ -542,6 +560,15 @@ class AssetBrowserApp:
         output = Path(self.output_var.get()).expanduser() if self.output_var.get().strip() else None
         needle = self.filter_var.get().casefold().strip()
         state_filter = self.state_var.get()
+        shading_filter = self.shading_var.get()
+        coverage = None
+        if shading_filter != "All":
+            links = self.browser.links
+            coverage = links.coverage if links.links is not None and links.root == self.source_var.get().strip() else None
+            if coverage is None:
+                # Built on a worker once; the table refreshes when it is ready (or says why not).
+                links.request(lambda ready: self.refresh_table() if ready is not None else self.progress_var.set(links.message),
+                              key="shading filter")
         selected_models = {self._record_key(record) for record in self._selected_records()} if hasattr(self, "table") else set()
         open_folders = {item for item in self._folder_items() if self.table.item(item, "open")} if hasattr(self, "table") else set()
         terms = needle.split()
@@ -556,6 +583,11 @@ class AssetBrowserApp:
             state, _reason = self._record_status(record, output)
             if state_filter != "All" and state != state_filter:
                 continue
+            if shading_filter != "All":
+                kinds = (coverage or {}).get(getattr(record, "archive_path", None) or "")
+                wanted = SHADING_FILTERS[shading_filter]
+                if not kinds or (kinds != {"exact rule"} if wanted is None else wanted not in kinds):
+                    continue
             self.filtered_records.append(record)
         for child in self.table.get_children():
             self.table.delete(child)
@@ -587,7 +619,8 @@ class AssetBrowserApp:
                 self.table.selection_add(item)
         self.update_selection_label()
         self.start_button.configure(state="normal" if self.records and self.runner is None and not getattr(self, "scanning", False) and not self.browser.review else "disabled")
-        self.progress_var.set(f"{len(self.records)} models found; {len(self.filtered_records)} visible")
+        self.progress_var.set(f"{len(self.records)} models found; {len(self.filtered_records)} visible"
+                              + (" (reading material links…)" if shading_filter != "All" and coverage is None else ""))
         self._gallery_changed()
 
     def _gallery_changed(self) -> None:
