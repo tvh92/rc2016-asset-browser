@@ -23,7 +23,8 @@ Module map:
 | `rc2016/app/catalog.py`, `rc2016/app/workers.py` | Read-only result catalog; coalesced background workers and owned-process cleanup |
 | `rc2016/viewer/loader.py` | `SourcePreviewLoader`: archive model to viewport payload |
 | `rc2016/viewer/viewport.py` | Windows OpenGL viewport (ctypes, no extra packages) |
-| `rc2016/viewer/shading.py` | GLSL 1.20 programs for Shaded mode and the glass/forward path |
+| `rc2016/viewer/shading.py` | GLSL 1.20 programs, shared deferred lighting and glass/forward paths |
+| `rc2016/viewer/native_glsl.py` | Material-bound native DAG emission, selection and CPU surface evaluation |
 | `rc2016/viewer/textures.py` | Texture decoding/upload, material slot tables, `GRAPH_RULES`, texture export |
 | `rc2016/viewer/animation.py` | Clip library and skinning matrices |
 | `rc2016/viewer/environment.py` | Shared review HDRI as lighting maps: built-in EXR reader, sun extraction, diffuse SH and prefiltered specular |
@@ -67,7 +68,7 @@ The level list and the Flash UI list are read the first time their type is selec
 - Models are named by the named actors whose files reference them (`actor_users()`, one level of parent actors included), read from `reports/asset_references.sqlite`. The numbered moby/tie/shrub assets of the first game's data carry no name anywhere in the game data (their own materials are numbered too), and almost none is used by a named actor.
 - The search box matches path, ID, actor names and animation-set names. Several words must all match.
 - The State filter (All, READY, EXPORTED, VERIFIED, STALE, NO ANIMSET, PREVIOUS) reflects saved builds in the output root; EXPORTED marks folders that hold an `export.json`. Browsing does not approve backend cache reuse.
-- The **Shading** filter (All, Generic reading, Family fallback, No material graph, Exact rules only) sits next to State and uses the links table ([Rule coverage](#rule-coverage)).
+- The **Shading** filter (All, Native translation, Generic reading, Family fallback, No material graph, Exact rules only) sits next to State and uses the links table ([Rule coverage](#rule-coverage)).
 
 ## 3D view
 
@@ -99,7 +100,7 @@ Select one source row to load its geometry. Archive metadata is loaded once; onl
 
 ## Shaded mode
 
-Shaded (`rc2016/viewer/shading.py`) is one GLSL 1.20 program on the legacy WGL context. It follows the game's deferred BRDF (see [shading](shading.md)):
+Shaded (`rc2016/viewer/shading.py`) uses GLSL 1.20 programs on the legacy WGL context. Hand rules and native translations supply surface values to the same deferred BRDF (see [shading](shading.md)). The hand-rule path reads:
 
 - diffuse = `_c`;
 - specular = GGX with Schlick Fresnel, F0 from `_g`, F90 = sat(60 x F0), GGX alpha = 2^(-5.5 x gloss) (roughness = 2^(-2.75 x gloss)); diffuse and specular are added;
@@ -107,6 +108,18 @@ Shaded (`rc2016/viewer/shading.py`) is one GLSL 1.20 program on the legacy WGL c
 - `_n` is read as an RG tangent normal without a green flip, with the tangent frame taken from screen-space UV derivatives.
 
 The lighting is selected under the 3D view ([Lighting and tonemap](#lighting-and-tonemap)), not the game's lighting. The skin Fresnel lerp is not applied.
+
+### Native translation
+
+**Native translation** is a per-viewer checkbox, on by default, in both the model and level viewers. It affects Shaded mode only and preserves the camera when switched. The level CLI accepts `--no-native-translation` for comparable captures.
+
+`rc2016/viewer/native_glsl.py` emits the ready, material-bound scalar DAG from `shaders.bindings.prepare_translation`: albedo, F0, gloss, emission multiplier and the optional tangent-space normal. Fully ported exact viewer rules retain precedence through `materials._viewer_rule_wins_translation`, preserving their tint, pick, foliage and other terms. An eligible translation replaces a generic reading or family fallback; unsupported translations keep those readings. Forward rules retain their separate programs. No graph-name, shader-ID or code-hash recipe dispatch is added to the translator.
+
+The GLSL frontend mirrors `shaders.nodes`: UV0.xy is the only input, every sample retains its own coordinates and channels, and textures use linear filtering with repeat addressing. The viewer already reverses the decoder's Blender V flip and uploads top-down image rows, so native UV arithmetic and sample coordinates use game-space V directly. Native textures have separate GL cache entries: DXGI sRGB formats decode RGB before filtering, while alpha and normal maps stay linear. Missing native normals use the geometry normal. Supplied normals use the translated xyz slice with a derivative tangent basis; the game's packed vertex TBN is not reconstructed.
+
+Programs are cached by `translation_sha256`, emitter version, texture interpretation, vertex program and shared fragment source. Constants are literals. The level viewer groups draws by native program then material and records uniform state per material and program. Lighting, tonemap and the Viewer rig / Shared HDRI selectors are shared with the hand-rule path.
+
+A ready translation describes a bounded deferred surface, with `game_equivalence: false`. It does not establish runtime draw/variant selection, engine constants, sampler state or complete game shading. The existing Blender math guards are retained, including `log2(0) = 0`; this differs from the GCN singular case. CPU source controls for `basic_normal_gloss` and untinted `mo_gbl_color_tint_01`, using identical linear texel samples, agree on albedo, F0, gloss and emission. At interpolated UVs the native frontend decodes sRGB before filtering, whereas the retained hand shader uses its power-2.2 approximation after filtering, so the sampled values can differ. Their normal slices differ: the translated basic writer uses normalized `(x, y, 1-x*x-y*y)`, while the hand rule uses a square-root z; the selected tint translation has no normal slice. These findings preserve exact-rule precedence and are covered by `tests/test_native_glsl.py`.
 
 ### Lighting and tonemap
 
@@ -140,7 +153,7 @@ Limitations of the lighting: no shadowing, ambient occlusion or interreflection.
 
 ### `_g` meaning per material graph
 
-The `_g` channel layout depends on the graph's decoded writer. `GRAPH_RULES` in `rc2016/viewer/textures.py` registers decoded rules by exact full graph stems ending in a dot before the `.materialgraph` extension. These rules precede the retained skin, incandescence and `basic_normal_gloss` family fallbacks; the first matching entry wins. Graphs without a rule use the generic reading: coloured F0 = spec x `_g.rgb`, gloss = sqrt(sat(gloss x a^2)), where `a` is `_g.a`.
+The `_g` channel layout depends on the graph's decoded writer. `GRAPH_RULES` in `rc2016/viewer/textures.py` registers decoded rules by exact full graph stems ending in a dot before the `.materialgraph` extension. These rules precede the retained skin, incandescence and `basic_normal_gloss` family fallbacks; the first matching entry wins. Graphs without a rule or eligible native translation use the generic reading: coloured F0 = spec x `_g.rgb`, gloss = sqrt(sat(gloss x a^2)), where `a` is `_g.a`.
 
 The specular and gloss scales (keys `0x62835AF9` and `0x24F4CA4C`) come from the material, else from the graph default. K (self-lit strength) comes from the self-lit key in the graph's own parameter table, because materials can store keys their graph never reads (for example writer `C4828176` uses only `0x06F19114`). Self-lit keys by family: `0x66EFA55B` (default deferred), `0x06F19114` (coloured-gloss-emissive), `0xF8C61683` (emissive in `_c` alpha), `0x5FD56522` (incandescence).
 
@@ -180,15 +193,16 @@ Parallax samples height alpha with the original UV gradients. Runtime fade, tang
 The Details tab lists, under each material slot, which rule matched the material:
 
 - **exact rule**: a `GRAPH_RULES` prefix ending in a dot, naming one decoded writer;
+- **native translation**: an eligible material-bound deferred DAG after exact-rule precedence; its limitations appear in Details and game equivalence stays false;
 - **family fallback**: a prefix naming a family (`basic_skin/`, `basic_normal_gloss*`, `basic_incandescence/`);
 - **generic reading**: no rule (coloured F0 with gloss alpha);
 - **no material graph**.
 
-The first matching rule wins, as in `_graph_rule`. `rc2016.formats.links.rule_coverage` and `material_rules` in `rc2016/viewer/loader.py` provide the classification; `rule_text` in `rc2016/app/browser.py` provides the wording.
+The first matching hand rule is tested for precedence, then an eligible native translation replaces its generic/family reading. `rc2016.formats.links.rule_coverage` accepts the selected translation receipt; `material_rules` in `rc2016/viewer/loader.py` uses the same selector. `rule_text` in `rc2016/app/browser.py` provides the wording, and switching Native translation off restores the fallback wording in Details.
 
 The model list's **Shading** filter uses the same classification (a model matches when any of its materials has that kind; Exact rules only requires every material to be exact). It reads the links table, built on first use.
 
-Viewer rule coverage on the EUR archive: of 6,864 models with materials, 5,650 have at least one exact-rule material, 2,114 at least one generic reading, 508 at least one family fallback, and 14 a material without a graph. The 233 materials of models placed in Novalis zones are 168 exact rule, 4 family fallback and 61 generic reading. This measures the viewer's rules, not game accuracy.
+With Native translation enabled, the EUR archive's 11,180 materials classify as 9,720 exact rule, 220 native translation (40 graphs), 138 family fallback, 1,098 generic reading and 4 without a graph. Of 6,864 models with materials, 5,650 have at least one exact-rule material, 740 a native translation, 1,611 a generic reading, 506 a family fallback, and 14 a material without a graph; these model categories overlap. The 233 base materials of models placed in Novalis zones are 168 exact rule, 9 native translation (5 graphs), 3 family fallback and 53 generic reading. With the toggle off they are 168 exact, 4 family and 61 generic. Coverage describes the selected surface frontend, not game accuracy, and excludes per-instance replacement materials from the Novalis base count. Native eligibility is stored per material in the links table; source changes invalidate its cache.
 
 ### Glass and forward materials
 
