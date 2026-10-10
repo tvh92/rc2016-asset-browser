@@ -133,6 +133,7 @@ For graphs without a registered family, `apply_viewer_graph_rule` builds the ass
 - Self-lit = `_c.rgb × (_g.B or _c.a) × K` with the viewer's effective K. Normal x, y = 2RG − 1 with the viewer's z.
 - Each term in `rule['ported']` builds the viewer's material terms and frozen inputs as nodes named `VR <term> <param>`. Closure limitations are recorded separately on the material; `ported` does not imply identical rendered output. Terms in `rule['unported']` are recorded on the material. The forward unlit screen rule (`mo_neb_amb_screen_01`) is built at t = 0.
 - These materials carry `shader_preview_status = viewer_graph_rule_frontend` and `game_equivalence = False`.
+- Parallax UV marching and height visibility are explicitly unported in Blender. When POM is the only missing term, the proven C/G/N and tint/detail front-end remains selected instead of a native translation. Additional unported terms retain the existing translation-selection policy. Reopen validation checks that the limitation and source normal equation survive.
 
 ### Two-colour metal verification
 

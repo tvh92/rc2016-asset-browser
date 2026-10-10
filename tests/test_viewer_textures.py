@@ -469,9 +469,10 @@ class TexturePreviewTests(unittest.TestCase):
         self.assertEqual((paths['g_mode'], paths['k'], paths['_h']), ('grey', 0.0, 't/mo_black_h.texture'))
         self.assertEqual(set(paths['tint']), {'a', 'b', 'power_a', 'power_b', 'weight_a', 'weight_b', 'mask_b'})
         self.assertEqual(paths['spec_tint'], [1.0, 1.0, 1.0])
-        other = tp.material_texture_paths(archive, 'm/variant.material')   # undecoded variant: no tint, no _h
-        self.assertEqual(other['g_mode'], 'colored')
-        self.assertNotIn('tint', other); self.assertNotIn('_h', other)
+        other = tp.material_texture_paths(archive, 'm/variant.material')
+        self.assertEqual(other['g_mode'], 'grey')
+        self.assertEqual(other['tint']['variant'], 'detail')
+        self.assertEqual(other['parallax']['writer'], '4E4D7894')
 
     def test_color_tint_variants_bind_exact_slots_and_preserve_zero_overrides(self):
         from unittest.mock import patch
@@ -517,7 +518,7 @@ class TexturePreviewTests(unittest.TestCase):
                 if kind == 'world_normal': self.assertEqual(paths['_pick'], 't/world_detail_n.texture')
             other = tp._graph_rule([folder + stem + '_extra.materialgraph'])
             self.assertNotIn('tint_variant', other)
-        self.assertNotIn('tint_variant', tp._graph_rule([folder + 'jn_color_tint_detail_parallax.materialgraph']))
+        self.assertEqual(tp._graph_rule([folder + 'jn_color_tint_detail_parallax.materialgraph'])['parallax'], 'tint')
 
     def test_fixed_tint_palette_filters_in_linear_space_and_repeats(self):
         texture = dict(format=29, width=2, height=1, pixels=bytes([255,0,0,255, 0,0,255,255]), srgb=True)

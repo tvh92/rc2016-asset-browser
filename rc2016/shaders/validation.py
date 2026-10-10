@@ -534,6 +534,11 @@ def _validate_viewer_rule_material(source, material):
     assert rule.get("applies"), "Viewer-rule material without an applicable source rule"
     assert json.loads(material["rc_viewer_graph_rule"]) == rule, "Reopened viewer rule differs from the material report"
     ported = list(rule.get("ported") or ())
+    if "parallax" in rule.get("terms", {}):
+        assert "parallax" not in ported and "parallax" in rule.get("unported", ()), "Blender POM must remain explicitly unported"
+        assert "parallax" in str(material.get("rc_shader_frontend_limitation", "")), "Missing visible Blender POM limitation"
+        assert rule.get("normal_z") == "1-x*x-y*y", "POM source normal z semantics lost"
+
     nodes = material.node_tree.nodes
     output = next((node for node in nodes if node.type == "OUTPUT_MATERIAL" and node.is_active_output), None)
     assert output and output.inputs["Surface"].is_linked, "Viewer-rule material has no active surface output"

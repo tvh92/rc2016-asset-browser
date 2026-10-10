@@ -99,19 +99,21 @@ GRAPH_RULES = (
     # EB1AC2CD bounded deferred writer; Materials/VehicleRandomColor/VEHICLE_RANDOM_COLOR_DECODE.md.
     ('materialgraph/vehicle/mo_veh_random_color_01/mo_veh_random_color_01.',
      dict(g_mode='vehicle', self_lit_key=None, vehicle=True)),
-    # ColorTintVariants exact writers; parallax remains unruled.
+    # ColorTintVariants exact writers; complete tint-POM writer 4E4D7894.
     ('materialgraph/environment/global/gbl_color_tint_01/jn_mo_gbl_color_tint_01_random_color.',
      dict(g_mode='grey', self_lit_key=None, tint=True, tint_variant='random')),
     ('materialgraph/environment/global/gbl_color_tint_01/jn_color_tint_detail.',
      dict(g_mode='grey', self_lit_key=None, tint=True, tint_variant='detail')),
+    ('materialgraph/environment/global/gbl_color_tint_01/jn_color_tint_detail_parallax.',
+     dict(g_mode='grey', self_lit_key=None, tint=True, tint_variant='detail', parallax='tint')),
     ('materialgraph/environment/global/gbl_color_tint_01/jn_gbl_color_tint_01_world_detail.',
      dict(g_mode='grey', self_lit_key=None, tint=True, tint_variant='world')),
     ('materialgraph/environment/global/gbl_color_tint_01/jn_gbl_color_tint_01_world_detail_normal.',
      dict(g_mode='grey', self_lit_key=None, tint=True, tint_variant='world_normal')),
     # 5FADAD33 / cached E80EA4C1; Materials/ParallaxOcclusion/PARALLAX_OCCLUSION_DECODE.md.
-    # UV march and height shadows are deliberately omitted from this bounded preview.
+    # Native 5FADAD33 height-alpha march/intersection and seven-sample albedo shadows.
     ('materialgraph/global/basic_parallax_occlusion/basic_parallax_occlusion.',
-     dict(g_mode='grey', self_lit_key=None, parallax_outputs=True)),
+     dict(g_mode='grey', self_lit_key=None, parallax_outputs=True, parallax=True)),
     # 2685144F cached forward material kernel and CA81B14F deferred writer; Materials/GlowMask.
     ('required/materials/jn_basic_normal_gloss_glow_mask.',
      dict(g_mode='grey', self_lit='glow_mask', self_lit_key=0x06F19114, glow=1)),
@@ -319,12 +321,25 @@ def material_texture_paths(archive, material_path: str) -> dict:
             else: result.pop(role, None)
         result['foliage'] = True
     if rule.get('parallax_outputs'):
+        result['parallax_normal'] = True
         # api5 is a separate height texture, sometimes also named _c; use C/G/N slot identities.
         material_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
         for role, slot in (('_c', 0x49A7866BABDAD780), ('_g', 0x49A7866B1576D848), ('_n', 0x49A7866B7AE34E7A)):
             path = material_slots.get(slot) or slots.get(slot)
             if path:
                 result[role] = path
+    if rule.get('parallax'):
+        height_slot = 0x49A7866BB521DFCB
+        height_path = texture_slots(data, MATERIAL_SLOT_SECTION).get(height_slot) or slots.get(height_slot)
+        if height_path: result['_parallax_height'] = height_path
+        tint_pom = rule['parallax'] == 'tint'
+        result['parallax_normal'] = True
+        result['parallax'] = dict(kind=2 if tint_pom else 1,
+            height_scale=value(0xEE0F9FF8, 1.0) if tint_pom else value(0x47F581F6, 0.1),
+            steps_front=16.0 if tint_pom else value(0xD709BC41, 16.0),
+            steps_grazing=64.0 if tint_pom else value(0xD60526F5, 64.0),
+            fade=1.0, shadows=True, writer='4E4D7894' if tint_pom else '5FADAD33',
+            runtime='viewer derivative TBN, fade=1, CB0[95]=1, viewer key light; singular rays skip POM')
     if rule.get('bng'):
         kind = rule['bng']
         # Bind by serialized slot identity: suffixes do not identify normal/detail or mo_black_h.
@@ -386,7 +401,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
         t = result['tint']; t['variant'] = kind
         if kind == 'detail': t['mask_b'] = 1.0   # this graph has no mask-strength key
         t['detail_scale'] = value(0x93F9F959 if kind == 'detail' else 0xAC34BF6E, 1.0)
-        t['detail_strength'] = value(0x3BBC1444 if kind == 'detail' else 0xB23D4CB3, 1.0)
+        t['detail_strength'] = (1.0 if rule.get('parallax') == 'tint' else
+                                value(0x3BBC1444 if kind == 'detail' else 0xB23D4CB3, 1.0))
         # abs(attr3.w) is an instance-buffer product; freeze magnitude .5, preserve material override.
         t['instance_palette'] = 0.5
         override = value(0x26DCC4CE, 0.0)
@@ -793,14 +809,14 @@ def material_textures(archive, materials: list[dict], cache: dict) -> dict[int, 
             paths = {}
         entry.update(k=paths.get('k', 0.0), g_mode=paths.get('g_mode', 'colored'), self_lit=paths.get('self_lit', 'c_alpha'),
                      spec=paths.get('spec', 1.0), gloss=paths.get('gloss', 1.0))
-        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow'):
+        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'parallax', 'parallax_normal'):
             if paths.get(key):
                 entry[key] = paths[key]
         if paths.get('foliage'):
             entry['foliage'] = True
         if 'za_fresnel_power' in paths:
             entry['za_fresnel_power'] = paths['za_fresnel_power']
-        for role in (*ROLES, *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ())):
+        for role in (*ROLES, *(('_parallax_height',) if paths.get('parallax') else ()), *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ())):
             path = paths.get(role)
             if not path:
                 continue

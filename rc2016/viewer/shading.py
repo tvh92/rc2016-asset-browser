@@ -32,6 +32,7 @@ PICK_TEXTURE_UNIT = 4   # colour-pick palette (blarg_saucer_colorpick)
 ARCH_SEQUENCE_TEXTURE_UNIT = 8   # frozen AAED778C sequence; prompt 03 reservation
 BNG_DETAIL_TEXTURE_UNIT = 11   # prompt 06 normal detail only
 TINT_DETAIL_TEXTURE_UNIT = 9   # ColorTintVariants; sole new sampler for prompt04
+PARALLAX_HEIGHT_TEXTURE_UNIT = 12   # separate source height-alpha slot
 TINT_MASK_TEXTURE_UNIT = 5   # _h tint mask (mo_gbl_color_tint_01)
 # Bones live in a 1-row RGBA32F texture (4 texels = one row-major matrix):
 # a uniform array runs out of vertex constants near 200 joints (Clank has 150,
@@ -77,6 +78,7 @@ void main() {
 
 FRAGMENT = """
 #version 120
+#extension GL_ARB_shader_texture_lod : enable
 uniform bool uRockBlend; uniform sampler3D uRockTex; uniform vec3 uRockSrgb;
 uniform vec4 uRockScale0; uniform vec4 uRockScale1;
 uniform vec3 uRockTint; uniform vec4 uRockP; // exponent, tint amount, mask strength, sharpness
@@ -92,6 +94,8 @@ uniform bool uTwoColorMetal;
 uniform vec3 uMetalDiffuseA; uniform vec3 uMetalDiffuseB;
 uniform vec3 uMetalSpecA; uniform vec3 uMetalSpecB;
 uniform vec4 uMetalP; // tint power, rim-gloss power, C texture scale, normal strength
+uniform bool uParallax; uniform bool uParallaxNormal; uniform bool uHasParallaxHeight;
+uniform sampler2D uTexParallaxHeight; uniform vec4 uParallaxP; // H, face/grazing steps, fade
 uniform bool uFoliage; // FE32FE79/1E0AE45A close-range normal z weight
 uniform bool uZaFresnel; uniform float uZaFresnelPower; // za_basic_normal_gloss geometry-normal rim suppression
 uniform bool uSelfLitG;       // self-lit mask from _g.B instead of _c.a
@@ -125,6 +129,38 @@ varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
 varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm;
 const float PI = 3.14159265;
 vec3 linear(vec3 c) { return pow(max(c, 0.0), vec3(2.2)); }
+#ifdef GL_ARB_shader_texture_lod
+// 5FADAD33 rel764-920: positive counts, original IMAGE_SAMPLE_D UV gradients.
+vec2 parallaxUV(vec2 uv,vec2 D,int count,vec2 dx,vec2 dy) {
+    float inv=1.0/float(count),depth=1.0,oldHeight=1.0;
+    float upper=0.0,lower=0.0,hu=0.0,hl=0.0;vec2 p=uv;
+    for(int i=0;i<count;i++) {
+        p-=D*inv;float h=texture2DGradARB(uTexParallaxHeight,p,dx,dy).a;
+        float nextDepth=depth-inv;
+        if(h>nextDepth){upper=depth;lower=nextDepth;hu=oldHeight;hl=h;break;}
+        oldHeight=h;depth=nextDepth;
+    }
+    float du=upper-hu,dl=lower-hl,intersection=0.0;
+    if(du!=dl)intersection=(du*lower-upper*dl)/(du-dl);
+    return uv-(1.0-intersection)*D;
+}
+// rel972/1048-1312/1448-1588: no saturate; source may brighten albedo.
+float parallaxShadow(vec2 uv,vec2 ls,vec2 dx,vec2 dy) {
+    float base=texture2DGradARB(uTexParallaxHeight,uv,dx,dy).a;
+    float a=2.0*(texture2DGradARB(uTexParallaxHeight,uv+0.7699999809265137*ls,dx,dy).a-base)+(-1.5399999618530273);
+    a=max(a,4.0*(texture2DGradARB(uTexParallaxHeight,uv+0.6600000262260437*ls,dx,dy).a-base)+(-2.640000104904175));
+    a=max(a,1.0*(texture2DGradARB(uTexParallaxHeight,uv+0.8799999952316284*ls,dx,dy).a-base)+(-0.8799999952316284));
+    a=max(a,6.0*(texture2DGradARB(uTexParallaxHeight,uv+0.550000011920929*ls,dx,dy).a-base)+(-3.3000001907348633));
+    a=max(a,8.0*(texture2DGradARB(uTexParallaxHeight,uv+0.4399999976158142*ls,dx,dy).a-base)+(-3.5199999809265137));
+    a=max(a,10.0*(texture2DGradARB(uTexParallaxHeight,uv+0.33000001311302185*ls,dx,dy).a-base)+(-3.3000001907348633));
+    a=max(a,12.0*(texture2DGradARB(uTexParallaxHeight,uv+0.2199999988079071*ls,dx,dy).a-base)+(-2.6399998664855957));
+    return 1.0-0.6000000238418579*a;
+}
+#else
+// No implicit-gradient fallback: viewport disables POM and exposes a capability warning.
+vec2 parallaxUV(vec2 uv,vec2 D,int count,vec2 dx,vec2 dy){return uv;}
+float parallaxShadow(vec2 uv,vec2 ls,vec2 dx,vec2 dy){return 1.0;}
+#endif
 vec3 ggx(vec3 N, vec3 V, vec3 L, vec3 F0, vec3 F90, float a) {
     vec3 H = normalize(L + V);
     float NdL = max(dot(N, L), 0.0), NdV = max(dot(N, V), 1e-4), NdH = max(dot(N, H), 0.0);
@@ -191,7 +227,32 @@ void main() {
     if (uZaFresnel) { // E08357DC: CB2 dw2; use geometry normal before the tangent map
         zaWeight = 1.0 - clamp(pow(1.00100004673 - clamp(dot(N, V), 0.0, 1.0), uZaFresnelPower), 0.0, 1.0);
     }
-    vec4 c = uHasC ? texture2D(uTexC, vUV) : vec4(uColor, 0.0);
+    vec2 materialUV=vUV;float parallaxShadowWeight=1.0;
+    vec3 pomT=vec3(0.0),pomB=vec3(0.0),pomN=normalize(vNrm);
+    vec2 pomDx=dFdx(vUV),pomDy=dFdy(vUV);
+    if(uMode==2 && uParallaxNormal) {
+        vec3 dp1=dFdx(vPos),dp2=dFdy(vPos);
+        vec3 t=cross(dp2,pomN)*pomDx.x+cross(pomN,dp1)*pomDy.x;
+        vec3 b=cross(dp2,pomN)*pomDx.y+cross(pomN,dp1)*pomDy.y;
+        float ndv=dot(pomN,V);
+        int count=int(mix(uParallaxP.z,uParallaxP.y,clamp(ndv,0.0,1.0)));
+        // Preview guard for singular rays/degenerate UV frames; absent from source.
+        if(dot(t,t)>0.0 && dot(b,b)>0.0) {
+            pomT=normalize(t);pomB=-normalize(b);
+        }
+        if(uParallax && uHasParallaxHeight && count>0 && ndv!=0.0 && dot(pomT,pomT)>0.0) {
+            float face=gl_FrontFacing?1.0:-1.0;
+            vec2 D=face*uParallaxP.x*uParallaxP.w*vec2(dot(pomT,V),-dot(pomB,V))/ndv;
+            // Finite-ray preview guard; source does not define a controlled overflow policy.
+            if(abs(D.x)<=3.4e38 && abs(D.y)<=3.4e38) {
+            materialUV=parallaxUV(vUV,D,count,pomDx,pomDy);
+            vec3 light=normalize(vec3(-0.45,0.65,0.62)); // viewer key replaces CB0[128..130]
+            vec2 ls=1.25*uParallaxP.x*uParallaxP.w*vec2(dot(pomT,light),-dot(pomB,light));
+            parallaxShadowWeight=parallaxShadow(materialUV,ls,pomDx,pomDy);
+            }
+        }
+    }
+    vec4 c = uHasC ? texture2D(uTexC, materialUV) : vec4(uColor, 0.0);
     vec3 albedo = (uMode >= 1 && uHasC) ? (uSrgbC ? linear(c.rgb) : c.rgb) : linear(uColor);
     if (uMode >= 1 && uFacingGlow) albedo = vec3(1.0); // 0CD2AAFB: no albedo input, v76-v78 = 1
     if (uMode == 2 && uPuddles && uHasPuddleAtlas) {
@@ -240,7 +301,7 @@ void main() {
     if (uMode == 2 && uHasC && uTint) {
         // mo_gbl_color_tint_01 writer: lerp(B', A', m), A' = c + m(sat((A c)^pA) - c),
         // B' = c + wB(1 - kB h)(sat((B c)^pB) - c), m = wA h.
-        float h = uHasH ? texture2D(uTexH, vUV).r : 0.0;
+        float h = uHasH ? texture2D(uTexH, materialUV).r : 0.0;
         float m = uTintM * h, w = uTintP.z * (1.0 - uTintP.w * h);
         vec3 ta = clamp(pow(max(abs(uTintA * albedo), vec3(1e-8)), vec3(uTintP.x)), 0.0, 1.0);
         vec3 tb = clamp(pow(max(abs(uTintB * albedo), vec3(1e-8)), vec3(uTintP.y)), 0.0, 1.0);
@@ -286,7 +347,7 @@ void main() {
         vec3 p2 = cross(dp2, N), p1 = cross(N, dp1);
         vec3 T = p2 * du1.x + p1 * du2.x, B = p2 * du1.y + p1 * du2.y;
         float scale = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-20));
-        vec2 rg = texture2D(uTexN, vUV).rg * 2.0 - 1.0;
+        vec2 rg = texture2D(uTexN, materialUV).rg * 2.0 - 1.0;
         if (uTwoColorMetal) rg *= clamp(uMetalP.w, 0.0, 1.0);
         float z = sqrt(max(0.0, 1.0 - dot(rg, rg)));
         if (uTwoColorMetal) z = 1.0 - dot(rg, rg); // 1012E99D: source fade 2, not a square root
@@ -296,12 +357,13 @@ void main() {
             float face = gl_FrontFacing ? 1.0 : -1.0;
             glowParallaxUV += uGlowP.x * face * vec2(dot(V, normalize(T)), -dot(V, normalize(-B)));
         }
+        if (uParallaxNormal) z = 1.0 - dot(rg, rg); // rel1660-1680
         if (uFoliage) z = 1.0 - dot(rg, rg); // native normal, s=2; engine fade omitted
         if (uZaFresnel) z = 1.0 - dot(rg, rg); // E08357DC normal z weight, close-range fade s=2
         if (uTintVariant != 0) {
             z = 1.0 - dot(rg, rg); // native close-range normal, CB0[95]=1
             if ((uTintVariant == 2 && uHasTintDetail) || (uTintVariant == 4 && uHasP)) {
-                vec2 d = uTintVariant == 2 ? texture2D(uTexTintDetail, vUV * uTintDetailP.x).rg
+                vec2 d = uTintVariant == 2 ? texture2D(uTexTintDetail, materialUV * uTintDetailP.x).rg
                                          : texture2D(uTexP, tintWorldUV).rg;
                 d = (d * 2.0 - 1.0) * clamp(uTintDetailP.y, 0.0, 1.0);
                 float dz = 1.0 - dot(d, d);
@@ -330,6 +392,10 @@ void main() {
             N = normalize(mix(baseN, n2, rockWeight));
         } else N = normalize(T * scale * rg.x - B * scale * rg.y + N * z);
     }
+    if(uMode==2 && uParallaxNormal && uTintVariant==0 && dot(pomT,pomT)>0.0 && uHasN) {
+        vec2 xy=texture2D(uTexN,materialUV).rg*2.0-1.0;
+        N=(gl_FrontFacing?1.0:-1.0)*normalize(pomT*xy.x+pomB*xy.y+pomN*(1.0-dot(xy,xy)));
+    }
     vec3 metalSpecTint = vec3(1.0);
     float metalRim = 0.0;
     if (uMode == 2 && uTwoColorMetal) {
@@ -351,9 +417,10 @@ void main() {
         // Engine's blended environment irradiance is replaced by the viewer ambient.
         albedo = glowMask * (uGlowColour + uGlowP.z * ambient);
     }
+    albedo *= parallaxShadowWeight; // source MRT1 shadow AFTER tint, not specular
     vec3 color = albedo * (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * 2.0;
     if (uMode == 2) {
-        vec4 g = uHasG ? texture2D(uTexG, vUV) : vec4(0.0);
+        vec4 g = uHasG ? texture2D(uTexG, materialUV) : vec4(0.0);
         vec3 gl = uSrgbG ? linear(g.rgb) : g.rgb;
         if (uHasG || uVehicle) {
             vec3 F0; float gloss;
@@ -516,6 +583,7 @@ OPAQUE_UNIFORMS = (
     "uSkin", "uBoneTex", "uBoneWidth", "uMode", "uColor", "uTexC", "uTexG", "uTexN", "uHasC", "uHasG", "uHasN",
     "uSrgbC", "uSrgbG", "uGMode", "uSpecScale", "uGlossScale", "uSelfLitG", "uK",
     "uTwoColorMetal", "uMetalDiffuseA", "uMetalDiffuseB", "uMetalSpecA", "uMetalSpecB", "uMetalP",
+    "uParallax", "uParallaxNormal", "uHasParallaxHeight", "uTexParallaxHeight", "uParallaxP",
     "uFoliage",
     "uZaFresnel", "uZaFresnelPower",
     "uGlowKind", "uGlowColour", "uGlowP", "uTexGlowParallax", "uHasGlowParallax", "uSrgbGlowParallax", "uSrgbGlowMask",
@@ -598,6 +666,8 @@ class Shading:
             if not address:
                 raise ShaderError(f"OpenGL 2.0 function {name} is unavailable")
             setattr(self, name, ctypes.WINFUNCTYPE(result, *arguments)(address))
+        gl.glGetString.restype = ctypes.c_char_p
+        self.supports_parallax = b'GL_ARB_shader_texture_lod' in (gl.glGetString(0x1F03) or b'').split()
         self.programs = {}
 
     def _compile(self, kind, source):

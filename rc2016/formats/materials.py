@@ -431,15 +431,21 @@ def classify_absent_texture(path, refs, material_data, graph_datas):
 # Viewer reading keys that change the result beyond the generic _g/self-lit front-end
 # ('screen' is the viewer's forward 'screen' entry; 'bng'/'bng_detail' the basic_normal_gloss variants).
 VIEWER_RULE_EXTRAS=('pick','tint','spec_tint','arch_sequence','vehicle','glow','two_color_metal','puddles',
-    'foliage','za_fresnel_power','screen','rock_blend','bng','bng_detail','facing_glow')
+    'foliage','za_fresnel_power','screen','rock_blend','bng','bng_detail','facing_glow','parallax')
 # Terms rc_game_shader.apply_viewer_graph_rule builds (same GLSL math as gl_shading.FRAGMENT/GLASS_FRAGMENT).
-VIEWER_RULE_BUILT=frozenset(VIEWER_RULE_EXTRAS)
+VIEWER_RULE_BUILT=frozenset(VIEWER_RULE_EXTRAS)-{'parallax'}
 # Extra source images each term samples (texture_preview.material_texture_paths roles).
 VIEWER_TERM_ROLES=dict(pick=('_pick',),tint=('_h','_tint_detail','_tint_palette','_pick'),arch_sequence=('_h','_sequence','_pick'),
     vehicle=('_pick','_vehicle_p2','_h'),glow=('_h','_glow_parallax'),puddles=('_puddle_noise','_puddle_ripple'),
-    screen=('_screen_timeline','_c','_n','_pick','_g'),rock_blend=('_rock_mask','_rock_c2','_rock_g2','_rock_n2'),bng_detail=('_bng_detail',))
+    screen=('_screen_timeline','_c','_n','_pick','_g'),rock_blend=('_rock_mask','_rock_c2','_rock_g2','_rock_n2'),bng_detail=('_bng_detail',),parallax=('_parallax_height',))
 # Writers whose tangent normal z is 1-x*x-y*y (gl_shading.FRAGMENT), not sqrt(1-x*x-y*y).
-VIEWER_LINEAR_Z_TERMS=('bng','foliage','za_fresnel_power','glow','two_color_metal','rock_blend')
+VIEWER_LINEAR_Z_TERMS=('bng','foliage','za_fresnel_power','glow','two_color_metal','rock_blend','parallax')
+
+
+def _viewer_rule_wins_translation(translated, rule):
+    """Keep proven C/G/N for POM-only omissions; other missing terms retain the native route."""
+    unported = set(rule.get('unported') or ())
+    return not (translated and unported and not unported.issubset({'parallax'}))
 
 
 def _viewer_constant_samples(archive, paths):
@@ -495,12 +501,13 @@ def viewer_graph_rule(archive, material_path, bound_paths=None):
     for key in present:
         missing=[textures[role] for role in VIEWER_TERM_ROLES.get(key,()) if textures.get(role) and bound_paths is not None
                  and textures[role].lower() not in bound]
-        if key not in VIEWER_RULE_BUILT:reasons[key]='not built in the Blender front-end'
+        if key == 'parallax':reasons[key]='multi-step height-alpha view-ray UV march and seven height shadows are not built in Blender; unshifted C/G/N only'
+        elif key not in VIEWER_RULE_BUILT:reasons[key]='not built in the Blender front-end'
         elif missing:reasons[key]='sampled source texture is not a bound material texture: '+', '.join(missing)
         else:ported.append(key);continue
         unported.append(key)
     terms={key:paths[key] for key in ('pick','tint','spec_tint','arch_sequence','vehicle','glow','two_color_metal',
-        'puddles','za_fresnel_power','rock_blend','bng','facing_glow') if key in paths and key in present+['bng']}
+        'puddles','za_fresnel_power','rock_blend','bng','facing_glow','parallax') if key in paths and key in present+['bng']}
     if forward:terms['screen']=forward
     linear_z=bool(bng) or any(key in present for key in VIEWER_LINEAR_Z_TERMS) or bool((paths.get('tint') or {}).get('variant'))
     rule=dict(applies=True,schema='rcps4-viewer-graph-rule-v2',
@@ -659,7 +666,7 @@ def prepare_materials(archive, model_geometry, output_dir, export_textures, log,
                           (anchor in bound or 'facing_glow' in rule.get('ported',())))
             translated=(shader_translation.get('status')=='ready' and not profile and
                 not any(p.get('family') in ('skin_emissive','basic_skin','character_glass') for p in shader_preflights))
-            if viewer_ready and not (translated and rule.get('unported')):
+            if viewer_ready and _viewer_rule_wins_translation(translated, rule):
                 # Built in Blender by rc_game_shader.apply_viewer_graph_rule (same reading as the asset viewer).
                 # A fully ported viewer rule wins over the native translation, which drops tint/pick/foliage
                 # terms and the normal map (battery cannon: black trim built white); geometry._material follows.

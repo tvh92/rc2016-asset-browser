@@ -17,6 +17,13 @@ class MeshPayloadError(ValueError):
     pass
 
 
+def parallax_preview_parameters_valid(params):
+    """Explicit preview policy for parameters whose native execution is undefined/uncontrolled."""
+    values = [float(params.get(k, d)) for k, d in
+              (('height_scale', 0.), ('steps_front', 16.), ('steps_grazing', 64.), ('fade', 1.))]
+    return all(math.isfinite(v) for v in values) and all(0. < v < 2147483647. for v in values[1:3])
+
+
 def _triples(values, label, *, allow_flat=False):
     """Normalize a sequence/array into finite 3-tuples without a NumPy dependency."""
     try:
@@ -331,6 +338,7 @@ class ModelViewport(_TkFrame):
         self._compressed_upload = None
         self._shading = None       # gl_shading.Shading once the context exists
         self.shading_error = None
+        self.shading_warning = None
         self._bones = None         # current frame: ctypes float array, joints x 16 (row-major)
         self._bone_count = 0
         self._bones_dirty = False
@@ -457,9 +465,11 @@ class ModelViewport(_TkFrame):
             if entry.get('_rock_volume'):
                 uploaded['_rock_volume'] = (self._upload_rock_volume(entry['_rock_volume']), False)
                 uploaded['rock_blend']['scales'] = entry['_rock_volume']['scales']
+        for key in ('parallax', 'parallax_normal'):
+            if key in entry: uploaded[key] = entry[key]
         if "bng" in entry:
             uploaded["bng"] = entry["bng"]
-        for role in ("_c", "_g", "_n", "_pick", "_h", "_sequence", "_tint_detail", "_bng_detail", "_vehicle_p2", "_glow_parallax", "_puddle_atlas"):
+        for role in ("_c", "_g", "_n", "_pick", "_h", "_sequence", "_tint_detail", "_bng_detail", "_vehicle_p2", "_glow_parallax", "_puddle_atlas", "_parallax_height"):
             texture = entry.get(role)
             if not texture:
                 continue
@@ -774,8 +784,9 @@ class ModelViewport(_TkFrame):
 
     def _draw_shaded(self, index_array, uv_array, joint_array, weight_array, batches):
         """GLSL path for every mode: GPU skinning, base colour, and the game BRDF."""
-        from rc2016.viewer.shading import TINT_DETAIL_TEXTURE_UNIT, ATTRIBUTES, BONE_TEXTURE_UNIT, PICK_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, ARCH_SEQUENCE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT, GLOW_PARALLAX_TEXTURE_UNIT
+        from rc2016.viewer.shading import TINT_DETAIL_TEXTURE_UNIT, ATTRIBUTES, BONE_TEXTURE_UNIT, PICK_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, ARCH_SEQUENCE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT, GLOW_PARALLAX_TEXTURE_UNIT, PARALLAX_HEIGHT_TEXTURE_UNIT
         gl, sh = self._gl, self._shading
+        self.shading_warning = None
         program, u, size = sh.program(self._bone_count or 1)
         sh.glUseProgram(program)
         for unit, name in ((TINT_DETAIL_TEXTURE_UNIT, "uTexTintDetail"), (0, "uTexC"), (1, "uTexG"), (2, "uTexN"), (PICK_TEXTURE_UNIT, "uTexP"), (TINT_MASK_TEXTURE_UNIT, "uTexH"), (ARCH_SEQUENCE_TEXTURE_UNIT, "uTexSequence"), (BNG_DETAIL_TEXTURE_UNIT, "uTexBngDetail"), (VEHICLE_PALETTE_TEXTURE_UNIT, "uTexVehicleP2")):
@@ -846,16 +857,16 @@ class ModelViewport(_TkFrame):
     def _unbind_material_units(self):
         self._shading.glActiveTexture(self.GL_TEXTURE0+14);self._gl.glBindTexture(self.GL_TEXTURE_2D,0)
         self._shading.glActiveTexture(self.GL_TEXTURE0 + 15); self._gl.glBindTexture(0x806F,0)
-        from rc2016.viewer.shading import TINT_DETAIL_TEXTURE_UNIT, BONE_TEXTURE_UNIT, PICK_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, ARCH_SEQUENCE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT, GLOW_PARALLAX_TEXTURE_UNIT
-        for unit in (GLOW_PARALLAX_TEXTURE_UNIT, TINT_DETAIL_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, ARCH_SEQUENCE_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, PICK_TEXTURE_UNIT, BONE_TEXTURE_UNIT, 2, 1, 0):
+        from rc2016.viewer.shading import TINT_DETAIL_TEXTURE_UNIT, BONE_TEXTURE_UNIT, PICK_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, ARCH_SEQUENCE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT, GLOW_PARALLAX_TEXTURE_UNIT, PARALLAX_HEIGHT_TEXTURE_UNIT
+        for unit in (PARALLAX_HEIGHT_TEXTURE_UNIT, GLOW_PARALLAX_TEXTURE_UNIT, TINT_DETAIL_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, ARCH_SEQUENCE_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, PICK_TEXTURE_UNIT, BONE_TEXTURE_UNIT, 2, 1, 0):
             self._shading.glActiveTexture(self.GL_TEXTURE0 + unit)
             self._gl.glBindTexture(self.GL_TEXTURE_2D, 0)
 
     def _apply_material(self, u, entry, level):
         """Bind one material's textures and set its uniforms on the current opaque program."""
-        from rc2016.viewer.shading import TINT_DETAIL_TEXTURE_UNIT, PICK_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, ARCH_SEQUENCE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT, GLOW_PARALLAX_TEXTURE_UNIT
+        from rc2016.viewer.shading import TINT_DETAIL_TEXTURE_UNIT, PICK_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, ARCH_SEQUENCE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT, GLOW_PARALLAX_TEXTURE_UNIT, PARALLAX_HEIGHT_TEXTURE_UNIT
         gl, sh = self._gl, self._shading
-        for unit, role, has, srgb in ((GLOW_PARALLAX_TEXTURE_UNIT, "_glow_parallax", "uHasGlowParallax", "uSrgbGlowParallax"), (TINT_DETAIL_TEXTURE_UNIT, "_tint_detail", "uHasTintDetail", "uSrgbTintDetail"), (0, "_c", "uHasC", "uSrgbC"), (1, "_g", "uHasG", "uSrgbG"), (2, "_n", "uHasN", None),
+        for unit, role, has, srgb in ((PARALLAX_HEIGHT_TEXTURE_UNIT, "_parallax_height", "uHasParallaxHeight", None), (GLOW_PARALLAX_TEXTURE_UNIT, "_glow_parallax", "uHasGlowParallax", "uSrgbGlowParallax"), (TINT_DETAIL_TEXTURE_UNIT, "_tint_detail", "uHasTintDetail", "uSrgbTintDetail"), (0, "_c", "uHasC", "uSrgbC"), (1, "_g", "uHasG", "uSrgbG"), (2, "_n", "uHasN", None),
                                       (PICK_TEXTURE_UNIT, "_pick", "uHasP", "uSrgbP"),
                                       (TINT_MASK_TEXTURE_UNIT, "_h", "uHasH", None), (ARCH_SEQUENCE_TEXTURE_UNIT, "_sequence", "uHasSequence", None), (BNG_DETAIL_TEXTURE_UNIT, "_bng_detail", "uHasBngDetail", None),
                                       (VEHICLE_PALETTE_TEXTURE_UNIT, "_vehicle_p2", "uHasVehicleP2", "uSrgbVehicleP2")):
@@ -865,6 +876,18 @@ class ModelViewport(_TkFrame):
             sh.glUniform1i(u[has], 1 if texture else 0)
             if srgb:
                 sh.glUniform1i(u[srgb], 1 if texture and texture[1] else 0)
+        pom = entry.get('parallax') or {}
+        supported = getattr(sh, 'supports_parallax', True)
+        valid = parallax_preview_parameters_valid(pom)
+        if pom and not supported:
+            self.shading_warning = 'Parallax unavailable: explicit texture gradients require GL_ARB_shader_texture_lod'
+        elif pom and not valid:
+            self.shading_warning = 'Parallax unavailable: nonfinite parameters or invalid signed step endpoints; preview guard, native behavior unproven'
+        sh.glUniform1i(u['uParallax'], 1 if pom and level == 2 and supported and valid else 0)
+        sh.glUniform1i(u['uParallaxNormal'], 1 if entry.get('parallax_normal') else 0)
+        sh.glUniform1i(u['uTexParallaxHeight'], PARALLAX_HEIGHT_TEXTURE_UNIT)
+        sh.glUniform4f(u['uParallaxP'], *(float((pom if valid else {}).get(k,d)) for k,d in
+            (('height_scale',0.),('steps_front',16.),('steps_grazing',64.),('fade',1.))))
         rock = entry.get('rock_blend') or {}
         volume = entry.get('_rock_volume')
         sh.glActiveTexture(self.GL_TEXTURE0 + 15); gl.glBindTexture(0x806F, volume[0] if volume else 0)

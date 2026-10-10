@@ -975,6 +975,7 @@ class AssetBrowser:
                         self.source_text=source_details(payload,getattr(self.selected_record,'used_by','') or '')
                         self._render_details()
                         if self.viewport.shading_error:self.model_info.set(self.model_info.get()+'\n'+self.viewport.shading_error)
+                        if getattr(self.viewport,'shading_warning',''):self.model_info.set(self.model_info.get()+'\n'+self.viewport.shading_warning)
                     elif kind=='animation':self._start_animation(payload)
                     elif kind=='clip_list':self._apply_clip_list(payload)
                     elif kind=='artifact':self._open(payload)
