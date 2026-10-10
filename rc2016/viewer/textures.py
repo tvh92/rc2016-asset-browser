@@ -125,7 +125,13 @@ GRAPH_RULES = (
      dict(g_mode='grey', self_lit_key=None, rock_blend=True)),
     # FE32FE79/B01E7CB2 cached deferred outputs; Materials/Foliage/FOLIAGE_DECODE.md.
     ('materialgraph/global/basic_foliage/basic_foliage.',
-     dict(g_mode='grey', self_lit_key=None, foliage=True)),
+     dict(g_mode='grey', self_lit_key=None, foliage=True, alpha_cut=True)),
+    # Tree leaf graphs: alpha-tested deferred writers (opaque, two-sided materials) whose `_c` alpha is
+    # coverage only. Everything else keeps the generic reading: their g/n/cma/cmb terms are not decoded.
+    ('materialgraph/environment/global/plant/gbl_plant_tree_foliage_transparent_01/rp_nov_plant_tree_foliage_transparent.',
+     dict(alpha_cut=True)),
+    ('materialgraph/environment/global/plant/gbl_plant_tree_foliage_transparent_01/gbl_plant_tree_foliage_transparent_01.',
+     dict(alpha_cut=True)),
     # Cached forward 8716DC7A at t=0; Materials/StaleSelfLitKeys/STALE_SELF_LIT_KEYS_DECODE.md.
     ('materialgraph/environment/nebula/ambient/neb_amb_screen_01/mo_neb_amb_screen_01.',
      dict(self_lit_key=None, screen=True)),
@@ -140,6 +146,12 @@ GRAPH_RULES = (
     ('materialgraph/character/npc/npc_qwark_robot_bulb/npc_qwark_robot_bulb.',
      dict(self_lit_key=None, facing_glow=True)),
 )
+# Leaf cut-out (alpha test). The deferred foliage writers kill a fragment when its coverage, `_c`
+# alpha (basic_foliage FE32FE79/B01E7CB2; the tree graphs' 0476D929/6F0C1A0C), is below the
+# interpolated vertex output attr0.z. The vertex shaders read attr0.z from the engine's per-instance
+# record (byte 268 of a 272-byte record), which is runtime data, not a graph or material constant.
+# This default is therefore INFERRED, the conventional half coverage; it is not decoded game data.
+FOLIAGE_ALPHA_CUTOFF = 0.5
 # Texture slot tables: 16-byte rows (path string offset u32, flags u32, slot hash u64), stored twice.
 GRAPH_SLOT_SECTION, MATERIAL_SLOT_SECTION = 0x1CAFE804, 0xB967FF7A
 # Blend/cull per material: .material section 0xE1275683, u32 at byte 16 (rc2016.pipeline.render_state).
@@ -320,6 +332,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
             if path: result[role] = path
             else: result.pop(role, None)
         result['foliage'] = True
+    if rule.get('alpha_cut'):
+        result['alpha_cut'] = FOLIAGE_ALPHA_CUTOFF
     if rule.get('parallax_outputs'):
         result['parallax_normal'] = True
         # api5 is a separate height texture, sometimes also named _c; use C/G/N slot identities.
@@ -814,6 +828,8 @@ def material_textures(archive, materials: list[dict], cache: dict) -> dict[int, 
                 entry[key] = paths[key]
         if paths.get('foliage'):
             entry['foliage'] = True
+        if paths.get('alpha_cut'):
+            entry['alpha_cut'] = float(paths['alpha_cut'])
         if 'za_fresnel_power' in paths:
             entry['za_fresnel_power'] = paths['za_fresnel_power']
         for role in (*ROLES, *(('_parallax_height',) if paths.get('parallax') else ()), *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ())):

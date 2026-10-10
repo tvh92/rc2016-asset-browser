@@ -170,6 +170,7 @@ uniform vec4 uMetalP; // tint power, rim-gloss power, C texture scale, normal st
 uniform bool uParallax; uniform bool uParallaxNormal; uniform bool uHasParallaxHeight;
 uniform sampler2D uTexParallaxHeight; uniform vec4 uParallaxP; // H, face/grazing steps, fade
 uniform bool uFoliage; // FE32FE79/1E0AE45A close-range normal z weight
+uniform float uAlphaCut; // leaf cut-out: discard when _c.a < threshold (0 = off); threshold inferred, see textures.FOLIAGE_ALPHA_CUTOFF
 uniform bool uZaFresnel; uniform float uZaFresnelPower; // za_basic_normal_gloss geometry-normal rim suppression
 uniform bool uSelfLitG;       // self-lit mask from _g.B instead of _c.a
 uniform float uK;
@@ -327,6 +328,7 @@ void main() {
         }
     }
     vec4 c = uHasC ? texture2D(uTexC, materialUV) : vec4(uColor, 0.0);
+    if (uHasC && c.a < uAlphaCut) discard;
     vec3 albedo = (uMode >= 1 && uHasC) ? (uSrgbC ? linear(c.rgb) : c.rgb) : linear(uColor);
     if (uMode >= 1 && uFacingGlow) albedo = vec3(1.0); // 0CD2AAFB: no albedo input, v76-v78 = 1
     if (uMode == 2 && uPuddles && uHasPuddleAtlas) {
@@ -656,7 +658,7 @@ OPAQUE_UNIFORMS = (
     "uSrgbC", "uSrgbG", "uGMode", "uSpecScale", "uGlossScale", "uSelfLitG", "uK",
     "uTwoColorMetal", "uMetalDiffuseA", "uMetalDiffuseB", "uMetalSpecA", "uMetalSpecB", "uMetalP",
     "uParallax", "uParallaxNormal", "uHasParallaxHeight", "uTexParallaxHeight", "uParallaxP",
-    "uFoliage",
+    "uFoliage", "uAlphaCut",
     "uZaFresnel", "uZaFresnelPower",
     "uGlowKind", "uGlowColour", "uGlowP", "uTexGlowParallax", "uHasGlowParallax", "uSrgbGlowParallax", "uSrgbGlowMask",
     "uVehicle", "uTexVehicleP2", "uHasVehicleP2", "uSrgbVehicleP2", "uVehicleA", "uVehicleB", "uVehicleP",
@@ -694,10 +696,16 @@ void main() {
 }
 """
 # Level viewer click-to-identify: each model drawn in a flat id colour into the back buffer.
+# Leaf cut-out materials sample `_c` alpha so a click passes through their holes (uPickCut = 0: off).
 PICK_FRAGMENT = """
 #version 120
 uniform vec3 uPickColour;
-void main() { gl_FragColor = vec4(uPickColour, 1.0); }
+uniform sampler2D uTexC; uniform float uPickCut;
+varying vec2 vUV;
+void main() {
+    if (uPickCut > 0.0 && texture2D(uTexC, vUV).a < uPickCut) discard;
+    gl_FragColor = vec4(uPickColour, 1.0);
+}
 """
 
 
@@ -806,5 +814,5 @@ class Shading:
     def pick_program(self):
         """Level viewer click-to-identify: INSTANCED_VERTEX writing a flat id colour (uPickColour)."""
         if "pick" not in self.programs:
-            self.programs["pick"] = self._link(INSTANCED_VERTEX, PICK_FRAGMENT, INSTANCE_ATTRIBUTES, ("uPickColour",))
+            self.programs["pick"] = self._link(INSTANCED_VERTEX, PICK_FRAGMENT, INSTANCE_ATTRIBUTES, ("uPickColour", "uTexC", "uPickCut"))
         return self.programs["pick"]
