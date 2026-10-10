@@ -152,6 +152,37 @@ class TexturePreviewTests(unittest.TestCase):
         self.assertEqual(paths['g_mode'], 'grey'); self.assertEqual(paths['k'], 0.0)
         self.assertEqual(paths['spec'], 0.0); self.assertEqual(paths['gloss'], 1.0)
         self.assertTrue(entry['foliage']); self.assertEqual(entry['_g']['path'], paths['_g'])
+        self.assertEqual(paths['alpha_cut'], tp.FOLIAGE_ALPHA_CUTOFF)
+        self.assertEqual(entry['alpha_cut'], tp.FOLIAGE_ALPHA_CUTOFF)
+
+    def test_leaf_cutout_is_exact_per_graph_and_off_for_other_graphs(self):
+        base = 'materialgraph/environment/global/plant/gbl_plant_tree_foliage_transparent_01/'
+        graphs = (base + 'rp_nov_plant_tree_foliage_transparent.materialgraph',
+                  base + 'gbl_plant_tree_foliage_transparent_01.materialgraph',
+                  'materialgraph/global/basic_foliage/basic_foliage.materialgraph')
+        for graph in graphs:
+            with self.subTest(graph=graph):
+                self.assertTrue(tp._graph_rule([graph])['alpha_cut'])
+                self.assertEqual(tp._graph_rule([graph.replace('.materialgraph', '_extra.materialgraph')]), {})
+        # The tree graphs only cut out; their g/n/cma/cmb terms keep the generic reading.
+        self.assertEqual(tp._graph_rule([graphs[0]]), dict(alpha_cut=True))
+        self.assertEqual(tp._graph_rule([graphs[1]]), dict(alpha_cut=True))
+        # The split-face sibling and other foliage graphs have no decoded writer here.
+        self.assertEqual(tp._graph_rule(['materialgraph/global/basic_foliage_split_face_texture/basic_foliage_split_face_texture.materialgraph']), {})
+        self.assertEqual(tp.FOLIAGE_ALPHA_CUTOFF, 0.5)   # inferred default, see the constant's comment
+
+    def test_tree_material_reads_alpha_cut_without_changing_generic_roles(self):
+        from unittest.mock import patch
+        graph = 'materialgraph/environment/global/plant/gbl_plant_tree_foliage_transparent_01/rp_nov_plant_tree_foliage_transparent.materialgraph'
+        blob = dat1(['t/leaf_c.texture', 't/leaf_n.texture'], lambda at: [])
+        material = dat1([graph, 't/leaf_c.texture'], lambda at: [(tp.MATERIAL_FLAGS_SECTION, flags(0x23C))])
+        archive = FakeArchive({'m/leaf.material': ('material', material), graph: ('materialgraph', blob)})
+        with patch.object(tp, 'load_texture', side_effect=lambda _, p: dict(path=p, pixels=b'', format=61)):
+            paths = tp.material_texture_paths(archive, 'm/leaf.material')
+            entry = tp.material_textures(archive, [dict(index=0, path='m/leaf.material')], {})[0]
+        self.assertEqual(paths['alpha_cut'], 0.5); self.assertEqual(entry['alpha_cut'], 0.5)
+        self.assertEqual(paths['g_mode'], 'colored'); self.assertNotIn('foliage', paths)
+        self.assertEqual(tp.blend_state(0x23C), dict(blend='opaque', two_sided=True))   # opaque, two-sided: alpha test, no blend
 
     def test_glow_mask_graphs_are_distinct_and_bind_serialized_slots(self):
         from unittest.mock import patch

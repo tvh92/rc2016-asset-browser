@@ -6,6 +6,26 @@ from rc2016.viewer.viewport import (MeshPayloadError, back_to_front, batch_centr
                        perspective_matrix, split_forward, validate_mesh)
 
 
+class LeafCutoutShaderTests(unittest.TestCase):
+    def test_fragment_and_pick_shaders_discard_below_the_threshold_and_the_uniforms_are_linked(self):
+        from rc2016.viewer import shading
+        self.assertIn("if (uHasC && c.a < uAlphaCut) discard;", shading.FRAGMENT)
+        self.assertIn("uAlphaCut", shading.OPAQUE_UNIFORMS)
+        # The cut-out sits right after `_c` is sampled, before any lighting term reads it.
+        self.assertLess(shading.FRAGMENT.index("c.a < uAlphaCut"), shading.FRAGMENT.index("vec3 albedo ="))
+        self.assertIn("texture2D(uTexC, vUV).a < uPickCut", shading.PICK_FRAGMENT)
+        self.assertIn("discard", shading.PICK_FRAGMENT)
+
+    def test_gl_entry_carries_the_cutout(self):
+        from rc2016.viewer.viewport import ModelViewport
+
+        class Upload:
+            def _upload_texture(self, texture): return 5
+        uploaded = ModelViewport._gl_entry(Upload(), dict(alpha_cut=0.5, _c=dict(path='t/leaf_c.texture')), {})
+        self.assertEqual(uploaded['alpha_cut'], 0.5)
+        self.assertNotIn('alpha_cut', ModelViewport._gl_entry(Upload(), dict(_c=dict(path='t/leaf_c.texture')), {}))
+
+
 class MeshValidationTests(unittest.TestCase):
     def test_accepts_flat_or_row_vertices_and_builds_vertex_normals(self):
         payload = {"vertices": [0, 0, 0, 1, 0, 0, 0, 1, 0], "triangles": [[0, 1, 2]]}
