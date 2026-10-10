@@ -63,6 +63,7 @@ def main(argv=None):
     parser.add_argument("--camera", type=lambda s: tuple(float(x) for x in s.split(",")))
     parser.add_argument("--no-material-overrides", action="store_true",
                         help="draw instances without their per-instance material overrides")
+    parser.add_argument("--no-sky", action="store_true", help="draw the flat background instead of the level sky")
     args = parser.parse_args(argv)
 
     import tkinter as tk
@@ -92,7 +93,7 @@ def main(argv=None):
 
     panel = LevelPanel(root, tk, ttk, source.get, level=args.level or settings["level"], mode=args.mode,
                        zone_filter=args.zones, on_done=finished if (args.capture or args.camera) else None,
-                       material_overrides=not args.no_material_overrides)
+                       material_overrides=not args.no_material_overrides, sky=not args.no_sky)
     panel.frame.pack(side="top", fill="both", expand=True)
 
     def close():

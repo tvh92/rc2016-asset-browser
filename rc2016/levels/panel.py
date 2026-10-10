@@ -43,9 +43,36 @@ def override_summary(overrides):
             + (f" ({skipped:,} entries not applied)" if skipped else ""))
 
 
+def load_sky(archive, zones):
+    """level_sky for the level's full zone list, with its dome and noise textures loaded, or None."""
+    from rc2016.levels.sky import level_sky
+    from rc2016.viewer.textures import load_texture
+    sky = level_sky(archive, zones)
+    if sky:
+        sky["textures"] = {}
+        for path in {p for dome in sky["domes"] for p in (dome["dome_texture"], dome["noise_texture"])}:
+            try:
+                sky["textures"][path] = load_texture(archive, path)
+            except (ValueError, KeyError, OSError) as exc:
+                sky["textures"][path] = None
+                sky["notes"].append(f"{path}: {exc}")
+    return sky
+
+
+def sky_summary(sky):
+    """Status-line text for a level_sky result."""
+    if sky is None:
+        return "no sky"
+    parts = [f"{len(sky['domes'])} cloud dome{'s' * (len(sky['domes']) != 1)}"]
+    if sky["unsupported"]:
+        parts.append(f"{len(sky['unsupported'])} sky mesh{'es' * (len(sky['unsupported']) != 1)} not ported")
+    parts.append("captured clear sky" if sky["clear_sky"] else "flat background")
+    return "sky: " + ", ".join(parts)
+
+
 def load_level(get_archive, level_path, out, cancel, zone_filter=None):
     """Background loader. Posts, in order: ('zones', paths), ('zone', scene summary) per zone,
-    ('bounds', native bounds), ('model', path, geometry, hidden, [(zone, groups)]) per model with
+    ('bounds', native bounds), ('sky', level_sky result or None) for a .level, ('model', path, geometry, hidden, [(zone, groups)]) per model with
     groups keyed by (mirrored, effective material changes), ('overrides', running totals) after each
     model, ('materials', {path: entry}) batches, then ('done', timings). Errors: ('error', what, message)
     or ('fatal', message)."""
@@ -56,6 +83,7 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
     except Exception as exc:
         out.put(("fatal", f"{type(exc).__name__}: {exc}"))
         return
+    all_zones = zones
     if zone_filter:
         zones = [z for z in zones if level_scene.zone_label(z) in zone_filter or z in zone_filter]
     out.put(("zones", zones))
@@ -75,6 +103,11 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
             entry["count"] += model["count"]
             entry["zones"].append((zone, model["groups"]))
     out.put(("bounds", level_scene.core_bounds(points)))
+    if level_path.endswith(".level"):
+        try:
+            out.put(("sky", load_sky(archive, all_zones)))
+        except Exception as exc:
+            out.put(("error", "sky", f"{type(exc).__name__}: {exc}"))
     geometries, overrides = [], dict(outcomes=Counter(), instances=0, models=set())
     for path, entry in sorted(models.items(), key=lambda item: -item[1]["count"]):
         if cancel.is_set():
@@ -131,7 +164,7 @@ class LevelPanel:
     """Tk panel; ``source_root`` is a callable returning the current extracted source root."""
 
     def __init__(self, parent, tk, ttk, source_root, level=None, mode="Shaded", zone_filter=None, on_done=None,
-                 list_parent=None, on_open_model=None, material_overrides=True):
+                 list_parent=None, on_open_model=None, material_overrides=True, sky=True):
         """``list_parent``: a separate frame for the level list (the asset browser's left pane);
         by default the list sits at the top of the panel's own side column (standalone window).
         ``on_open_model(model path)``: open a picked model elsewhere (the browser's Model tab)."""
@@ -178,6 +211,9 @@ class LevelPanel:
         self.overrides_var = tk.BooleanVar(value=material_overrides)
         ttk.Checkbutton(toggles, text="Instance material overrides", variable=self.overrides_var,
                         command=lambda: self.view.set_material_overrides(self.overrides_var.get())).pack(anchor="w")
+        self.sky_var = tk.BooleanVar(value=sky)
+        ttk.Checkbutton(toggles, text="Sky (atmosphere cloud dome)", variable=self.sky_var,
+                        command=lambda: self.view.set_show_sky(self.sky_var.get())).pack(anchor="w")
         head = ttk.Frame(side); head.grid(row=6, column=0, sticky="ew", pady=(8, 2))
         ttk.Label(head, text="Zones").pack(side="left")
         ttk.Button(head, text="None", width=5, command=lambda: self._set_all(False)).pack(side="right")
@@ -197,6 +233,7 @@ class LevelPanel:
         self.view = LevelViewport(main, width=420, height=300)
         self.view.grid(row=0, column=0, sticky="nsew")
         self.view.material_overrides = bool(material_overrides)
+        self.view.show_sky = bool(sky)
         self.view.set_mode(mode)
         self.view.clear("Choose a level and click Load.")
         self.view.on_stats = self._show_stats
@@ -380,6 +417,11 @@ class LevelPanel:
             for zone, groups in zones:
                 self.view.add_instances(zone, path, groups)
             p["models"] += 1
+        elif kind == "sky":
+            self.view.set_sky(item[1])
+            p["sky"] = sky_summary(item[1])
+            for unsupported in (item[1] or {}).get("unsupported", ()):
+                print("level viewer: sky:", unsupported["model"], "-", unsupported["reason"], file=sys.stderr)
         elif kind == "overrides":
             p["overrides"] = item[1]
         elif kind == "materials":
@@ -408,9 +450,10 @@ class LevelPanel:
             return
         errors = f" · {len(p['errors'])} failed" if p.get("errors") else ""
         overrides = override_summary(p.get("overrides"))
+        sky = f" · {p['sky']}" if p.get("sky") else ""
         self.status_var.set(
             f"{p['state']} · {p['zones_with_models']}/{p['zones']} zones with models · {p['models']} models{errors} · "
-            f"{stats['materials']} materials · {stats['textures']} textures{overrides} · showing {stats['instances']:,} instances, "
+            f"{stats['materials']} materials · {stats['textures']} textures{overrides}{sky} · showing {stats['instances']:,} instances, "
             f"{stats['triangles']:,} triangles in {stats['draws']} draws · {stats['draw_ms']:.1f} ms/frame · "
             f"speed {stats['speed']:.1f}/s")
 

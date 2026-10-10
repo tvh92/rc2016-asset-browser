@@ -9,6 +9,7 @@ from __future__ import annotations
 import ctypes
 import math
 import struct
+import sys
 import time
 import zlib
 
@@ -184,6 +185,9 @@ class LevelViewport(ModelViewport):
         self._draw_list = None
         self.show_hidden = False
         self.material_overrides = True   # per-instance material overrides from the zone records
+        self.show_sky = True
+        self._sky = None           # rc2016.levels.sky.level_sky result plus loaded textures
+        self._sky_gl = None        # uploaded sky buffers and textures
         self.on_stats = None
         self.on_pick = None        # called with a model path (or None) after a click
         self.on_open = None        # called with a model path after a double click on it
@@ -272,6 +276,16 @@ class LevelViewport(ModelViewport):
         self._draw_list = None
         self._draw()
 
+    def set_sky(self, sky):
+        """The level's sky (sky.level_sky with a 'textures' {path: load_texture} map), or None."""
+        self._release_sky()
+        self._sky = sky
+        self._schedule_draw()
+
+    def set_show_sky(self, show):
+        self.show_sky = bool(show)
+        self._draw()
+
     def _visible_groups(self, model):
         if model["hidden"] and not self.show_hidden:
             return ()
@@ -294,6 +308,8 @@ class LevelViewport(ModelViewport):
             textures = [v[0] for v in self._texture_names.values() if v]
             if textures:
                 self._gl.glDeleteTextures(len(textures), (ctypes.c_uint * len(textures))(*textures))
+        self._release_sky()
+        self._sky = None
         self._models, self._materials, self._texture_names, self._draw_list = {}, {}, {}, None
         self._material_ops = {}
         self._hidden_zones = set()
@@ -436,6 +452,7 @@ class LevelViewport(ModelViewport):
         gl.glMatrixMode(self.GL_MODELVIEW)
         gl.glLoadMatrixf((ctypes.c_float * 16)(*view_matrix(self._eye, self._yaw, self._pitch)))
         gl.glMultMatrixf((ctypes.c_float * 16)(*BASIS))
+        self._near = near
 
     def _draw(self):
         if not self._make_current():
@@ -452,6 +469,13 @@ class LevelViewport(ModelViewport):
             self._setup_camera(width, height)
             if self._draw_list is None:
                 self._build_draw_list()
+            if self._sky and self.show_sky and self._mode in ("Shaded", "Textured"):
+                try:
+                    self._draw_sky()
+                except Exception as exc:   # the level still draws on the flat background
+                    print(f"level viewer: sky failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+                    self._release_sky()
+                    self._sky = None
             try:
                 self._draw_level()
             except Exception as exc:   # report instead of failing every Tk repaint
@@ -622,6 +646,107 @@ class LevelViewport(ModelViewport):
                 sh.glUniform4f(u[name], *(float(x) for x in vector))
             self._draw_span(model, span, groups)
         gl.glDepthMask(1); gl.glDisable(self.GL_BLEND); gl.glDisable(self.GL_CULL_FACE)
+
+    # Sky ------------------------------------------------------------------------------------
+    _near = 0.05
+    SKY_CUBE = (-1, -1, -1, 1, -1, -1, 1, 1, -1, -1, 1, -1, -1, -1, 1, 1, -1, 1, 1, 1, 1, -1, 1, 1)
+    SKY_CUBE_INDICES = (0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 4, 5, 0, 5, 1,
+                        3, 2, 6, 3, 6, 7, 0, 3, 7, 0, 7, 4, 1, 5, 6, 1, 6, 2)
+
+    def _release_sky(self):
+        record, self._sky_gl = self._sky_gl, None
+        if not record or not self._make_current():
+            return
+        buffers = [name for dome in record["domes"] for name in dome["buffers"]]
+        if buffers:
+            self._ext["glDeleteBuffers"](len(buffers), (ctypes.c_uint * len(buffers))(*buffers))
+        textures = [name for name in record["textures"].values() if name]
+        if textures:
+            self._gl.glDeleteTextures(len(textures), (ctypes.c_uint * len(textures))(*textures))
+
+    def _upload_sky(self):
+        """Dome vertex/UV/index buffers and the dome and noise textures (once per path)."""
+        from array import array
+        sky = self._sky
+        record = dict(domes=[], textures={},
+                      cube=((ctypes.c_float * 24)(*self.SKY_CUBE), (ctypes.c_uint * 36)(*self.SKY_CUBE_INDICES)))
+        for path, texture in sky.get("textures", {}).items():
+            record["textures"][path] = self._upload_texture(texture) if texture else 0
+        self._gl.glBindTexture(self.GL_TEXTURE_2D, 0)
+        for dome in sky["domes"]:
+            geometry = dome["geometry"]
+            if not (record["textures"].get(dome["dome_texture"]) and record["textures"].get(dome["noise_texture"])):
+                continue   # a texture the driver rejected: draw the clear sky only
+            buffers = [self._buffer(self.GL_ARRAY_BUFFER, geometry["positions"]),
+                       self._buffer(self.GL_ARRAY_BUFFER, geometry["uvs"]),
+                       self._buffer(self.GL_ELEMENT_ARRAY_BUFFER, array("I", geometry["indices"]))]
+            self._ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0); self._ext["glBindBuffer"](self.GL_ELEMENT_ARRAY_BUFFER, 0)
+            srgb = {path: bool((sky["textures"].get(path) or {}).get("srgb")) for path in (dome["dome_texture"], dome["noise_texture"])}
+            record["domes"].append(dict(dome, buffers=buffers, scale=1.0 / max(geometry["radius"], 1e-6), srgb=srgb))
+        self._sky_gl = record
+
+    def _draw_sky(self):
+        """Clear sky and cloud domes around the camera: camera rotation only, no depth test or write,
+        drawn first so the level covers them. Colour goes through the level's tonemap (display())."""
+        if self._sky_gl is None:
+            self._upload_sky()
+        gl, sh, ext, record, sky = self._gl, self._shading, self._ext, self._sky_gl, self._sky
+        program, u = sh.sky_program()
+        sh.glUseProgram(program)
+        self._apply_lighting(u)                       # tonemap and exposure; reads the camera modelview
+        gl.glScalef.argtypes = [ctypes.c_float] * 3
+        gl.glBlendFunc.argtypes = [ctypes.c_uint, ctypes.c_uint]; gl.glDepthMask.argtypes = [ctypes.c_ubyte]
+        radius = math.sqrt(self._near * self._far)    # anywhere between the planes: no depth test
+        gl.glPushMatrix()
+        gl.glLoadMatrixf((ctypes.c_float * 16)(*view_matrix((0.0, 0.0, 0.0), self._yaw, self._pitch)))
+        gl.glMultMatrixf((ctypes.c_float * 16)(*BASIS))
+        gl.glDisable(self.GL_DEPTH_TEST); gl.glDepthMask(0); gl.glDisable(self.GL_CULL_FACE)
+        ext["glBindVertexArray"](0)
+        gl.glEnableClientState(self.GL_VERTEX_ARRAY)
+        try:
+            if sky.get("clear_sky"):
+                from rc2016.levels.sky import PROFILE_STEP
+                profile = [float(x) for colour in sky["clear_sky"] for x in colour]
+                sh.glUniform1i(u["uSkyMode"], 0)
+                sh.glUniform3fv(u["uProfile"], len(profile) // 3, (ctypes.c_float * len(profile))(*profile))
+                sh.glUniform1f(u["uProfileStep"], PROFILE_STEP)
+                gl.glPushMatrix(); gl.glScalef(radius, radius, radius)
+                vertices, indices = record["cube"]
+                gl.glVertexPointer(3, self.GL_FLOAT, 0, ctypes.cast(vertices, ctypes.c_void_p))
+                gl.glDrawElements(self.GL_TRIANGLES, 36, self.GL_UNSIGNED_INT, ctypes.cast(indices, ctypes.c_void_p))
+                gl.glPopMatrix()
+            if record["domes"]:
+                sh.glUniform1i(u["uSkyMode"], 1)
+                sh.glUniform3f(u["uSunRay"], *(float(x) for x in sky["sun_ray"]))
+                sh.glUniform1i(u["uDome"], 0); sh.glUniform1i(u["uNoise"], 1)
+                gl.glEnable(self.GL_BLEND); gl.glBlendFunc(self.GL_SRC_ALPHA, self.GL_ONE_MINUS_SRC_ALPHA)
+                gl.glEnableClientState(self.GL_TEXTURE_COORD_ARRAY)
+                for dome in record["domes"]:
+                    constants = list(dome["constants"]) + [0.0]
+                    for i in range(6):
+                        sh.glUniform4f(u[f"uP[{i}]"], *constants[4 * i:4 * i + 4])
+                    sh.glUniform1i(u["uDomeSrgb"], dome["srgb"][dome["dome_texture"]])
+                    sh.glUniform1i(u["uNoiseSrgb"], dome["srgb"][dome["noise_texture"]])
+                    for unit, path in ((0, dome["dome_texture"]), (1, dome["noise_texture"])):
+                        sh.glActiveTexture(self.GL_TEXTURE0 + unit)
+                        gl.glBindTexture(self.GL_TEXTURE_2D, record["textures"][path])
+                    vbo, tbo, ibo = dome["buffers"]
+                    ext["glBindBuffer"](self.GL_ARRAY_BUFFER, vbo); gl.glVertexPointer(3, self.GL_FLOAT, 0, None)
+                    ext["glBindBuffer"](self.GL_ARRAY_BUFFER, tbo); gl.glTexCoordPointer(2, self.GL_FLOAT, 0, None)
+                    ext["glBindBuffer"](self.GL_ELEMENT_ARRAY_BUFFER, ibo)
+                    gl.glPushMatrix(); gl.glScalef(*(radius * dome["scale"],) * 3)
+                    for first, count in dome["spans"]:
+                        gl.glDrawElements(self.GL_TRIANGLES, count * 3, self.GL_UNSIGNED_INT, ctypes.c_void_p(first * 12))
+                    gl.glPopMatrix()
+        finally:
+            ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0); ext["glBindBuffer"](self.GL_ELEMENT_ARRAY_BUFFER, 0)
+            gl.glDisableClientState(self.GL_TEXTURE_COORD_ARRAY); gl.glDisableClientState(self.GL_VERTEX_ARRAY)
+            for unit in (1, 0):
+                sh.glActiveTexture(self.GL_TEXTURE0 + unit)
+                gl.glBindTexture(self.GL_TEXTURE_2D, 0)
+            gl.glDisable(self.GL_BLEND); gl.glDepthMask(1); gl.glEnable(self.GL_DEPTH_TEST)
+            gl.glPopMatrix()
+            sh.glUseProgram(0)
 
     # Picking -------------------------------------------------------------------------------
     def pick(self, x, y):

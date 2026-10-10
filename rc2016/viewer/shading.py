@@ -699,6 +699,55 @@ PICK_FRAGMENT = """
 uniform vec3 uPickColour;
 void main() { gl_FragColor = vec4(uPickColour, 1.0); }
 """
+# Level sky (rc2016/levels/sky.py), drawn around the camera before the level: native Y-up
+# positions (the modelview holds only the camera rotation), DirectX-convention UV0.
+SKY_VERTEX = """
+#version 120
+varying vec3 vDir; varying vec2 vUV;
+void main() { vDir = gl_Vertex.xyz; vUV = gl_MultiTexCoord0.xy; gl_Position = ftransform(); }
+"""
+# uSkyMode 0: clear sky, colour by elevation from the profile (uProfile, uProfileStep degrees per bin).
+# uSkyMode 1: port of the Rk_Sky_Dome cloud fragment shader 0x8d3c81d0. uP[0..5] hold its constant
+# dwords 0-22; uSunRay is the atmosphere's sun ray (native). Engine inputs use presentation values:
+# time 0, alpha multiplier 1, alpha-test threshold 0, no fog. The stars term (dword 22) is not ported.
+SKY_FRAGMENT = """
+#version 120
+const float PI = 3.14159265;
+vec3 linear(vec3 c) { return pow(max(c, 0.0), vec3(2.2)); }
+// @lighting
+varying vec3 vDir; varying vec2 vUV;
+uniform int uSkyMode;
+uniform vec3 uProfile[15]; uniform float uProfileStep;
+uniform sampler2D uDome; uniform sampler2D uNoise; uniform bool uDomeSrgb; uniform bool uNoiseSrgb;
+uniform vec4 uP[6]; uniform vec3 uSunRay;
+float P(int i) { return uP[i / 4][i - 4 * (i / 4)]; }
+vec4 fetch(sampler2D s, vec2 uv, bool srgb) { vec4 c = texture2D(s, uv); return srgb ? vec4(linear(c.rgb), c.a) : c; }
+void main() {
+    vec3 dir = normalize(vDir);
+    if (uSkyMode == 0) {
+        float x = clamp(degrees(asin(clamp(dir.y, -1.0, 1.0))) / uProfileStep - 0.5, 0.0, 14.0);
+        int i = int(floor(x)), j = i < 14 ? i + 1 : 14;
+        gl_FragColor = vec4(display(mix(uProfile[i], uProfile[j], x - float(i))), 1.0);
+        return;
+    }
+    float t = 0.0;
+    float n0 = fetch(uNoise, vec2(26.0 * vUV.x + P(21) * t, 26.0 * vUV.y), uNoiseSrgb).x;
+    vec2 d = vUV + 0.014 * n0;
+    vec4 s3 = fetch(uDome, vec2(0.5 * d.x + P(3) + P(7) * t, d.y), uDomeSrgb);
+    vec4 s4 = fetch(uDome, vec2(0.5 * d.x + P(11) + P(12) * t, d.y), uDomeSrgb);
+    float r = s4.x, g = s4.y, b = s3.z, a = s3.w;
+    float c = max(clamp(-dot(uSunRay, dir), 0.0, 1.0), 1e-6);
+    float e1 = P(15) * (1.26 - 1.2 * P(14)) + 1.2 * P(14);
+    float k = clamp(1.0 - 0.1 * P(19) * P(17) * pow(c, e1) * (g + a), 0.0, 1.0);
+    vec3 A = vec3(P(0), P(1), P(2)), B = vec3(P(4), P(5), P(6)), C = vec3(P(8), P(9), P(10));
+    vec3 rgb = k * (A * ((1.0 - a) * P(16) * r) + C * (P(18) * b) + B * (P(19) * pow(c, P(14)) * (r * (1.0 - a) + b)));
+    float coverage = clamp(P(13) * (P(20) * (1.0 - a) * g + a), 0.0, 1.0);
+    if (coverage + 1e-7 <= 0.0) discard;   // alpha test against the (presentation) threshold 0
+    gl_FragColor = vec4(display(rgb), coverage);
+}
+""".replace("// @lighting\n", LIGHTING)
+SKY_UNIFORMS = (*LIGHTING_UNIFORMS, "uSkyMode", "uProfile", "uProfileStep", "uDome", "uNoise", "uDomeSrgb",
+                "uNoiseSrgb", "uSunRay", *(f"uP[{i}]" for i in range(6)))
 
 
 class ShaderError(RuntimeError):
@@ -802,6 +851,12 @@ class Shading:
             self.programs[key] = self._link(INSTANCED_VERTEX, GLASS_FRAGMENT if glass else FRAGMENT,
                                             INSTANCE_ATTRIBUTES, GLASS_UNIFORMS if glass else OPAQUE_UNIFORMS)
         return self.programs[key]
+
+    def sky_program(self):
+        """Level viewer sky: clear-sky profile and the Rk_Sky_Dome cloud port (SKY_FRAGMENT)."""
+        if "sky" not in self.programs:
+            self.programs["sky"] = self._link(SKY_VERTEX, SKY_FRAGMENT, {}, SKY_UNIFORMS)
+        return self.programs["sky"]
 
     def pick_program(self):
         """Level viewer click-to-identify: INSTANCED_VERTEX writing a flat id colour (uPickColour)."""
