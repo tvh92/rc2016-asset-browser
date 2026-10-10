@@ -136,10 +136,23 @@ GRAPH_RULES = (
     # DB75867B forward terminal, explicit viewer leaves; Materials/GroundPuddles/GROUND_PUDDLES_DECODE.md.
     ('materialgraph/environment/kalebo/jn_ground_puddles.',
      dict(g_mode='grey', self_lit_key=None, puddles=True)),
+    # Water PREVIEW, not a decode (family prefix, so rule coverage counts it as a fallback). The colour
+    # writers f4d47ece/5476807b (light loops, 63 samples) are not translated. Decoded: the alpha-over
+    # state, the textures by slot (water_tile_01n/02n), and from the normal pre-pass b9a5ef0f the
+    # world-planar UV (native x, z) scale literals of the two tiles. Body colour is key 0x1DAF77B8,
+    # an inferred role; opacity and gloss are presentation values (WATER_PRESENTATION).
+    ('materialgraph/visualeffect/environment/pokitaru/unique/pok_uniq_water/',
+     dict(forward='water', slots={'_n': 0x49A7866B69E7942C, '_pick': 0x49A7866B0D86F9E5}, params=(
+         ('body', 0x1DAF77B8, 3),))),
     # Forward colour pass 0CD2AAFB rel 12552-12672: white base + red facing glow; Materials/QwarkBulb/README.md.
     ('materialgraph/character/npc/npc_qwark_robot_bulb/npc_qwark_robot_bulb.',
      dict(self_lit_key=None, facing_glow=True)),
 )
+# Water preview values that are not decoded (labelled presentation): opacity at normal incidence
+# (Fresnel raises it to 1 at grazing angles), F0 0.02 (water, IOR 1.33), gloss of the reflection.
+# The tile UV transforms are the pre-pass b9a5ef0f literals at time 0.
+WATER_PRESENTATION = dict(opacity=0.8, f0=0.02, gloss=0.9, normal_strength=0.5,
+                          uv_a=(0.095, 0.105, 0.248, 0.613), uv_b=(0.105, 0.095, 0.0, 0.0))
 # Texture slot tables: 16-byte rows (path string offset u32, flags u32, slot hash u64), stored twice.
 GRAPH_SLOT_SECTION, MATERIAL_SLOT_SECTION = 0x1CAFE804, 0xB967FF7A
 # Blend/cull per material: .material section 0xE1275683, u32 at byte 16 (rc2016.pipeline.render_state).
@@ -517,6 +530,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
             if path:
                 result[role] = path
         params = {name: vec3(key, (0.0, 0.0, 0.0)) if size == 3 else value(key, 0.0) for name, key, size in rule['params']}
+        if rule['forward'] == 'water':
+            params.update(WATER_PRESENTATION)
         result['forward'] = dict(kind=rule['forward'], params=params, **blend_state(material_flags(data)))
     if rule.get('facing_glow'):
         # No texture, parameter, vertex colour or instance input: albedo is 1.0 and the glow is

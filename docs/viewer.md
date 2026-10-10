@@ -199,6 +199,12 @@ Graphs with a `forward` rule are drawn after every opaque batch with a second pr
 - **`character_glass`** (Blarg visor, writer `34D5B21C`): rim alpha, tinted reflection without Fresnel, and body colour x (1 + environment rim). Parameters are read from the material, else the graph default.
 - **`blarg_saucer_glass`** (saucer dome, writer `FEEC00CE`): the writer binds textures by slot hash, not suffix: the palette `_colorpick_c` and `Patterns_cma` in the `_n` slot. The material's `glass_c`/`glass_g` are never read (Textured mode still shows `glass_c`). Alpha = sat(0.9 + rim), so the dome is at least 90% opaque: dark amber 0.4 x palette x diffuse, grey F0 0.1 reflections, a faint pattern normal.
 - **Approximations:** the engine's light loop, probes, screen-space reflections and fog are replaced by the selected viewer lighting (rig or shared HDRI). Colour is tonemapped per fragment before blending (the game blends HDR before tonemapping). Instance fade is 0 and `attr0.w` is 1.
+- **Water preview** (`pok_uniq_water` folder: `pok_uniq_water`, `rp_pok_uniq_water_biolumenscent`; `uKind` 4) is an approximation, not a decode. The rule is registered as a family prefix, so rule coverage counts it as a fallback.
+  - The colour writers (`f4d47ece`, `5476807b`) are not translated: they have per-light loops, about 13 KB of code and 63 texture samples, and they are not in the shadPS4 cache.
+  - From game data: the alpha-over state; the normal tiles by slot hash (`water_tile_01n` in the `_n` slot, `water_tile_02n` in the `_pick` slot); and, from the normal pre-pass `b9a5ef0f`, the world-planar mapping (native x, z) with its scale and offset literals at time 0. The pre-pass applies them to the single-channel height tiles; reusing them for the normal tiles is an assumption.
+  - The body colour is key `0x1DAF77B8`; its role is inferred.
+  - Presentation values (`WATER_PRESENTATION` in `textures.py`): opacity 0.8, F0 0.02, gloss 0.9, normal strength 0.5. The shading is body colour x viewer diffuse x (1 - Fresnel), plus GGX and environment reflection; alpha is raised to 1 by Fresnel.
+  - Not drawn: scrolling, foam, depth fade, shoreline coverage and refraction.
 - Other forward graphs (VFX, energy, cornea, other glass families) have no rule and draw opaque.
 
 ## Animation playback
@@ -394,6 +400,6 @@ Data-dependent tests read the `RC2016_RESEARCH` environment variable and skip wi
 - The 3D view shows the bind pose or a played clip, not attachments or runtime blending. Lighting is the viewer rig or the shared review HDRI, with no shadows, ambient occlusion or interreflection; neither is the game's lighting. Materials follow the rules above.
 - The rule coverage and Shading filter describe the viewer's rules, not game accuracy.
 - Several graph rules rest on bounded decodes; runtime draw-time inputs (time, instance interpolants, constant-buffer binding) are frozen or unproven.
-- Forward materials other than the character glass, saucer dome, screen, puddle and bulb graphs draw opaque.
+- Forward materials other than the character glass, saucer dome, screen, puddle and bulb graphs, and the water preview, draw opaque.
 - Portable exports approximate materials; they are not game-accurate.
 - Native mouse input and the packaged executable's window have been checked by hand only, not by automated tests.

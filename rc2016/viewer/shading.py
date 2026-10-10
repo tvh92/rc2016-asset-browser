@@ -554,6 +554,9 @@ void main() {
 #   uA = pattern tiling, pattern normal strength, F0 base, gloss; uB.xyz = pick u, rim bias, rim exp.
 #   Pattern (_n slot) and palette (_pick) textures; instance fade b = 0, CB0[95] = attr0.w = 1,
 #   SSR weight 0, both lighting instance flags (32 diffuse, 64 specular) on.
+# uKind 4, water PREVIEW (pok_uniq_water family; textures.WATER_PRESENTATION), not a decode:
+#   uA = body colour, opacity; uB = F0, normal strength, gloss; uC/uD = tile A/B UV scale.xy, offset.zw
+#   applied to native world (x, z). Tiles: _n slot (water_tile_01n) and _pick slot (water_tile_02n).
 GLASS_FRAGMENT = """
 #version 120
 uniform sampler2D uScreenNoiseA; uniform sampler2D uScreenNoiseB;
@@ -563,6 +566,7 @@ uniform vec4 uA; uniform vec4 uB; uniform vec4 uC; uniform vec4 uD;
 uniform sampler2D uTexN; uniform bool uHasN;
 uniform sampler2D uTexP; uniform bool uHasP; uniform bool uSrgbP;
 varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
+varying vec3 vTintWorldPos;
 const float PI = 3.14159265;
 vec3 linear(vec3 c) { return pow(max(c, 0.0), vec3(2.2)); }
 float sat(float x) { return clamp(x, 0.0, 1.0); }
@@ -596,6 +600,26 @@ void main() {
         if (uSrgbP) na = screenLinear(na);
         if (uScreenSrgbB) nb = screenLinear(nb);
         color = (1.0 + mix(uB.w, uA.w, h)) * (1.0 - (1.0-na)*(1.0-nb)*(1.0-tint));
+    } else if (uKind == 4) {
+        vec2 xz = vTintWorldPos.xz;
+        vec2 d = vec2(0.0);
+        if (uHasN) d += texture2D(uTexN, xz * uC.xy + uC.zw).rg * 2.0 - 1.0;
+        if (uHasP) d += texture2D(uTexP, xz * uD.xy + uD.zw).rg * 2.0 - 1.0;
+        d *= uB.y;
+        // Tangent frame of the planar (x, z) mapping from screen derivatives, as for the patterned glass.
+        vec3 dp1 = dFdx(vPos), dp2 = dFdy(vPos); vec2 du1 = dFdx(xz), du2 = dFdy(xz);
+        vec3 p2 = cross(dp2, N), p1 = cross(N, dp1);
+        vec3 T = p2 * du1.x + p1 * du2.x, B = p2 * du1.y + p1 * du2.y;
+        float scale = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-20));
+        N = normalize(N + T * scale * d.x + B * scale * d.y);
+        float a = pow(2.0, -5.5 * sqrt(sat(uB.z)));
+        vec3 F0 = vec3(uB.x), F90 = vec3(1.0);
+        float F = uB.x + (1.0 - uB.x) * pow(1.0 - sat(dot(N, V)), 5.0);
+        vec3 ambient = ambientLight(N);
+        vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
+        vec3 S = ggx(N, V, L1, F0, F90, a) * C1 + ggx(N, V, L2, F0, F90, a) * C2 + envSpecular(N, V, F0, F90, a, ambient);
+        color = uA.rgb * Ld * (1.0 - F) + S;
+        alpha = mix(uA.w, 1.0, F);
     } else if (uKind == 2) {
         float rim = sat(4.0 * pow(om, uB.z));
         alpha = sat(uB.y + rim);
@@ -633,7 +657,7 @@ void main() {
 """
 FRAGMENT = FRAGMENT.replace("// @lighting\n", LIGHTING)
 GLASS_FRAGMENT = GLASS_FRAGMENT.replace("// @lighting\n", LIGHTING)
-GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3}
+GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4}
 
 
 def glass_uniforms(forward):
@@ -642,6 +666,9 @@ def glass_uniforms(forward):
     if forward["kind"] == "screen":
         return (3, (*p["colour_a"], p["intensity_a"]), (*p["colour_b"], p["intensity_b"]),
                 (p["alpha_base"], p["mask_strength"], p["grid"], 0.0), (0.0,) * 4)
+    if forward["kind"] == "water":
+        return (4, (*p["body"], p["opacity"]), (p["f0"], p["normal_strength"], p["gloss"], 0.0),
+                tuple(p["uv_a"]), tuple(p["uv_b"]))
     if forward["kind"] == "glass_patterned":
         return (2, (p["tiling"], p["normal_strength"], p["f0"], p["gloss"]),
                 (p["pick_u"], p["rim_bias"], p["rim_exp"], 0.0), (0.0,) * 4, (0.0,) * 4)
