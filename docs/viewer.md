@@ -18,6 +18,8 @@ Module map:
 | `rc2016/app/batch.py` | Model discovery, output verification, `BatchRunner`, `PipelineBatchRunner`, `ExportBatchRunner`, `PipelineIndexScanner` |
 | `rc2016/app/theme.py`, `rc2016/app/settings.py` | Dark theme, tooltips, UI scale, Tk runtime bootstrap; settings file, project paths, Python/Blender discovery |
 | `rc2016/app/browser.py` | Model/Level/Flash UI views, 3D/Textures/Details notebook, model details |
+| `rc2016/app/gallery.py` | Gallery tab: virtualised thumbnail grid, selection and render-queue rules |
+| `rc2016/app/thumbnails.py` | Thumbnail cache index, offscreen renderer and its CLI (`python -m rc2016.app.thumbnails`) |
 | `rc2016/app/catalog.py`, `rc2016/app/workers.py` | Read-only result catalog; coalesced background workers and owned-process cleanup |
 | `rc2016/viewer/loader.py` | `SourcePreviewLoader`: archive model to viewport payload |
 | `rc2016/viewer/viewport.py` | Windows OpenGL viewport (ctypes, no extra packages) |
@@ -50,7 +52,7 @@ An **Asset type** selector (Model / Level / Flash UI) above the search row decid
 
 | Type | Left | Right |
 |---|---|---|
-| Model (default) | Search/filter row and model tree | Notebook with **3D model**, **Textures**, **Details** |
+| Model (default) | Search/filter row and model tree | Notebook with **3D model**, **Textures**, **Details**, **Gallery** |
 | Level | The archive's levels; a typed `.level` or `.zone` path plus **Load** below the list | Zone toggles, view options, level viewport ([levels](levels.md)) |
 | Flash UI | The archive's 53 `.gfx`/`.swf` files | Symbol list, canvas, frame and export controls |
 
@@ -286,12 +288,23 @@ For saved Blender scenes the output root can drive an isolated review (`rc2016/p
 - The Blender proof controls are built but not shown in the notebook, and a proof never substitutes for the 3D model.
 - Catalog discovery lists a passed `runs/<run>/variant_assemblies/<name>/assembly_receipt.json` (schema `fusion-source-linked-assembly-cache-v1`, exactly one matching input) under its V1 source identity, labelled "(V1/V5 assembly)"; master and validation hashes are verified on selection.
 
+## Gallery and thumbnails
+
+The **Gallery** tab shows rendered thumbnails of the models selected in the tree (selecting a folder selects every model inside it) or, with nothing or one unlisted model selected, of the current search results (capped at 2000, with a note). A single click selects the model in the tree and loads it in the 3D view; double click or Enter also switches to the **3D model** tab. Arrow keys, Page Up/Down, Home/End and the wheel move through the grid. Hovering a tile shows its path, ID and, for a failed thumbnail, the reason. Without an Output folder the tab only asks for one.
+
+- **Grid:** one Tk canvas that draws only the visible rows; decoded images sit in a 300-entry LRU. Tiles are the native 192 px image; spacing and labels follow the UI scale. The label is the first named actor that uses the model, else the file name.
+- **Renderer:** `rc2016/app/thumbnails.py` runs as one child process (never more than one), so the Tk thread and 3D view are not blocked and it can be cancelled. It draws the model in Shaded mode, Highest LOD, look 0, bind pose, with the same framing as **Reset view**, into an offscreen RGBA framebuffer (GL 3 or EXT framebuffer objects) at twice the size, then box-filters down by alpha weight. The background is transparent, so tiles suit light and dark themes. If framebuffer objects are unavailable it reads the window back buffer instead and the background is opaque grey. It skips the streamed HD texture mips (this process only; the interactive viewer is unchanged).
+- **Queue:** missing thumbnails for the visible tiles are rendered first, then the rest of the list. The gallery restarts the renderer only when a visible tile is not near the front of its queue. **Render all thumbnails** renders every archive model (progress in the log, **Cancel** stops it).
+- **Cache:** `<output root>/.cache/thumbnails/<model id>.png` plus `index.json`, keyed by model id with `source_hash` (SHA-256 of the packed model bytes, as in Details), `renderer_version`, `size`, `status` (`ok`, `unsupported`, `error`) and `reason`. A result is reused until the source hash, `THUMBNAIL_VERSION` (bump it when rendering changes) or the size differs; failures are recorded and not retried before that. PNGs and the index are written atomically; `renderer.log` holds the child's stderr.
+- **CLI:** `python -m rc2016.app.thumbnails --source <game root> --output <output root> [--ids-file F] [--all] [--size 192] [--limit N] [--force] [--no-fbo]`. The ids file lists model ids in priority order; `--all` appends every other archive model. One JSON line per model (`event`, `id`, `status`, `reason`, `seconds`) goes to stdout.
+
 ## Settings and caches
 
 - Settings: `%APPDATA%/RC2016 Asset Browser/settings.json` (source and output folders, UI scale, export options, Blender and Python paths). Settings saved under the former name `PS4 Animation Extractor` are copied once.
 - `<repo>/.cache/shared_index`: parsed `layout.csv` and the shared index sidecar.
 - `<repo>/.cache/source_preview`: the viewer's archive working cache.
 - `<repo>/.cache/reviews`: isolated Blender review runs.
+- `<output root>/.cache/thumbnails`: gallery thumbnails and their index.
 - Output root: `reports/asset_references.sqlite`, the model index, saved builds, `export.json` folders.
 
 ## Tests

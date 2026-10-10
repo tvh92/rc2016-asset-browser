@@ -588,6 +588,13 @@ class AssetBrowserApp:
         self.update_selection_label()
         self.start_button.configure(state="normal" if self.records and self.runner is None and not getattr(self, "scanning", False) and not self.browser.review else "disabled")
         self.progress_var.set(f"{len(self.records)} models found; {len(self.filtered_records)} visible")
+        self._gallery_changed()
+
+    def _gallery_changed(self) -> None:
+        """The selection or the visible model list changed: the Gallery tab refreshes when shown."""
+        gallery = getattr(getattr(self, "browser", None), "gallery", None)
+        if gallery is not None:
+            gallery.invalidate()
 
     def on_filter_changed(self) -> None:
         # Typing a search returns the tree to automatic folding so matches are visible.
@@ -669,6 +676,7 @@ class AssetBrowserApp:
         items = self.table.selection() if hasattr(self, "table") else ()
         if len(items) == 1 and items[0] in self.item_by_record and hasattr(self, "browser"):
             self.browser.select_asset(self.item_by_record[items[0]])
+        self._gallery_changed()
 
     @staticmethod
     def _record_key(record: ModelCandidate | PipelineModelCandidate):

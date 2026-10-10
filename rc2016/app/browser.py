@@ -147,6 +147,8 @@ class AssetBrowser:
         textures=ttk.Frame(notebook,padding=6)
         notebook.add(view,text='3D model');notebook.add(textures,text='Textures')
         notebook.add(result,text='Details')
+        from rc2016.app.gallery import Gallery   # the Gallery tab: thumbnail grid of the selected or searched models
+        self.gallery=Gallery(self,notebook)
         self._build_texture_tab(textures)
         self._build_type_views(type_host if type_host is not None else parent.master,model_view if model_view is not None else parent)
         view.columnconfigure(0,weight=1);view.rowconfigure(0,weight=1)
@@ -1004,4 +1006,5 @@ class AssetBrowser:
         if self.play_job is not None:self.app.root.after_cancel(self.play_job);self.play_job=None
         self.meta_work.close();self.detail_work.close();self.artifact_work.close();self.source_work.close();self.anim_work.close();self.clip_list_work.close()
         self.texture_work.close();self.texture_list_work.close();self.flash_tab.close();self.level_panel.close()
+        self.gallery.close()
         self.cancel_review()

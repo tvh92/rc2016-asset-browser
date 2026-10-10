@@ -3,6 +3,7 @@
 A Windows desktop tool for browsing, viewing and exporting the assets of **Ratchet & Clank (PS4, 2016)** straight from the game's own archive.
 
 - **Models:** a searchable tree of all ~7,000 models with an interactive 3D view (Shaded, Textured, Solid, Wireframe), looks/LODs, skeletal animation playback and model details.
+- **Gallery:** a thumbnail grid of a folder or search result (rendered by a separate process and cached in the output folder); click a tile to open the model.
 - **Textures:** every texture a model uses, or all ~19,000 in the archive, with channel preview and export to the original `.texture`, DDS or PNG.
 - **Levels:** loads a `.level` and shows its zones' model instances in a 3D level view. It also runs as a standalone level viewer.
 - **Flash UI:** renders the game's Scaleform menus and in-game planet maps, and exports them as PNG.
