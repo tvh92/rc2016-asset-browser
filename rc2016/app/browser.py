@@ -796,7 +796,7 @@ class AssetBrowser:
                 index=int(item[5:]);self._close_clip_picker()
                 self._choose_clip(index,REST_POSE if index<0 else self.clip_labels[index])
             elif item:
-                tree.item(item,open=not tree.item(item,'open'))
+                tree.item(item,open=not tree.item(item,'open'));place()
 
         def click(event):
             inside=(0<=event.x_root-top.winfo_rootx()<top.winfo_width() and
@@ -820,23 +820,42 @@ class AssetBrowser:
             item=tree.focus() or next(iter(tree.get_children()),'')
             if item:tree.focus(item);tree.selection_set(item)
 
-        search.trace_add('write',fill);fill()
+        # Below the button, at least 380 px wide, flipped above it at the bottom of the screen.
+        # The height follows the rows currently shown (resized on search and folder open/close);
+        # a flipped list keeps its bottom edge on the button.
+        top.update_idletasks()
+        row_height=int(ttk.Style(top).lookup('Treeview','rowheight') or 20)
+        width=max(button.winfo_width(),380)
+        x=max(0,min(button.winfo_rootx(),top.winfo_screenwidth()-width))
+        below=button.winfo_rooty()+button.winfo_height()
+        max_height=top.winfo_screenheight()//2
+        flip=below+max_height>top.winfo_screenheight()
+
+        def visible_rows(parent=''):
+            return sum(1+(visible_rows(i) if tree.item(i,'open') else 0) for i in tree.get_children(parent))
+
+        def place(_event=None):
+            if self.clip_popup is not top:return
+            top.update_idletasks()
+            rows=max(4,min(18,visible_rows()))
+            height=min(rows*row_height+entry.winfo_reqheight()+16,max_height)
+            y=max(0,button.winfo_rooty()-height) if flip else below
+            top.geometry(f'{width}x{height}+{x}+{y}')
+
+        def refill(*_args):
+            fill();place()
+
+        # <<TreeviewOpen>> fires before the item opens: measure after it.
+        tree.bind('<<TreeviewOpen>>',lambda _e:top.after_idle(place))
+        tree.bind('<<TreeviewClose>>',lambda _e:top.after_idle(place))
+        search.trace_add('write',refill);fill()
         top.bind('<ButtonPress-1>',click,add='+')
         tree.bind('<ButtonRelease-1>',release)
         tree.bind('<Return>',lambda _e:choose(tree.focus()))
         entry.bind('<Return>',first_match)
         entry.bind('<Down>',into_list)
         top.bind('<Escape>',lambda _e:self._close_clip_picker())
-        # Below the button, at least 380 px wide, flipped above it at the bottom of the screen.
-        top.update_idletasks()
-        rows=max(8,min(18,len(self.clip_labels)+2))   # short lists get a short drop-down
-        row_height=int(ttk.Style(top).lookup('Treeview','rowheight') or 20)
-        width=max(button.winfo_width(),380)
-        height=min(rows*row_height+entry.winfo_reqheight()+20,top.winfo_screenheight()//2)
-        x=max(0,min(button.winfo_rootx(),top.winfo_screenwidth()-width))
-        y=button.winfo_rooty()+button.winfo_height()
-        if y+height>top.winfo_screenheight():y=max(0,button.winfo_rooty()-height)
-        top.geometry(f'{width}x{height}+{x}+{y}')
+        place()
         top.lift();top.grab_set();entry.focus_set()
         return 'break'
 
