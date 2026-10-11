@@ -64,6 +64,8 @@ The level list and the Flash UI list are read the first time their type is selec
 
 The Level tab and standalone level viewer include **Actors (source placements)**, enabled by default. The layer previews structurally bound primary models, with skinned NPCs/enemies in source bind pose. Actor-only zones have working zone toggles. Click an actor to report its name, actor path, primary model and ID; double click opens that model. Status reports actors drawn, unresolved and skipped-skinned. The standalone `--no-actors` option hides the layer while keeping its assets preloaded. Runtime state selection, animation and unproven attachment/material components remain excluded; see [level actors](levels.md#gameplay-actor-decoder-actor_formatpy).
 
+**Enemy spawns (experimental)** is off by default. Enable it to inspect approximate factory populations, including Novalis's 84 Peckbots and 20 Birdbots. The standalone option is `--experimental-spawns`. Every eligible encounter state is combined; template/location cycling and repeated-anchor spacing are inspection choices, not decoded game placement. Enemies use source bind pose and the shared material path. Picking identifies the factory, template and location; status labels approximate draws and unresolved inputs. The ordinary actor toggle and zone toggles remain independent. See [enemy factory preview](levels.md#enemy-factory-coverage-and-experimental-preview) for source layouts, placement policy and limitations.
+
 ## Model tree, search, used-by
 
 - The tree groups models by archive folder. A folder that holds one model and no subfolders is skipped (`folder_layout`). Selecting a folder selects every model inside it.

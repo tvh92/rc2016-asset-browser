@@ -370,17 +370,40 @@ The full-zone probe finds 21 same-model near pairs for 17 actors, including unre
 
 The airlock class stays excluded while other proven primary bindings draw. A RenderDoc capture of the Nebula airlock draws, especially both Trespasser doors, with identified model/vertex buffers, full world and bind/bone matrices, and the visibility/state of coinciding static doors would settle whether runtime applies a transform/pose adjustment or the source intentionally represents opposite-facing geometry. No rotation or scale is tuned to hide the disagreement.
 
-## Enemy factory coverage
+## Enemy factory coverage and experimental preview
 
-Source actor counts are not runtime enemy population counts. In Novalis the four Peckbot and two Birdbot model records are templates used by script factories, not six independent encounter placements. The actor preview currently shows those source records at their stored matrices; it does not expand factory spawns. Only templates referenced by the supported actor-component IDs are suppressed. Script factory template bindings are not yet part of the drawing policy.
+Source actor counts are not runtime enemy population counts. In Novalis the four Peckbot and two Birdbot model records are templates used by script factories. **Actors (source placements)** retains the stored-record preview policy. **Enemy spawns (experimental)** is a separate, off-by-default inspection layer; `--experimental-spawns` enables it in the standalone viewer. Source actor visibility and zone toggles remain independent. All eligible factory assets preload in either state.
 
-Novalis `gp_base.zone` has 39 `SunsetSpawnerFactoryScriptAction` nodes. Structural parameter bindings connect `Templates` (CRC32 `0xEDD5E282`) and `Locations` (`0x951BD5B6`) to actor IDs or actor-group IDs. Group members come from `0x0CF58A6E` / `0x041071EF`. Bound `InitialCount` (`0x90D607B0`) values sum to 84 across 18 Peckbot factories, including one with two Peckbot template variants, and 20 across 11 Birdbot factories. These totals span conditional encounter/checkpoint states and are not a simultaneous population. Other factories configure Blarg troopers/transports and Amoeboids.
+`spawn_format.py` structurally decodes `SunsetSpawnerFactoryScriptAction` inputs. Models still come exclusively from each referenced template's `.actor` primary pointer in `0x32FAC8E0`, Highest LOD / look 0, and the existing bind/rest geometry and material rules. Template material overrides reuse the normal instance path. Runtime material actions, animation, scripts and encounter activation are not applied. A click labels the synthetic instance approximate and reports its factory, template and location IDs alongside its actor/model paths. Status reports experimental draws and unresolved placements separately from source actors.
 
-Locations include points, spatial volumes, paths and groups. For example, Peckbot factory node 229 requests five enemies from one StaticVolume, while node 465 requests five from a group of eight paths. A location matrix alone therefore cannot determine the spawned model matrices, spacing or which template/path is selected. Factory counts and references are confirmed source data; exact spawn placement and activation remain unsupported. The viewer must not duplicate a model at a volume centre or invent a distribution to match a count. A runtime capture of those two encounters with individual enemy world matrices, factory/template IDs and path/volume choices would settle the placement rule. Animation and script execution remain outside the viewer.
+| Source | Decoded input |
+| --- | --- |
+| `0x5E54ACCF` / `0xEF8637D5` | 32-byte node record, action-name index and matching CRC32; factory ID and parameter-binding range |
+| `0xBEAB52E7` | 12-byte binding: pin CRC32, parameter index, trailing pin CRC32 |
+| `0xD86A7934` | 24-byte parameter `<HHHHQQ>`; kind 5 actor index plus matching u64 ID, or group ID with actor index `0xFFFF`; kind 2 low-u32 float literal for count |
+| `0x0CF58A6E` / `0x041071EF` | Group ID selects u16 actor indices; count is the low u16 of the packed count/flags word, with the upper u16 retained as uninterpreted flags |
+| `Templates` / `Locations` / `InitialCount` | Matching CRC32 `0xEDD5E282` / `0x951BD5B6` / `0x90D607B0`; typed source targets and literal count |
+
+Novalis has 39 bound factories requesting 123 enemies: 84 Peckbots across 18 factories, 20 Birdbots across 11, eight Blarg troopers, one armored transport, four medium and six small Amoeboids. All 123 preview in bind pose. These sums cross conditional encounter/checkpoint states and are not simultaneous gameplay populations. Veldin previews 75 of 78 requested enemies across 36 factories; three lack bound locations.
+
+**Approximate placement policy:** cycle templates and locations in source binding order for the factory's total literal InitialCount. Retain the template's complete linear matrix, including scale, shear and mirroring. Replace only translation with the referenced location actor's translation. For repeated anchors, spread instances on a centred 2.5-unit grid in native X/Z, leaving native Y unchanged. This grid, template choice and location cycling are presentation choices. A volume's linear matrix never scales an enemy. Paths are represented by their actor anchor, not sampled along their curve. Source template records and the normal actor layer remain unchanged, so stored templates may also appear when both layers are on.
+
+Locations include points, spatial volumes, paths and groups. Node 229 requests five Peckbots from one StaticVolume; node 465 requests five from eight paths. Factory counts and references are source-traced; exact world matrices, orientation selection, distribution, ground contact, visibility and spawn order remain unproven. Floating/intersecting enemies and bind-pose shapes are expected test limitations and are not corrected by tuning transforms. Runtime captures with factory/template IDs and individual enemy world/bone matrices would establish actual placement. The experiment deliberately combines every eligible encounter state and excludes other spawning mechanisms.
+
+The real-archive check covers all 233 zones without an invariant failure: 807 factories with identifiable enemy templates, 3,040 known requested placements, 3,011 usable bind-pose previews. Thirty-three factories remain unresolved (some have no literal count): 16 with ScalePrototyping, eleven without locations, five without a single literal count, and two with external/unresolved references; reasons overlap. Known unsupported models, missing structural primaries, nonidentity actor-local transforms and unproven drawing components stay excluded. Counts are per source-zone inventory; actual-level membership is used separately for per-level receipts.
+
+Full Novalis and Veldin GPU proofs identify generated Peckbots, Birdbots and Horned Toads. With the experiment off, both levels match the previous build pixel for pixel at the same 1216×873 camera, with source actors both on and off. Timing below uses all zones, source actors on, warmed OpenGL rendering plus `glFinish`, 60 samples per state in reversed blocks. Both states share one preloaded scene; enabling adds no archive reads.
+
+| Level | Load with assets preloaded (s) | Experiment off (ms/frame) | On (ms/frame) | Extra enemies | Draw calls off / on |
+| --- | --- | --- | --- | --- | --- |
+| Novalis | 8.14 | 19.53 | 19.12 | 123 | 1152 / 1152 |
+| Veldin | 4.45 | 11.86 | 11.92 | 75 | 631 / 631 |
+
+The small frame-time differences are within run variability, not evidence of a speedup or a reliable fixed cost. The extra rows share existing model/material batches; these two levels add no draw calls. Load times include the experimental assets even when its checkbox is off and are warm-run observations, not cold-load comparisons.
 
 ## Actor material swaps (runtime, not applied)
 
-Zones also hold actors and their scripts. Their runtime material swaps do not apply to the model-instance table or the source-placement actor preview. The script-table layouts below were checked on all 113 main-game zones that have script nodes (42,587 nodes) without a failure and remain research-only. Actor placement and component ownership are now decoded separately by `actor_format.py`:
+Zones also hold actors and their scripts. Their runtime material swaps do not apply to the model-instance table or the source-placement actor preview. The script-table layouts below were checked on all 113 main-game zones that have script nodes (42,587 nodes) without a failure. Factory inputs are now decoded for the explicit experimental layer; runtime material actions remain research-only. Actor placement and component ownership are now decoded separately by `actor_format.py`:
 
 | Section | Content |
 | --- | --- |
@@ -388,6 +411,6 @@ Zones also hold actors and their scripts. Their runtime material swaps do not ap
 | `0x5E54ACCF` | 32-byte script nodes: u64 id, u16 input-pin count, u16 + u16 first and count of outgoing links, u16 + u16 first and count of parameter bindings (all in `0xBEAB52E7`), u16 action index (`0xEF8637D5` names), u32 CRC32 of the action name, u32 offset and size of the node's object in the serialized `0x2300D240` |
 | `0xBEAB52E7` | 12-byte links: CRC32 pin name, node or parameter index, CRC32 pin name (`Out`, `In`, `Apply`, `Reset`, `Target`, ...) |
 | `0xD86A7934` | 24-byte parameters: u16 kind, u16 special name index; kind 5 references an actor (u16 index into `0x70682CB8` and the u64 actor id) or an actor group |
-| `0x0CF58A6E` | 24-byte actor groups: u32 index, u32 start, u32 count of u16 actor indices in `0x041071EF`, `0xFFFFFFFF`, u64 group id |
+| `0x0CF58A6E` | 24-byte actor groups: u32 index, u32 start, u16 count and u16 raw flags for actor indices in `0x041071EF`, `0xFFFFFFFF`, u64 group id |
 
 `MaterialOverrideData {SourceMaterialName, Replacement}` is the payload of `SetMaterialAction` nodes, which have `Apply` and `Reset` inputs and a `Target` parameter. All 42 in the main game target actors: 55 bindings to single actors and 3 to actor groups (82 actors). On each target's model, `SourceMaterialName` names exactly one material slot. They fire on gameplay events (entering volumes, power state, checkpoints, signal relays, save flags), so they are runtime states, not placement data. Four Nebula airlock-door actors share their position with static instances of the same model in `neb_art.zone`, which are drawn with their own materials. The `MaterialConstant` fields in `0x81999057` belong to gameplay actor components and are not decoded.
