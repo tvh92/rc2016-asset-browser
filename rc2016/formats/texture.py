@@ -1,6 +1,8 @@
 """PS4 texture built/stream decoder and DDS writer for this game."""
+from collections import OrderedDict
 from pathlib import Path
 import struct
+import threading
 
 from rc2016.formats.container import read_container
 from rc2016.formats.archive import lz4_block
@@ -12,7 +14,7 @@ UNCOMPRESSED_BPP = {28:4, 29:4, 49:2, 61:1}
 
 
 def parse_header(built):
-    root=read_container(built,0,{})
+    root=read_container(built,0,{},light=True)
     section=next((s for s in root['sections'] if int(s['label_hash'],16)==HEADER),None)
     if not section or section['size']<36:
         raise ValueError('Texture lacks the 36-byte PS4 texture header')
@@ -77,6 +79,38 @@ def ps4_deswizzle_slices(data,width,height,fmt,count):
     return [ps4_deswizzle_top(data[i*step:(i+1)*step],width,height,fmt) for i in range(count)]
 
 
+# Untiling index arrays depend only on the padded block grid; most textures share a few sizes.
+_TARGET_CACHE_MAX_ENTRIES=1<<22   # larger grids (16 MB+ of indices) are rebuilt each time
+_target_cache=OrderedDict()
+_target_lock=threading.Lock()
+
+
+def _build_targets(padded_w,padded_h):
+    import numpy as np
+    m=np.arange(64)
+    x=(m&1)|((m>>1)&2)|((m>>2)&4)
+    y=((m>>1)&1)|((m>>2)&2)|((m>>3)&4)
+    ty,tx=np.meshgrid(np.arange(padded_h//8),np.arange(padded_w//8),indexing='ij')
+    return ((ty[...,None]*8+y)*padded_w+tx[...,None]*8+x).ravel()
+
+
+def _deswizzle_targets(padded_w,padded_h):
+    """Read-only destination index of each source block (bounded, thread-safe LRU of 8 grids)."""
+    key=(padded_w,padded_h)
+    with _target_lock:
+        hit=_target_cache.get(key)
+        if hit is not None:
+            _target_cache.move_to_end(key);return hit
+    target=_build_targets(padded_w,padded_h)
+    if target.size>_TARGET_CACHE_MAX_ENTRIES:
+        return target
+    target.flags.writeable=False
+    with _target_lock:
+        _target_cache[key]=target
+        while len(_target_cache)>8:_target_cache.popitem(last=False)
+    return target
+
+
 def ps4_deswizzle_top(data,width,height,fmt):
     """Untile one PS4 Thin1D-style top mip in 8x8 blocks.
 
@@ -93,11 +127,7 @@ def ps4_deswizzle_top(data,width,height,fmt):
         np=None
     if np is not None:
         # Same mapping as the loop below, done as one gather.
-        m=np.arange(64)
-        x=(m&1)|((m>>1)&2)|((m>>2)&4)
-        y=((m>>1)&1)|((m>>2)&2)|((m>>3)&4)
-        ty,tx=np.meshgrid(np.arange(padded_h//8),np.arange(padded_w//8),indexing='ij')
-        target=((ty[...,None]*8+y)*padded_w+tx[...,None]*8+x).ravel()
+        target=_deswizzle_targets(padded_w,padded_h)
         blocks=np.frombuffer(data,dtype=np.uint8,count=needed).reshape(-1,bytes_per_block)
         out=np.empty_like(blocks);out[target]=blocks
         out=out.reshape(padded_h,padded_w,bytes_per_block)[:blocks_h,:blocks_w]
