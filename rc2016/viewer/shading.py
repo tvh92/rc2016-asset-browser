@@ -18,6 +18,8 @@ tonemap (LIGHTING below): viewing aids, not the game's lighting.
 from __future__ import annotations
 
 import ctypes
+from pathlib import Path
+import struct
 
 ENVIRONMENT_TEXTURE_UNIT = 6   # shared review HDRI: prefiltered radiance bands (environment.py)
 # Viewer lighting shared by FRAGMENT and GLASS_FRAGMENT. uLighting 0 is the fixed viewer rig: key and
@@ -826,6 +828,50 @@ class ShaderError(RuntimeError):
     pass
 
 
+# Linked program binaries (glGetProgramBinary), keyed by the shader sources, attribute bindings and the
+# driver's vendor/renderer/version strings. Any failure falls back to compiling from source.
+PROGRAM_CACHE_DIR = Path(__file__).resolve().parents[2] / '.cache' / 'gl_programs'
+PROGRAM_CACHE_VERSION = 1
+
+
+def program_cache_key(vertex_source, fragment_source, attributes, driver):
+    """Hex key of one program for one driver (``driver``: vendor, renderer and version bytes)."""
+    import hashlib
+    digest = hashlib.sha256(repr((PROGRAM_CACHE_VERSION, driver, sorted(attributes.items()))).encode())
+    for text in (vertex_source, fragment_source):
+        digest.update(b'\0' + text.encode())
+    return digest.hexdigest()[:40]
+
+
+def read_program_binary(path):
+    """(binary format, bytes) stored by write_program_binary, or None."""
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return None
+    if len(data) < 12 or data[:4] != b'RCPB':
+        return None
+    binary_format, size = struct.unpack_from('<II', data, 4)
+    return (binary_format, data[12:]) if size == len(data) - 12 and size else None
+
+
+def write_program_binary(path, binary_format, blob):
+    """Atomic write (temporary file + rename); errors only lose the speed-up."""
+    import os
+    import threading
+    path = Path(path)
+    temp = path.with_name(f'{path.name}.{os.getpid()}.{threading.get_ident():x}.tmp')
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp.write_bytes(b'RCPB' + struct.pack('<II', binary_format, len(blob)) + bytes(blob))
+        os.replace(temp, path)
+    except OSError:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+
+
 class Shading:
     """GL 2.0 entry points and one linked program per skeleton size."""
 
@@ -859,6 +905,14 @@ class Shading:
         "glActiveTexture": (None, [ctypes.c_uint]),
     }
 
+    # GL 4.1 / ARB_get_program_binary; without them programs are always compiled from source.
+    BINARY_NAMES = {
+        "glGetProgramBinary": (None, [ctypes.c_uint, ctypes.c_int, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_uint), ctypes.c_void_p]),
+        "glProgramBinary": (None, [ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p, ctypes.c_int]),
+        "glProgramParameteri": (None, [ctypes.c_uint, ctypes.c_uint, ctypes.c_int]),
+    }
+    program_cache = True   # class switch for the on-disk program binaries
+
     def __init__(self, gl):
         gl.wglGetProcAddress.argtypes = [ctypes.c_char_p]
         gl.wglGetProcAddress.restype = ctypes.c_void_p
@@ -870,6 +924,23 @@ class Shading:
         gl.glGetString.restype = ctypes.c_char_p
         self.supports_parallax = b'GL_ARB_shader_texture_lod' in (gl.glGetString(0x1F03) or b'').split()
         self.programs = {}
+        self.binary = None
+        try:
+            functions = {}
+            for name, (result, arguments) in self.BINARY_NAMES.items():
+                address = gl.wglGetProcAddress(name.encode())
+                if not address:
+                    raise LookupError(name)
+                functions[name] = ctypes.WINFUNCTYPE(result, *arguments)(address)
+            count = ctypes.c_int(0)
+            gl.glGetIntegerv.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+            gl.glGetIntegerv(0x87FE, ctypes.byref(count))   # GL_NUM_PROGRAM_BINARY_FORMATS
+            driver = tuple(gl.glGetString(code) or b'' for code in (0x1F00, 0x1F01, 0x1F02))   # vendor, renderer, version
+            if count.value > 0 and all(driver):
+                self.binary = dict(functions, driver=driver)
+            gl.glGetError()
+        except Exception:
+            self.binary = None
 
     def _compile(self, kind, source):
         shader = self.glCreateShader(kind)
@@ -885,12 +956,56 @@ class Shading:
         return shader
 
     def _link(self, vertex_source, fragment_source, attributes, names):
+        cache = None
+        if self.binary and self.program_cache:
+            cache = PROGRAM_CACHE_DIR / f"{program_cache_key(vertex_source, fragment_source, attributes, self.binary['driver'])}.bin"
+            program = self._load_binary(cache)
+            if program:
+                return program, {name: self.glGetUniformLocation(program, name.encode()) for name in names}
+        program = self._link_source(vertex_source, fragment_source, attributes, cache is not None)
+        if cache is not None:
+            self._save_binary(cache, program)
+        return program, {name: self.glGetUniformLocation(program, name.encode()) for name in names}
+
+    def _load_binary(self, path):
+        """A program from a stored binary, or 0 when it is absent or the driver rejects it."""
+        stored = read_program_binary(path)
+        if not stored:
+            return 0
+        program = self.glCreateProgram()
+        try:
+            self.binary["glProgramBinary"](program, stored[0], stored[1], len(stored[1]))
+            ok = ctypes.c_int(0)
+            self.glGetProgramiv(program, 0x8B82, ctypes.byref(ok))   # LINK_STATUS
+            if ok.value:
+                return program
+        except Exception:
+            pass
+        self.glDeleteProgram(program)
+        return 0
+
+    def _save_binary(self, path, program):
+        try:
+            size = ctypes.c_int(0)
+            self.glGetProgramiv(program, 0x8741, ctypes.byref(size))   # GL_PROGRAM_BINARY_LENGTH
+            if size.value <= 0:
+                return
+            blob, written, binary_format = ctypes.create_string_buffer(size.value), ctypes.c_int(0), ctypes.c_uint(0)
+            self.binary["glGetProgramBinary"](program, size.value, ctypes.byref(written), ctypes.byref(binary_format), blob)
+            if 0 < written.value <= size.value:
+                write_program_binary(path, binary_format.value, blob.raw[:written.value])
+        except Exception:
+            pass
+
+    def _link_source(self, vertex_source, fragment_source, attributes, retrievable=False):
         vertex = self._compile(0x8B31, vertex_source)
         fragment = self._compile(0x8B30, fragment_source)
         program = self.glCreateProgram()
         self.glAttachShader(program, vertex); self.glAttachShader(program, fragment)
         for name, location in attributes.items():
             self.glBindAttribLocation(program, location, name.encode())
+        if retrievable:
+            self.binary["glProgramParameteri"](program, 0x8257, 1)   # GL_PROGRAM_BINARY_RETRIEVABLE_HINT
         self.glLinkProgram(program)
         self.glDeleteShader(vertex); self.glDeleteShader(fragment)
         ok = ctypes.c_int(0)
@@ -899,7 +1014,7 @@ class Shading:
             log = ctypes.create_string_buffer(4096)
             self.glGetProgramInfoLog(program, 4096, None, log)
             raise ShaderError(log.value.decode(errors="replace"))
-        return program, {name: self.glGetUniformLocation(program, name.encode()) for name in names}
+        return program
 
     def program(self, joints=1):
         """The linked program; bones come from a texture, so one program fits every rig."""
