@@ -78,7 +78,14 @@ def section_table(data: bytes, start: int = 0) -> list[dict[str, Any]]:
     return sections
 
 
-def read_container(data: bytes, start: int, known_bones: dict[int, str]) -> dict[str, Any]:
+def read_container(data: bytes, start: int, known_bones: dict[int, str], light: bool = False) -> dict[str, Any]:
+    """One 1TAD container: header, section table, and (unless ``light``) section hashes,
+    strings, clip metadata, bone hashes and stream directory.
+
+    ``light`` returns only offset/declared_size/section_count/header_flags/table_end and
+    the sections without ``sha256_16``, with the same bounds checks and errors, for
+    decoders that read section offsets only (textures, models).
+    """
     if data[start : start + 4] != MAGIC:
         raise ValueError(f"0x{start:X} does not begin with 1TAD")
     if start + HEADER_SIZE > len(data):
@@ -113,11 +120,14 @@ def read_container(data: bytes, start: int, known_bones: dict[int, str]) -> dict
                 "size": size,
                 "in_bounds": end <= len(data),
                 "overlaps_header": offset < table_end,
-                "sha256_16": hashlib.sha256(data[offset:end]).hexdigest()[:16]
-                if end <= len(data)
-                else None,
             }
         )
+        if not light:
+            sections[-1]["sha256_16"] = hashlib.sha256(data[offset:end]).hexdigest()[:16] if end <= len(data) else None
+
+    if light:
+        return {"offset": start, "declared_size": declared_size, "section_count": section_count,
+                "header_flags": header_flags, "table_end": table_end, "sections": sections}
 
     container_end = start + declared_size
     local_strings = [

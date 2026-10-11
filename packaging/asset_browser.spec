@@ -49,6 +49,7 @@ a = Analysis(
         "PIL.Image",
         "PIL.DdsImagePlugin",
         "PIL.PngImagePlugin",
+        "PIL.ImageTk",   # gallery thumbnails decode off the GUI thread
     ],
     hookspath=[str(project_root / "packaging" / "pyinstaller_hooks")],
     hooksconfig={},

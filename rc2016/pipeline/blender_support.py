@@ -6,9 +6,10 @@ import numpy as np
 import bpy
 from mathutils import Matrix,Quaternion
 from rc2016.formats.skeleton import worlds
+from rc2016.pipeline.bulk_checks import split_polygons
 
 
-def targets(rows,frame,entry):
+def _relative_frame(rows,frame,entry):
     if entry['kind']=='relative/additive-style layer':
         frame=copy.deepcopy(frame);rest={r['hash']:r for r in rows}
         for sample in frame:
@@ -20,7 +21,70 @@ def targets(rows,frame,entry):
             sample['rotation_xyzw']=[result.x,result.y,result.z,result.w]
             sample['translation']=[a+b for a,b in zip(r['translation'],sample['translation'])]
             sample['scale']=[a*b for a,b in zip(r['scale'],sample['scale'])]
+    return frame
+
+
+def targets(rows,frame,entry):
+    frame=_relative_frame(rows,frame,entry)
     return {r['name']:Matrix(m.tolist()) for r,m in zip(rows,worlds(rows,frame,entry['inheritance']))}
+
+
+def target_array(rows,frame,entry):
+    """targets() as a (joints, 4, 4) float64 array in row order."""
+    frame=_relative_frame(rows,frame,entry)
+    result=worlds(rows,frame,entry['inheritance'])
+    return np.asarray(result,dtype=np.float64).reshape(len(rows),4,4)
+
+
+def keyframe_interpolation_value(name='CONSTANT'):
+    """RNA enum value of a keyframe interpolation (CONSTANT is BEZT_IPO_CONST, 0)."""
+    return bpy.types.Keyframe.bl_rna.properties['interpolation'].enum_items[name].value
+
+
+def read_values(collection,prop,width=1,dtype=np.float32):
+    """collection.foreach_get into a flat array; per-item reads if raw access is refused."""
+    out=np.empty(len(collection)*width,dtype=dtype)
+    try:
+        collection.foreach_get(prop,out)
+        return out
+    except (TypeError,RuntimeError,AttributeError):
+        values=[getattr(item,prop) for item in collection]
+        return np.asarray([v for value in values for v in value] if width>1 else values,dtype=dtype).reshape(-1)
+
+
+def write_values(collection,prop,values,width=1):
+    """collection.foreach_set; per-item writes if raw access is refused."""
+    values=np.ascontiguousarray(values).reshape(-1)
+    try:
+        collection.foreach_set(prop,values)
+    except (TypeError,RuntimeError,AttributeError):
+        rows=values.reshape(-1,width).tolist() if width>1 else values.tolist()
+        for item,value in zip(collection,rows):setattr(item,prop,value)
+
+
+def set_constant_interpolation(curve):
+    """Make every key of an F-curve CONSTANT in one call."""
+    points=curve.keyframe_points
+    try:
+        points.foreach_set('interpolation',np.full(len(points),keyframe_interpolation_value(),dtype=np.int32))
+    except (TypeError,RuntimeError,AttributeError):
+        for key in points:
+            if key.interpolation!='CONSTANT':key.interpolation='CONSTANT'
+
+
+def all_constant_interpolation(curve):
+    points=curve.keyframe_points
+    try:
+        values=np.empty(len(points),dtype=np.int32);points.foreach_get('interpolation',values)
+        return bool(np.all(values==keyframe_interpolation_value()))
+    except (TypeError,RuntimeError,AttributeError):
+        return all(key.interpolation=='CONSTANT' for key in points)
+
+
+def curve_keys(curve):
+    """(frames, values) of an F-curve's keyframe points as float64 arrays."""
+    co=read_values(curve.keyframe_points,'co',2).reshape(-1,2).astype(np.float64)
+    return co[:,0],co[:,1]
 
 
 def add_curve(bag,path,index,values):
@@ -29,7 +93,7 @@ def add_curve(bag,path,index,values):
     points=np.column_stack((np.flatnonzero(keep)+1,values[keep])).astype(np.float32)
     curve=bag.fcurves.new(data_path=path,index=index);curve.keyframe_points.add(len(points))
     curve.keyframe_points.foreach_set('co',points.ravel())
-    for key in curve.keyframe_points:key.interpolation='CONSTANT'
+    set_constant_interpolation(curve)
     curve.update()
 
 
@@ -103,12 +167,16 @@ def structural_snapshot(scene):
     for o in scene.objects:
         if o.type!='MESH':continue
         m=o.data
+        # Bulk reads give the same Python floats/ints (float32 widened) as per-item access.
+        group_names=[g.name for g in o.vertex_groups]
+        topology=split_polygons(read_values(m.loops,'vertex_index',1,np.int32),
+            read_values(m.polygons,'loop_start',1,np.int32),read_values(m.polygons,'loop_total',1,np.int32))
         meshes[o.name]=dict(vertices=len(m.vertices),polygons=len(m.polygons),
-            positions=digest([list(v.co) for v in m.vertices]),topology=digest([list(p.vertices) for p in m.polygons]),
-            weights=digest([[(o.vertex_groups[g.group].name,g.weight) for g in v.groups] for v in m.vertices]),
-            normals=digest([list(n.vector) for n in m.corner_normals]),
-            uvs=digest([[list(x.uv) for x in uv.data] for uv in m.uv_layers]),
-            materials=[x.name if x else None for x in m.materials],polygon_materials=digest([p.material_index for p in m.polygons]))
+            positions=digest(read_values(m.vertices,'co',3).reshape(-1,3).astype(np.float64).tolist()),topology=digest(topology),
+            weights=digest([[(group_names[g.group],g.weight) for g in v.groups] for v in m.vertices]),
+            normals=digest(read_values(m.corner_normals,'vector',3).reshape(-1,3).astype(np.float64).tolist()),
+            uvs=digest([read_values(uv.data,'uv',2).reshape(-1,2).astype(np.float64).tolist() for uv in m.uv_layers]),
+            materials=[x.name if x else None for x in m.materials],polygon_materials=digest(read_values(m.polygons,'material_index',1,np.int32).tolist()))
     materials={}
     for m in bpy.data.materials:
         nodes=[];links=[]

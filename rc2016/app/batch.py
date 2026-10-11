@@ -441,7 +441,7 @@ class PipelineBatchRunner:
     def __init__(self, selectors: Sequence[str], extracted_root: Path, output_root: Path,
                  python_executable: Path, blender_executable: Path,
                  skip_verified: bool = True, event: Callable[..., None] | None = None,
-                 skip_previews: bool = False, clip_only: tuple[str, str] | None = None):
+                 clip_only: tuple[str, str] | None = None):
         self.selectors = tuple(dict.fromkeys(s.strip() for s in selectors if s.strip()))
         # (archive path, clip name): that model is built in its own run with only this clip.
         self.clip_only = clip_only if clip_only and clip_only[0] in self.selectors else None
@@ -450,7 +450,6 @@ class PipelineBatchRunner:
         self.python_executable = python_executable.expanduser().resolve()
         self.blender_executable = blender_executable.expanduser().resolve()
         self.skip_verified = skip_verified
-        self.skip_previews = skip_previews
         self.event = event or (lambda *_args, **_kwargs: None)
         self.cancel_requested = threading.Event()
         self.process: subprocess.Popen[str] | None = None
@@ -487,8 +486,6 @@ class PipelineBatchRunner:
             command.append("--reuse-cache")
         else:
             command.append("--force")
-        if self.skip_previews:
-            command.append("--skip-previews")
         return command
 
     def run(self) -> int:

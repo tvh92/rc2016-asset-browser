@@ -12,6 +12,7 @@ sys.dont_write_bytecode=True
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT))
 from rc2016.pipeline import VERSION
+from rc2016.formats import archive as archive_module
 from rc2016.formats.archive import Archive,locate
 from rc2016.formats.clips import extract_set
 from rc2016.pipeline.clip_selection import ClipSelectionError, resolve_clip_selection
@@ -65,6 +66,71 @@ def prune_intermediates(output_root, log):
     log('intermediates_pruned', folders=list(INTERMEDIATE_DIRS), bytes=freed)
 
 
+def lz4_warning():
+    """A loud warning (never a failure) when only the slow pure-Python LZ4 decoder is available."""
+    if archive_module._lz4_c is not None:
+        return None
+    return ('The lz4 package is not installed for '+sys.executable+'; archive and texture streams use the '
+        'pure-Python LZ4 decoder, which is much slower. Install it with: "'+sys.executable+'" -m pip install lz4')
+
+
+def archive_file_stamps(root):
+    """[size, mtime_ns] of every file directly in the archive folder (metadata and segments)."""
+    stamps={}
+    with os.scandir(extended(root)) as entries:
+        for entry in entries:
+            if entry.is_file():
+                stat=entry.stat();stamps[entry.name]=[stat.st_size,stat.st_mtime_ns]
+    return stamps
+
+
+def record_verified_sources(archive):
+    """Remember the source hash of every asset read this run (Archive.decode reads through bytes())."""
+    verified={};read_bytes=archive.bytes
+    def recording(key):
+        data,digest=read_bytes(key);verified[key]=digest
+        return data,digest
+    archive.bytes=recording
+    return verified
+
+
+def sources_unchanged_since_start(archive,keys,start_stamps,verified):
+    """True when the archive files are unchanged since the run began and every mapped key was
+    hashed this run with its recorded hash; then the promotion re-read is not needed."""
+    if start_stamps is None or archive_file_stamps(archive.root)!=start_stamps:
+        return False
+    return all(key not in archive.mapping or ('loose_path' not in archive.entries[key]
+               and verified.get(key)==archive.mapping[key]['source_sha256']) for key in keys)
+
+
+ACTOR_INDEX_SCHEMA='rcps4-actor-reference-index-v1'
+
+
+def load_or_build_actor_index(index,archive,output_root,stamps,log):
+    """Reuse the actor reference graph across runs while the archive, layout and index code
+    are unchanged (stamp); otherwise decode every actor once and store the graph."""
+    stamp=sha(json.dumps(dict(schema=ACTOR_INDEX_SCHEMA,layout=archive.layout_identity,metadata=archive.metadata,
+        index_source=file_hash(ROOT/'rc2016/formats/index.py'),archive_files=stamps),sort_keys=True).encode())
+    folder=Path(output_root)/'cache'/'actor_index';path=folder/(stamp[:24]+'.json')
+    actors={key for key,entry in archive.entries.items() if entry['type']=='actor'}
+    try:cached=load(path) if path.is_file() else None
+    except (OSError,ValueError):cached=None
+    if (isinstance(cached,dict) and cached.get('stamp')==stamp and isinstance(cached.get('graph'),dict)
+            and set(cached['graph'])==actors):
+        index.graph.update(cached['graph']);index.errors.extend(cached.get('errors',[]))
+        log('actor_reference_index_reused',actors=len(actors),stamp=stamp[:24])
+        return True
+    index.actor_index()
+    try:
+        folder.mkdir(parents=True,exist_ok=True)
+        dump(path,dict(stamp=stamp,graph={key:index.graph[key] for key in actors if key in index.graph},
+            errors=[e for e in index.errors if e.get('asset_id') in actors]))
+        for old in folder.glob('*.json'):
+            if old!=path:old.unlink()
+    except OSError:pass
+    return False
+
+
 def remove_empty_dirs(root):
     """Delete empty folders below ``root`` (deepest first); runs recreate the ones they need."""
     for folder,_dirs,_files in sorted(os.walk(root),key=lambda row:-len(row[0])):
@@ -93,14 +159,14 @@ def run_selected_models(selection, manifest, process, checkpoint, save_manifest,
 
 
 def verified_cache_hit(old, fingerprint, final, validation_path):
-    """Check the blend, validation report, and every recorded preview hash."""
+    """Check the blend and validation report (and any preview hash an older report recorded)."""
     if (old.get('fingerprint') != fingerprint
             or old.get('final_sha256') != file_hash(final)
             or old.get('validation_sha256') != file_hash(validation_path)):
         return False
     validation = load(validation_path)
     return validation.get('status')=='passed' and all(Path(p['path']).is_file() and file_hash(p['path']) == p['sha256']
-               for p in validation['previews'])
+               for p in validation.get('previews') or [])
 
 
 def verified_source_model_reuse_after_orchestration_change(old,fingerprint,final,validation_path,
@@ -368,10 +434,16 @@ def process_model(key,index,args,code_hash,previous,log):
     # Check the shortest generated texture path before decoding model/material
     # assets; late Blender image-load failures are difficult to diagnose.
     preflight_texture_output(args.output_root,model_root,args.export_textures)
-    for folder in ('meshes','textures','materials','decoded_sources','animation_cache','reports','validation','review_images'):
+    for folder in ('meshes','textures','materials','decoded_sources','animation_cache','reports','validation'):
         (model_root/folder).mkdir(parents=True,exist_ok=True)
     report_dir=model_root/'reports'
     related=index.related(key)
+    # A reused actor index decodes no actors; decode this model's related ones so their
+    # source hashes and decoded files are current for the fingerprint and inventory.
+    for source_key in related['related_assets']:
+        if archive.entries[source_key]['type']=='actor':
+            try:archive.decode(source_key)
+            except Exception:pass     # recorded in index_errors by the actor scan, as before
     dump(report_dir/'references.json',related)
     model_path=archive.decode(key)
     bundled=Path(__file__).with_name('model_profiles')/(file_hash(model_path)+'.json')
@@ -592,10 +664,10 @@ def process_model(key,index,args,code_hash,previous,log):
                 source_evidence=check))
     job=dict(schema=VERSION,fingerprint=fingerprint,model=model,geometry=geometry,native_geometry=native_geometry,native_parts=native_parts,
         animation_selection=selection_identity,clip_catalog=entries,
-        texture_transport=texture_transport,skip_previews=args.skip_previews,
+        texture_transport=texture_transport,
         experimental_ambiguous_inheritance=args.experimental_ambiguous_inheritance,
         clips=action_entries,limitations=limitations,candidate=str(candidate),checkpoint=str(checkpoint),
-        review=str(model_root/'review_images'),validation_report=str(model_root/'validation/validation.json'),
+        validation_report=str(model_root/'validation/validation.json'),
         hdri=str(args.hdri) if args.hdri else None,game_lighting=args.game_lighting,veldin_look=args.veldin_look,
         shared_lighting=args.shared_lighting,
         game_lighting_exr=(args.game_lighting['environment_exr'] if args.game_lighting else None),
@@ -633,11 +705,15 @@ def process_model(key,index,args,code_hash,previous,log):
         manifest['reopened_validation_status']='passed_structural_integrity_semantics_reported_separately'
         manifest['game_accurate_uv_claim']=False if native_summary['source_units']['uv0_record_stride']==8 else True
         dump(model_root/'meshes/manifest.json',manifest)
-    for source_key in related['related_assets']:
-        if source_key in archive.mapping and archive.bytes(source_key)[1]!=archive.mapping[source_key]['source_sha256']:
-            raise RuntimeError('Source asset changed during build: '+archive.entries[source_key]['path'])
-    if any(file_hash(archive.root/name)!=digest for name,digest in archive.metadata.items()):
-        raise RuntimeError('Archive metadata changed during build')
+    # Archive files untouched since the run began (size + mtime) and every source hashed this
+    # run: nothing to re-read. Otherwise re-read and re-hash every source and the metadata.
+    if not sources_unchanged_since_start(archive,related['related_assets'],getattr(args,'archive_stamps',None),
+                                         getattr(args,'verified_sources',{})):
+        for source_key in related['related_assets']:
+            if source_key in archive.mapping and archive.bytes(source_key)[1]!=archive.mapping[source_key]['source_sha256']:
+                raise RuntimeError('Source asset changed during build: '+archive.entries[source_key]['path'])
+        if any(file_hash(archive.root/name)!=digest for name,digest in archive.metadata.items()):
+            raise RuntimeError('Archive metadata changed during build')
     # Promotion follows a separate-process reopen validation. Atomic replace is only allowed with -Force.
     if final.exists() and not args.force:raise FileExistsError('Final appeared during build: '+str(final))
     promote(candidate,final,args.force)
@@ -664,9 +740,9 @@ def process_model(key,index,args,code_hash,previous,log):
         experimental_action_count=sum(len(e.get('experimental_action_names',[])) for e in included),
         classifications=dict(Counter(e['kind'] for e in entries)),validation=str(model_root/'validation/validation.json'),
         validation_sha256=file_hash(model_root/'validation/validation.json'),limitations=str(report_dir/'limitations.json'),
-        previews=validation['previews'],automated=['archive discovery','asset index','actor reference scan','selective asset extraction/decompression',
+        automated=['archive discovery','asset index','actor reference scan','selective asset extraction/decompression',
         'skeleton and inverse-bind inspection','exact v15 samples and raw clips','classification evidence','affine action baking',
-        'embedded controls','source-order NLA','separate-process all-sample validation','manual-review renders'],
+        'embedded controls','source-order NLA','separate-process key and sampled-pose validation'],
         lighting=(dict(source='Novalis game reflection probe',region=args.game_lighting['region'],probe=args.game_lighting['source_path'],
             limitation='Cycles world conversion; Novalis grid mapping, probe selectors, and atmosphere sun-ray direction are decoded. RGB96 is a source-valued surface-light candidate; model placement, light-grid coefficients, and runtime field names remain unresolved') if args.game_lighting else
             dict(source='Veldin capture game look',limitation='Captured key light/ambient/exposure; tonemap as compositor nodes (trilinear grade, max 0.0035 from the OCIO tetrahedral view)') if args.veldin_look else dict(source='External HDRI')),
@@ -1325,7 +1401,6 @@ def main():
     parser.add_argument('--fail-on-missing-assets',action='store_true')
     parser.add_argument('--experimental-ambiguous-inheritance',action='store_true',
         help='Include both decoded full and SSC0 experimental Actions for source-related clips blocked by inheritance ambiguity; SSC0 is preferred, runtime accuracy remains unproven')
-    parser.add_argument('--skip-previews',action='store_true',help='Validate the reopened blend without rendering manual-review previews')
     parser.add_argument('--lighting-source',choices=('veldin','novalis','hdri'),default='hdri',
         help='hdri (default): the shared review lighting from --lighting-config; veldin: opt-in captured Veldin key light, ambient, exposure and RC PS4 Game tonemap; novalis: decoded probe')
     parser.add_argument('--novalis-atmosphere-sun',action='store_true',help='Add the source-valued Novalis RGB96 Sun candidate; runtime field names remain pending')
@@ -1370,11 +1445,19 @@ def main():
     args.previous_implementation_sha256=prior_manifest.get('implementation_sha256',{})
     manifest=dict(schema='ps4-animation-pipeline-v1',version=VERSION,source_root=str(args.extracted_root),output_root=str(args.output_root),models=previous.copy(),errors=[])
     try:
-        archive=Archive(locate(args.extracted_root),args.output_root,log);archive.index_loose(args.extracted_root)
+        warning=lz4_warning()
+        if warning:
+            log('warning',message=warning)
+            print('WARNING: '+warning,file=sys.stderr,flush=True)
+        archive_root=locate(args.extracted_root)
+        # Stamped before Archive() hashes the metadata, so any later change is seen.
+        args.archive_stamps=archive_file_stamps(archive_root)
+        archive=Archive(archive_root,args.output_root,log);archive.index_loose(args.extracted_root)
+        args.verified_sources=record_verified_sources(archive)
         manifest.update(archive_root=str(archive.root),archive_metadata_sha256=archive.metadata,archive_warnings=archive.warnings,
             indexed_assets=len(archive.entries),source_policy='read-only source; each selected entry and duplicate occurrence hashed',
             source_order='layout.csv order across animsets; recursive lookup order within animsets; physical order within directory-less wrappers')
-        index=AssetIndex(archive);index.actor_index();index.save()
+        index=AssetIndex(archive);load_or_build_actor_index(index,archive,args.output_root,args.archive_stamps,log);index.save()
         if args.list_models_json:
             rows=[dict(id=e['id'],path=e['path'],available=any(o['available'] for o in e['occurrences']))
                   for e in archive.entries.values() if e['type']=='model']
@@ -1386,7 +1469,7 @@ def main():
                 except OSError as exc:log('intermediates_prune_skipped',reason=str(exc))
             return 0
         selection=select_models(index,archive.entries,args.model,args.all_models)
-        for name in ('work/tmp','compressed_assets','decoded_sources','animation_cache','blender','review','final','cache'):
+        for name in ('work/tmp','compressed_assets','decoded_sources','animation_cache','blender','final','cache'):
             (args.output_root/name).mkdir(parents=True,exist_ok=True)
         # Reject a Blender-inaccessible OutputRoot before lighting or model
         # asset extraction begins. process_model repeats the guard for safety.

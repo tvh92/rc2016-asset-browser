@@ -197,25 +197,27 @@ def evaluate_surface(translation, uv, sample):
 
 def prepare_material_translation(archive, path):
     """Material-bound receipt, cached on the archive; malformed shaders fail closed."""
-    from rc2016.formats.archive import decompress
-    from rc2016.formats.index import references
+    from rc2016.formats.archive import asset_data, asset_references
     from rc2016.formats.materials import extract_material_parameters
     from rc2016.shaders.bindings import prepare_translation
-    cache = getattr(archive, '_native_translation_cache', None)
-    if cache is None: cache = archive._native_translation_cache = {}
-    if path not in cache:
+    from rc2016.viewer.textures import _archive_cache, _remember
+    cache = _archive_cache(archive, '_native_translation_cache')
+    found = cache.get(path)
+    if found is None:
+        def entry(p, kind):
+            ids = [i for i in archive.resolve(p) if archive.entries[i]['type'] == kind]
+            if len(ids) != 1: raise ValueError('Ambiguous source ' + p)
+            return ids[0]
         try:
-            def data(p, kind):
-                ids = [i for i in archive.resolve(p) if archive.entries[i]['type'] == kind]
-                if len(ids) != 1: raise ValueError('Ambiguous source ' + p)
-                return decompress(archive.bytes(ids[0])[0])[0]
-            material = data(path, 'material')
-            graphs = list(dict.fromkeys(r['path'] for r in references(material) if r['path'].endswith('.materialgraph')))
-            cache[path] = prepare_translation([data(g, 'materialgraph') for g in graphs], material,
-                                              extract_material_parameters(material))
+            material_id = entry(path, 'material')
+            material = asset_data(archive, material_id)
+            graphs = list(dict.fromkeys(r['path'] for r in asset_references(archive, material_id) if r['path'].endswith('.materialgraph')))
+            result = prepare_translation([asset_data(archive, entry(g, 'materialgraph')) for g in graphs], material,
+                                         extract_material_parameters(material))
         except (ValueError, KeyError, IndexError, OSError) as exc:
-            cache[path] = dict(status='unsupported', diagnostics=[f'{type(exc).__name__}: {exc}'], game_equivalence=False)
-    return cache[path]
+            result = dict(status='unsupported', diagnostics=[f'{type(exc).__name__}: {exc}'], game_equivalence=False)
+        found = _remember(cache, path, result)
+    return found
 
 
 def selected_translation(archive, path, paths=None):
@@ -223,13 +225,12 @@ def selected_translation(archive, path, paths=None):
     from rc2016.formats.links import EXACT, rule_coverage
     from rc2016.formats.materials import _viewer_rule_wins_translation, viewer_graph_rule
     from rc2016.viewer.textures import material_texture_paths
-    from rc2016.formats.archive import decompress
-    from rc2016.formats.index import references
+    from rc2016.formats.archive import asset_references
     paths = paths if paths is not None else material_texture_paths(archive, path)
     if paths.get('forward'): return None
     ids = [i for i in archive.resolve(path) if archive.entries[i]['type'] == 'material']
     if len(ids) != 1: return None
-    graphs = [r['path'] for r in references(decompress(archive.bytes(ids[0])[0])[0]) if r['path'].endswith('.materialgraph')]
+    graphs = [r['path'] for r in asset_references(archive, ids[0]) if r['path'].endswith('.materialgraph')]
     if rule_coverage(graphs)[0] == EXACT:
         bound = [v for v in paths.values() if isinstance(v, str) and v.endswith('.texture')]
         rule = viewer_graph_rule(archive, path, bound)
@@ -239,12 +240,8 @@ def selected_translation(archive, path, paths=None):
     # Validate portable GLSL shape before advertising the route in coverage/UI.
     emit_surface(translation)
     from rc2016.viewer.textures import texture_header, GL_COMPRESSED, GL_UNCOMPRESSED
-    headers = getattr(archive, '_native_texture_headers', None)
-    if headers is None: headers = archive._native_texture_headers = {}
     for binding in translation['texture_bindings']:
-        path = binding['path']
-        if path not in headers: headers[path] = texture_header(archive, path)
-        header = headers[path]
+        header = texture_header(archive, binding['path'])   # memoized on the archive
         if max(1, header.get('array_size', 1)) != 1 or header['format'] not in GL_COMPRESSED | GL_UNCOMPRESSED:
             return None
     return translation

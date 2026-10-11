@@ -101,6 +101,13 @@ class ThumbnailIndex:
             return self.png_path(model_id).is_file()
         return entry.get('status') in STATUSES
 
+    def is_unchanged(self, model_id, size, identity) -> bool:
+        """Cheap freshness: current for this version and size, and recorded under the same archive identity.
+
+        No archive bytes are read. An entry without an identity (older index) is never trusted here."""
+        entry = self.models.get(model_id)
+        return bool(identity) and self.is_current(model_id, size) and entry.get('identity') == identity
+
     def record(self, model_id, status, source_hash=None, size=DEFAULT_SIZE, reason='', **extra) -> dict:
         if status not in STATUSES:
             raise ValueError(f'Unknown thumbnail status: {status}')
@@ -200,6 +207,23 @@ def downsample_rgba(rgba_bottom_up, width, height, factor):
                 out[o:o + 3] = (round(r / a), round(g / a), round(b / a))
             out[o + 3] = round(a / area)
     return out_w, out_h, bytes(out)
+
+
+def entry_identity(archive, entry):
+    """Cheap identity of a model's archive bytes without reading them, or None when it cannot be known.
+
+    The layout identity covers layout.csv and the other metadata; the first occurrence's range and its
+    archive file size and mtime catch a rewritten archive. Loose files are not covered (they are hashed)."""
+    if not entry or 'loose_path' in entry:
+        return None
+    occurrence = next((o for o in entry.get('occurrences', ()) if o.get('available')), None)
+    if occurrence is None:
+        return None
+    try:
+        stat = os.stat(archive.root / occurrence['archive'])
+    except OSError:
+        return None
+    return f"{archive.layout_identity}|{entry.get('order')}|{occurrence['archive']}|{occurrence['offset']}|{occurrence['size']}|{stat.st_size}|{stat.st_mtime_ns}"
 
 
 # Command line ----------------------------------------------------------------
@@ -414,6 +438,7 @@ def run(args) -> int:
     index = ThumbnailIndex.load(folder)
     loader = SourcePreviewLoader()
     archive = loader._ensure_archive(args.source)
+    archive.verify_repeats = False   # hash the first copy only; repeats are identical in a consistent install
     models = [(entry['path'], model_id) for model_id, entry in archive.entries.items() if entry['type'] == 'model']
     ids = select_ids(args, models)
     total = len(ids)
@@ -436,12 +461,19 @@ def run(args) -> int:
         for number, model_id in enumerate(ids, 1):
             started = time.perf_counter()
             entry = archive.entries.get(model_id)
-            status, reason, source_hash, notes, load_s, render_s = 'ok', '', None, [], 0.0, 0.0
+            status, reason, source_hash, notes, load_s, render_s, identity = 'ok', '', None, [], 0.0, 0.0, None
             try:
                 if not entry or entry['type'] != 'model':
                     raise KeyError('not a model in this archive')
-                _data, source_hash = archive.bytes(model_id)
+                identity = entry_identity(archive, entry)
+                if not args.force and index.is_unchanged(model_id, size, identity):
+                    emit(event='model', id=model_id, status=index.get(model_id)['status'], skipped=True, n=number, total=total)
+                    continue
+                _data, source_hash = archive.bytes(model_id)   # only on a miss
                 if not args.force and index.is_current(model_id, size, source_hash):
+                    if identity:
+                        index.get(model_id)['identity'] = identity   # upgrade an older entry
+                        index.dirty = True
                     emit(event='model', id=model_id, status=index.get(model_id)['status'], skipped=True, n=number, total=total)
                     continue
                 payload = loader.load(args.source, model_id, entry['path'], 'Highest', 0, None, True)
@@ -457,7 +489,7 @@ def run(args) -> int:
                 png_path = index.png_path(model_id)
                 if png_path.exists():
                     png_path.unlink()
-            index.record(model_id, status, source_hash, size, reason or '; '.join(notes))
+            index.record(model_id, status, source_hash, size, reason or '; '.join(notes), identity=identity)
             seconds = time.perf_counter() - started
             emit(event='model', id=model_id, status=status, reason=reason, seconds=round(seconds, 3),
                  load_s=round(load_s, 3), render_s=round(render_s, 3), n=number, total=total)
