@@ -185,6 +185,7 @@ class LevelViewport(ModelViewport):
         self._draw_list = None
         self.show_hidden = False
         self.show_actors = True
+        self.show_spawn_preview = False
         self.picked_actor = None
         self.material_overrides = True   # per-instance material overrides from the zone records
         self.show_sky = True
@@ -231,6 +232,15 @@ class LevelViewport(ModelViewport):
     def add_actors(self, zone, path, groups, actors):
         """Batched actor rows plus source identities for click-to-identify."""
         self._gl_call(self._store_actors, zone, path, groups, actors)
+
+    def add_spawns(self, zone, path, groups, actors):
+        self._gl_call(self._store_spawns, zone, path, groups, actors)
+
+    def set_spawn_preview(self, show):
+        self.show_spawn_preview = bool(show)
+        self._draw_list = None
+        self.picked_actor = None
+        self._draw()
 
     def set_show_actors(self, show):
         self.show_actors = bool(show)
@@ -309,7 +319,9 @@ class LevelViewport(ModelViewport):
         counts = [(m["triangles"], sum(g[1] for g in self._visible_groups(m))) for m in self._models.values()]
         actors = sum(len(m['actors']) - sum(a['zone'] in self._hidden_zones for a in m['actors'])
                      for m in self._models.values() if not m['hidden'] or self.show_hidden) if self.show_actors else 0
-        return dict(actors=actors, models=len(self._models), instances=sum(n for _t, n in counts),
+        spawns = sum(sum(a['zone'] not in self._hidden_zones for a in m.get('spawns', []))
+                     for m in self._models.values() if not m['hidden'] or self.show_hidden) if self.show_spawn_preview else 0
+        return dict(actors=actors, spawns=spawns, models=len(self._models), instances=sum(n for _t, n in counts),
                     triangles=sum(t * n for t, n in counts),
                     materials=len(self._materials), textures=sum(1 for v in self._texture_names.values() if v),
                     draws=len(self._draw_list or ()), draw_ms=self.last_draw_ms, speed=self._speed,
@@ -371,7 +383,7 @@ class LevelViewport(ModelViewport):
                       nbo=self._buffer(self.GL_ARRAY_BUFFER, geometry["normals"]),
                       tbo=self._buffer(self.GL_ARRAY_BUFFER, geometry["uvs"]),
                       ibo=self._buffer(self.GL_ELEMENT_ARRAY_BUFFER, geometry["indices"]),
-                      zones=[], actor_zones=[], actors=[], groups=[], groups_for=None)
+                      zones=[], actor_zones=[], actors=[], spawn_zones=[], spawns=[], groups=[], groups_for=None)
         record["buffers"] = [record[k] for k in ("vbo", "nbo", "tbo", "ibo")]
         self._ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0); self._ext["glBindBuffer"](self.GL_ELEMENT_ARRAY_BUFFER, 0)
         self._models[path] = record
@@ -391,12 +403,20 @@ class LevelViewport(ModelViewport):
         record['actors'].extend(actors)
         record['groups_for'] = None
 
+    def _store_spawns(self, zone, path, groups, actors):
+        record = self._models[path]
+        for key, rows in sorted(groups.items()):
+            record['spawn_zones'].append((zone, key, rows))
+        record['spawns'].extend(actors)
+        record['groups_for'] = None
+
     def _merge_groups(self):
         """One instance buffer per model, handedness and set of material changes over the visible zones:
         [(buffer, count, mirrored, changes)]."""
         from array import array
         hidden = frozenset(self._hidden_zones)
-        state = (hidden, self.show_actors)
+        preview = getattr(self, 'show_spawn_preview', False)
+        state = (hidden, self.show_actors, preview)
         for model in self._models.values():
             if model["groups_for"] == state:
                 continue
@@ -405,7 +425,10 @@ class LevelViewport(ModelViewport):
                 self._ext["glDeleteBuffers"](len(old), (ctypes.c_uint * len(old))(*old))
             self._delete_vaos([model])
             merged = {}
-            for zone, key, rows in model["zones"] + (model["actor_zones"] if self.show_actors else []):
+            layers = model["zones"] + (model["actor_zones"] if self.show_actors else [])
+            if preview:
+                layers += model.get("spawn_zones", [])
+            for zone, key, rows in layers:
                 if zone not in hidden:
                     merged.setdefault(key, array("f")).extend(rows)
             model["groups"] = [(self._buffer(self.GL_ARRAY_BUFFER, rows), len(rows) // 16, flip, changes)
@@ -848,7 +871,8 @@ class LevelViewport(ModelViewport):
         gl.glReadPixels(x, height - 1 - y, 1, 1, 0x1907, self.GL_UNSIGNED_BYTE, pixel)   # GL_RGB
         found = pick_index(bytes(pixel)[:3])
         path = order[found] if found is not None and found < len(order) else None
-        if path and self.show_actors and self._models[path]['actors']:
+        if path and ((self.show_actors and self._models[path]['actors']) or
+                     (self.show_spawn_preview and self._models[path]['spawns'])):
             self._pick_actor(self._models[path], x, y, width, height)
         self._draw()
         return path
@@ -868,7 +892,8 @@ class LevelViewport(ModelViewport):
         self._begin_attributes()
         sh.glUniform1i(u['uTexC'], 0)
         sh.glActiveTexture(self.GL_TEXTURE0)
-        actors = [a for a in model['actors'] if a['zone'] not in self._hidden_zones]
+        visible = (model['actors'] if self.show_actors else []) + (model['spawns'] if self.show_spawn_preview else [])
+        actors = [a for a in visible if a['zone'] not in self._hidden_zones]
         temporary, entries = [], []
         try:
             for zone, key, rows in model['zones']:

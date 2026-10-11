@@ -168,8 +168,10 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
                                    models=len(overrides["models"]))))
     actor_time = time.perf_counter()
     candidates = catalog.candidates()
+    from rc2016.levels.spawn_format import preview_placements, preview_summary
+    spawn_candidates, factories = preview_placements(catalog.factories, catalog.zone_actors, catalog.descriptor)
     actor_models = {}
-    for actor in candidates:
+    for actor in candidates + spawn_candidates:
         actor_models.setdefault(actor['model'].lower(), []).append(actor)
     for key, placements in actor_models.items():
         path = placements[0]['model']
@@ -202,13 +204,15 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
         gpu_path = geometry_paths[path.lower()]
         by_zone = {}
         for actor in placements:
-            by_zone.setdefault(actor['zone'], []).append(actor)
+            by_zone.setdefault((actor['zone'], bool(actor.get('spawn_preview'))), []).append(actor)
             actor['drawn'] = True
-        for zone, actors in by_zone.items():
+        for (zone, preview), actors in by_zone.items():
             groups, replacements = actor_groups(actors, geometry['materials'])
             geometry['override_materials'].extend(dict(path=p) for p in replacements)
-            out.put(("actors", zone, gpu_path, groups, actors))
+            out.put(("spawns" if preview else "actors", zone, gpu_path, groups, actors))
     summary = catalog.summary()
+    spawns = preview_summary(spawn_candidates, factories)
+    out.put(("spawn_summary", spawns))
     actor_seconds = actor_decode_seconds + time.perf_counter() - actor_time
     out.put(("actor_summary", summary))
     if not points:
@@ -229,7 +233,7 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
             out.put(("materials", entries))
         drop_uploaded_pixels(cache, entries, uploaded)
     out.put(("done", dict(geometry_seconds=geometry_seconds, total_seconds=time.perf_counter() - started,
-                          models=len(geometries), materials=len(done), actors=summary, actor_seconds=actor_seconds,
+                          models=len(geometries), materials=len(done), actors=summary, spawns=spawns, actor_seconds=actor_seconds,
                           material_overrides=dict(outcomes=dict(overrides["outcomes"]), instances=overrides["instances"],
                                                   models=len(overrides["models"])))))
 
@@ -238,7 +242,7 @@ class LevelPanel:
     """Tk panel; ``source_root`` is a callable returning the current extracted source root."""
 
     def __init__(self, parent, tk, ttk, source_root, level=None, mode="Shaded", zone_filter=None, on_done=None,
-                 list_parent=None, on_open_model=None, material_overrides=True, sky=True, native_translation=True, actors=True):
+                 list_parent=None, on_open_model=None, material_overrides=True, sky=True, native_translation=True, actors=True, spawn_preview=False):
         """``list_parent``: a separate frame for the level list (the asset browser's left pane);
         by default the list sits at the top of the panel's own side column (standalone window).
         ``on_open_model(model path)``: open a picked model elsewhere (the browser's Model tab)."""
@@ -294,6 +298,9 @@ class LevelPanel:
         self.actors_var = tk.BooleanVar(value=actors)
         ttk.Checkbutton(toggles, text="Actors (source placements)", variable=self.actors_var,
                         command=lambda: self.view.set_show_actors(self.actors_var.get())).pack(anchor="w")
+        self.spawn_var = tk.BooleanVar(value=spawn_preview)
+        ttk.Checkbutton(toggles, text="Enemy spawns (experimental)", variable=self.spawn_var,
+                        command=lambda: self.view.set_spawn_preview(self.spawn_var.get())).pack(anchor="w")
         head = ttk.Frame(side); head.grid(row=6, column=0, sticky="ew", pady=(8, 2))
         ttk.Label(head, text="Zones").pack(side="left")
         ttk.Button(head, text="None", width=5, command=lambda: self._set_all(False)).pack(side="right")
@@ -315,6 +322,7 @@ class LevelPanel:
         self.view.material_overrides = bool(material_overrides)
         self.view.show_sky = bool(sky)
         self.view.show_actors = bool(actors)
+        self.view.show_spawn_preview = bool(spawn_preview)
         self.view.native_translation = bool(native_translation)
         self.view.set_mode(mode)
         self.view.clear("Choose a level and click Load.")
@@ -433,7 +441,11 @@ class LevelPanel:
             return
         actor = self.view.picked_actor
         if actor:
-            self.picked_var.set(f"{actor['name'] or '(unnamed)'} · {actor['actor_path']} · {actor['id']} · {path}")
+            text = f"{actor['name'] or '(unnamed)'} · {actor['actor_path']} · {actor['id']} · {path}"
+            if actor.get('spawn_preview'):
+                spawn = actor['spawn_preview']
+                text += f" · APPROXIMATE: factory {spawn['factory_id']}, template {spawn['template_id']}, location {spawn['location_id']} · {spawn['policy']}"
+            self.picked_var.set(text)
         else:
             self.picked_var.set(f"{path} · {self.view.instance_count(path):,} visible instances (outlined)")
         self.open_button.configure(state="normal")
@@ -507,6 +519,13 @@ class LevelPanel:
         elif kind == "actors":
             _kind, zone, path, groups, actors = item
             self.view.add_actors(zone, path, groups, actors)
+        elif kind == "spawns":
+            _kind, zone, path, groups, actors = item
+            self.view.add_spawns(zone, path, groups, actors)
+        elif kind == "spawn_summary":
+            p["spawns"] = item[1]
+            for reason, count in item[1]["reasons"].items():
+                print(f"level viewer: experimental spawns ({count}): {reason}", file=sys.stderr)
         elif kind == "actor_summary":
             p["actors"] = item[1]
             for reason, count in item[1]['reasons'].items():
@@ -550,6 +569,9 @@ class LevelPanel:
         actor_stats = p.get('actors', {})
         actors = (f" · actors {stats.get('actors', 0):,} drawn, {actor_stats.get('unresolved', 0):,} unresolved, "
                   f"{actor_stats.get('skipped_skinned', 0):,} skipped-skinned")
+        if self.view.show_spawn_preview:
+            actors += (f" · EXPERIMENTAL spawns {stats.get('spawns', 0):,} drawn (approximate), "
+                       f"{p.get('spawns', {}).get('unresolved', 0):,} unresolved")
         self.status_var.set(
             f"{p['state']}{actors} · {p['zones_with_models']}/{p['zones']} zones with placements · {p['models']} models{errors} · "
             f"{stats['materials']} materials · {stats['textures']} textures{overrides}{sky} · showing {stats['instances']:,} instances, "

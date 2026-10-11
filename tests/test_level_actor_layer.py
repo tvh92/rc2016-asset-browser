@@ -104,6 +104,36 @@ class LayerTests(unittest.TestCase):
         v._hidden_zones=set();v.show_actors=False;LevelViewport._merge_groups(v)
         self.assertEqual(uploaded[model['groups'][0][0]],original)
 
+    def test_preview_toggle_invalidates_cached_draws_and_batches_independently(self):
+        from array import array
+        from types import SimpleNamespace
+        from rc2016.levels.viewport import LevelViewport
+        static, placed, spawn = (array('f', IDENTITY) for _ in range(3))
+        placed[12], spawn[12] = 8., 16.
+        model = dict(zones=[('art',(False,()),static)], actor_zones=[('game',(False,()),placed)],
+                     spawn_zones=[('game',(False,()),spawn)], groups=[],groups_for=None)
+        uploads = {}; identifiers = iter(range(100))
+        def buffer(target, rows):
+            ident = next(identifiers); uploads[ident] = rows.tobytes(); return ident
+        v = SimpleNamespace(_hidden_zones=set(),show_actors=False,show_spawn_preview=False,
+            _models={'model':model},_draw_list='cached',picked_actor=actor(), _draw=lambda:None,
+            _ext={'glDeleteBuffers':lambda *a:None,'glBindBuffer':lambda *a:None},
+            _delete_vaos=lambda *a:None,_buffer=buffer,GL_ARRAY_BUFFER=1)
+        LevelViewport.set_spawn_preview(v, True)
+        self.assertIsNone(v._draw_list)
+        self.assertIsNone(v.picked_actor)
+        LevelViewport._merge_groups(v)
+        self.assertEqual(uploads[model['groups'][0][0]],static.tobytes()+spawn.tobytes())
+        v.show_actors=True
+        LevelViewport._merge_groups(v)
+        self.assertEqual(uploads[model['groups'][0][0]],static.tobytes()+placed.tobytes()+spawn.tobytes())
+        v.show_spawn_preview=False
+        LevelViewport._merge_groups(v)
+        self.assertEqual(uploads[model['groups'][0][0]],static.tobytes()+placed.tobytes())
+        v._hidden_zones={'game'}
+        LevelViewport._merge_groups(v)
+        self.assertEqual(uploads[model['groups'][0][0]],static.tobytes())
+
 
 class LoaderTests(unittest.TestCase):
     def test_case_variants_share_the_uploaded_static_geometry(self):
