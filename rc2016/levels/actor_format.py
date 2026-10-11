@@ -1,6 +1,6 @@
 """Source-traced actor descriptors and zone placements; no gameplay execution.
 
-The placement control is still open (docs/levels.md). This module deliberately
+Placement controls and exclusions are recorded in docs/levels.md. This module
 provides data only: it does not decide that a dependency is a drawable attachment,
 apply spawn scripts, or silently select a model from dependency strings.
 """

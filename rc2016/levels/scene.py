@@ -178,6 +178,7 @@ def model_geometry(archive, model_path, lod='Highest', look=0):
     from rc2016.formats.native_model import decode_model
     decoded = decode_model(model_path, lod=lod, look=look, data=asset_bytes(archive, model_path), as_arrays=True)
     positions, normals, uvs, indices, batches = [], [], [], [], []
+    skinned = any(any(bool(pairs) for pairs in m.get('weights', [])) for m in decoded['meshes'])
     vertex_total = triangle_total = 0
     for mesh in decoded['meshes']:
         if not len(mesh['triangles']):
@@ -205,12 +206,18 @@ def model_geometry(archive, model_path, lod='Highest', look=0):
         result.frombytes(np.ascontiguousarray(np.concatenate(parts) if isinstance(parts, list) else parts,
                                               dtype=dtype).tobytes())
         return result
+    bounds = (positions.min(axis=0).tolist(), positions.max(axis=0).tolist())
+    triangles = np.concatenate(indices)
+    edges = positions[triangles[:, 1]] - positions[triangles[:, 0]]
+    sides = positions[triangles[:, 2]] - positions[triangles[:, 0]]
+    usable = bool(np.isfinite(positions).all() and np.any(np.linalg.norm(np.cross(edges, sides), axis=1) > 1e-10))
     positions, normals = packed(positions, 'f', np.float32), packed(normals, 'f', np.float32)
     uvs, indices = packed(uvs, 'f', np.float32), packed(indices, 'I', np.uint32)
     return dict(positions=positions, normals=normals, uvs=uvs, indices=indices, batches=batches,
                 materials=[dict(index=m.get('index', i), name=m.get('name'), path=m.get('path'))
                            for i, m in enumerate(decoded['materials'])],
-                radius=math.sqrt(radius), triangles=len(indices) // 3, source_sha256=decoded['source_sha256'])
+                radius=math.sqrt(radius), triangles=len(indices) // 3, source_sha256=decoded['source_sha256'],
+                skinned=skinned, bind_usable=usable, bounds=bounds)
 
 
 def material_entries(archive, materials, done, texture_cache):

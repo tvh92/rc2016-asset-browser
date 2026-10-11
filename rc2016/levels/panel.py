@@ -107,6 +107,9 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
     if zone_filter:
         zones = [z for z in zones if level_scene.zone_label(z) in zone_filter or z in zone_filter]
     out.put(("zones", zones))
+    from rc2016.levels.actors import ActorCatalog, actor_groups
+    catalog = ActorCatalog(archive)
+    actor_decode_seconds = 0.0
     models, points = {}, []
     for zone in zones:
         if cancel.is_set():
@@ -116,7 +119,15 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
         except Exception as exc:
             out.put(("error", zone, f"{type(exc).__name__}: {exc}"))
             continue
-        out.put(("zone", dict(zone=zone, instances=scene["instances"], models=len(scene["models"]))))
+        actor_time = time.perf_counter()
+        try:
+            actor_count = catalog.add_zone(zone, scene)
+        except Exception as exc:
+            # Layout invariants fail the load instead of silently losing actors.
+            out.put(("fatal", f"Actors in {zone}: {type(exc).__name__}: {exc}"))
+            return
+        actor_decode_seconds += time.perf_counter() - actor_time
+        out.put(("zone", dict(zone=zone, instances=scene["instances"], models=len(scene["models"]), actors=actor_count)))
         points.extend(scene["points"])
         for model in scene["models"]:
             entry = models.setdefault(model["path"], dict(hidden=model["hidden"], count=0, zones=[]))
@@ -128,7 +139,7 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
             out.put(("sky", load_sky(archive, all_zones)))
         except Exception as exc:
             out.put(("error", "sky", f"{type(exc).__name__}: {exc}"))
-    geometries, overrides = [], dict(outcomes=Counter(), instances=0, models=set())
+    geometries, geometry_cache, geometry_paths, overrides = [], {}, {}, dict(outcomes=Counter(), instances=0, models=set())
     for path, entry in sorted(models.items(), key=lambda item: -item[1]["count"]):
         if cancel.is_set():
             return
@@ -150,9 +161,58 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
         # Replacement materials load with the model's own (material_entries skips loaded paths).
         geometry["override_materials"] = [dict(path=material) for material in replacements]
         geometries.append(geometry)
+        geometry_cache[path.lower()] = geometry
+        geometry_paths[path.lower()] = path
         out.put(("model", path, geometry, entry["hidden"], zones))
         out.put(("overrides", dict(outcomes=dict(overrides["outcomes"]), instances=overrides["instances"],
                                    models=len(overrides["models"]))))
+    actor_time = time.perf_counter()
+    candidates = catalog.candidates()
+    actor_models = {}
+    for actor in candidates:
+        actor_models.setdefault(actor['model'].lower(), []).append(actor)
+    for key, placements in actor_models.items():
+        path = placements[0]['model']
+        if cancel.is_set():
+            return
+        geometry = geometry_cache.get(path.lower())
+        upload = geometry is None
+        try:
+            if upload:
+                geometry = level_scene.model_geometry(archive, path)
+            for actor in placements:
+                actor['skinned'] = geometry['skinned']
+                actor['model_sha256'] = geometry['source_sha256']
+            if not geometry['bind_usable']:
+                for actor in placements:
+                    actor['reason'] = 'unusable bind/rest geometry'
+                    actor['skip_skin'] = geometry['skinned']
+                continue
+        except Exception as exc:
+            for actor in placements:
+                actor['reason'] = f'model decode failed: {path}: {type(exc).__name__}: {exc}'
+            continue
+        if upload:
+            geometry['override_materials'] = []
+            geometry_cache[path.lower()] = geometry
+            geometry_paths[path.lower()] = path
+            geometries.append(geometry)
+            out.put(("model", path, geometry, level_scene.hidden_by_default(path), []))
+        # Canonical GPU path for a model shared with the static layer.
+        gpu_path = geometry_paths[path.lower()]
+        by_zone = {}
+        for actor in placements:
+            by_zone.setdefault(actor['zone'], []).append(actor)
+            actor['drawn'] = True
+        for zone, actors in by_zone.items():
+            groups, replacements = actor_groups(actors, geometry['materials'])
+            geometry['override_materials'].extend(dict(path=p) for p in replacements)
+            out.put(("actors", zone, gpu_path, groups, actors))
+    summary = catalog.summary()
+    actor_seconds = actor_decode_seconds + time.perf_counter() - actor_time
+    out.put(("actor_summary", summary))
+    if not points:
+        out.put(("bounds", level_scene.core_bounds([a['matrix_rows'][3][:3] for a in candidates if a.get('drawn')])))
     geometry_seconds = time.perf_counter() - started
     done, cache, uploaded = set(), {}, set()
     for geometry in geometries:
@@ -169,7 +229,7 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
             out.put(("materials", entries))
         drop_uploaded_pixels(cache, entries, uploaded)
     out.put(("done", dict(geometry_seconds=geometry_seconds, total_seconds=time.perf_counter() - started,
-                          models=len(geometries), materials=len(done),
+                          models=len(geometries), materials=len(done), actors=summary, actor_seconds=actor_seconds,
                           material_overrides=dict(outcomes=dict(overrides["outcomes"]), instances=overrides["instances"],
                                                   models=len(overrides["models"])))))
 
@@ -178,7 +238,7 @@ class LevelPanel:
     """Tk panel; ``source_root`` is a callable returning the current extracted source root."""
 
     def __init__(self, parent, tk, ttk, source_root, level=None, mode="Shaded", zone_filter=None, on_done=None,
-                 list_parent=None, on_open_model=None, material_overrides=True, sky=True, native_translation=True):
+                 list_parent=None, on_open_model=None, material_overrides=True, sky=True, native_translation=True, actors=True):
         """``list_parent``: a separate frame for the level list (the asset browser's left pane);
         by default the list sits at the top of the panel's own side column (standalone window).
         ``on_open_model(model path)``: open a picked model elsewhere (the browser's Model tab)."""
@@ -231,6 +291,9 @@ class LevelPanel:
         self.native_translation_var = tk.BooleanVar(value=native_translation)
         ttk.Checkbutton(toggles, text="Native translation", variable=self.native_translation_var,
                         command=lambda: self.view.set_native_translation(self.native_translation_var.get())).pack(anchor="w")
+        self.actors_var = tk.BooleanVar(value=actors)
+        ttk.Checkbutton(toggles, text="Actors (source placements)", variable=self.actors_var,
+                        command=lambda: self.view.set_show_actors(self.actors_var.get())).pack(anchor="w")
         head = ttk.Frame(side); head.grid(row=6, column=0, sticky="ew", pady=(8, 2))
         ttk.Label(head, text="Zones").pack(side="left")
         ttk.Button(head, text="None", width=5, command=lambda: self._set_all(False)).pack(side="right")
@@ -251,6 +314,7 @@ class LevelPanel:
         self.view.grid(row=0, column=0, sticky="nsew")
         self.view.material_overrides = bool(material_overrides)
         self.view.show_sky = bool(sky)
+        self.view.show_actors = bool(actors)
         self.view.native_translation = bool(native_translation)
         self.view.set_mode(mode)
         self.view.clear("Choose a level and click Load.")
@@ -259,11 +323,11 @@ class LevelPanel:
         self.view.on_open = self._open_model
         self.view.on_lighting_changed = lambda: self.lighting_note.configure(text=self.view.lighting_note or "")
         self.status_var = tk.StringVar(value="")
-        ttk.Label(main, textvariable=self.status_var, anchor="w", padding=(4, 3)).grid(row=1, column=0, sticky="ew")
+        ttk.Label(main, textvariable=self.status_var, width=1, anchor="w", padding=(4, 3)).grid(row=1, column=0, sticky="ew")
         picked = ttk.Frame(main); picked.grid(row=2, column=0, sticky="ew")
         picked.columnconfigure(0, weight=1)
         self.picked_var = tk.StringVar(value="Click a model in the view to identify it.")
-        ttk.Label(picked, textvariable=self.picked_var, anchor="w", padding=(4, 0, 4, 3)).grid(row=0, column=0, sticky="ew")
+        ttk.Label(picked, textvariable=self.picked_var, width=1, wraplength=1000, anchor="w", padding=(4, 0, 4, 3)).grid(row=0, column=0, sticky="ew")
         self.open_button = ttk.Button(picked, text="Open in Model tab", state="disabled",
                                       command=lambda: self._open_model(self.view.selected))
         if on_open_model:
@@ -367,7 +431,11 @@ class LevelPanel:
             self.picked_var.set("Nothing under the pointer.")
             self.open_button.configure(state="disabled")
             return
-        self.picked_var.set(f"{path} · {self.view.instance_count(path):,} visible instances (outlined)")
+        actor = self.view.picked_actor
+        if actor:
+            self.picked_var.set(f"{actor['name'] or '(unnamed)'} · {actor['actor_path']} · {actor['id']} · {path}")
+        else:
+            self.picked_var.set(f"{path} · {self.view.instance_count(path):,} visible instances (outlined)")
         self.open_button.configure(state="normal")
 
     def _open_model(self, path):
@@ -420,8 +488,9 @@ class LevelPanel:
             summary = item[1]
             row = self.zone_rows.get(summary["zone"])
             if row is not None:
-                if summary["models"]:
-                    row.configure(text=f"{row.name} — {summary['instances']:,} placed")
+                if summary["models"] or summary.get("actors"):
+                    row.configure(text=f"{row.name} — {summary['instances']:,} placed"
+                                  + (f", {summary['actors']:,} actors" if summary.get("actors") else ""))
                     p["zones_with_models"] += 1
                     p["instances"] += summary["instances"]
                 else:
@@ -435,6 +504,15 @@ class LevelPanel:
             for zone, groups in zones:
                 self.view.add_instances(zone, path, groups)
             p["models"] += 1
+        elif kind == "actors":
+            _kind, zone, path, groups, actors = item
+            self.view.add_actors(zone, path, groups, actors)
+        elif kind == "actor_summary":
+            p["actors"] = item[1]
+            for reason, count in item[1]['reasons'].items():
+                print(f"level viewer: {count} actors unresolved: {reason}", file=sys.stderr)
+            if item[1]['duplicates']:
+                print(f"level viewer: {len(item[1]['duplicates'])} actor/static near pairs (see actor summary)", file=sys.stderr)
         elif kind == "sky":
             self.view.set_sky(item[1])
             p["sky"] = sky_summary(item[1])
@@ -469,8 +547,11 @@ class LevelPanel:
         errors = f" · {len(p['errors'])} failed" if p.get("errors") else ""
         overrides = override_summary(p.get("overrides"))
         sky = f" · {p['sky']}" if p.get("sky") else ""
+        actor_stats = p.get('actors', {})
+        actors = (f" · actors {stats.get('actors', 0):,} drawn, {actor_stats.get('unresolved', 0):,} unresolved, "
+                  f"{actor_stats.get('skipped_skinned', 0):,} skipped-skinned")
         self.status_var.set(
-            f"{p['state']} · {p['zones_with_models']}/{p['zones']} zones with models · {p['models']} models{errors} · "
+            f"{p['state']}{actors} · {p['zones_with_models']}/{p['zones']} zones with placements · {p['models']} models{errors} · "
             f"{stats['materials']} materials · {stats['textures']} textures{overrides}{sky} · showing {stats['instances']:,} instances, "
             f"{stats['triangles']:,} triangles in {stats['draws']} draws · {stats['draw_ms']:.1f} ms/frame · "
             f"speed {stats['speed']:.1f}/s")
