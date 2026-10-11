@@ -11,8 +11,9 @@ from __future__ import annotations
 
 from pathlib import Path
 import struct
+import threading
 
-from rc2016.formats.archive import decompress, lz4_block
+from rc2016.formats.archive import asset_data, asset_references, decompress, lz4_block
 from rc2016.formats.index import references
 from rc2016.formats.texture import dds_bytes, parse_header, ps4_deswizzle_slices
 
@@ -256,22 +257,43 @@ def _role(path):
     return next((r for r in ('_c', '_g', '_n', '_h') if stem.endswith(r)), None)
 
 
+# Guards every cache below: per-archive memo dicts and the caller-owned texture caches of
+# material_textures (the level viewer resolves materials from a thread pool).
+_CACHE_LOCK = threading.RLock()
+
+
+def _archive_cache(archive, name):
+    """A dict kept on the archive object under ``name`` (a throwaway dict when it takes no attributes)."""
+    cache = getattr(archive, name, None)
+    if cache is None:
+        with _CACHE_LOCK:
+            cache = getattr(archive, name, None)
+            if cache is None:
+                cache = {}
+                try:
+                    setattr(archive, name, cache)
+                except AttributeError:
+                    pass   # objects without attributes just skip caching
+    return cache
+
+
+def _remember(cache, key, value):
+    """cache.setdefault under the lock: the first stored value wins for every thread."""
+    with _CACHE_LOCK:
+        return cache.setdefault(key, value)
+
+
 def _graph_info(archive, graph_id):
     """(texture paths, slots, parameter keys, defaults, verified skin roles) of one graph.
 
     Many materials share a graph (a level loads hundreds of materials over a few dozen graphs),
     so the parse is kept on the archive object, per entry id. Callers must not mutate the result.
     """
-    cache = getattr(archive, '_graph_info_cache', None)
-    if cache is None:
-        cache = {}
-        try:
-            archive._graph_info_cache = cache
-        except AttributeError:
-            pass   # objects without attributes just skip caching
-    if graph_id not in cache:
-        graph_data = decompress(archive.bytes(graph_id)[0])[0]
-        textures = [r['path'] for r in references(graph_data) if r['path'].endswith('.texture')]
+    cache = _archive_cache(archive, '_graph_info_cache')
+    found = cache.get(graph_id)
+    if found is None:
+        graph_data = asset_data(archive, graph_id)
+        textures = [r['path'] for r in asset_references(archive, graph_id) if r['path'].endswith('.texture')]
         slots = texture_slots(graph_data, GRAPH_SLOT_SECTION)
         keys, defaults = frozenset(), {}
         try:
@@ -294,8 +316,8 @@ def _graph_info(archive, graph_id):
                     matches = [slot for slot in slots if slot & 0xFFFFFFFF == int(key, 16)]
                     if len(matches) == 1:
                         role_slots[roles[role]] = matches[0]
-        cache[graph_id] = (textures, slots, keys, defaults, role_slots)
-    return cache[graph_id]
+        found = _remember(cache, graph_id, (textures, slots, keys, defaults, role_slots))
+    return found
 
 
 def _foliage_alpha_cutoff(data):
@@ -324,8 +346,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
     material_ids = [k for k in archive.resolve(material_path) if archive.entries[k]['type'] == 'material']
     if len(material_ids) != 1:
         return {}
-    data = decompress(archive.bytes(material_ids[0])[0])[0]
-    found = [r['path'] for r in references(data) if not r.get('resolution_error')]
+    data = asset_data(archive, material_ids[0])
+    found = [r['path'] for r in asset_references(archive, material_ids[0]) if not r.get('resolution_error')]
     textures = [p for p in found if p.endswith('.texture')]
     graphs = [p for p in found if p.endswith('.materialgraph')]
     graph_keys, defaults, slots, role_slots = set(), {}, {}, {}
@@ -693,7 +715,8 @@ def _read_top_mip(archive, texture_path: str, full: bool) -> dict:
     stream = [k for k in ids if archive.entries[k]['built_path'].lower().endswith('.stream')]
     if len(built) != 1:
         raise ValueError(f'Texture {texture_path} has {len(built)} built assets')
-    info = parse_header(decompress(archive.bytes(built[0])[0])[0])
+    info = parse_header(asset_data(archive, built[0]))
+    _remember(_archive_cache(archive, '_texture_header_cache'), built[0], _header_facts(info))
     fmt = info['format']
     small = max(info['sd_width'], info['sd_height'])
     use_stream = (len(stream) == 1 and info['stream_size'] and info['hd_width'] and info['hd_height']
@@ -714,10 +737,141 @@ def _read_top_mip(archive, texture_path: str, full: bool) -> dict:
                 array_size=count, full_size=full_size, srgb=fmt in SRGB_FORMATS)
 
 
-def load_texture(archive, texture_path: str) -> dict:
-    """Top mip of one game texture as GPU-ready blocks plus its GL format."""
+TEXTURE_DISK_CACHE_VERSION = 1
+TEXTURE_DISK_CACHE_BYTES = 2 * 1024 ** 3
+_TEXTURE_DISK_MAGIC = b'RCTX'
+try:   # the decoders' own source: any change to them invalidates every cached texture
+    import hashlib as _hashlib
+    _TEXTURE_DECODER_SHA256 = _hashlib.sha256(b''.join(
+        (Path(__file__).resolve().parents[1] / name).read_bytes()
+        for name in ('viewer/textures.py', 'formats/texture.py', 'formats/archive.py', 'formats/container.py'))).hexdigest()
+except OSError:   # frozen executable without sources: no disk cache
+    _TEXTURE_DECODER_SHA256 = None
 
-    texture = _read_top_mip(archive, texture_path, full=False)
+
+class TextureDiskCache:
+    """Decoded top mips (load_texture results without GL fields) under ``folder``.
+
+    Keyed by the archive metadata hashes, the texture's archive occurrences and the decoder
+    source hash. Each file is ``RCTX`` + u32 header length + JSON header (with the payload
+    SHA-256) + slice bytes, written to a unique temporary file and renamed into place. A file
+    that fails any check is ignored and rewritten. Least recently used files are removed once
+    the folder exceeds ``limit`` bytes.
+    """
+
+    def __init__(self, folder, limit=TEXTURE_DISK_CACHE_BYTES):
+        self.folder, self.limit = Path(folder), limit
+        self._lock = threading.Lock()
+        self._total = None
+
+    def key(self, archive, texture_path):
+        metadata = getattr(archive, 'metadata', None)
+        if not metadata or _TEXTURE_DECODER_SHA256 is None:
+            return None
+        rows = []
+        for k in sorted(archive.resolve(texture_path)):
+            e = archive.entries[k]
+            if 'loose_path' in e:
+                return None
+            rows.append((k, e['built_path'], [(o['archive'], o['offset'], o['size']) for o in e['occurrences'] if o['available']][:1]))
+        import hashlib
+        return hashlib.sha256(repr((TEXTURE_DISK_CACHE_VERSION, _TEXTURE_DECODER_SHA256, sorted(metadata.items()),
+                                    texture_path, rows)).encode()).hexdigest()
+
+    def _file(self, key):
+        return self.folder / key[:2] / f'{key}.rctx'
+
+    def get(self, key):
+        import hashlib, json, os
+        path = self._file(key)
+        try:
+            with open(path, 'rb') as f:
+                blob = f.read()
+            if blob[:4] != _TEXTURE_DISK_MAGIC:
+                return None
+            size = struct.unpack_from('<I', blob, 4)[0]
+            header = json.loads(blob[8:8 + size].decode('utf-8'))
+            payload = blob[8 + size:]
+            if header.get('key') != key or hashlib.sha256(payload).hexdigest() != header.get('payload_sha256') \
+                    or sum(header['slice_sizes']) != len(payload) or not header['slice_sizes']:
+                return None
+            slices, at = [], 0
+            for n in header['slice_sizes']:
+                slices.append(payload[at:at + n]); at += n
+            texture = header['texture']
+            texture.update(full_size=tuple(texture['full_size']), pixels=slices[0], slices=slices)
+            os.utime(path)   # recency for eviction
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, struct.error):
+            return None
+        return texture
+
+    def put(self, key, texture):
+        import hashlib, json, os, uuid
+        slices = texture['slices']
+        payload = b''.join(slices)
+        fields = {k: texture[k] for k in ('path', 'width', 'height', 'format', 'array_size', 'full_size', 'srgb')}
+        header = json.dumps(dict(key=key, texture=fields, slice_sizes=[len(s) for s in slices],
+                                 payload_sha256=hashlib.sha256(payload).hexdigest())).encode('utf-8')
+        path = self._file(key)
+        temp = path.with_name(f'{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp')
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(temp, 'wb') as f:
+                f.write(_TEXTURE_DISK_MAGIC + struct.pack('<I', len(header)) + header + payload)
+            os.replace(temp, path)
+        except OSError:
+            try: temp.unlink()
+            except OSError: pass
+            return
+        self._grow(8 + len(header) + len(payload))
+
+    def _grow(self, added):
+        with self._lock:
+            if self._total is None:
+                self._total = sum(size for _p, size, _t in self._scan())
+            else:
+                self._total += added
+            if self._total <= self.limit:
+                return
+            files = sorted(self._scan(), key=lambda row: row[2])
+            self._total = sum(size for _p, size, _t in files)
+            for path, size, _t in files:
+                if self._total <= self.limit * 0.9:
+                    break
+                try:
+                    path.unlink(); self._total -= size
+                except OSError:
+                    pass
+
+    def _scan(self):
+        rows = []
+        try:
+            for sub in self.folder.iterdir():
+                if sub.is_dir():
+                    for path in sub.glob('*.rctx'):
+                        try:
+                            st = path.stat(); rows.append((path, st.st_size, st.st_mtime_ns))
+                        except OSError:
+                            pass
+        except OSError:
+            pass
+        return rows
+
+
+def load_texture(archive, texture_path: str) -> dict:
+    """Top mip of one game texture as GPU-ready blocks plus its GL format.
+
+    With a TextureDiskCache on ``archive.texture_disk_cache`` the decoded top mip is
+    reused from disk across sessions.
+    """
+
+    disk = getattr(archive, 'texture_disk_cache', None)
+    key = disk.key(archive, texture_path) if disk is not None else None
+    texture = disk.get(key) if key else None
+    if texture is None:
+        texture = _read_top_mip(archive, texture_path, full=False)
+        if key and texture['format'] in GL_COMPRESSED.keys() | GL_UNCOMPRESSED.keys():
+            disk.put(key, texture)
     fmt = texture['format']
     if fmt not in GL_COMPRESSED and fmt not in GL_UNCOMPRESSED:
         raise ValueError(f'Texture format {fmt} is not previewable')
@@ -740,13 +894,13 @@ def model_texture_list(archive, materials: list[dict]) -> list[dict]:
             ids = [k for k in archive.resolve(material['path']) if archive.entries[k]['type'] == 'material']
             if len(ids) != 1:
                 continue
-            found = [r['path'] for r in references(decompress(archive.bytes(ids[0])[0])[0]) if not r.get('resolution_error')]
+            found = [r['path'] for r in asset_references(archive, ids[0]) if not r.get('resolution_error')]
             direct = [p for p in found if p.endswith('.texture')]
             via_graph = []
             for graph in (p for p in found if p.endswith('.materialgraph')):
                 gids = [k for k in archive.resolve(graph) if archive.entries[k]['type'] == 'materialgraph']
                 if len(gids) == 1:
-                    via_graph += [r['path'] for r in references(decompress(archive.bytes(gids[0])[0])[0])
+                    via_graph += [r['path'] for r in asset_references(archive, gids[0])
                                   if r['path'].endswith('.texture')]
         except (ValueError, KeyError, OSError):
             continue
@@ -770,14 +924,27 @@ def load_texture_full(archive, texture_path: str) -> dict:
     return _read_top_mip(archive, texture_path, full=True)
 
 
+HEADER_FACTS = ('format', 'hd_width', 'hd_height', 'sd_width', 'sd_height', 'array_size')
+
+
+def _header_facts(info):
+    return {k: v for k, v in info.items() if k in HEADER_FACTS}
+
+
 def texture_header(archive, texture_path: str) -> dict:
-    """Header facts only (format and sizes), without untiling any pixels."""
+    """Header facts only (format and sizes), without untiling any pixels.
+
+    Memoized on the archive per built asset, also by _read_top_mip's own parse.
+    """
 
     built = [k for k in archive.resolve(texture_path) if archive.entries[k]['built_path'].lower().endswith('.built')]
     if len(built) != 1:
         raise ValueError(f'Texture {texture_path} has {len(built)} built assets')
-    info = parse_header(decompress(archive.bytes(built[0])[0])[0])
-    return {k: v for k, v in info.items() if k in ('format', 'hd_width', 'hd_height', 'sd_width', 'sd_height', 'array_size')}
+    cache = _archive_cache(archive, '_texture_header_cache')
+    facts = cache.get(built[0])
+    if facts is None:
+        facts = _remember(cache, built[0], _header_facts(parse_header(asset_data(archive, built[0]))))
+    return dict(facts)
 
 
 # Pillow lacks the sRGB twins of BC1-BC3; their blocks are identical, only the
@@ -954,15 +1121,33 @@ def puddle_texture_atlas(noise, ripple):
             pixels_sha256=hashlib.sha256(t['pixels']).hexdigest()) for t in (noise,ripple)])
 
 
+def _cached_texture(archive, cache: dict, path, tolerate=True):
+    """cache[path], loading it once. ``tolerate`` stores None for an unloadable texture;
+    otherwise the error propagates and nothing is stored. Loads run outside the lock."""
+    with _CACHE_LOCK:
+        if path in cache:
+            return cache[path]
+    try:
+        texture = load_texture(archive, path)
+    except (ValueError, KeyError, OSError):
+        if not tolerate:
+            raise
+        texture = None
+    return _remember(cache, path, texture)
+
+
 def _with_pixels(archive, cache: dict, path):
     """cache[path] for CPU sampling: reloaded when a caller dropped its 'pixels' (see material_textures)."""
-    texture = cache.get(path)
+    with _CACHE_LOCK:
+        texture = cache.get(path)
     if texture and 'pixels' not in texture:
-        texture = cache[path] = load_texture(archive, path)
+        texture = load_texture(archive, path)
+        with _CACHE_LOCK:
+            cache[path] = texture
     return texture
 
 
-def material_textures(archive, materials: list[dict], cache: dict) -> dict[int, dict]:
+def material_textures(archive, materials: list[dict], cache: dict, translations: dict | None = None) -> dict[int, dict]:
     """Material slot -> {'_c'/'_g'/'_n'/'_pick': texture or None, 'k', 'g_mode', 'self_lit', 'spec', 'gloss'[, 'pick']}.
 
     Missing or unloadable textures are None and that part is shaded without
@@ -970,13 +1155,18 @@ def material_textures(archive, materials: list[dict], cache: dict) -> dict[int, 
     A caller may drop 'pixels' and 'slices' from cached textures it has
     uploaded (the level loader does); sources sampled here on the CPU (tint
     palette, screen timeline, puddle and RockBlend layers) are then reloaded.
+    ``translations``, when given, receives {material path: selected native translation or None}
+    for materials whose texture paths resolved, so material_rules need not select it again.
+    Thread-safe for concurrent calls sharing one ``cache``.
     """
 
     result = {}
     for material in materials:
         entry = {role: None for role in ROLES}
+        resolved = False
         try:
             paths = material_texture_paths(archive, material['path']) if material.get('path') else {}
+            resolved = True
         except (ValueError, KeyError, OSError):
             paths = {}
         entry.update(k=paths.get('k', 0.0), g_mode=paths.get('g_mode', 'colored'), self_lit=paths.get('self_lit', 'c_alpha'),
@@ -994,19 +1184,12 @@ def material_textures(archive, materials: list[dict], cache: dict) -> dict[int, 
             path = paths.get(role)
             if not path:
                 continue
-            if path not in cache:
-                try:
-                    cache[path] = load_texture(archive, path)
-                except (ValueError, KeyError, OSError):
-                    cache[path] = None
-            entry[role] = cache[path]
+            entry[role] = _cached_texture(archive, cache, path)
         if paths.get('tint', {}).get('variant'):
             entry['tint'] = dict(entry['tint'])
             for role in ('_tint_detail', '_tint_palette'):
                 path = paths.get(role)
-                if path and path not in cache:
-                    try: cache[path] = load_texture(archive, path)
-                    except (ValueError, KeyError, OSError): cache[path] = None
+                if path: _cached_texture(archive, cache, path)
                 if role == '_tint_detail': entry[role] = cache.get(path)
                 elif cache.get(path):
                     entry['tint']['palette_rgb'] = tint_palette_sample(_with_pixels(archive, cache, path), entry['tint']['palette_u'])
@@ -1014,16 +1197,13 @@ def material_textures(archive, materials: list[dict], cache: dict) -> dict[int, 
         if paths.get('leaf_colour'):
             # Placeholder: one fixed-coordinate read of the palette ramp (no per-instance UV yet).
             path = paths['_cmb']
-            if path not in cache:
-                try: cache[path] = load_texture(archive, path)
-                except (ValueError, KeyError, OSError): cache[path] = None
+            _cached_texture(archive, cache, path)
             ramp = _with_pixels(archive, cache, path)
             if ramp:
                 entry['leaf_colour'] = dict(paths['leaf_colour'], palette_rgb=leaf_palette_sample(ramp, *paths['leaf_colour']['palette_uv']))
         if paths.get('forward', {}).get('kind') == 'screen':
             path = paths.get('_screen_timeline')
-            if path and path not in cache:
-                cache[path] = load_texture(archive, path)
+            if path: _cached_texture(archive, cache, path, tolerate=False)
             timeline = _with_pixels(archive, cache, path)
             if not timeline: raise ValueError('Screen timeline source unavailable')
             # Linear filtering at normalized .5: exact RGBA8 source timeline, 512x1.
@@ -1038,14 +1218,15 @@ def material_textures(archive, materials: list[dict], cache: dict) -> dict[int, 
             sources=[]
             for role in ('_puddle_noise','_puddle_ripple'):
                 path=paths.get(role)
-                if path and path not in cache: cache[path]=load_texture(archive,path)
+                if path: _cached_texture(archive,cache,path,tolerate=False)
                 sources.append(cache.get(path))
             if not all(sources) or not entry.get('_g') or not entry.get('_c'):
                 raise ValueError('GroundPuddles source texture unavailable')
             key=('GroundPuddlesAtlas',*(t['path'] for t in sources))
-            if key not in cache: cache[key]=puddle_texture_atlas(*(_with_pixels(archive,cache,t['path']) for t in sources))
-            entry['_puddle_atlas']=cache[key]
-            entry['puddles']=dict(entry['puddles'], scales=cache[key]['scales'])
+            atlas=cache.get(key)
+            if atlas is None: atlas=_remember(cache,key,puddle_texture_atlas(*(_with_pixels(archive,cache,t['path']) for t in sources)))
+            entry['_puddle_atlas']=atlas
+            entry['puddles']=dict(entry['puddles'], scales=atlas['scales'])
             if not entry.get('_n'): entry['puddles']['writer']='4A6CDAAA'
         if paths.get('rock_blend'):
             entry['rock_blend'] = paths['rock_blend']
@@ -1055,9 +1236,7 @@ def material_textures(archive, materials: list[dict], cache: dict) -> dict[int, 
                 else ('_rock_mask', '_rock_c2', '_rock_g2', '_rock_n2')
             for role in roles:
                 path = paths.get(role)
-                if path and path not in cache:
-                    try: cache[path] = load_texture(archive, path)
-                    except (ValueError, KeyError, OSError): cache[path] = None
+                if path: _cached_texture(archive, cache, path)
                 extra.append(_with_pixels(archive, cache, path))
             if all(extra) and all(entry.get(role) for role in ('_c', '_g', '_n')):
                 try:
@@ -1070,12 +1249,17 @@ def material_textures(archive, materials: list[dict], cache: dict) -> dict[int, 
         if material.get('path'):
             from rc2016.viewer.native_glsl import selected_translation
             try:
-                translated = selected_translation(archive, material['path'], paths)
+                try:
+                    translated = selected_translation(archive, material['path'], paths)
+                except (ValueError, KeyError, IndexError, OSError):
+                    if resolved and translations is not None: translations[material['path']] = None
+                    raise
+                if resolved and translations is not None: translations[material['path']] = translated
                 if translated:
                     native_textures = {}
                     for binding in translated['texture_bindings']:
                         path = binding['path']
-                        if path not in cache: cache[path] = load_texture(archive, path)
+                        _cached_texture(archive, cache, path, tolerate=False)
                         # Native uploads use a separate sRGB/linear GL object. A hand
                         # upload of this path may already have released its CPU pixels.
                         texture = _with_pixels(archive, cache, path)

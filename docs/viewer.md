@@ -97,6 +97,12 @@ Select one source row to load its geometry. Archive metadata is loaded once; onl
 **Loading speed:**
 
 - The archive opens from the pipeline's cached parsed `layout.csv` (`.cache/shared_index`; see [pipeline](pipeline.md), "Archive loading speed"). With the optional `lz4` package, LZ4 blocks decode in C.
+- Large files hashed on every open (the archive metadata, the shared assets table in `open_asset_index`) are re-hashed only when their size or modification time changes (`stat_file_hash`, sidecar `.cache/shared_index/file_hashes.json`). The archive root found under the game folder is remembered (`located_roots.json`) and used while it still holds the metadata files and a segment; otherwise the folder is walked again. Hash values are unchanged, so existing caches stay valid.
+- The viewer reads only the first copy of an asset that the archive repeats (`verify_repeats = False`, as the level viewer does); the scan and pipeline still compare every copy.
+- Each `Archive` memoizes decompressed assets and their reference lists (`asset_data`, `asset_references`; LRU, 256 MB, single assets over 32 MB are not kept), so a material, its graphs and texture headers are read once per model open although textures, the texture list, rule coverage and the native translation all need them. `texture_header` is memoized per built asset and filled by `load_texture`'s own parse. These caches and the texture caches of `material_textures` are thread-safe; the level viewer resolves materials from a thread pool.
+- Decoded top mips are kept on disk in `.cache/texture_preview` (`TextureDiskCache`, at most 2 GB, least recently used removed first). The key covers the archive metadata hashes, the texture's archive location and the source of the texture decoders, so a changed archive or decoder misses. Files are written atomically and carry a payload hash; a damaged file is decoded again.
+- Models are decoded from memory with `decode_model(..., as_arrays=True)`: positions, normals and triangles stay NumPy arrays through `mesh_payload` and `prepare_viewport`, and skin weights are decoded per batch with NumPy. UVs, skin and rock-alpha values reach the payload as flat lists, as before.
+- The loader's lock covers its own state only; the decode, texture reads and viewport arrays run outside it, so clip, pose and texture-list requests are not queued behind a model decode.
 - `prepare_viewport` builds the GL arrays with NumPy and falls back to the pure-Python `validate_mesh`, which also supplies the exact error message for an invalid payload. Both paths produce identical arrays.
 - The remaining time is mostly the shared native decoder (`rc2016.formats.native_model.decode_model`); a 550k-vertex prop loads in a few seconds and models under about 20k vertices draw in under 1 ms per frame.
 - **Recent models** (`SourcePreviewLoader._recent`): the last 6 decoded models (at most 1.5 million vertices in total) are kept with their animation libraries, so switching back or changing look or LOD is nearly instant. The key includes the output root, because animation sets are found through it. Setting `loader.identity = None` forces a fresh decode.
@@ -346,7 +352,7 @@ The table is built once per archive on a worker thread (about 20 seconds, about 
 
 ## Portable export (Extract selected)
 
-**Extract selected** exports portable files by default and needs no Blender. `ModelExporter` and `ExportOptions` (`rc2016/export/models.py`) run in the GUI process with their own `SourcePreviewLoader`, so they use the same decoders as the 3D view. The GUI runner is `ExportBatchRunner` in `rc2016/app/batch.py`.
+**Extract selected** exports portable files by default and needs no Blender. `ModelExporter` and `ExportOptions` (`rc2016/export/models.py`) run in the GUI process with their own `SourcePreviewLoader`, so they use the same decoders as the 3D view. `load(..., purpose='export')` decodes geometry (list-valued meshes), skeleton data and material paths only; it skips the viewer's texture decode, texture list, headers, rule coverage, native translation and viewport arrays. The GUI runner is `ExportBatchRunner` in `rc2016/app/batch.py`.
 
 One folder per model in the output root:
 
@@ -415,6 +421,8 @@ The **Gallery** tab shows rendered thumbnails of the models selected in the tree
 - Settings: `%APPDATA%/RC2016 Asset Browser/settings.json` (source and output folders, UI scale, export options, Blender and Python paths). Settings saved under the former name `PS4 Animation Extractor` are copied once.
 - `<repo>/.cache/shared_index`: parsed `layout.csv` and the shared index sidecar.
 - `<repo>/.cache/source_preview`: the viewer's archive working cache.
+- `<repo>/.cache/texture_preview`: decoded texture top mips for the viewer (at most 2 GB).
+- `<repo>/.cache/shared_index/file_hashes.json`, `located_roots.json`: file hashes by size and modification time, and the located archive root per game folder.
 - `<repo>/.cache/reviews`: isolated Blender review runs.
 - `<repo>/.cache/environment`: shared HDRI lighting maps (`<hdri hash>_v<version>.npz`).
 - `<repo>/.cache/shared_index/links_*.sqlite`: archive-wide asset links, one per archive identity.
