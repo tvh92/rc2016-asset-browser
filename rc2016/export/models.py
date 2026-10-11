@@ -327,7 +327,7 @@ def selected_meshes(decoded, lod, look):
 def mesh_arrays(mesh, joint_count):
     """Native positions/normals, game UVs (top row first), triangles, and skin sets (or None)."""
     positions = np.asarray(mesh['positions'], np.float32).reshape(-1, 3)
-    normals = np.asarray(mesh['normals'], np.float32).reshape(-1, 3) if mesh.get('normals') else None
+    normals = np.asarray(mesh['normals'], np.float32).reshape(-1, 3) if len(mesh.get('normals') if mesh.get('normals') is not None else ()) else None
     if normals is not None:
         length = np.linalg.norm(normals, axis=1, keepdims=True)
         normals = np.where(length > 1e-8, normals / np.maximum(length, 1e-8), np.array([0, 1, 0], np.float32))
@@ -631,7 +631,7 @@ class ModelExporter:
         gltf_based = any(f in options.formats for f in ('glb', 'gltf', 'fbx', 'usd', 'blend'))
         load_animation = options.animations != 'none' and gltf_based   # OBJ is the static rest pose only
         self.loader.load(self.source_root, model_id, source_path, options.lod, options.look,
-                         index_root if load_animation else None, False)
+                         index_root if load_animation else None, False, purpose='export')
         decoded, library = self.loader.current, self.loader.animation if load_animation else None
         archive = self.loader.archive
         self._check()
