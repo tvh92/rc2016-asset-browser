@@ -144,6 +144,7 @@ Two front ends share one implementation:
 | `panel.py` | `LevelPanel` (Tk): level list, typed path entry, view mode, zone toggles, status line; `load_level` background loader |
 | `viewport.py` | `LevelViewport` (a `ModelViewport` subclass): instanced renderer, fly camera, PNG capture |
 | `scene.py` | Data only, no GL: archive access, `zone_scene`, `model_geometry`, `core_bounds`, material lookup |
+| `actor_format.py`, `actors.py` | Actor/component decoding, structural primary binding, source-placement policy and exclusions |
 | `sky.py` | Data only, no GL: the level's atmosphere, cloud domes and clear-sky profile ([sky](#sky-in-the-level-viewer-skypy)) |
 | `level_format.py`, `zone_format.py` | The decoders described above |
 
@@ -196,7 +197,7 @@ Models whose path contains `collision` or `environment/template/` (for example `
 | Wheel | Dolly |
 | Ctrl+wheel, `[` `]`, `-` `+` | Fly speed |
 | F, Home | Reset to overview |
-| Left click (no drag) | Identify the model under the pointer |
+| Left click (no drag) | Identify a model or actor; actors report name, actor path, primary model and ID |
 | Double click | Open the identified model in the Model tab (asset browser) and load it; it does not reset the camera |
 
 Zone list: per-zone checkbox with placed-instance count, **All** / **None** buttons. The side column also has the **Lighting** (`Viewer rig` or `Shared HDRI`) and **Tonemap** (`ACES fit` or `Khronos PBR Neutral`) selectors, which work as in the model viewer ([Lighting and tonemap](viewer.md#lighting-and-tonemap)), and the **Show collision/template models**, **Instance material overrides**, **Native translation** and **Sky (atmosphere cloud dome)** checkboxes. Native translation is on by default, affects Shaded mode only and switches surface frontends without moving the camera. The status line shows load state, zone and model counts, failures, material and texture counts, the number of instances drawn with material overrides and of override entries not applied, the sky (cloud domes drawn, sky meshes not ported, captured clear sky or flat background), visible instances and triangles, draw calls, frame time (ms) and speed.
@@ -261,13 +262,13 @@ For ranked structural candidates, dat1lib cross-checks and serialized schemas ac
 - Water: the `pok_uniq_water` replacement materials on the ocean and pool planes draw with the [water preview](viewer.md#glass-and-forward-materials), an approximation, not the game's water shader. Planes that two overrides stack at one position draw both layers.
 - Replacement materials go through the same rules as other materials; they are not included in the rule-coverage counts above (with overrides, 292 materials load for Novalis).
 - Material-override entries whose slot name the placed model lacks (22% of entries) are not applied. Whether the game applies them some other way (for example by slot position) is not known; they are counted on the status line.
-- Gameplay actors: structurally decoded, but still not drawn. Rendering stopped at the airlock placement control; see [actors](#gameplay-actor-decoder-actor_formatpy).
+- Gameplay actors use the source-placement layer below. Runtime quest/save/spawn visibility, animation, attachments and unproven drawing components remain unsupported; ambiguous classes are skipped and reported.
 - Not handled: `_imposter` zones, quest-overlay regions, VFX, lights, collision volumes, `.level` spawn records (`0x3395AEC1`), decals, fog, sky meshes on graphs other than `Rk_Sky_Dome`, the stars term, cloud scrolling (time is frozen) and the atmosphere scattering tables.
 - Undecoded instance fields: flags at `+0x5C`, the tail blocks other than material overrides, the heap's other objects.
 
 ## Gameplay actor decoder (`actor_format.py`)
 
-`decode_actor(data)` reads an actor's dedicated primary-model pointer, local record, indexed dependencies and component definitions. `decode_zone_actors(data)` reads actor placement matrices and component ownership even in zones without a model-instance table. These functions supply source data only; the viewer does not use them yet. No animation or script execution is included.
+`decode_actor(data)` reads an actor's dedicated primary-model pointer, local record, indexed dependencies and component definitions. `decode_zone_actors(data)` reads actor placement matrices and component ownership even in zones without a model-instance table. These functions supply source data to `actors.ActorCatalog`, used by the viewer. No animation or script execution is included.
 
 ### Actor-to-model binding
 
@@ -281,7 +282,7 @@ For ranked structural candidates, dat1lib cross-checks and serialized schemas ac
 
 The primary pointer, rather than a string scan or name similarity, is the only candidate model-selection rule. Dependency models include destroyed crate chunks and spawned/attached parts. Dependency actors can form deeper chains: the corpus reaches five edges from the Clankbot spawner pad. Those edges do not establish model inheritance or attachment transforms, so an empty primary never falls back to a dependency's model. Every readable actor descriptor has an identity local matrix. Model-bearing descriptors store 176-byte local records; two empty-primary light descriptors store 152 bytes while declaring 160, a reported non-render exception.
 
-All 822 actor types referenced by zones were checked, followed recursively through the structural dependency table: 1,127 descriptors, 1,126 readable and one missing asset. Of the direct types, 720 have a primary model. The combined descriptor catalog references 887 distinct primary models. Highest LOD / look 0 was used only for geometry preflight; its suitability as an actor's initial visible state is still unproven. Secondary models, breakable states and attachments were not selected for drawing.
+All 822 actor types referenced by zones were checked, followed recursively through the structural dependency table: 1,127 descriptors, 1,126 readable and one missing asset. Of the direct types, 720 have a primary model. The combined descriptor catalog references 887 distinct primary models. The viewer selects that dedicated primary, Highest LOD and look 0. This is an explicit preview rule, not a claim of the runtime initial state. Secondary models, broken pieces and dependencies are not selected for drawing; an empty primary stays unresolved. Directly placed helper actors use their own structural primary pointer.
 
 ### Zone placement and components
 
@@ -297,7 +298,7 @@ All 822 actor types referenced by zones were checked, followed recursively throu
 | +0x18 | u64 | Actor ID, unique in the zone |
 | `0x50EDC53D` | 16-byte records | Same component-definition layout as an actor file; payloads are in `0x81999057` |
 
-Placement records retain the complete finite affine float32[16] matrix at +0x00, using the model-instance row-vector convention. They must not be decomposed into TRS. +0x40 is a record-kind discriminator (0, 1, 2, 4); +0x44 is the record's byte count, not a scale or bounding volume. Kind-0 render headers carry the matching actor ID at +0x48 and model sentinel `0xFFFF` at +0x58. Other kinds have different headers: their +0x48 must not be treated as a render-record ID. Existing per-instance material-override blocks are decoded on render records using their own bounds and the zone replacement list; no swaps are applied.
+Placement records retain the complete finite affine float32[16] matrix at +0x00, using the model-instance row-vector convention. They must not be decomposed into TRS. +0x40 is a record-kind discriminator (0, 1, 2, 4); +0x44 is the record's byte count, not a scale or bounding volume. Kind-0 render headers carry the matching actor ID at +0x48 and model sentinel `0xFFFF` at +0x58. Other kinds have different headers: their +0x48 must not be treated as a render-record ID. Existing per-instance material-override blocks are decoded on render records using their own bounds and the zone replacement list, then applied through `scene.resolve_overrides`. Runtime SetMaterialAction swaps are not applied.
 
 The decoder raises on container/section bounds, duplicate tags, malformed string references, invalid indices, duplicate IDs, nonfinite/nonaffine matrices, record sizes/alignment, render ID/sentinel mismatches, component name CRCs, payload ranges and component ownership failures. A final actor record may extend fewer than eight bytes beyond an unpadded heap, as with model instances (ten corpus cases, all four bytes).
 
@@ -307,41 +308,71 @@ The decoder raises on container/section bounds, duplicate tags, malformed string
 
 All 233 actor-bearing zones decode with no layout invariant or archive repeated-copy failures: 40,267 actors in the main `levels/` namespace plus eight legacy `rc1/levels/` actors. 18,565 placements have a structural primary-model binding; 18,559 pass the bounded geometry preflight after keeping the three known viewer failure classes unresolved. The other actors have no primary render model (21,709) or a missing actor asset (one Batalia `vol_simpleattach`).
 
-Counts below follow each actual `.level` zone list, rather than every zone sharing its folder prefix. Some level lists share zones. Rigid/skinned refer to nonempty decoded skin influences after excluding the known failures; finite geometry/extents are numerical preflight, not visual bind-pose or placement acceptance. Primary-bound counts include the known failures, so rigid + skinned + unresolved equals actors.
+Counts below follow each actual `.level` zone list, including shared zones. Primary-bound means the dedicated source pointer exists. Resolved means eligible geometry submitted, including default-hidden collision/template models. Drawn excludes that existing hidden filter with all zones enabled. Rigid/skinned classify resolved geometry by nonempty skin influences. Actors = rigid + skinned + unresolved; drawn + hidden = resolved.
 
-| Level | Actors | Primary model bound | Rigid | Skinned | Unresolved |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `aridia` | 1,728 | 738 | 265 | 468 | 995 |
-| `batalia` | 3,310 | 1,651 | 1,047 | 604 | 1,659 |
-| `deplanetizer` | 2,874 | 1,498 | 491 | 1,007 | 1,376 |
-| `deplanetizer_exterior` | 832 | 62 | 8 | 54 | 770 |
-| `deplanetizer_nefarious` | 329 | 58 | 26 | 32 | 271 |
-| `gaspar` | 4,146 | 2,350 | 491 | 1,859 | 1,796 |
-| `kalebo` | 3,884 | 767 | 266 | 501 | 3,117 |
-| `metropolis` | 4,912 | 2,967 | 722 | 2,245 | 1,945 |
-| `museum` | 540 | 344 | 343 | 1 | 196 |
-| `nebula` | 1,661 | 867 | 406 | 461 | 794 |
-| `novalis` | 1,943 | 794 | 313 | 481 | 1,149 |
-| `phoenix` | 837 | 436 | 332 | 104 | 401 |
-| `pokitaru` | 2,554 | 954 | 369 | 585 | 1,600 |
-| `prequartu` | 1,122 | 364 | 267 | 97 | 758 |
-| `quartu` | 3,072 | 1,411 | 678 | 733 | 1,661 |
-| `rilgar` | 3,587 | 1,327 | 685 | 641 | 2,261 |
-| `veldin` | 1,760 | 1,051 | 197 | 854 | 709 |
+| Level | Actors | Primary bound | Rigid | Skinned | Hidden | Drawn | Unresolved | Near static pairs |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `aridia` | 1,728 | 738 | 264 | 453 | 20 | 697 | 1,011 | 0 |
+| `batalia` | 3,310 | 1,651 | 1,045 | 589 | 22 | 1,612 | 1,676 | 0 |
+| `deplanetizer` | 2,874 | 1,498 | 330 | 932 | 101 | 1,161 | 1,612 | 0 |
+| `deplanetizer_exterior` | 832 | 62 | 7 | 53 | 0 | 60 | 772 | 0 |
+| `deplanetizer_nefarious` | 329 | 58 | 14 | 25 | 1 | 38 | 290 | 0 |
+| `gaspar` | 4,146 | 2,350 | 459 | 1,838 | 46 | 2,251 | 1,849 | 0 |
+| `kalebo` | 3,884 | 767 | 171 | 474 | 22 | 623 | 3,239 | 0 |
+| `metropolis` | 4,912 | 2,967 | 671 | 2,214 | 73 | 2,812 | 2,027 | 0 |
+| `museum` | 540 | 344 | 331 | 1 | 82 | 250 | 208 | 0 |
+| `nebula` | 1,661 | 867 | 330 | 444 | 76 | 698 | 887 | 4 |
+| `novalis` | 1,943 | 794 | 307 | 480 | 31 | 756 | 1,156 | 0 |
+| `phoenix` | 837 | 436 | 244 | 87 | 25 | 306 | 506 | 0 |
+| `pokitaru` | 2,554 | 954 | 327 | 574 | 45 | 856 | 1,653 | 0 |
+| `prequartu` | 1,122 | 364 | 241 | 59 | 81 | 219 | 822 | 0 |
+| `quartu` | 3,072 | 1,411 | 569 | 645 | 111 | 1,103 | 1,858 | 0 |
+| `rilgar` | 3,587 | 1,327 | 680 | 612 | 17 | 1,275 | 2,295 | 0 |
+| `veldin` | 1,760 | 1,051 | 175 | 836 | 30 | 981 | 749 | 0 |
 
-Unresolved model classes remain `npc_skidd_mcmarx` (two Aridia actors), `npc_skidds_agent` (three Aridia actors) and `npc_ryno_dealer` (one Rilgar actor), as explicitly excluded from this work. A geometry-only decode yielding finite arrays does not clear their viewer failure status. Non-render volumes, curves, cameras and controllers with empty primaries stay undrawn; dependencies are not substituted for them. Flags, component unread tails, attached/joint-relative parts, scale/offset components and runtime initial states need further evidence before a draw policy can be approved.
+All actual level lists and all 233 actor-bearing zones pass the actor loader policy without invariant failures. Selected geometry is finite and has nonzero triangle area. This numerical check does not visually certify every bind pose. Proof views cover Plumber, Grimroth, vendors, enemies, crate clusters and a sewer door; their source bind/rest meshes are noncollapsed. No poses are authored.
 
-### Placement stop condition
+Remaining classes and reasons:
+
+- Empty primaries: volumes, curves, cameras, controllers and other non-render actors; no dependency model is substituted. One Batalia `volume/vol_simpleattach/vol_simpleattach.actor` asset is missing.
+- Known model failures: `npc_skidd_mcmarx` (two Aridia actors), `npc_skidds_agent` (three Aridia actors), `npc_ryno_dealer` (one Rilgar actor). These remain explicitly excluded even when a geometry-only decode returns arrays.
+- Placement conflicts: Nebula airlock primary-model class, described below. Any same-model near static control with a conflicting full matrix excludes that model class for the selected zone list.
+- Unproven drawing components: ScalePrototyping, ScaleOverTime, PositionOffset, CurveFollowerAttach, MaterialOverrideComponent, StaticMaterialOverrideList, StaticMaterialOverride, MaterialOverrideSyncComponent, RenderOverrideConstantSyncComponent, TriggerResponderChangeMaterial, AttachmentList and HoverboardAttach. Their affected placements remain unresolved, including components with empty payloads whose defaults are unproven.
+- ActorAttachment/spawner components: typed AttachedActor/AttachedList and SpawnTemplate/SpawneeTemplate IDs mark referenced children/templates undrawn. Parent primary meshes can still draw; no joint-relative transform or spawned dependency is inferred.
+- VFX actor or primary-model namespaces are outside the layer.
+
+Local render-record bytes +0x58 through +0xAF are identical across all 1,025 model-bearing descriptors, including descendants: raw flags +0x5C = 0x00440000, candidate override count +0x99 = 0, block +0xA4 = 0xFFFFFFFF. Along with identity local matrices, this supplies no class-specific descriptor offset, scale or material variation. Unknown byte semantics are not inferred. Placement records have 1,224 override entries across the whole corpus and use the existing exact slot/material resolver; per-actor outcomes are retained.
+
+The raw table flags 0/4/8/12 and runtime visibility remain unresolved. The layer previews source placements, including multiple quest-state Plumber placements that overlap in Novalis bind pose. Highest LOD / look 0 and default model materials are used only when no unproven drawing component blocks the actor. MaterialConstant is not interpreted. Per-level reason counts, actor paths, model bindings, IDs, offsets and hashes are retained in the private corpus report.
+
+### Actor layer and identification
+
+**Actors (source placements)** is enabled by default and independent of the existing zone toggles. Actor-only zone rows are enabled. `--no-actors` starts the standalone viewer with the layer hidden. Both states preload actor geometry/materials; toggling requires no archive reload. The normal draw path shares model geometry and batches full matrices by handedness and effective materials across visible zones. Static rows retain their original order and framing bounds; actor bounds are used only without static placements.
+
+A click reports actor name, .actor path, resolved primary model and actor ID. Model-level picking is followed by an identity pass for that model only; individual actor IDs add click-time work, not regular frame draws. The source receipt retains the exact matrix, primary section/offset/type and actor/zone/model hashes. Double click continues to open the primary in the Model tab. Status shows visible actors drawn, unresolved placements and skipped-skinned (known skin-model failures or unusable bind geometry); component/placement policy skips count as unresolved.
+
+### Actor performance and regression
+
+RTX 3060, 1216x836 viewport, Viewer lighting / ACES fit, native translation, sky and material overrides enabled. Full Novalis camera is `118,-418,345,90,-35`; full Veldin is `75,-160,85,90,-25`. Two 30-frame blocks per state follow five warm-up frames in off/on/on/off order, with glFinish per frame; the table reports the median over 60 samples. Block medians vary, especially for Veldin, so these are representative preview costs.
+
+| Level | Worker load (either toggle state) | Actor decode/resolve/geometry | Frame off/on | CPU off/on | Draws off/on |
+| --- | ---: | ---: | --- | --- | --- |
+| novalis | 8.48 s | 1.25 s | 16.52 / 18.19 ms | 9.43 / 10.83 ms | 989 / 1152 |
+| veldin | 4.02 s | 1.00 s | 8.81 / 14.90 ms | 3.94 / 8.64 ms | 412 / 631 |
+
+Pre-change worker loads in the corresponding baseline run were 5.65 s for Novalis and 3.14 s for Veldin. The new totals include actor texture loading; actor_seconds excludes textures. Hiding the preloaded layer saves frame cost, while retaining its load/memory cost. The actors-off full-level PNG pixels match the pre-change frames exactly at the same cameras and viewport sizes. GPU picks identify the crate, door, NPC/vendor and enemy proof placements. The available reference folder has no matching Novalis/Veldin actor camera, so no direct reference-image match is claimed.
+
+### Placement controls
 
 All four airlock actors in Nebula `gp_base.zone` are within 0.00265 native units of static instances of their exact primary model in the actual `neb_art.zone`, but face approximately 180 degrees away from those instances about Y. For example, `AIRLOCK_TRESPASSER_1` has first-axis X/Z `(-0.258819, +0.965926)`, while the coinciding static instance has `(+0.258819, -0.965926)`. Their actor descriptors have identity local matrices and no per-instance component payload explaining the difference. Matching boss-door matrices exist only in an unreferenced debug art zone, which is not part of `nebula.level`.
 
-The full-zone probe finds 21 same-model near pairs for 17 actors; eight pairs have matching matrices (maximum element difference below 1e-6). These are probe classifications, including unreferenced/debug zones, not automatic duplicate suppression. The actual Nebula level has four pairs, all four airlock mismatches, and no matching pair. Co-location alone cannot establish that an actor should replace a static instance.
+The full-zone probe finds 21 same-model near pairs for 17 actors, including unreferenced/debug zones; eight match full matrices (<1e-6 maximum element difference). Actual level lists contain only the four Nebula airlock conflicts. Same-model translations within 0.05 units are reported. Full matches suppress the actor in favour of the selected static placement, even when materials differ; conflicting matrices block the model class. Classification precedes zone visibility toggles, so suppressed actors remain suppressed when their static zone is hidden. Co-location alone never supplies a corrected transform.
 
-Rendering stopped at this control: no actor layer, UI toggle, bind-pose visual claims, screenshots, new load/frame timings or pixel-regression capture were produced. The existing scene, viewport and panel drawing code is unchanged. A RenderDoc capture of the Nebula airlock draws—especially both Trespasser doors—with identified model/vertex buffers, full world and bind/bone matrices, and the visibility/state of the coinciding static doors would settle whether the runtime applies a transform/pose adjustment or the source intentionally represents opposite-facing geometry. No rotation or scale was tuned to hide the disagreement.
+The airlock class stays excluded while other proven primary bindings draw. A RenderDoc capture of the Nebula airlock draws, especially both Trespasser doors, with identified model/vertex buffers, full world and bind/bone matrices, and the visibility/state of coinciding static doors would settle whether runtime applies a transform/pose adjustment or the source intentionally represents opposite-facing geometry. No rotation or scale is tuned to hide the disagreement.
 
-## Actor material swaps (not drawn)
+## Actor material swaps (runtime, not applied)
 
-Zones also hold actors and their scripts. Their material swaps do not apply to the model-instance table, and the viewer does not draw actors. The script-table layouts below were checked on all 113 main-game zones that have script nodes (42,587 nodes) without a failure and remain research-only. Actor placement and component ownership are now decoded separately by `actor_format.py`:
+Zones also hold actors and their scripts. Their runtime material swaps do not apply to the model-instance table or the source-placement actor preview. The script-table layouts below were checked on all 113 main-game zones that have script nodes (42,587 nodes) without a failure and remain research-only. Actor placement and component ownership are now decoded separately by `actor_format.py`:
 
 | Section | Content |
 | --- | --- |
