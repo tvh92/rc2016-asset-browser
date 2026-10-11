@@ -238,6 +238,7 @@ Approximations:
 
 Known gaps:
 - Glass, energy and VFX materials are forward-shaded and not covered by the deferred group. Only `character_glass` and the documented per-model recipes exist.
+- Fur shells (flag `0x80000`) are drawn as ordinary opaque surfaces; their alpha passes and `fur_control` textures are not modelled. One no-graph fur-shell skin layer is read with the grey `_g` layout by inference from its sibling (see [viewer](viewer.md)).
 - K is verified on two materials only; a capture with another weapon equipped would confirm further values.
 - Exposure is recovered for Veldin daytime only. Whether other levels use a different or adaptive exposure is unknown; the 1D and 3D tables are probably global.
 - The native skin ramp term and the full forward light and shadow response are not reproduced.

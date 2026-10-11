@@ -63,6 +63,9 @@ def main(argv=None):
     parser.add_argument("--camera", type=lambda s: tuple(float(x) for x in s.split(",")))
     parser.add_argument("--no-material-overrides", action="store_true",
                         help="draw instances without their per-instance material overrides")
+    parser.add_argument("--experimental-spawns", action="store_true",
+                        help="approximate enemy factory populations; all encounter states combined")
+    parser.add_argument("--no-actors", action="store_true", help="hide the source-placement actor layer")
     parser.add_argument("--no-sky", action="store_true", help="draw the flat background instead of the level sky")
     parser.add_argument("--no-native-translation", action="store_true",
                         help="use only hand rules and generic/family material readings")
@@ -96,7 +99,7 @@ def main(argv=None):
     panel = LevelPanel(root, tk, ttk, source.get, level=args.level or settings["level"], mode=args.mode,
                        zone_filter=args.zones, on_done=finished if (args.capture or args.camera) else None,
                        material_overrides=not args.no_material_overrides, sky=not args.no_sky,
-                       native_translation=not args.no_native_translation)
+                       native_translation=not args.no_native_translation, actors=not args.no_actors, spawn_preview=args.experimental_spawns)
     panel.frame.pack(side="top", fill="both", expand=True)
 
     def close():

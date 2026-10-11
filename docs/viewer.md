@@ -62,6 +62,10 @@ An **Asset type** selector (Model / Level / Flash UI) above the search row decid
 
 The level list and the Flash UI list are read the first time their type is selected.
 
+The Level tab and standalone level viewer include **Actors (source placements)**, enabled by default. The layer previews structurally bound primary models, with skinned NPCs/enemies in source bind pose. Actor-only zones have working zone toggles. Click an actor to report its name, actor path, primary model and ID; double click opens that model. Status reports actors drawn, unresolved and skipped-skinned. The standalone `--no-actors` option hides the layer while keeping its assets preloaded. Runtime state selection, animation and unproven attachment/material components remain excluded; see [level actors](levels.md#gameplay-actor-decoder-actor_formatpy).
+
+**Enemy spawns (experimental)** is off by default. Enable it to inspect approximate factory populations, including Novalis's 84 Peckbots and 20 Birdbots. The standalone option is `--experimental-spawns`. Every eligible encounter state is combined; template/location cycling and repeated-anchor spacing are inspection choices, not decoded game placement. Enemies use source bind pose and the shared material path. Picking identifies the factory, template and location; status labels approximate draws and unresolved inputs. The ordinary actor toggle and zone toggles remain independent. See [enemy factory preview](levels.md#enemy-factory-coverage-and-experimental-preview) for source layouts, placement policy and limitations.
+
 ## Model tree, search, used-by
 
 - The tree groups models by archive folder. A folder that holds one model and no subfolders is skipped (`folder_layout`). Selecting a folder selects every model inside it.
@@ -157,13 +161,15 @@ Limitations of the lighting: no shadowing, ambient occlusion or interreflection.
 
 The `_g` channel layout depends on the graph's decoded writer. `GRAPH_RULES` in `rc2016/viewer/textures.py` registers decoded rules by exact full graph stems ending in a dot before the `.materialgraph` extension. These rules precede the retained skin, incandescence and `basic_normal_gloss` family fallbacks; the first matching entry wins. Graphs without a rule or eligible native translation use the generic reading: coloured F0 = spec x `_g.rgb`, gloss = sqrt(sat(gloss x a^2)), where `a` is `_g.a`.
 
+A material that names no graph gets the generic reading too. One exception: `FUR_SHELL_GREY_READING` in `rc2016/viewer/textures.py` lists one exact fur-shell material (Big Al's `skin_and_fur`, render-state bit `0x80000`, no graph) and reads it as grey, like its sibling skin material that uses the same `_c`/`_g`/`_n` textures. This is an inference from the shared textures, not a decoded rule (`g_mode_source` marks it). The fur-shell passes themselves are not drawn; the layer is shaded as a normal opaque surface.
+
 The specular and gloss scales (keys `0x62835AF9` and `0x24F4CA4C`) come from the material, else from the graph default. K (self-lit strength) comes from the self-lit key in the graph's own parameter table, because materials can store keys their graph never reads (for example writer `C4828176` uses only `0x06F19114`). Self-lit keys by family: `0x66EFA55B` (default deferred), `0x06F19114` (coloured-gloss-emissive), `0xF8C61683` (emissive in `_c` alpha), `0x5FD56522` (incandescence).
 
 "Grey" below means F0 = grey spec x `_g.G` and gloss = sqrt(sat(gloss x `_g.R`)). Writer IDs are the hashes of the decoded shader writers; the decode notes are research material (not included here).
 
 | Graph | Reading |
 |---|---|
-| `basic_skin/*` | R = gloss (sqrt), G = grey specular capped at 0.5. Coloured F0 would give red specular on skin |
+| `basic_skin/*` | R = gloss (sqrt), G = grey specular capped at 0.5. Verified graph identities select C/G/N by the pipeline slot roles; stale instance slots and the secondary normal cannot win by suffix. Coloured F0 would give red specular on skin |
 | `basic_normal_gloss`, `_detail`, `_monitor_dep`, `_aniso` (writer `5EBDECA4`) | Grey, no self-lit |
 | `basic_incandescence` | Grey; self-lit = `0x5FD56522` x `_g.B` |
 | `basic_normal_gloss_emissive`, `_emissive_detail`, `_fresnel_detail`, `_emissive_colored_spec`, `_aniso_incan`, `_specfresnel_emissive` | Six separately traced writers: grey, with graph-specific tint, glow, rim and detail terms; detail uses texture unit 11; pulses show t=0 |
@@ -179,6 +185,7 @@ The specular and gloss scales (keys `0x62835AF9` and `0x24F4CA4C`) come from the
 | `jn_color_tint_detail_parallax` (writer `4E4D7894`) | Grey, no self-lit; source tint and detail normal at displaced UVs; fixed 16-64 steps, height key `0xEE0F9FF8`, visibility applied after tint to albedo only; height unit 12 |
 | `jn_basic_normal_gloss_glow_mask` (`2685144F`), `_02` (`CA81B14F`) | Grey, K `0x06F19114`; first: mask/tint/environment and offset-parallax glow; `_02`: `c.R x mask x K` with a vertex factor; unit 13 |
 | `mo_blend_01` (writer `886AAC94`) | Blends two source-resolved c/g/n layers through H, squared vertex alpha and sharpness; grey, no self-lit; unit 15; source vertex alpha when available, otherwise 1 |
+| `rp_mo_blend_color_breakup_01` (writer `A3DAA047`) | The `mo_blend_01` H/alpha/sharpness blend of g/n layers sampled at U x UV0 (key `0xE8D31733`), H at UV0; albedo is one breakup `_c` sample at native world (x, z) / T (key `0xFD70EF49`), no layer colour or tint; unit 15. Native position is world space in the level viewer and model space in the model viewer and Blender |
 | `basic_foliage` | Four deferred writers: grey, no self-lit, no subsurface output; normal z = 1 - x^2 - y^2; leaf cut-out on `_c` alpha with a decoded per-material baseline ([Leaf cut-out](#leaf-cut-out)); dither and normal fade omitted |
 | `rp_nov_plant_tree_foliage_transparent`, `gbl_plant_tree_foliage_transparent_01` (tree leaves) | Leaf cut-out only ([Leaf cut-out](#leaf-cut-out)); every other term keeps the generic reading, because the `_g`, `_cma` and `_cmb` terms of these writers are not decoded |
 | `mo_neb_amb_screen_01` (forward `8716DC7A`) | Source timeline/grid, mask, colour/intensity and scroll noise at CB0[99]=0 with frozen cutoff, alpha and fog; units 0/1/2/4 |

@@ -25,6 +25,7 @@ VERTICES = 0xA98BE69B
 SKIN_BATCH = 0xC61B1FF5
 SKIN_DATA = 0xDCA379A2
 SKIN_JOINT_REMAP = 0x5240C82B
+JOINTS = 0x15DF9D3B
 MODEL_HEADER = 0x283D0383
 DEFAULT_POSITION_SHIFT = 12
 RCRA_WEIGHTS = 0xCCBAFF15
@@ -388,6 +389,7 @@ def decode_model(path, lod='Highest', look=0, expected_sha256=None, preserve_sou
         raise ValueError('Skin batch section is not a multiple of 16 bytes')
     skin_batch_counts=_skin_batch_counts(meshes_raw,mesh_count,len(skin_batches)//SKIN_BATCH_STRIDE,selected)
     joint_palettes=_skin_joint_palettes(skin_batches,_chunk(data,sections,SKIN_JOINT_REMAP))
+    joint_count=len(_chunk(data,sections,JOINTS) or b'')//16
     result=[]
     for mesh_index in selected:
         mesh_record = _mesh_record(meshes_raw, mesh_index)
@@ -422,8 +424,10 @@ def decode_model(path, lod='Highest', look=0, expected_sha256=None, preserve_sou
             for batch_index in range(batch_first,batch_first+batch_count):
                 skin_offset,zero0,zero1,influence_code,count,first=struct.unpack_from('<II4H',skin_batches,batch_index*SKIN_BATCH_STRIDE)
                 palette=joint_palettes.get(batch_index)
-                if palette is None and (zero0 or zero1):
+                if palette is None and zero1:
                     raise ValueError(f'Unsupported nonzero skin batch fields at {batch_index}')
+                # Without a palette, a nonzero u32 at +4 is a joint-id base added to each u8 id (NPC form).
+                id_base=zero0 if palette is None else 0
                 influences,stride=_influence_layout(influence_code)
                 packed_count=influences
                 if first+count>local_count or skin_offset+count*stride>len(skin):
@@ -436,6 +440,10 @@ def decode_model(path, lod='Highest', look=0, expected_sha256=None, preserve_sou
                         if max(ids)>=len(palette):
                             raise ValueError(f'Skin batch {batch_index} local joint id exceeds its remap palette')
                         ids=[palette[x] for x in ids]
+                    elif id_base:
+                        ids=[x+id_base for x in ids]
+                        if max(ids)>=joint_count:
+                            raise ValueError(f'Skin batch {batch_index} joint id base exceeds the skeleton')
                     values=[1.0] if influences==1 else ([v/sum(raw) for v in raw] if sum(raw) else [])
                     if not values:
                         raise ValueError(f'Zero-sum skin weights in batch {batch_index}')
@@ -581,8 +589,8 @@ def _skin_joint_palettes(skin_batches, remap):
     order, each starting on the next 16-byte boundary with zero padding, and
     the last one ends at the section end; all five archive models with the
     section (two Telepathipus, three NPCs) satisfy this. Batches with a
-    nonzero +4 but a zero count are a different, undecoded form and are left
-    to fail closed.
+    nonzero +4 but a zero count are the palette-less NPC form: decode_model
+    adds the +4 value to each u8 id instead, and no palette is built.
     """
     if not remap:
         return {}

@@ -75,6 +75,10 @@ GRAPH_RULES = (
     # Other models/enm_blarg_saucer/evidence/COLORPICK_DECODE.md (writer 66744D01)
     ('materialgraph/global/basic_colored_spec_emmisive_in_c_alpha/blarg_saucer_colorpick.',
      dict(g_mode='grey', self_lit='g_blue', self_lit_key=0x06F19114, pick=(0x40520184, 0xD257B634, 0x124A2F94))),
+    # Cached SPIR-V 63EEBF51 (ID in the graph's OrbShdr): coloured F0 = P*_g.rgb, gloss = sqrt(Q*_g.a^2), no self-lit;
+    # Materials/BasicColoredSpec/BASIC_COLORED_SPEC_DECODE.md. Exact graph only; 1BC3FDDF/F8FBB38F are undecoded.
+    ('materialgraph/global/basic_colored_spec/basic_colored_spec.',
+     dict(g_mode='colored', self_lit_key=None)),
     # Exact graph only: the jn_/_detail/_random_color tint variants have their own, undecoded writers.
     ('materialgraph/environment/global/gbl_color_tint_01/mo_gbl_color_tint_01.',
      dict(g_switch=TINT_G_SWITCH, self_lit_key=None, tint=True)),
@@ -123,6 +127,10 @@ GRAPH_RULES = (
     # 886AAC94 resource-table deferred writer; Materials/RockBlend/ROCK_BLEND_DECODE.md.
     ('materialgraph/environment/global/rock/mo_blend_01/mo_blend_01.',
      dict(g_mode='grey', self_lit_key=None, rock_blend=True)),
+    # A3DAA047 deferred writer (same vertex programs as 886AAC94): one breakup colour sample at native
+    # world (x, z) / T, layer g/n at U * UV0, no layer colour or tint; RockBlend/ROCK_BLEND_DECODE.md.
+    ('materialgraph/environment/global/rock/mo_blend_01/rp_mo_blend_color_breakup_01.',
+     dict(g_mode='grey', self_lit_key=None, rock_blend='color_breakup')),
     # FE32FE79/B01E7CB2 cached deferred outputs; Materials/Foliage/FOLIAGE_DECODE.md.
     ('materialgraph/global/basic_foliage/basic_foliage.',
      dict(g_mode='grey', self_lit_key=None, foliage=True, alpha_cut=True)),
@@ -171,6 +179,13 @@ WATER_PRESENTATION = dict(opacity=0.8, f0=0.02, gloss=0.9, normal_strength=0.5,
 GRAPH_SLOT_SECTION, MATERIAL_SLOT_SECTION = 0x1CAFE804, 0xB967FF7A
 # Blend/cull per material: .material section 0xE1275683, u32 at byte 16 (rc2016.pipeline.render_state).
 MATERIAL_FLAGS_SECTION = 0xE1275683
+# Fur-shell render-state bit (flags & 0x80000): the engine draws extra alpha-over passes that are not modelled.
+FUR_SHELL_FLAG = 0x80000
+# Fur-shell materials with no material graph in the file, read as 'grey' like their sibling skin material
+# (Skin_Only, same _c/_g/_n textures). An inference from the shared textures, not a decoded rule. Without
+# it the body reads coloured F0 = _g.rgb, which turns the grey-layout _g (B about 1) into a blue specular.
+# Lower-case archive paths; the fur-shell bit must also be set.
+FUR_SHELL_GREY_READING = frozenset({'material/character/npc/npc_big_al_tools/npc_big_al_skin_and_fur.material'})
 BLEND_MODES = {0: 'opaque', 1: 'additive', 2: 'alpha_over'}   # flags & 3; mode 3 has no captured example
 
 
@@ -209,6 +224,14 @@ def blend_state(flags):
     return dict(blend=BLEND_MODES.get(flags & 3), two_sided=bool(flags & 4))
 
 
+def fur_shell_grey_reading(material_path, graphs, data):
+    """True for a listed fur-shell material that names no graph and has the fur-shell flag bit."""
+    if graphs or not material_path or material_path.lower() not in FUR_SHELL_GREY_READING:
+        return False
+    flags = material_flags(data)
+    return flags is not None and bool(flags & FUR_SHELL_FLAG)
+
+
 def _graph_rule(graphs):
     return next((rule for prefix, rule in GRAPH_RULES for g in graphs if g.startswith(prefix)), {})
 
@@ -221,7 +244,7 @@ def _role(path):
 
 
 def _graph_info(archive, graph_id):
-    """(texture paths, slots, parameter key hashes, defaults) of one material graph entry.
+    """(texture paths, slots, parameter keys, defaults, verified skin roles) of one graph.
 
     Many materials share a graph (a level loads hundreds of materials over a few dozen graphs),
     so the parse is kept on the archive object, per entry id. Callers must not mutate the result.
@@ -244,7 +267,21 @@ def _graph_info(archive, graph_id):
             keys = frozenset(row['key_hash'] for table in tables for row in table)
         except (ValueError, struct.error):
             defaults = {}
-        cache[graph_id] = (textures, slots, keys, defaults)
+        # Reuse the pipeline's path-and-hash verified skin slot roles. Stale
+        # swarmer bindings and the secondary normal must not win by suffix.
+        import hashlib
+        from rc2016.shaders.families import FAMILY_REGISTRY
+        graph_path = archive.entries[graph_id]['path'].replace('\\', '/').lower()
+        spec = FAMILY_REGISTRY.get((graph_path, hashlib.sha256(graph_data).hexdigest()), {})
+        role_slots = {}
+        if spec.get('family') in ('basic_skin', 'skin_emissive'):
+            roles = {'base_color': '_c', 'colored_specular_gloss': '_g', 'normal': '_n'}
+            for key, role in spec['texture_slots'].items():
+                if role in roles:
+                    matches = [slot for slot in slots if slot & 0xFFFFFFFF == int(key, 16)]
+                    if len(matches) == 1:
+                        role_slots[roles[role]] = matches[0]
+        cache[graph_id] = (textures, slots, keys, defaults, role_slots)
     return cache[graph_id]
 
 
@@ -278,20 +315,28 @@ def material_texture_paths(archive, material_path: str) -> dict:
     found = [r['path'] for r in references(data) if not r.get('resolution_error')]
     textures = [p for p in found if p.endswith('.texture')]
     graphs = [p for p in found if p.endswith('.materialgraph')]
-    graph_keys, defaults, slots = set(), {}, {}
+    graph_keys, defaults, slots, role_slots = set(), {}, {}, {}
     for graph in graphs:
         ids = [k for k in archive.resolve(graph) if archive.entries[k]['type'] == 'materialgraph']
         if len(ids) == 1:
-            graph_textures, graph_slots, keys, graph_defaults = _graph_info(archive, ids[0])
+            graph_textures, graph_slots, keys, graph_defaults, graph_roles = _graph_info(archive, ids[0])
             textures += graph_textures
             slots.update(graph_slots)
             graph_keys |= keys
             defaults.update(graph_defaults)
+            role_slots.update(graph_roles)
     result = {}
     for path in dict.fromkeys(textures):
         role = _role(path)
         if role and role not in result:
             result[role] = path
+    if role_slots:
+        instance_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
+        for role, slot in role_slots.items():
+            result.pop(role, None)
+            path = instance_slots.get(slot) or slots.get(slot)
+            if path:
+                result[role] = path
     rows = {}
     try:
         from rc2016.formats.materials import extract_material_parameters
@@ -324,6 +369,9 @@ def material_texture_paths(archive, material_path: str) -> dict:
 
     rule = _graph_rule(graphs)
     result['g_mode'] = rule.get('g_mode', 'colored')
+    if fur_shell_grey_reading(material_path, graphs, data):
+        result['g_mode'] = 'grey'
+        result['g_mode_source'] = 'fur_shell_sibling_inferred'
     if 'g_switch' in rule:
         result['g_mode'] = 'colored' if value(rule['g_switch'], 0.0) >= 0.5 else 'grey'
     result['self_lit'] = rule.get('self_lit', 'c_alpha')
@@ -523,19 +571,31 @@ def material_texture_paths(archive, material_path: str) -> dict:
                 diffuse_specular_environment='viewer rig'), runtime_pass_verified=False)
     if rule.get('rock_blend'):
         # 886AAC94 resource table: mask, gA/gB, nA/nB, cA/cB, in bounded source table order.
+        # A3DAA047 (color_breakup): mask, gA/gB, nA/nB and one breakup colour (pass contract api 5-10).
+        breakup = rule['rock_blend'] == 'color_breakup'
         instance = texture_slots(data, MATERIAL_SLOT_SECTION)
         wanted = {'_rock_mask': 0x49A7866B3404C763, '_g': 0x49A7866B7BF812C7,
                   '_rock_g2': 0x49A7866B42752E02, '_n': 0x49A7866B146D84F5,
                   '_rock_n2': 0x49A7866B2DE0B830, '_c': 0x49A7866B969AFD6A,
                   '_rock_c2': 0x49A7866BAF17C1AF}
+        if breakup:
+            # The graph does not declare the layer-colour slots; a stale instance binding is never read.
+            del wanted['_rock_c2']; wanted['_c'] = 0x49A7866BF9937BC9
+            result.pop('_rock_c2', None)
         for role, slot in wanted.items():
             path = instance.get(slot) or slots.get(slot)
             if path: result[role] = path
             else: result.pop(role, None)
         result['spec'] = value(0xFEAF9A36, 1.0)
-        result['rock_blend'] = dict(tint=vec3(0x1AAD6A99, (1.0, 1.0, 1.0)),
-            exponent=value(0x965B2DCD, 1.0), tint_amount=value(0xF0A64F9B, 0.0),
-            mask_strength=value(0x21C2A812, 1.0), sharpness=value(0xF2634949, 1.0), writer='886AAC94')
+        if breakup:
+            # CB2 table 0: P dw0, Q dw1, T dw2 (world tile), K dw3, U dw4 (layer UV scale), S dw5.
+            result['rock_blend'] = dict(variant='color_breakup', world_tile=value(0xFD70EF49, 10.0),
+                layer_uv_scale=value(0xE8D31733, 1.0), mask_strength=value(0x21C2A812, 1.0),
+                sharpness=value(0xF2634949, 1.0), world_axes='native x, z', writer='A3DAA047')
+        else:
+            result['rock_blend'] = dict(tint=vec3(0x1AAD6A99, (1.0, 1.0, 1.0)),
+                exponent=value(0x965B2DCD, 1.0), tint_amount=value(0xF0A64F9B, 0.0),
+                mask_strength=value(0x21C2A812, 1.0), sharpness=value(0xF2634949, 1.0), writer='886AAC94')
     if rule.get('screen'):
         # 8716DC7A: timeline api5 is sampled once at t=0; api6 reads alpha only.
         # Existing forward units 0/1/2/4 carry api6/api9/api7/api8. No new unit.
@@ -927,7 +987,10 @@ def material_textures(archive, materials: list[dict], cache: dict) -> dict[int, 
         if paths.get('rock_blend'):
             entry['rock_blend'] = paths['rock_blend']
             extra = []
-            for role in ('_rock_mask', '_rock_c2', '_rock_g2', '_rock_n2'):
+            # color_breakup has no layer-B colour: its unread colour slice repeats gB to keep the volume layout.
+            roles = ('_rock_mask', '_rock_g2', '_rock_g2', '_rock_n2') if paths['rock_blend'].get('variant') == 'color_breakup' \
+                else ('_rock_mask', '_rock_c2', '_rock_g2', '_rock_n2')
+            for role in roles:
                 path = paths.get(role)
                 if path and path not in cache:
                     try: cache[path] = load_texture(archive, path)

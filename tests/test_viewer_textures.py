@@ -792,8 +792,13 @@ class RockBlendTests(unittest.TestCase):
         self.assertEqual((paths['g_mode'],paths['k'],paths['rock_blend']['writer']),('grey',0.0,'886AAC94'))
         self.assertEqual((paths['spec'],paths['gloss']), (1.0,1.0))
         self.assertEqual((paths['rock_blend']['mask_strength'],paths['rock_blend']['sharpness']), (1.0,1.0))
-        for stem in ('rp_mo_blend_01','rp_mo_blend_01_caustic','rp_mo_blend_01_glow_vert_paint','mo_neb_worldspace_detail_01','mo_blend_01_extra'):
+        for stem in ('rp_mo_blend_01','rp_mo_blend_01_caustic','rp_mo_blend_01_glow_vert_paint','mo_neb_worldspace_detail_01','mo_blend_01_extra',
+                     'rp_mo_blend_color_breakup_02','rp_mo_blend_color_breakup_01_extra'):
             self.assertNotIn('rock_blend',tp._graph_rule([graph.replace('mo_blend_01.materialgraph',stem+'.materialgraph')]))
+        self.assertIs(tp._graph_rule([graph])['rock_blend'],True)
+        # A3DAA047 exact path: its own variant, never the 886AAC94 reading.
+        breakup=graph.replace('mo_blend_01.materialgraph','rp_mo_blend_color_breakup_01.materialgraph')
+        self.assertEqual(tp._graph_rule([breakup])['rock_blend'],'color_breakup')
         def loaded(_archive,path):
             return dict(path=path,width=1,height=1,format=28,pixels=bytes([10,20,30,255]),srgb=False)
         with patch.object(tp,'load_texture',side_effect=loaded):
@@ -808,6 +813,37 @@ class RockBlendTests(unittest.TestCase):
         self.assertNotIn('_rock_volume',entry)
         self.assertTrue(entry['rock_blend']['unresolved_second_layer'])
         self.assertIsNotNone(entry['_c'])
+
+    @unittest.skipUnless((MATERIALS / 'RockBlend/color_breakup/source_assets/novalis_001.material').is_file(), 'color_breakup sources are not present')
+    def test_color_breakup_slots_parameters_and_volume(self):
+        from unittest.mock import patch
+        graph='materialgraph/environment/global/rock/mo_blend_01/rp_mo_blend_color_breakup_01.materialgraph'
+        here=MATERIALS/'RockBlend/color_breakup/source_assets'
+        graph_bytes=(here/'rp_mo_blend_color_breakup_01.materialgraph').read_bytes()
+        material=(here/'novalis_001.material').read_bytes()
+        archive=FakeArchive({graph:('materialgraph',graph_bytes[4:]),'m/breakup.material':('material',material[4:])})
+        paths=tp.material_texture_paths(archive,'m/breakup.material')
+        expected=tp.texture_slots(material,tp.MATERIAL_SLOT_SECTION)
+        defaults=tp.texture_slots(graph_bytes,tp.GRAPH_SLOT_SECTION)
+        # Pass-contract api 5-10: H, gA, gB, nA, nB, breakup colour.
+        for role,key in (('_rock_mask',0x49A7866B3404C763),('_g',0x49A7866B7BF812C7),('_rock_g2',0x49A7866B42752E02),
+                         ('_n',0x49A7866B146D84F5),('_rock_n2',0x49A7866B2DE0B830),('_c',0x49A7866BF9937BC9)):
+            self.assertEqual(paths[role],expected.get(key) or defaults[key])
+        self.assertNotIn('_rock_c2',paths)   # the stale instance 0x...969AFD6A binding is never read
+        self.assertNotEqual(paths['_c'],expected.get(0x49A7866B969AFD6A))
+        rb=paths['rock_blend']
+        self.assertEqual((rb['variant'],rb['writer'],paths['g_mode'],paths['k']),('color_breakup','A3DAA047','grey',0.0))
+        approx=lambda x:round(x,6)
+        self.assertEqual(tuple(map(approx,(paths['spec'],paths['gloss'],rb['world_tile'],rb['mask_strength'],rb['layer_uv_scale'],rb['sharpness']))),
+                         (1.0,1.1,22.0,1.0,0.6,0.761))
+        self.assertNotIn('tint',rb)
+        def loaded(_archive,path):
+            return dict(path=path,width=1,height=1,format=28,pixels=bytes([10,20,30,255]),srgb=False)
+        with patch.object(tp,'load_texture',side_effect=loaded), \
+                patch('rc2016.viewer.native_glsl.selected_translation',return_value=None):
+            entry=tp.material_textures(archive,[dict(index=0,path='m/breakup.material')],{})[0]
+        self.assertEqual(entry['_rock_volume']['source_paths'],[paths[k] for k in ('_rock_mask','_rock_g2','_rock_g2','_rock_n2')])
+        self.assertNotIn('unresolved_second_layer',entry['rock_blend'])
 
     def test_source_alpha_transport_and_absent_default_are_distinct(self):
         mesh=dict(index=0,positions=[(0,0,0),(1,0,0),(0,1,0)],normals=[(0,1,0)]*3,
@@ -916,6 +952,22 @@ class GroundPuddlesTests(unittest.TestCase):
                 a=sample(image,u,v,True);b=sample(packed,(u%1)*scale[0]+scale[2],(v%1)*scale[1]+scale[3],False)
                 for x,y in zip(a,b):self.assertAlmostEqual(x,y,places=10)
         with self.assertRaises(ValueError):tp.puddle_texture_atlas(dict(textures[0],srgb=True),textures[1])
+
+    def test_fur_shell_grey_reading_is_exact_and_flag_bound(self):
+        skin='material/character/npc/npc_big_al_tools/npc_big_al_skin_and_fur.material'
+        def data_with_flags(flags):
+            # Minimal DAT1 blob: one section-table row for the flags section, flags word at byte 16.
+            body=bytearray(36);body[16:20]=struct.pack('<I',flags)
+            header=bytearray(28);header[0:4]=b'DAT1';struct.pack_into('<H',header,12,1)
+            struct.pack_into('<III',header,16,tp.MATERIAL_FLAGS_SECTION,28,len(body))
+            return bytes(header)+bytes(body)
+        fur=data_with_flags(tp.FUR_SHELL_FLAG|0x30)
+        self.assertEqual(tp.material_flags(fur),tp.FUR_SHELL_FLAG|0x30)
+        self.assertTrue(tp.fur_shell_grey_reading(skin,[],fur))
+        self.assertTrue(tp.fur_shell_grey_reading(skin.upper(),[],fur))
+        self.assertFalse(tp.fur_shell_grey_reading(skin,['required/materials/basic_normal_gloss.materialgraph'],fur))
+        self.assertFalse(tp.fur_shell_grey_reading(skin,[],data_with_flags(0x30)))
+        self.assertFalse(tp.fur_shell_grey_reading('material/character/hero/test/other.material',[],fur))
 
 if __name__ == '__main__':
     unittest.main()

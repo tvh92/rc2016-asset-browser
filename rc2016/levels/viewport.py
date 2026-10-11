@@ -184,6 +184,9 @@ class LevelViewport(ModelViewport):
         self._texture_names = {}   # texture path -> (GL id, sRGB) or None
         self._draw_list = None
         self.show_hidden = False
+        self.show_actors = True
+        self.show_spawn_preview = False
+        self.picked_actor = None
         self.material_overrides = True   # per-instance material overrides from the zone records
         self.show_sky = True
         self._sky = None           # rc2016.levels.sky.level_sky result plus loaded textures
@@ -225,6 +228,25 @@ class LevelViewport(ModelViewport):
     def add_instances(self, zone, path, groups):
         """One zone's instances of an uploaded model: {mirrored: array('f') of 16-float rows}."""
         self._gl_call(self._store_instances, zone, path, groups)
+
+    def add_actors(self, zone, path, groups, actors):
+        """Batched actor rows plus source identities for click-to-identify."""
+        self._gl_call(self._store_actors, zone, path, groups, actors)
+
+    def add_spawns(self, zone, path, groups, actors):
+        self._gl_call(self._store_spawns, zone, path, groups, actors)
+
+    def set_spawn_preview(self, show):
+        self.show_spawn_preview = bool(show)
+        self._draw_list = None
+        self.picked_actor = None
+        self._draw()
+
+    def set_show_actors(self, show):
+        self.show_actors = bool(show)
+        self.picked_actor = None
+        self._draw_list = None
+        self._draw()
 
     def set_zone_visible(self, zone, visible):
         (self._hidden_zones.discard if visible else self._hidden_zones.add)(zone)
@@ -295,7 +317,11 @@ class LevelViewport(ModelViewport):
 
     def stats(self):
         counts = [(m["triangles"], sum(g[1] for g in self._visible_groups(m))) for m in self._models.values()]
-        return dict(models=len(self._models), instances=sum(n for _t, n in counts),
+        actors = sum(len(m['actors']) - sum(a['zone'] in self._hidden_zones for a in m['actors'])
+                     for m in self._models.values() if not m['hidden'] or self.show_hidden) if self.show_actors else 0
+        spawns = sum(sum(a['zone'] not in self._hidden_zones for a in m.get('spawns', []))
+                     for m in self._models.values() if not m['hidden'] or self.show_hidden) if self.show_spawn_preview else 0
+        return dict(actors=actors, spawns=spawns, models=len(self._models), instances=sum(n for _t, n in counts),
                     triangles=sum(t * n for t, n in counts),
                     materials=len(self._materials), textures=sum(1 for v in self._texture_names.values() if v),
                     draws=len(self._draw_list or ()), draw_ms=self.last_draw_ms, speed=self._speed,
@@ -318,6 +344,7 @@ class LevelViewport(ModelViewport):
         self._hidden_zones = set()
         self._pending, self._pending_materials = [], {}
         self.selected = None
+        self.picked_actor = None
         self._error = message
         self._show_error(message)
 
@@ -356,7 +383,7 @@ class LevelViewport(ModelViewport):
                       nbo=self._buffer(self.GL_ARRAY_BUFFER, geometry["normals"]),
                       tbo=self._buffer(self.GL_ARRAY_BUFFER, geometry["uvs"]),
                       ibo=self._buffer(self.GL_ELEMENT_ARRAY_BUFFER, geometry["indices"]),
-                      zones=[], groups=[], groups_for=None)
+                      zones=[], actor_zones=[], actors=[], spawn_zones=[], spawns=[], groups=[], groups_for=None)
         record["buffers"] = [record[k] for k in ("vbo", "nbo", "tbo", "ibo")]
         self._ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0); self._ext["glBindBuffer"](self.GL_ELEMENT_ARRAY_BUFFER, 0)
         self._models[path] = record
@@ -369,25 +396,44 @@ class LevelViewport(ModelViewport):
             record["zones"].append((zone, key, rows))
         record["groups_for"] = None
 
+    def _store_actors(self, zone, path, groups, actors):
+        record = self._models[path]
+        for key, rows in sorted(groups.items()):
+            record['actor_zones'].append((zone, key, rows))
+        record['actors'].extend(actors)
+        record['groups_for'] = None
+
+    def _store_spawns(self, zone, path, groups, actors):
+        record = self._models[path]
+        for key, rows in sorted(groups.items()):
+            record['spawn_zones'].append((zone, key, rows))
+        record['spawns'].extend(actors)
+        record['groups_for'] = None
+
     def _merge_groups(self):
         """One instance buffer per model, handedness and set of material changes over the visible zones:
         [(buffer, count, mirrored, changes)]."""
         from array import array
         hidden = frozenset(self._hidden_zones)
+        preview = getattr(self, 'show_spawn_preview', False)
+        state = (hidden, self.show_actors, preview)
         for model in self._models.values():
-            if model["groups_for"] == hidden:
+            if model["groups_for"] == state:
                 continue
             old = [g[0] for g in model["groups"]]
             if old:
                 self._ext["glDeleteBuffers"](len(old), (ctypes.c_uint * len(old))(*old))
             self._delete_vaos([model])
             merged = {}
-            for zone, key, rows in model["zones"]:
+            layers = model["zones"] + (model["actor_zones"] if self.show_actors else [])
+            if preview:
+                layers += model.get("spawn_zones", [])
+            for zone, key, rows in layers:
                 if zone not in hidden:
                     merged.setdefault(key, array("f")).extend(rows)
             model["groups"] = [(self._buffer(self.GL_ARRAY_BUFFER, rows), len(rows) // 16, flip, changes)
                                for (flip, changes), rows in sorted(merged.items())]
-            model["groups_for"] = hidden
+            model["groups_for"] = state
         self._ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0)
 
     def _delete_vaos(self, models):
@@ -781,6 +827,7 @@ class LevelViewport(ModelViewport):
     def pick(self, x, y):
         """Model path under window pixel (x, y), or None: each visible model is drawn in an id colour
         into the back buffer, one pixel is read, and the frame is redrawn."""
+        self.picked_actor = None
         if not (self._models and self._make_current() and self._shading is not None and self._ext):
             return None
         gl, sh = self._gl, self._shading
@@ -823,8 +870,71 @@ class LevelViewport(ModelViewport):
         gl.glReadBuffer(0x0405)   # GL_BACK
         gl.glReadPixels(x, height - 1 - y, 1, 1, 0x1907, self.GL_UNSIGNED_BYTE, pixel)   # GL_RGB
         found = pick_index(bytes(pixel)[:3])
+        path = order[found] if found is not None and found < len(order) else None
+        if path and ((self.show_actors and self._models[path]['actors']) or
+                     (self.show_spawn_preview and self._models[path]['spawns'])):
+            self._pick_actor(self._models[path], x, y, width, height)
         self._draw()
-        return order[found] if found is not None and found < len(order) else None
+        return path
+
+    def _pick_actor(self, model, x, y, width, height):
+        """Second pass for the selected model only; individual IDs cost work only on clicks.
+
+        Static rows use background ID and still write depth. Each actor keeps its full
+        matrix and material cut-out. Regular frames continue to use merged instancing.
+        """
+        from array import array
+        gl, sh = self._gl, self._shading
+        gl.glClear(self.GL_COLOR_BUFFER_BIT | self.GL_DEPTH_BUFFER_BIT)
+        self._setup_camera(width, height)
+        program, u = sh.pick_program()
+        sh.glUseProgram(program)
+        self._begin_attributes()
+        sh.glUniform1i(u['uTexC'], 0)
+        sh.glActiveTexture(self.GL_TEXTURE0)
+        visible = (model['actors'] if self.show_actors else []) + (model['spawns'] if self.show_spawn_preview else [])
+        actors = [a for a in visible if a['zone'] not in self._hidden_zones]
+        temporary, entries = [], []
+        try:
+            for zone, key, rows in model['zones']:
+                if zone not in self._hidden_zones:
+                    buffer = self._buffer(self.GL_ARRAY_BUFFER, rows)
+                    temporary.append(buffer)
+                    entries.append((None, (buffer, len(rows)//16, *key)))
+            for i, actor in enumerate(actors):
+                rows = array('f', (v for row in actor['matrix_rows'] for v in row))
+                buffer = self._buffer(self.GL_ARRAY_BUFFER, rows)
+                temporary.append(buffer)
+                entries.append((i, (buffer, 1, *actor['group_key'])))
+            # Preserve the regular draw-list's material/batch order and alpha test.
+            for key, item_model, span, original_groups in self._draw_list:
+                if item_model is not model:
+                    continue
+                entry = self._materials.get(key[0]) or {}
+                texture = entry.get('_c') if key[1] else None
+                cut = float(entry.get('alpha_cut', 0.0)) if texture else 0.0
+                gl.glBindTexture(self.GL_TEXTURE_2D, texture[0] if cut else 0)
+                sh.glUniform1f(u['uPickCut'], cut)
+                keys = {(g[2], g[3]) for g in original_groups}
+                for index, group in entries:
+                    if (group[2], group[3]) not in keys:
+                        continue
+                    colour = pick_colour(index) if index is not None else (0.,0.,0.)
+                    sh.glUniform3f(u['uPickColour'], *colour)
+                    self._draw_span(model, span, [group])
+            pixel = (ctypes.c_ubyte * 4)()
+            gl.glReadBuffer(0x0405)
+            gl.glReadPixels(x, height-1-y, 1, 1, 0x1907, self.GL_UNSIGNED_BYTE, pixel)
+            index = pick_index(bytes(pixel)[:3])
+            if index is not None and index < len(actors):
+                self.picked_actor = actors[index]
+        finally:
+            gl.glBindTexture(self.GL_TEXTURE_2D, 0)
+            self._end_attributes()
+            sh.glUseProgram(0)
+            self._delete_vaos([model])
+            if temporary:
+                self._ext['glDeleteBuffers'](len(temporary), (ctypes.c_uint * len(temporary))(*temporary))
 
     def select(self, path):
         """Outline a model's instances (None clears it)."""

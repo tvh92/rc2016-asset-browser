@@ -1097,6 +1097,9 @@ class ModelViewport(_TkFrame):
         sh.glUniform4f(u['uRockScale0'],*scales[0],*scales[1]); sh.glUniform4f(u['uRockScale1'],*scales[2],*scales[3])
         sh.glUniform3f(u['uRockTint'],*(float(x) for x in rock.get('tint',(1.,)*3)))
         sh.glUniform4f(u['uRockP'],*(float(rock.get(k,d)) for k,d in (('exponent',1.),('tint_amount',0.),('mask_strength',1.),('sharpness',1.))))
+        breakup = rock.get('variant') == 'color_breakup'
+        sh.glUniform3f(u['uRockBreakup'], 1. if breakup else 0., 1./max(1e-5,float(rock.get('world_tile',1.))),
+                       float(rock.get('layer_uv_scale',1.)))
         puddles=entry.get('puddles') or {}; atlas=entry.get('_puddle_atlas')
         sh.glActiveTexture(self.GL_TEXTURE0+14);gl.glBindTexture(self.GL_TEXTURE_2D,atlas[0] if atlas else 0)
         sh.glUniform1i(u['uPuddleTex'],14);sh.glUniform1i(u['uHasPuddleAtlas'],1 if atlas else 0)
