@@ -261,16 +261,91 @@ For ranked structural candidates, dat1lib cross-checks and serialized schemas ac
 - Water: the `pok_uniq_water` replacement materials on the ocean and pool planes draw with the [water preview](viewer.md#glass-and-forward-materials), an approximation, not the game's water shader. Planes that two overrides stack at one position draw both layers.
 - Replacement materials go through the same rules as other materials; they are not included in the rule-coverage counts above (with overrides, 292 materials load for Novalis).
 - Material-override entries whose slot name the placed model lacks (22% of entries) are not applied. Whether the game applies them some other way (for example by slot position) is not known; they are counted on the status line.
-- Not handled: gameplay actors (`gp_*` zones and actors in art zones, see below), `_imposter` zones, quest-overlay regions, VFX, lights, collision volumes, `.level` spawn records (`0x3395AEC1`), decals, fog, sky meshes on graphs other than `Rk_Sky_Dome`, the stars term, cloud scrolling (time is frozen) and the atmosphere scattering tables.
+- Gameplay actors: structurally decoded, but still not drawn. Rendering stopped at the airlock placement control; see [actors](#gameplay-actor-decoder-actor_formatpy).
+- Not handled: `_imposter` zones, quest-overlay regions, VFX, lights, collision volumes, `.level` spawn records (`0x3395AEC1`), decals, fog, sky meshes on graphs other than `Rk_Sky_Dome`, the stars term, cloud scrolling (time is frozen) and the atmosphere scattering tables.
 - Undecoded instance fields: flags at `+0x5C`, the tail blocks other than material overrides, the heap's other objects.
+
+## Gameplay actor decoder (`actor_format.py`)
+
+`decode_actor(data)` reads an actor's dedicated primary-model pointer, local record, indexed dependencies and component definitions. `decode_zone_actors(data)` reads actor placement matrices and component ownership even in zones without a model-instance table. These functions supply source data only; the viewer does not use them yet. No animation or script execution is included.
+
+### Actor-to-model binding
+
+| `.actor` section | Confirmed wire layout |
+| --- | --- |
+| `0x32FAC8E0` | Exactly one u32 absolute string-pool offset: the primary `.model` path, or an empty string |
+| `0x364A6C7C` | Local record: float32[16] row-vector matrix at +0x00, record kind at +0x40, declared byte size at +0x44 |
+| `0x3AB204B9` | Array of u32 absolute string-pool offsets to dependencies; this game's entries are not the modern 16-byte reference format |
+| `0x135832C8` | 16-byte component definitions: u32 name string offset, u32 CRC32(name), u32 absolute payload offset, u32 payload byte size |
+| `0x6D4301EF` | Actor component payloads |
+
+The primary pointer, rather than a string scan or name similarity, is the only candidate model-selection rule. Dependency models include destroyed crate chunks and spawned/attached parts. Dependency actors can form deeper chains: the corpus reaches five edges from the Clankbot spawner pad. Those edges do not establish model inheritance or attachment transforms, so an empty primary never falls back to a dependency's model. Every readable actor descriptor has an identity local matrix. Model-bearing descriptors store 176-byte local records; two empty-primary light descriptors store 152 bytes while declaring 160, a reported non-render exception.
+
+All 822 actor types referenced by zones were checked, followed recursively through the structural dependency table: 1,127 descriptors, 1,126 readable and one missing asset. Of the direct types, 720 have a primary model. The combined descriptor catalog references 887 distinct primary models. Highest LOD / look 0 was used only for geometry preflight; its suitability as an actor's initial visible state is still unproven. Secondary models, breakable states and attachments were not selected for drawing.
+
+### Zone placement and components
+
+| Section / actor-table offset | Type | Meaning |
+| --- | --- | --- |
+| `0x70682CB8` | 32-byte records | Actor placements; offsets below are relative to each table record |
+| +0x00 | u32 | Name index in `0xDC625B3D`; `0xFFFFFFFF` means unnamed |
+| +0x04 | u32 | Actor-path index in `0x78684035` |
+| +0x08 | u32 | Placement record offset relative to heap `0x06ABCAB2` |
+| +0x0C | u32 | First component-definition index in `0x50EDC53D` |
+| +0x10 | u32 | Component count; every definition is owned exactly once |
+| +0x14 | u32 | Raw flags (observed 0, 4, 8, 12); spawn/visibility meaning unresolved |
+| +0x18 | u64 | Actor ID, unique in the zone |
+| `0x50EDC53D` | 16-byte records | Same component-definition layout as an actor file; payloads are in `0x81999057` |
+
+Placement records retain the complete finite affine float32[16] matrix at +0x00, using the model-instance row-vector convention. They must not be decomposed into TRS. +0x40 is a record-kind discriminator (0, 1, 2, 4); +0x44 is the record's byte count, not a scale or bounding volume. Kind-0 render headers carry the matching actor ID at +0x48 and model sentinel `0xFFFF` at +0x58. Other kinds have different headers: their +0x48 must not be treated as a render-record ID. Existing per-instance material-override blocks are decoded on render records using their own bounds and the zone replacement list; no swaps are applied.
+
+The decoder raises on container/section bounds, duplicate tags, malformed string references, invalid indices, duplicate IDs, nonfinite/nonaffine matrices, record sizes/alignment, render ID/sentinel mismatches, component name CRCs, payload ranges and component ownership failures. A final actor record may extend fewer than eight bytes beyond an unpadded heap, as with model instances (ten corpus cases, all four bytes).
+
+`read_component(data, component)` reuses the guarded generic dat1lib SerializedSection reader under the explicitly named 202300 wire-layout hypothesis, not a game-version claim. Unknown types and out-of-range reads raise; extra objects and unread ranges are reported with absolute offsets/raw bytes. The corpus has 45 actor-descriptor and 156 zone-component payloads with unread four- or eight-byte tails; successful parsing is not complete semantic coverage. ActorAttachment, ScalePrototyping, PositionOffset, MaterialOverrideComponent and StaticMaterialOverrideList data are retained, but attachment placement, component scale, spawn visibility and default-material-state behavior are not implemented. MaterialConstant values are not interpreted as shader parameters.
+
+### Corpus counts and unresolved classes
+
+All 233 actor-bearing zones decode with no layout invariant or archive repeated-copy failures: 40,267 actors in the main `levels/` namespace plus eight legacy `rc1/levels/` actors. 18,565 placements have a structural primary-model binding; 18,559 pass the bounded geometry preflight after keeping the three known viewer failure classes unresolved. The other actors have no primary render model (21,709) or a missing actor asset (one Batalia `vol_simpleattach`).
+
+Counts below follow each actual `.level` zone list, rather than every zone sharing its folder prefix. Some level lists share zones. Rigid/skinned refer to nonempty decoded skin influences after excluding the known failures; finite geometry/extents are numerical preflight, not visual bind-pose or placement acceptance. Primary-bound counts include the known failures, so rigid + skinned + unresolved equals actors.
+
+| Level | Actors | Primary model bound | Rigid | Skinned | Unresolved |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `aridia` | 1,728 | 738 | 265 | 468 | 995 |
+| `batalia` | 3,310 | 1,651 | 1,047 | 604 | 1,659 |
+| `deplanetizer` | 2,874 | 1,498 | 491 | 1,007 | 1,376 |
+| `deplanetizer_exterior` | 832 | 62 | 8 | 54 | 770 |
+| `deplanetizer_nefarious` | 329 | 58 | 26 | 32 | 271 |
+| `gaspar` | 4,146 | 2,350 | 491 | 1,859 | 1,796 |
+| `kalebo` | 3,884 | 767 | 266 | 501 | 3,117 |
+| `metropolis` | 4,912 | 2,967 | 722 | 2,245 | 1,945 |
+| `museum` | 540 | 344 | 343 | 1 | 196 |
+| `nebula` | 1,661 | 867 | 406 | 461 | 794 |
+| `novalis` | 1,943 | 794 | 313 | 481 | 1,149 |
+| `phoenix` | 837 | 436 | 332 | 104 | 401 |
+| `pokitaru` | 2,554 | 954 | 369 | 585 | 1,600 |
+| `prequartu` | 1,122 | 364 | 267 | 97 | 758 |
+| `quartu` | 3,072 | 1,411 | 678 | 733 | 1,661 |
+| `rilgar` | 3,587 | 1,327 | 685 | 641 | 2,261 |
+| `veldin` | 1,760 | 1,051 | 197 | 854 | 709 |
+
+Unresolved model classes remain `npc_skidd_mcmarx` (two Aridia actors), `npc_skidds_agent` (three Aridia actors) and `npc_ryno_dealer` (one Rilgar actor), as explicitly excluded from this work. A geometry-only decode yielding finite arrays does not clear their viewer failure status. Non-render volumes, curves, cameras and controllers with empty primaries stay undrawn; dependencies are not substituted for them. Flags, component unread tails, attached/joint-relative parts, scale/offset components and runtime initial states need further evidence before a draw policy can be approved.
+
+### Placement stop condition
+
+All four airlock actors in Nebula `gp_base.zone` are within 0.00265 native units of static instances of their exact primary model in the actual `neb_art.zone`, but face approximately 180 degrees away from those instances about Y. For example, `AIRLOCK_TRESPASSER_1` has first-axis X/Z `(-0.258819, +0.965926)`, while the coinciding static instance has `(+0.258819, -0.965926)`. Their actor descriptors have identity local matrices and no per-instance component payload explaining the difference. Matching boss-door matrices exist only in an unreferenced debug art zone, which is not part of `nebula.level`.
+
+The full-zone probe finds 21 same-model near pairs for 17 actors; eight pairs have matching matrices (maximum element difference below 1e-6). These are probe classifications, including unreferenced/debug zones, not automatic duplicate suppression. The actual Nebula level has four pairs, all four airlock mismatches, and no matching pair. Co-location alone cannot establish that an actor should replace a static instance.
+
+Rendering stopped at this control: no actor layer, UI toggle, bind-pose visual claims, screenshots, new load/frame timings or pixel-regression capture were produced. The existing scene, viewport and panel drawing code is unchanged. A RenderDoc capture of the Nebula airlock draws—especially both Trespasser doors—with identified model/vertex buffers, full world and bind/bone matrices, and the visibility/state of the coinciding static doors would settle whether the runtime applies a transform/pose adjustment or the source intentionally represents opposite-facing geometry. No rotation or scale was tuned to hide the disagreement.
 
 ## Actor material swaps (not drawn)
 
-Zones also hold actors and their scripts. Their material swaps do not apply to the model-instance table, and the viewer does not draw actors. These layouts were checked on all 113 main-game zones that have script nodes (42,587 nodes, 40,267 actors) without a failure, but no repository code decodes them:
+Zones also hold actors and their scripts. Their material swaps do not apply to the model-instance table, and the viewer does not draw actors. The script-table layouts below were checked on all 113 main-game zones that have script nodes (42,587 nodes) without a failure and remain research-only. Actor placement and component ownership are now decoded separately by `actor_format.py`:
 
 | Section | Content |
 | --- | --- |
-| `0x70682CB8` | 32-byte actors: u32 name index (`0xDC625B3D`), u32 actor-type index (`0x78684035`, `.actor` paths), u32 heap offset of an instance-like record (matrix, size, the actor id at `+0x48`, model index `0xFFFF`; not listed in `0x6987F172`), 3 x u32 not decoded, u64 actor id |
+| `0x70682CB8` | 32-byte actors: u32 name index (`0xDC625B3D`), u32 actor-type index (`0x78684035`, `.actor` paths), u32 heap offset of a placement record (kind-0 render header: matrix, byte size, actor ID at `+0x48`, model index `0xFFFF`; not listed in `0x6987F172`), u32 first component index, u32 component count, u32 raw flags, u64 actor ID |
 | `0x5E54ACCF` | 32-byte script nodes: u64 id, u16 input-pin count, u16 + u16 first and count of outgoing links, u16 + u16 first and count of parameter bindings (all in `0xBEAB52E7`), u16 action index (`0xEF8637D5` names), u32 CRC32 of the action name, u32 offset and size of the node's object in the serialized `0x2300D240` |
 | `0xBEAB52E7` | 12-byte links: CRC32 pin name, node or parameter index, CRC32 pin name (`Out`, `In`, `Apply`, `Reset`, `Target`, ...) |
 | `0xD86A7934` | 24-byte parameters: u16 kind, u16 special name index; kind 5 references an actor (u16 index into `0x70682CB8` and the u64 actor id) or an actor group |
