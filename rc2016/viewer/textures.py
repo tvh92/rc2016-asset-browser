@@ -127,6 +127,10 @@ GRAPH_RULES = (
     # 886AAC94 resource-table deferred writer; Materials/RockBlend/ROCK_BLEND_DECODE.md.
     ('materialgraph/environment/global/rock/mo_blend_01/mo_blend_01.',
      dict(g_mode='grey', self_lit_key=None, rock_blend=True)),
+    # A3DAA047 deferred writer (same vertex programs as 886AAC94): one breakup colour sample at native
+    # world (x, z) / T, layer g/n at U * UV0, no layer colour or tint; RockBlend/ROCK_BLEND_DECODE.md.
+    ('materialgraph/environment/global/rock/mo_blend_01/rp_mo_blend_color_breakup_01.',
+     dict(g_mode='grey', self_lit_key=None, rock_blend='color_breakup')),
     # FE32FE79/B01E7CB2 cached deferred outputs; Materials/Foliage/FOLIAGE_DECODE.md.
     ('materialgraph/global/basic_foliage/basic_foliage.',
      dict(g_mode='grey', self_lit_key=None, foliage=True, alpha_cut=True)),
@@ -545,19 +549,31 @@ def material_texture_paths(archive, material_path: str) -> dict:
                 diffuse_specular_environment='viewer rig'), runtime_pass_verified=False)
     if rule.get('rock_blend'):
         # 886AAC94 resource table: mask, gA/gB, nA/nB, cA/cB, in bounded source table order.
+        # A3DAA047 (color_breakup): mask, gA/gB, nA/nB and one breakup colour (pass contract api 5-10).
+        breakup = rule['rock_blend'] == 'color_breakup'
         instance = texture_slots(data, MATERIAL_SLOT_SECTION)
         wanted = {'_rock_mask': 0x49A7866B3404C763, '_g': 0x49A7866B7BF812C7,
                   '_rock_g2': 0x49A7866B42752E02, '_n': 0x49A7866B146D84F5,
                   '_rock_n2': 0x49A7866B2DE0B830, '_c': 0x49A7866B969AFD6A,
                   '_rock_c2': 0x49A7866BAF17C1AF}
+        if breakup:
+            # The graph does not declare the layer-colour slots; a stale instance binding is never read.
+            del wanted['_rock_c2']; wanted['_c'] = 0x49A7866BF9937BC9
+            result.pop('_rock_c2', None)
         for role, slot in wanted.items():
             path = instance.get(slot) or slots.get(slot)
             if path: result[role] = path
             else: result.pop(role, None)
         result['spec'] = value(0xFEAF9A36, 1.0)
-        result['rock_blend'] = dict(tint=vec3(0x1AAD6A99, (1.0, 1.0, 1.0)),
-            exponent=value(0x965B2DCD, 1.0), tint_amount=value(0xF0A64F9B, 0.0),
-            mask_strength=value(0x21C2A812, 1.0), sharpness=value(0xF2634949, 1.0), writer='886AAC94')
+        if breakup:
+            # CB2 table 0: P dw0, Q dw1, T dw2 (world tile), K dw3, U dw4 (layer UV scale), S dw5.
+            result['rock_blend'] = dict(variant='color_breakup', world_tile=value(0xFD70EF49, 10.0),
+                layer_uv_scale=value(0xE8D31733, 1.0), mask_strength=value(0x21C2A812, 1.0),
+                sharpness=value(0xF2634949, 1.0), world_axes='native x, z', writer='A3DAA047')
+        else:
+            result['rock_blend'] = dict(tint=vec3(0x1AAD6A99, (1.0, 1.0, 1.0)),
+                exponent=value(0x965B2DCD, 1.0), tint_amount=value(0xF0A64F9B, 0.0),
+                mask_strength=value(0x21C2A812, 1.0), sharpness=value(0xF2634949, 1.0), writer='886AAC94')
     if rule.get('screen'):
         # 8716DC7A: timeline api5 is sampled once at t=0; api6 reads alpha only.
         # Existing forward units 0/1/2/4 carry api6/api9/api7/api8. No new unit.
@@ -949,7 +965,10 @@ def material_textures(archive, materials: list[dict], cache: dict) -> dict[int, 
         if paths.get('rock_blend'):
             entry['rock_blend'] = paths['rock_blend']
             extra = []
-            for role in ('_rock_mask', '_rock_c2', '_rock_g2', '_rock_n2'):
+            # color_breakup has no layer-B colour: its unread colour slice repeats gB to keep the volume layout.
+            roles = ('_rock_mask', '_rock_g2', '_rock_g2', '_rock_n2') if paths['rock_blend'].get('variant') == 'color_breakup' \
+                else ('_rock_mask', '_rock_c2', '_rock_g2', '_rock_n2')
+            for role in roles:
                 path = paths.get(role)
                 if path and path not in cache:
                     try: cache[path] = load_texture(archive, path)

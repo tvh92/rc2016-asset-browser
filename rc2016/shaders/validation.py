@@ -417,8 +417,11 @@ def _viewer_expected_constants(rule):
         e["za fresnel power"] = terms["za_fresnel_power"]
     if "rock_blend" in ported:
         r = terms["rock_blend"]
-        e.update({"rock tint": r["tint"], "rock exponent": r["exponent"], "rock tint amount": r["tint_amount"],
-                  "rock mask strength": r["mask_strength"], "rock sharpness": r["sharpness"]})
+        e.update({"rock mask strength": r["mask_strength"], "rock sharpness": r["sharpness"]})
+        if r.get("variant") == "color_breakup":
+            e.update({"rock world tile": r["world_tile"], "rock layer uv scale": r["layer_uv_scale"]})
+        else:
+            e.update({"rock tint": r["tint"], "rock exponent": r["exponent"], "rock tint amount": r["tint_amount"]})
     if "bng" in ported or "bng_detail" in ported:
         b = terms["bng"]
         e.update({"bng colour": b["colour"], **{"bng P%d" % i: x for i, x in enumerate(b["params"])},
@@ -479,8 +482,12 @@ def _viewer_required(rule, has_n):
     if "za_fresnel_power" in ported:
         names.append("za fresnel power")
     if "rock_blend" in ported:
-        names += ["rock tint", "rock exponent", "rock tint amount", "rock mask strength", "rock sharpness"]
-        req("_rock_mask", "_rock_c2", "_rock_g2", *(("_rock_n2",) if has_n else ()))
+        if terms["rock_blend"].get("variant") == "color_breakup":
+            names += ["rock mask strength", "rock sharpness", "rock layer uv scale"] + (["rock world tile"] if tex.get("_c") else [])
+            req("_rock_mask", "_rock_g2", *(("_rock_n2",) if has_n else ()))
+        else:
+            names += ["rock tint", "rock exponent", "rock tint amount", "rock mask strength", "rock sharpness"]
+            req("_rock_mask", "_rock_c2", "_rock_g2", *(("_rock_n2",) if has_n else ()))
     if "bng" in ported:
         kind = int(terms["bng"]["kind"])
         names += ["bng colour"] if kind == 1 or (kind == 4 and lit) else [] if kind == 4 else (["bng P0", "bng P1"] + (["bng P2"] if kind == 6 else []) if has_n else [])

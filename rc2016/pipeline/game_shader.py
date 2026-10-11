@@ -1279,10 +1279,25 @@ def apply_viewer_graph_rule(mat, source):
             if float(rb['sharpness']) != 0.0:   # m == 0 -> 0 (sharpness 0: pow(m, 0) = 1 everywhere)
                 target = P.m('MULTIPLY', target, P.m('GREATER_THAN', rm, 0.0))
             rock_w = P.lerp(va, target, P.const('rock mask strength', rb['mask_strength']))
-            albedo = P.vlerp(albedo, img('_rock_c2').outputs['Color'], rock_w)
-            tinted = P.vsat(P.v('POWER', P.v('ABSOLUTE', P.v('MULTIPLY', P.const3('rock tint', rb['tint']), albedo)), P.const('rock exponent', rb['exponent'])))
-            albedo = P.vlerp(albedo, tinted, P.const('rock tint amount', rb['tint_amount']))
-            rock_g = P.vlerp(g_rgb if g is not None else (0.0, 0.0, 0.0), img('_rock_g2').outputs['Color'], rock_w)
+            g2 = img('_rock_g2')
+            if rb.get('variant') == 'color_breakup':   # A3DAA047: layer g/n at U*UV0, colour at native world (x, z)/T
+                lu = P.const('rock layer uv scale', rb['layer_uv_scale'])
+                luv = P.game_uv(lu, lu)
+                g = P.tex(g, luv, 'rock layer A g') if g is not None else None
+                g2 = P.tex(g2, luv, 'rock layer B g')
+                n = P.tex(n, luv, 'rock layer A normal') if n is not None else None
+                if c is not None:
+                    wx, _, wz = P.sep(P.native_position())
+                    inv_t = P.m('DIVIDE', 1.0, P.m('MAXIMUM', P.const('rock world tile', rb['world_tile']), 1e-5))
+                    albedo = P.tex(c, P.gl_coord(P.m('MULTIPLY', wx, inv_t), P.m('MULTIPLY', wz, inv_t)), 'rock breakup colour').outputs['Color']
+                g_rgb = g.outputs['Color'] if g is not None else None
+                limits.append('rock_blend color_breakup: the breakup colour uses object-space (model) native x, z; '
+                              'the game uses world position, equal only when the model sits at the world origin')
+            else:
+                albedo = P.vlerp(albedo, img('_rock_c2').outputs['Color'], rock_w)
+                tinted = P.vsat(P.v('POWER', P.v('ABSOLUTE', P.v('MULTIPLY', P.const3('rock tint', rb['tint']), albedo)), P.const('rock exponent', rb['exponent'])))
+                albedo = P.vlerp(albedo, tinted, P.const('rock tint amount', rb['tint_amount']))
+            rock_g = P.vlerp(g_rgb if g is not None else (0.0, 0.0, 0.0), g2.outputs['Color'], rock_w)
             limits.append('rock_blend: vertex alpha is squared after interpolation (the vertex shader squares it before); '
                           'models without a colour stream use alpha 1 as the viewer does')
         world_uv = detail_mask = None
@@ -1384,7 +1399,11 @@ def apply_viewer_graph_rule(mat, source):
                 z = P.m('MULTIPLY', z, dz)
                 normal = P.tangent_normal(x, y, z, 'VR detailed normal')
             if rock_w is not None:
-                r2x, r2y = P.rg(img('_rock_n2').outputs['Color'])
+                n2 = img('_rock_n2')
+                if terms['rock_blend'].get('variant') == 'color_breakup':
+                    lu = P.const('rock layer uv scale', terms['rock_blend']['layer_uv_scale'])
+                    n2 = P.tex(n2, P.game_uv(lu, lu), 'rock layer B normal sample')
+                r2x, r2y = P.rg(n2.outputs['Color'])
                 n2 = P.tangent_normal(r2x, r2y, P.m('SUBTRACT', 1.0, P.dot2(r2x, r2y)), 'VR rock layer B normal')
                 normal = P.v('NORMALIZE', P.vlerp(base_normal, n2, rock_w))
         final_n = normal if normal is not None else Ng

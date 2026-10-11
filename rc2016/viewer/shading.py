@@ -155,8 +155,9 @@ FRAGMENT = """
 uniform bool uRockBlend; uniform sampler3D uRockTex; uniform vec3 uRockSrgb;
 uniform vec4 uRockScale0; uniform vec4 uRockScale1;
 uniform vec3 uRockTint; uniform vec4 uRockP; // exponent, tint amount, mask strength, sharpness
+uniform vec3 uRockBreakup; // A3DAA047: enabled, 1/max(1e-5, world tile T), layer UV scale U
 varying float vRockAlpha;
-uniform int uMode;            // 0 solid, 1 base colour, 2 game BRDF, 3 flat colour (wireframe)
+uniform int uMode;           // 0 solid, 1 base colour, 2 game BRDF, 3 flat colour (wireframe)
 uniform vec3 uColor;
 uniform sampler2D uTexC; uniform sampler2D uTexG; uniform sampler2D uTexN;
 uniform bool uHasC; uniform bool uHasG; uniform bool uHasN;
@@ -315,6 +316,8 @@ void main() {
         zaWeight = 1.0 - clamp(pow(1.00100004673 - clamp(dot(N, V), 0.0, 1.0), uZaFresnelPower), 0.0, 1.0);
     }
     vec2 materialUV=vUV;float parallaxShadowWeight=1.0;
+    bool rockBreakup = uMode == 2 && uRockBlend && uRockBreakup.x > 0.5;
+    if (rockBreakup) materialUV = vUV * uRockBreakup.z; // A3DAA047 rel448/472: U scales the layer g/n samples only
     vec3 pomT=vec3(0.0),pomB=vec3(0.0),pomN=normalize(vNrm);
     vec2 pomDx=dFdx(vUV),pomDy=dFdy(vUV);
     if(uMode==2 && uParallaxNormal) {
@@ -362,14 +365,20 @@ void main() {
         float m = 1.0 - clamp((1.0-vRockAlpha)*(6.0-5.0*h), 0.0, 1.0);
         float target = m == 0.0 ? (uRockP.w == 0.0 ? 1.0 : 0.0) : pow(abs(m), uRockP.w);
         rockWeight = vRockAlpha + uRockP.z * (target-vRockAlpha);
-        vec3 c2 = texture3D(uRockTex, vec3(fract(vUV)*uRockScale0.zw, 0.375)).rgb;
-        if (uRockSrgb.y > 0.5) c2 = linear(c2);
-        albedo = mix(albedo, c2, rockWeight);
-        vec3 tinted = clamp(pow(abs(uRockTint*albedo), vec3(uRockP.x)), 0.0, 1.0);
-        albedo = mix(albedo, tinted, uRockP.y);
-        vec3 g2 = texture3D(uRockTex, vec3(fract(vUV)*uRockScale1.xy, 0.625)).rgb;
+        if (rockBreakup) {
+            // A3DAA047 rel276-732: the only colour is one _c sample at native world (x, z) / T.
+            // The level viewer's position is world space; the model viewer's is model space.
+            if (uHasC) { vec3 cw = texture2D(uTexC, vTintWorldPos.xz * uRockBreakup.y).rgb; albedo = uSrgbC ? linear(cw) : cw; }
+        } else {
+            vec3 c2 = texture3D(uRockTex, vec3(fract(vUV)*uRockScale0.zw, 0.375)).rgb;
+            if (uRockSrgb.y > 0.5) c2 = linear(c2);
+            albedo = mix(albedo, c2, rockWeight);
+            vec3 tinted = clamp(pow(abs(uRockTint*albedo), vec3(uRockP.x)), 0.0, 1.0);
+            albedo = mix(albedo, tinted, uRockP.y);
+        }
+        vec3 g2 = texture3D(uRockTex, vec3(fract(materialUV)*uRockScale1.xy, 0.625)).rgb;
         if (uRockSrgb.z > 0.5) g2 = linear(g2);
-        vec3 g1 = texture2D(uTexG, vUV).rgb; if (uSrgbG) g1 = linear(g1);
+        vec3 g1 = texture2D(uTexG, materialUV).rgb; if (uSrgbG) g1 = linear(g1);
         rockG = mix(g1, g2, rockWeight);
     }
     vec2 tintWorldUV = vUV; float tintDetailMask = 1.0;
@@ -474,7 +483,7 @@ void main() {
             z *= dz;
         }
         if (uRockBlend) {
-            vec2 r2 = texture3D(uRockTex, vec3(fract(vUV)*uRockScale1.zw, 0.875)).rg*2.0-1.0;
+            vec2 r2 = texture3D(uRockTex, vec3(fract(materialUV)*uRockScale1.zw, 0.875)).rg*2.0-1.0;
             vec3 n2 = normalize(T*scale*r2.x - B*scale*r2.y + N*(1.0-dot(r2,r2)));
             N = normalize(mix(baseN, n2, rockWeight));
         } else N = normalize(T * scale * rg.x - B * scale * rg.y + N * z);
@@ -691,7 +700,7 @@ def glass_uniforms(forward):
 
 OPAQUE_UNIFORMS = (
     "uPuddles", "uPuddleTex", "uHasPuddleAtlas", "uPuddle0", "uPuddle1", "uPuddle2", "uPuddle3", "uPuddleNoiseScale", "uPuddleRippleScale",
-    "uRockBlend", "uRockTex", "uRockSrgb", "uRockScale0", "uRockScale1", "uRockTint", "uRockP",
+    "uRockBlend", "uRockTex", "uRockSrgb", "uRockScale0", "uRockScale1", "uRockTint", "uRockP", "uRockBreakup",
     "uSkin", "uBoneTex", "uBoneWidth", "uMode", "uColor", "uTexC", "uTexG", "uTexN", "uHasC", "uHasG", "uHasN",
     "uSrgbC", "uSrgbG", "uGMode", "uSpecScale", "uGlossScale", "uSelfLitG", "uK",
     "uTwoColorMetal", "uMetalDiffuseA", "uMetalDiffuseB", "uMetalSpecA", "uMetalSpecB", "uMetalP",
