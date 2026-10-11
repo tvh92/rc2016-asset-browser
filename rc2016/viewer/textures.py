@@ -75,6 +75,10 @@ GRAPH_RULES = (
     # Other models/enm_blarg_saucer/evidence/COLORPICK_DECODE.md (writer 66744D01)
     ('materialgraph/global/basic_colored_spec_emmisive_in_c_alpha/blarg_saucer_colorpick.',
      dict(g_mode='grey', self_lit='g_blue', self_lit_key=0x06F19114, pick=(0x40520184, 0xD257B634, 0x124A2F94))),
+    # Cached SPIR-V 63EEBF51 (ID in the graph's OrbShdr): coloured F0 = P*_g.rgb, gloss = sqrt(Q*_g.a^2), no self-lit;
+    # Materials/BasicColoredSpec/BASIC_COLORED_SPEC_DECODE.md. Exact graph only; 1BC3FDDF/F8FBB38F are undecoded.
+    ('materialgraph/global/basic_colored_spec/basic_colored_spec.',
+     dict(g_mode='colored', self_lit_key=None)),
     # Exact graph only: the jn_/_detail/_random_color tint variants have their own, undecoded writers.
     ('materialgraph/environment/global/gbl_color_tint_01/mo_gbl_color_tint_01.',
      dict(g_switch=TINT_G_SWITCH, self_lit_key=None, tint=True)),
