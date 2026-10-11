@@ -24,7 +24,7 @@ RIG_TO_WORLD = ((1.0, 0.0, 0.0), (0.0, 0.0, -1.0), (0.0, 1.0, 0.0))
 # texture_preview entry roles uploaded as 2D GL textures, deduplicated by texture path. Other textures
 # in an entry (tint palette, screen timeline, puddle and RockBlend sources) are only sampled on the CPU.
 GL_TEXTURE_ROLES = ("_c", "_g", "_n", "_pick", "_h", "_sequence", "_tint_detail", "_bng_detail", "_vehicle_p2",
-                    "_glow_parallax", "_puddle_atlas", "_parallax_height")
+                    "_glow_parallax", "_puddle_atlas", "_parallax_height", "_cma")
 
 
 def _mat3_mul(a, b):
@@ -621,6 +621,8 @@ class ModelViewport(_TkFrame):
             if key in entry: uploaded[key] = entry[key]
         if "bng" in entry:
             uploaded["bng"] = entry["bng"]
+        if "leaf_colour" in entry:
+            uploaded["leaf_colour"] = dict(entry["leaf_colour"])
         for role in GL_TEXTURE_ROLES:
             texture = entry.get(role)
             if not texture:
@@ -1055,7 +1057,7 @@ class ModelViewport(_TkFrame):
 
     def _apply_material(self, u, entry, level):
         """Bind one material's textures and set its uniforms on the current opaque program."""
-        from rc2016.viewer.shading import TINT_DETAIL_TEXTURE_UNIT, PICK_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, ARCH_SEQUENCE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT, GLOW_PARALLAX_TEXTURE_UNIT, PARALLAX_HEIGHT_TEXTURE_UNIT
+        from rc2016.viewer.shading import TINT_DETAIL_TEXTURE_UNIT, PICK_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, ARCH_SEQUENCE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT, GLOW_PARALLAX_TEXTURE_UNIT, PARALLAX_HEIGHT_TEXTURE_UNIT, LEAF_CMA_TEXTURE_UNIT
         gl, sh = self._gl, self._shading
         if self.native_translation and level == 2 and entry.get('native_translation'):
             from rc2016.viewer.native_glsl import TEXTURE_UNITS
@@ -1076,6 +1078,17 @@ class ModelViewport(_TkFrame):
             sh.glUniform1i(u[has], 1 if texture else 0)
             if srgb:
                 sh.glUniform1i(u[srgb], 1 if texture and texture[1] else 0)
+        # Novalis tree leaf colour (material E/S, frozen palette U): cma per pixel on its own unit.
+        leaf = (entry.get("leaf_colour") or {}) if level else {}
+        cma = entry.get("_cma") if level else None
+        sh.glActiveTexture(self.GL_TEXTURE0 + LEAF_CMA_TEXTURE_UNIT)
+        gl.glBindTexture(self.GL_TEXTURE_2D, cma[0] if cma else 0)
+        sh.glUniform1i(u["uTexCma"], LEAF_CMA_TEXTURE_UNIT)
+        sh.glUniform1i(u["uHasCma"], 1 if cma else 0)
+        sh.glUniform1i(u["uSrgbCma"], 1 if cma and cma[1] else 0)
+        sh.glUniform1i(u["uLeafColour"], 1 if cma and leaf.get("palette_rgb") else 0)
+        sh.glUniform4f(u["uLeafP"], float(leaf.get("exponent", 1.0)), float(leaf.get("scale", 1.0)), 1.0 if leaf.get("mapped_fresnel") else 0.0, 0.0)
+        sh.glUniform3f(u["uLeafPalette"], *(float(x) for x in leaf.get("palette_rgb", (1.0, 1.0, 1.0))))
         pom = entry.get('parallax') or {}
         supported = getattr(sh, 'supports_parallax', True)
         valid = parallax_preview_parameters_valid(pom)

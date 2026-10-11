@@ -1084,7 +1084,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 4
+VIEWER_RULE_FRONTEND_VERSION = 5
 
 
 def _viewer_rule_images(nt):
@@ -1203,6 +1203,24 @@ def apply_viewer_graph_rule(mat, source):
     geo = P.geo(); V = geo.outputs['Incoming']; Ng = geo.outputs['Normal']
     view_terms = []
     albedo = c.outputs['Color'] if c is not None else (0.0, 0.0, 0.0)
+    leaf = terms.get('leaf_colour') if on('leaf_colour') else None
+    def leaf_albedo(albedo, selected_normal):
+        ndv = P.sat(P.v('DOT_PRODUCT', P.v('NORMALIZE', selected_normal), P.v('NORMALIZE', V)))
+        f = P.m('POWER', P.m('SUBTRACT', 1.00100004673, ndv), P.const('leaf exponent', leaf['exponent']))
+        cma = P.sep(img('_cma').outputs['Color'])[0]
+        diffuse = P.v('SCALE', P.vlerp(albedo, P.comb(cma,cma,cma), f), P.const('leaf scale', leaf['scale']))
+        palette = P.sep(P.const3('leaf palette', leaf['palette_rgb']))
+        channels = []
+        for p, l in zip(palette, P.sep(diffuse)):
+            low = P.m('MULTIPLY', P.m('MULTIPLY', 2.0, p), l)
+            high = P.m('SUBTRACT', 1.0, P.m('MULTIPLY', P.m('MULTIPLY', 2.0, P.m('SUBTRACT', 1.0, p)), P.m('SUBTRACT', 1.0, l)))
+            channels.append(P.sat(P.lerp(low, high, P.ge(p, .5))))
+        return P.comb(*channels)
+    if leaf:
+        if not leaf.get('mapped_fresnel'): albedo = leaf_albedo(albedo, Ng)
+        view_terms.append('leaf colour')
+        limits.append('leaf_colour: palette U is frozen at 0.5; pass-0 geometry-normal Novalis / mapped-normal global overlay; '
+                      'runtime pass selection and native sampler state unproven; global normal fade is frozen to s=2')
     if facing:   # no albedo input: v76-v78 stay 1.0
         albedo = P.const3('facing glow albedo', facing['albedo'])
     g_rgb = g.outputs['Color'] if g is not None else None
@@ -1407,6 +1425,7 @@ def apply_viewer_graph_rule(mat, source):
                 n2 = P.tangent_normal(r2x, r2y, P.m('SUBTRACT', 1.0, P.dot2(r2x, r2y)), 'VR rock layer B normal')
                 normal = P.v('NORMALIZE', P.vlerp(base_normal, n2, rock_w))
         final_n = normal if normal is not None else Ng
+        if leaf and leaf.get('mapped_fresnel'): albedo = leaf_albedo(albedo, final_n)
         metal_tint = None
         if metal:                     # 1012E99D forward two-colour terms with the final normal
             b = P.m('SUBTRACT', 1.00100004673, P.sat(P.v('DOT_PRODUCT', final_n, V)))

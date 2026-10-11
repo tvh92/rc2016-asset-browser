@@ -107,6 +107,7 @@ BNG_DETAIL_TEXTURE_UNIT = 11   # prompt 06 normal detail only
 TINT_DETAIL_TEXTURE_UNIT = 9   # ColorTintVariants; sole new sampler for prompt04
 PARALLAX_HEIGHT_TEXTURE_UNIT = 12   # separate source height-alpha slot
 TINT_MASK_TEXTURE_UNIT = 5   # _h tint mask (mo_gbl_color_tint_01)
+LEAF_CMA_TEXTURE_UNIT = 7   # Novalis tree leaf cma (rp_nov_plant_tree_foliage_transparent); the only free unit
 # Bones live in a 1-row RGBA32F texture (4 texels = one row-major matrix):
 # a uniform array runs out of vertex constants near 200 joints (Clank has 150,
 # bucketed to 256 it failed with NVIDIA C6020).
@@ -172,6 +173,10 @@ uniform bool uParallax; uniform bool uParallaxNormal; uniform bool uHasParallaxH
 uniform sampler2D uTexParallaxHeight; uniform vec4 uParallaxP; // H, face/grazing steps, fade
 uniform bool uFoliage; // FE32FE79/1E0AE45A close-range normal z weight
 uniform float uAlphaCut; // leaf cut-out: discard when _c.a < threshold (0 = off); threshold inferred, see textures.FOLIAGE_ALPHA_CUTOFF
+// Novalis tree leaf colour, rp_nov pass-0 writer 0476D929. uLeafP = (E, S, mapped-normal Fresnel, unused);
+// palette U is a frozen preview input (textures.LEAF_PALETTE_U_PLACEHOLDER).
+uniform bool uLeafColour; uniform vec4 uLeafP; uniform vec3 uLeafPalette; // uLeafPalette = cmb ramp sample
+uniform sampler2D uTexCma; uniform bool uHasCma; uniform bool uSrgbCma;
 uniform bool uZaFresnel; uniform float uZaFresnelPower; // za_basic_normal_gloss geometry-normal rim suppression
 uniform bool uSelfLitG;       // self-lit mask from _g.B instead of _c.a
 uniform float uK;
@@ -345,6 +350,7 @@ void main() {
     vec4 c = uHasC ? texture2D(uTexC, materialUV) : vec4(uColor, 0.0);
     if (uHasC && c.a < uAlphaCut) discard;
     vec3 albedo = (uMode >= 1 && uHasC) ? (uSrgbC ? linear(c.rgb) : c.rgb) : linear(uColor);
+
     if (uMode >= 1 && uFacingGlow) albedo = vec3(1.0); // 0CD2AAFB: no albedo input, v76-v78 = 1
     if (uMode == 2 && uPuddles && uHasPuddleAtlas) {
         vec3 g=texture2D(uTexG,vUV).rgb;if(uSrgbG)g=linear(g);
@@ -454,7 +460,7 @@ void main() {
             glowParallaxUV += uGlowP.x * face * vec2(dot(V, normalize(T)), -dot(V, normalize(-B)));
         }
         if (uParallaxNormal) z = 1.0 - dot(rg, rg); // rel1660-1680
-        if (uFoliage) z = 1.0 - dot(rg, rg); // native normal, s=2; engine fade omitted
+        if (uFoliage || (uLeafColour && uLeafP.z > 0.5)) z = 1.0 - dot(rg, rg); // native normal, s=2; engine fade omitted
         if (uZaFresnel) z = 1.0 - dot(rg, rg); // E08357DC normal z weight, close-range fade s=2
         if (uTintVariant != 0) {
             z = 1.0 - dot(rg, rg); // native close-range normal, CB0[95]=1
@@ -491,6 +497,17 @@ void main() {
     if(uMode==2 && uParallaxNormal && uTintVariant==0 && dot(pomT,pomT)>0.0 && uHasN) {
         vec2 xy=texture2D(uTexN,materialUV).rg*2.0-1.0;
         N=(gl_FrontFacing?1.0:-1.0)*normalize(pomT*xy.x+pomB*xy.y+pomN*(1.0-dot(xy,xy)));
+    }
+    if (uMode == 2 && uLeafColour && uHasCma) {
+        // 0476D929 / CDD7CD94: F = (1.001 - sat(N.V))^CB2[0]; L = S * mix(c.rgb, cma.r, F); (Novalis material S; global literal 0.5)
+        // albedo = sat(cmb < 0.5 ? 2 cmb L : 1 - 2 (1 - cmb)(1 - L)). Novalis uses geometry normal; global bushes use the pass-0 mapped normal.
+        float ndv = clamp(dot(uLeafP.z > 0.5 ? N : normalize(vNrm), V), 0.0, 1.0);
+        float fresnel = pow(1.00100004673 - ndv, uLeafP.x);
+        float cma = texture2D(uTexCma, materialUV).r;
+        if (uSrgbCma) cma = linear(vec3(cma)).r;
+        vec3 leaf = uLeafP.y * mix(albedo, vec3(cma), fresnel);
+        vec3 cmb = uLeafPalette;
+        albedo = clamp(mix(2.0 * cmb * leaf, 1.0 - 2.0 * (1.0 - cmb) * (1.0 - leaf), step(0.5, cmb)), 0.0, 1.0);
     }
     vec3 metalSpecTint = vec3(1.0);
     float metalRim = 0.0;
@@ -705,7 +722,7 @@ OPAQUE_UNIFORMS = (
     "uSrgbC", "uSrgbG", "uGMode", "uSpecScale", "uGlossScale", "uSelfLitG", "uK",
     "uTwoColorMetal", "uMetalDiffuseA", "uMetalDiffuseB", "uMetalSpecA", "uMetalSpecB", "uMetalP",
     "uParallax", "uParallaxNormal", "uHasParallaxHeight", "uTexParallaxHeight", "uParallaxP",
-    "uFoliage", "uAlphaCut",
+    "uFoliage", "uAlphaCut", "uLeafColour", "uLeafP", "uLeafPalette", "uTexCma", "uHasCma", "uSrgbCma",
     "uZaFresnel", "uZaFresnelPower",
     "uGlowKind", "uGlowColour", "uGlowP", "uTexGlowParallax", "uHasGlowParallax", "uSrgbGlowParallax", "uSrgbGlowMask",
     "uVehicle", "uTexVehicleP2", "uHasVehicleP2", "uSrgbVehicleP2", "uVehicleA", "uVehicleB", "uVehicleP",

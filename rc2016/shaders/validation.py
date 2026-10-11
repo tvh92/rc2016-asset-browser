@@ -383,6 +383,8 @@ def _viewer_expected_constants(rule):
     """'VR <name>' constant -> value, derived from the source rule alone (rc_game_shader._ViewerNodes)."""
     terms, ported = rule.get("terms") or {}, set(rule.get("ported") or ())
     e = {}
+    if "leaf_colour" in ported:
+        l = terms["leaf_colour"]; e.update({"leaf exponent":l["exponent"], "leaf scale":l["scale"], "leaf palette":l["palette_rgb"]})
     if "pick" in ported:
         p = terms["pick"]; e.update({"pick scale": p["scale"], "pick blend": p["blend"], "pick u": p["u"]})
     if "tint" in ported:
@@ -447,6 +449,8 @@ def _viewer_required(rule, has_n):
     tex = rule.get("textures") or {}
     names, roles = [], []
     req = lambda *rs: roles.extend(r for r in rs if tex.get(r))
+    if "leaf_colour" in ported:
+        names += ["leaf exponent", "leaf scale", "leaf palette"]; req("_cma")
     if "pick" in ported and "vehicle" not in ported and "tint" not in ported:
         names += ["pick u", "pick scale", "pick blend"]; req("_pick")
     if "tint" in ported:
@@ -532,7 +536,8 @@ def _viewer_check_constants_and_images(source, material, rule, upstream, has_n):
         assert any(node.type == "TEX_IMAGE" and str(node.get("source_texture_path", "")).lower() == path for node in upstream), \
             f"Viewer-rule term image {role} ({path}) does not reach the active output"
     terms = rule.get("terms") or {}
-    for source_path in ((terms.get("tint") or {}).get("palette_source"), (terms.get("screen") or {}).get("timeline_source")):
+    for source_path in ((terms.get("tint") or {}).get("palette_source"), (terms.get("screen") or {}).get("timeline_source"),
+                        (terms.get("leaf_colour") or {}).get("palette_source")):
         if source_path:   # CPU-sampled constants (texture_preview.tint_palette_sample), as in the viewer
             assert source_path.lower() in rows and rows[source_path.lower()].get("dds_sha256"), \
                 f"Viewer constant sample source {source_path} is not a hashed source binding"
@@ -591,6 +596,14 @@ def _validate_viewer_rule_material(source, material):
         return bool(path) and any(node.type == "TEX_IMAGE" and str(node.get("source_texture_path", "")).lower() == path
                                   for node in _viewer_upstream(socket))
     terms = rule.get("terms") or {}
+    if "leaf_colour" in ported:
+        assert reaches(brdf.inputs[0],"_cma"), "Leaf cma does not feed albedo"
+        if terms['leaf_colour'].get('mapped_fresnel'):
+            assert reaches(brdf.inputs[0],"_n") == has_n, "Global leaf Fresnel lost the mapped normal"
+            assert not rule['textures'].get('_g') and not brdf.inputs[2].is_linked and not brdf.inputs[3].is_linked, "Global leaf zero MRT2 lost"
+            assert all(abs(x)<1e-7 for x in brdf.inputs[2].default_value[:3]) and abs(brdf.inputs[3].default_value)<1e-7, "Global leaf F0/gloss is not zero"
+        else:
+            assert not reaches(brdf.inputs[0],"_n"), "Novalis Fresnel must use geometry normal"
     arch = "arch_sequence" in ported
     glow1 = "glow" in ported and int(terms["glow"]["kind"]) == 1
     if facing:   # 0CD2AAFB has no albedo input

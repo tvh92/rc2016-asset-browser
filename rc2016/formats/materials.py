@@ -431,13 +431,13 @@ def classify_absent_texture(path, refs, material_data, graph_datas):
 # Viewer reading keys that change the result beyond the generic _g/self-lit front-end
 # ('screen' is the viewer's forward 'screen' entry; 'bng'/'bng_detail' the basic_normal_gloss variants).
 VIEWER_RULE_EXTRAS=('pick','tint','spec_tint','arch_sequence','vehicle','glow','two_color_metal','puddles',
-    'foliage','za_fresnel_power','screen','rock_blend','bng','bng_detail','facing_glow','parallax','alpha_cut')
+    'foliage','za_fresnel_power','screen','rock_blend','bng','bng_detail','facing_glow','parallax','alpha_cut','leaf_colour')
 # Terms rc_game_shader.apply_viewer_graph_rule builds (same GLSL math as gl_shading.FRAGMENT/GLASS_FRAGMENT).
 VIEWER_RULE_BUILT=frozenset(VIEWER_RULE_EXTRAS)-{'parallax'}
 # Extra source images each term samples (texture_preview.material_texture_paths roles).
 VIEWER_TERM_ROLES=dict(pick=('_pick',),tint=('_h','_tint_detail','_tint_palette','_pick'),arch_sequence=('_h','_sequence','_pick'),
     vehicle=('_pick','_vehicle_p2','_h'),glow=('_h','_glow_parallax'),puddles=('_puddle_noise','_puddle_ripple'),
-    screen=('_screen_timeline','_c','_n','_pick','_g'),rock_blend=('_rock_mask','_rock_c2','_rock_g2','_rock_n2'),bng_detail=('_bng_detail',),parallax=('_parallax_height',))
+    screen=('_screen_timeline','_c','_n','_pick','_g'),rock_blend=('_rock_mask','_rock_c2','_rock_g2','_rock_n2'),bng_detail=('_bng_detail',),parallax=('_parallax_height',),leaf_colour=('_cma','_cmb'))
 # Writers whose tangent normal z is 1-x*x-y*y (gl_shading.FRAGMENT), not sqrt(1-x*x-y*y).
 VIEWER_LINEAR_Z_TERMS=('bng','foliage','za_fresnel_power','glow','two_color_metal','rock_blend','parallax')
 
@@ -450,11 +450,15 @@ def _viewer_rule_wins_translation(translated, rule):
 
 def _viewer_constant_samples(archive, paths):
     """CPU samples the viewer takes in texture_preview.material_textures (same helper functions)."""
-    from rc2016.viewer.textures import load_texture,tint_palette_sample
+    from rc2016.viewer.textures import load_texture,tint_palette_sample,leaf_palette_sample
     tint=paths.get('tint') or {}
     if tint.get('variant') and paths.get('_tint_palette'):
         tint['palette_rgb']=tint_palette_sample(load_texture(archive,paths['_tint_palette']),tint['palette_u'])
         tint['palette_source']=paths['_tint_palette']
+    leaf=paths.get('leaf_colour')
+    if leaf:
+        leaf['palette_rgb']=leaf_palette_sample(load_texture(archive,paths['_cmb']),*leaf['palette_uv'])
+        leaf['palette_source']=paths['_cmb']
     forward=paths.get('forward') or {}
     if forward.get('kind')=='screen':
         if not paths.get('_screen_timeline'):raise ValueError('Screen timeline source unavailable')
@@ -507,9 +511,9 @@ def viewer_graph_rule(archive, material_path, bound_paths=None):
         else:ported.append(key);continue
         unported.append(key)
     terms={key:paths[key] for key in ('pick','tint','spec_tint','arch_sequence','vehicle','glow','two_color_metal',
-        'puddles','za_fresnel_power','rock_blend','bng','facing_glow','parallax','alpha_cut') if key in paths and key in present+['bng']}
+        'puddles','za_fresnel_power','rock_blend','bng','facing_glow','parallax','alpha_cut','leaf_colour') if key in paths and key in present+['bng']}
     if forward:terms['screen']=forward
-    linear_z=bool(bng) or any(key in present for key in VIEWER_LINEAR_Z_TERMS) or bool((paths.get('tint') or {}).get('variant'))
+    linear_z=bool(bng) or any(key in present for key in VIEWER_LINEAR_Z_TERMS) or bool((paths.get('tint') or {}).get('variant')) or bool((paths.get('leaf_colour') or {}).get('mapped_fresnel'))
     rule=dict(applies=True,schema='rcps4-viewer-graph-rule-v2',
         source='rc2016/viewer/textures.py material_texture_paths',
         g_mode=paths.get('g_mode','colored'),self_lit=paths.get('self_lit','c_alpha'),

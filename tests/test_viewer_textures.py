@@ -165,9 +165,9 @@ class TexturePreviewTests(unittest.TestCase):
             with self.subTest(graph=graph):
                 self.assertTrue(tp._graph_rule([graph])['alpha_cut'])
                 self.assertEqual(tp._graph_rule([graph.replace('.materialgraph', '_extra.materialgraph')]), {})
-        # The tree graphs only cut out; their g/n/cma/cmb terms keep the generic reading.
-        self.assertEqual(tp._graph_rule([graphs[0]]), dict(alpha_cut=True))
-        self.assertEqual(tp._graph_rule([graphs[1]]), dict(alpha_cut=True))
+        # Both exact tree graphs get their own decoded pass-0 leaf-colour variant.
+        self.assertEqual(tp._graph_rule([graphs[0]]), dict(alpha_cut=True, leaf_colour='novalis'))
+        self.assertEqual(tp._graph_rule([graphs[1]]), dict(alpha_cut=True, leaf_colour='global'))
         # The split-face sibling and other foliage graphs have no decoded writer here.
         self.assertEqual(tp._graph_rule(['materialgraph/global/basic_foliage_split_face_texture/basic_foliage_split_face_texture.materialgraph']), {})
         self.assertEqual(tp.FOLIAGE_ALPHA_CUTOFF_FALLBACK, 0.5)  # only missing/truncated material state
@@ -184,6 +184,29 @@ class TexturePreviewTests(unittest.TestCase):
         self.assertEqual(paths['alpha_cut'], 0.4078431725502014); self.assertEqual(entry['alpha_cut'], paths['alpha_cut'])
         self.assertEqual(paths['g_mode'], 'colored'); self.assertNotIn('foliage', paths)
         self.assertEqual(tp.blend_state(0x23C), dict(blend='opaque', two_sided=True))   # opaque, two-sided: alpha test, no blend
+
+    def test_tree_leaf_colour_binds_cma_and_ramp_by_slot_only_when_both_present(self):
+        from unittest.mock import patch
+        graph = 'materialgraph/environment/global/plant/gbl_plant_tree_foliage_transparent_01/rp_nov_plant_tree_foliage_transparent.materialgraph'
+        blob = dat1(['t/leaf_c.texture'], lambda at: [])
+        strings = [graph, 't/leaf_c.texture', 't/cma.texture', 't/ramp.texture']
+        def sections(with_ramp):
+            def build(at):
+                rows = struct.pack('<IIQ', at[2], 0, tp.LEAF_CMA_SLOT)
+                if with_ramp:
+                    rows += struct.pack('<IIQ', at[3], 0, tp.LEAF_CMB_SLOT)
+                return [(tp.MATERIAL_FLAGS_SECTION, flags(0x23C, alpha_reference=104)), (tp.MATERIAL_SLOT_SECTION, rows)]
+            return build
+        archive_for = lambda with_ramp: FakeArchive({'m/leaf.material': ('material', dat1(strings, sections(with_ramp))),
+                                                     graph: ('materialgraph', blob)})
+        with patch.object(tp, 'load_texture', side_effect=lambda _, p: dict(path=p, pixels=b'', format=61)):
+            both = tp.material_texture_paths(archive_for(True), 'm/leaf.material')
+            only_cma = tp.material_texture_paths(archive_for(False), 'm/leaf.material')
+        self.assertEqual(both['_cma'], 't/cma.texture'); self.assertEqual(both['_cmb'], 't/ramp.texture')
+        self.assertEqual(both['leaf_colour']['palette_uv'], (0.5, 0.5)); self.assertTrue(both['leaf_colour']['placeholder_u'])
+        self.assertEqual(both['leaf_colour']['exponent'], 1.0); self.assertEqual(both['leaf_colour']['scale'], 1.0)   # fallbacks: no material rows here
+        self.assertNotIn('leaf_colour', only_cma); self.assertNotIn('_cmb', only_cma)
+        self.assertEqual(only_cma['alpha_cut'], both['alpha_cut'])   # the cut-out does not depend on the ramp
 
     def test_foliage_cutoff_material_bytes_sum_clamp_zero_and_loader_floor(self):
         # CPU trace receipts: static-mesh material bytes, including nonzero byte20 and zero.

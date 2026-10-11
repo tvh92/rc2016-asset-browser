@@ -35,6 +35,18 @@ MIN_PREVIEW_SIZE = 512   # ~0.25 s per 1024² texture to untile
 
 ROLES = ('_c', '_g', '_n', '_pick', '_h')   # base colour, specular + gloss, tangent normal, colour-pick palette, tint mask
 PICK_SUFFIX = '_colorpick_c'
+# Novalis tree leaf (rp_nov_plant_tree_foliage_transparent, writer 0476D929). Slot hashes are read from the
+# material slot tables of the Novalis tree leaf materials; the cma/cmb roles are the names of the bound
+# textures. Source resource tables establish the slots; the equation and E/S/Y are decoded.
+LEAF_CMA_SLOT = 0x49A7866B96F96A72
+LEAF_CMB_SLOT = 0x49A7866B4984DA89
+LEAF_GLOBAL_NORMAL_SLOT = 0x49A7866B67D6383E
+# Material keys for the leaf writer's CB2 dwords (foliage/README.md): E = CB2[0] Fresnel exponent,
+# S = CB2[2] colour scale, Y = CB2[1] palette V. Per-material values, read like the other material terms.
+LEAF_EXPONENT_KEY, LEAF_SCALE_KEY, LEAF_PALETTE_Y_KEY = 0x9BCD75AC, 0xAAC47D17, 0x0F5B49E2
+# PLACEHOLDER: palette U. The writer multiplies GPU record floats at offsets 112 and 120 (transform block,
+# instance/report.md); the CPU producer-to-zone linkage is unproven, so U is fixed at 0.5.
+LEAF_PALETTE_U_PLACEHOLDER = 0.5
 # mo_gbl_color_tint_01 writer BE8C3EE0 (Animation/pipeline/Research/Materials/ColorTint01/COLOR_TINT_DECODE.md)
 TINT_KEYS = dict(spec_tint=0x6B591974, mask_b=0x8ED5C5E8, colour_a=0xA815C29F, colour_b=0x311C9325, power_a=0x9E7A020A,
                  weight_b=0x482ECFEB, weight_a=0xD1279E51, power_b=0x077353B0)
@@ -134,12 +146,13 @@ GRAPH_RULES = (
     # FE32FE79/B01E7CB2 cached deferred outputs; Materials/Foliage/FOLIAGE_DECODE.md.
     ('materialgraph/global/basic_foliage/basic_foliage.',
      dict(g_mode='grey', self_lit_key=None, foliage=True, alpha_cut=True)),
-    # Tree leaf graphs: alpha-tested deferred writers (opaque, two-sided materials) whose `_c` alpha is
-    # coverage only. Everything else keeps the generic reading: their g/n/cma/cmb terms are not decoded.
+    # Tree leaves and shrubs: decoded pass-0 overlay (Novalis 0476D929 / global CDD7CD94),
+    # exact source slots and material parameters, frozen preview palette U = 0.5.
+    # Global has mapped-normal Fresnel and zero MRT2; runtime pass selection is unproven.
     ('materialgraph/environment/global/plant/gbl_plant_tree_foliage_transparent_01/rp_nov_plant_tree_foliage_transparent.',
-     dict(alpha_cut=True)),
+     dict(alpha_cut=True, leaf_colour='novalis')),
     ('materialgraph/environment/global/plant/gbl_plant_tree_foliage_transparent_01/gbl_plant_tree_foliage_transparent_01.',
-     dict(alpha_cut=True)),
+     dict(alpha_cut=True, leaf_colour='global')),
     # Cached forward 8716DC7A at t=0; Materials/StaleSelfLitKeys/STALE_SELF_LIT_KEYS_DECODE.md.
     ('materialgraph/environment/nebula/ambient/neb_amb_screen_01/mo_neb_amb_screen_01.',
      dict(self_lit_key=None, screen=True)),
@@ -413,6 +426,29 @@ def material_texture_paths(archive, material_path: str) -> dict:
         result['foliage'] = True
     if rule.get('alpha_cut'):
         result['alpha_cut'] = _foliage_alpha_cutoff(data)
+    if rule.get('leaf_colour'):
+        # cma (Fresnel-mixed R) and cmb (palette ramp) by slot hash: material slot, else the graph's.
+        material_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
+        for role, slot in (('_cma', LEAF_CMA_SLOT), ('_cmb', LEAF_CMB_SLOT)):
+            path = material_slots.get(slot) or slots.get(slot)
+            if path: result[role] = path
+            else: result.pop(role, None)
+        global_leaf = rule['leaf_colour'] == 'global'
+        if global_leaf:
+            # CDD7CD94 pass 0: API5 C, API6 N; literal zero MRT2 (F0/gloss), zero self-lit.
+            for role, slot in (('_c',0x49A7866BABDAD780),('_n',LEAF_GLOBAL_NORMAL_SLOT)):
+                path = material_slots.get(slot) or slots.get(slot)
+                if path: result[role] = path
+                else: result.pop(role,None)
+            result.pop('_g',None); result.update(g_mode='grey',k=0.0,spec=1.0,gloss=1.0)
+        if '_cma' in result and '_cmb' in result:
+            # Global U = .5 + .5*sin(record112*record120), V = float32(.65 + .2*U).
+            # U remains the same frozen preview input; global V/S are writer literals, not material keys.
+            palette_y = struct.unpack('<f',struct.pack('<f',.6499999761581421+.20000000298023224*LEAF_PALETTE_U_PLACEHOLDER))[0] if global_leaf else value(LEAF_PALETTE_Y_KEY,.5)
+            result['leaf_colour'] = dict(exponent=value(LEAF_EXPONENT_KEY,1.0),scale=.5 if global_leaf else value(LEAF_SCALE_KEY,1.0),
+                palette_uv=(LEAF_PALETTE_U_PLACEHOLDER,palette_y),writer='CDD7CD94' if global_leaf else '0476D929',
+                keys=dict(exponent=LEAF_EXPONENT_KEY) if global_leaf else dict(exponent=LEAF_EXPONENT_KEY,scale=LEAF_SCALE_KEY,palette_y=LEAF_PALETTE_Y_KEY),
+                mapped_fresnel=global_leaf,placeholder_u=True)
     if rule.get('parallax_outputs'):
         result['parallax_normal'] = True
         # api5 is a separate height texture, sometimes also named _c; use C/G/N slot identities.
@@ -852,6 +888,24 @@ def tint_palette_sample(texture, u):
     return [a[i] * (1.0 - f) + b[i] * f for i in range(3)]
 
 
+def leaf_palette_sample(texture, u, v):
+    """Frozen cmb sample: top-mip repeat/bilinear, decode sRGB before filtering.
+    This is the preview sampler contract; native descriptor/wrap/mip state is unproven.
+    """
+    import math
+    im = to_image(texture).convert('RGB')
+    x, y = float(u)*im.width-.5, float(v)*im.height-.5
+    ix, iy = math.floor(x), math.floor(y); fx, fy = x-ix, y-iy
+    rgb = [0.0]*3
+    for dx, dy, weight in ((0,0,(1-fx)*(1-fy)),(1,0,fx*(1-fy)),(0,1,(1-fx)*fy),(1,1,fx*fy)):
+        for i, byte in enumerate(im.getpixel(((ix+dx)%im.width,(iy+dy)%im.height))):
+            c = byte/255.0
+            if texture.get('srgb'):
+                c = c/12.92 if c <= .04045 else ((c+.055)/1.055)**2.4
+            rgb[i] += weight*c
+    return rgb
+
+
 def rock_texture_volume(textures):
     """Four stored-value RGBA slices on unit 15, tiled without resampling.
 
@@ -936,7 +990,7 @@ def material_textures(archive, materials: list[dict], cache: dict) -> dict[int, 
             entry['alpha_cut'] = float(paths['alpha_cut'])
         if 'za_fresnel_power' in paths:
             entry['za_fresnel_power'] = paths['za_fresnel_power']
-        for role in (*ROLES, *(('_parallax_height',) if paths.get('parallax') else ()), *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ())):
+        for role in (*ROLES, *(('_parallax_height',) if paths.get('parallax') else ()), *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ()), *(('_cma',) if paths.get('leaf_colour') else ())):
             path = paths.get(role)
             if not path:
                 continue
@@ -957,6 +1011,15 @@ def material_textures(archive, materials: list[dict], cache: dict) -> dict[int, 
                 elif cache.get(path):
                     entry['tint']['palette_rgb'] = tint_palette_sample(_with_pixels(archive, cache, path), entry['tint']['palette_u'])
                     entry['tint']['palette_source'] = path
+        if paths.get('leaf_colour'):
+            # Placeholder: one fixed-coordinate read of the palette ramp (no per-instance UV yet).
+            path = paths['_cmb']
+            if path not in cache:
+                try: cache[path] = load_texture(archive, path)
+                except (ValueError, KeyError, OSError): cache[path] = None
+            ramp = _with_pixels(archive, cache, path)
+            if ramp:
+                entry['leaf_colour'] = dict(paths['leaf_colour'], palette_rgb=leaf_palette_sample(ramp, *paths['leaf_colour']['palette_uv']))
         if paths.get('forward', {}).get('kind') == 'screen':
             path = paths.get('_screen_timeline')
             if path and path not in cache:

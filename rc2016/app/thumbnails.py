@@ -25,7 +25,7 @@ import threading
 import time
 import zlib
 
-THUMBNAIL_VERSION = 1      # bump when rendering changes: invalidates every cached thumbnail
+THUMBNAIL_VERSION = 2      # bump when rendering changes: invalidates every cached thumbnail
 DEFAULT_SIZE = 192
 SUPERSAMPLE = 2            # render at 2x and box-filter down: the legacy pipeline has no MSAA
 INDEX_NAME = 'index.json'
