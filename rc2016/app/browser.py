@@ -86,40 +86,60 @@ def lighting_controls(ttk, parent, viewport, lighting_var, tonemap_var):
     viewport.on_lighting_changed = lambda: note.configure(text=viewport.lighting_note or '')
 
 
+MODEL_SUFFIX_TOKENS = ('enm', 'hero', 'npc', 'wpn')
+
+
+def clip_tokens(name):
+    """Grouping words of a clip name: its ``_`` parts, cut before a model suffix (``Idle_enm_X`` -> Idle)."""
+    parts = [part for part in name.split('_') if part]
+    for k in range(1, len(parts)):
+        if parts[k] in MODEL_SUFFIX_TOKENS:
+            return parts[:k]
+    return parts
+
+
 def group_clips(labels):
     """Menu tree for clip labels: [(text, clip index | subtree)], sorted case-insensitively.
 
     Labels are ``"animset: Name"`` when a model has several animsets, else ``"Name"``.
-    Clips group by animset, then by the name's first ``_`` token (Engaged, Hover, ...);
-    prefixes with a single clip go under Other, and a level with one group is flattened.
+    Clips group by animset, then word by word: a word shared by several clips becomes a folder
+    (Jetpack > One Hand > Fire), so the word that separates a clip's family is found wherever it sits.
+    Clips alone on their word go under Other. A folder whose only child is a folder is merged
+    into it (Aim > Vertical becomes Aim Vertical).
     """
     def ordered(items):
         return sorted(items, key=lambda item: (item[0].lower(), item[1]))
 
-    def by_prefix(items):
-        groups = {}
-        for name, index in items:
-            groups.setdefault(name.split('_', 1)[0] if '_' in name else '', []).append((name, index))
-        tree, other = [], []
-        for prefix, members in groups.items():
-            if prefix and len(members) > 1:
-                tree.append((prefix, ordered(members)))
+    def fold(label, children):
+        while len(children) == 1 and isinstance(children[0][1], list):
+            label, children = f'{label} {children[0][0]}', children[0][1]
+        return (label, children)
+
+    def build(items):
+        """items: (words left, name, index) -> menu nodes."""
+        groups, alone, folders = {}, [], []
+        for words, name, index in sorted(items, key=lambda item: (item[1].lower(), item[2])):
+            if words:
+                groups.setdefault(words[0].casefold(), []).append((words[0], words[1:], name, index))
             else:
-                other.extend(members)
-        tree.sort(key=lambda group: group[0].lower())
-        if other:
-            if not tree:
-                return ordered(other)
-            tree.append(('Other', ordered(other)))
-        return tree if len(tree) > 1 else tree[0][1]
+                alone.append((name, index))
+        for members in groups.values():
+            if len(members) == 1:
+                alone.append((members[0][2], members[0][3]))
+            else:
+                folders.append(fold(members[0][0], build([(rest, name, index) for _word, rest, name, index in members])))
+        folders.sort(key=lambda node: node[0].lower())
+        if not folders:
+            return ordered(alone)
+        return folders + ([('Other', ordered(alone))] if alone else [])
 
     sets = {}
     for index, label in enumerate(labels):
         animset, _sep, name = label.rpartition(': ')
-        sets.setdefault(animset, []).append((name, index))
+        sets.setdefault(animset, []).append((clip_tokens(name), name, index))
     if len(sets) <= 1:
-        return by_prefix(next(iter(sets.values()), [])) if sets else []
-    return [(animset, by_prefix(items)) for animset, items in sorted(sets.items(), key=lambda s: s[0].lower())]
+        return build(next(iter(sets.values()), []))
+    return [(animset, build(items)) for animset, items in sorted(sets.items(), key=lambda s: s[0].lower())]
 
 
 def count_clips(tree):
@@ -854,10 +874,15 @@ class AssetBrowser:
         def visible_rows(parent=''):
             return sum(1+(visible_rows(i) if tree.item(i,'open') else 0) for i in tree.get_children(parent))
 
+        def all_rows(parent=''):
+            return sum(1+all_rows(i) for i in tree.get_children(parent))
+
         def place(_event=None):
             if self.clip_popup is not top:return
             top.update_idletasks()
-            rows=max(4,min(18,visible_rows()))
+            # A flipped list grows upward from the button, which would shift every row under the pointer
+            # when a folder opens; it is sized for all rows instead, so folders open in place.
+            rows=max(4,min(18,all_rows() if flip else visible_rows()))
             height=min(rows*row_height+entry.winfo_reqheight()+16,max_height)
             y=max(0,button.winfo_rooty()-height) if flip else below
             top.geometry(f'{width}x{height}+{x}+{y}')

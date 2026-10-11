@@ -51,4 +51,13 @@ class SourcePreviewTests(unittest.TestCase):
         self.assertEqual(group_clips(['Walk','Idle']),[('Idle',1),('Walk',0)])
         self.assertEqual(group_clips([]),[])
 
+    def test_clip_menu_groups_on_the_word_that_separates_families(self):
+        labels=['Jetpack_One_Hand_Fire_E','Jetpack_One_Hand_Fire_N','Jetpack_One_Hand_Aim_Vertical_E',
+                'Jetpack_One_Hand_Aim_Vertical_N','Jetpack_Shoulder_Idle_hero_Ratchet','Jetpack_Shoulder_Fire_E']
+        self.assertEqual(group_clips(labels),[('Jetpack',[
+            ('One Hand',[('Aim Vertical',[('Jetpack_One_Hand_Aim_Vertical_E',2),('Jetpack_One_Hand_Aim_Vertical_N',3)]),
+                         ('Fire',[('Jetpack_One_Hand_Fire_E',0),('Jetpack_One_Hand_Fire_N',1)])]),
+            ('Shoulder',[('Jetpack_Shoulder_Fire_E',5),('Jetpack_Shoulder_Idle_hero_Ratchet',4)])])])
+        self.assertEqual(count_clips(group_clips(labels)),len(labels))
+
 if __name__=='__main__':unittest.main()
