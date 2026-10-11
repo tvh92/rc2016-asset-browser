@@ -26,6 +26,8 @@ def open_archive(source_root):
     root = locate(Path(source_root).expanduser().resolve())
     archive = Archive(root, Path(tempfile.gettempdir()) / 'rcps4-level-view', lambda *_a, **_k: None)
     archive.verify_repeats = False   # preview only: skip re-reading every repeated copy of an asset
+    from rc2016.viewer.textures import TextureDiskCache
+    archive.texture_disk_cache = TextureDiskCache(Path(__file__).resolve().parents[2] / '.cache' / 'texture_preview')
     return archive
 
 

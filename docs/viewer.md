@@ -367,7 +367,7 @@ One folder per model in the output root:
 
 **Coordinates and skeleton:** Y-up in game units (glTF's convention), game UVs, textures never flipped. GLB/glTF carry the skeleton (local TRS derived from `worlds()`, so either inheritance rule is reproduced), inverse binds, up to 8 influences (two JOINTS/WEIGHTS sets), and every playable clip as a glTF animation (additive clips standalone, as in the viewer). OBJ is the static rest pose.
 
-**Blender conversion** uses factory settings, `disable_bone_shape=True` (otherwise FBX/USD export the importer's bone-display icosphere as a mesh) and a private user folder. The `.blend` gets `apply_new_scene_defaults()` and packed images. These files carry glTF Principled materials, not the RC PS4 Deferred BRDF; use the research build for that.
+**Blender conversion** uses factory settings, `disable_bone_shape=True` (otherwise FBX/USD export the importer's bone-display icosphere as a mesh) and a private user folder. The `.blend` gets `apply_new_scene_defaults(configure_world=False, configure_gpu=False)` (render defaults only: no HDRI world, no OptiX device setup) and packed images. These files carry glTF Principled materials, not the RC PS4 Deferred BRDF; use the research build for that.
 
 **Materials** follow the viewer's per-graph `_g` reading (`material_texture_paths`: grey, skin or coloured, spec/gloss scales, self-lit K and mask):
 
@@ -423,7 +423,7 @@ The **Gallery** tab shows rendered thumbnails of the models selected in the tree
 - Settings: `%APPDATA%/RC2016 Asset Browser/settings.json` (source and output folders, UI scale, export options, Blender and Python paths). Settings saved under the former name `PS4 Animation Extractor` are copied once.
 - `<repo>/.cache/shared_index`: parsed `layout.csv` and the shared index sidecar.
 - `<repo>/.cache/source_preview`: the viewer's archive working cache.
-- `<repo>/.cache/texture_preview`: decoded texture top mips for the viewer (at most 2 GB).
+- `<repo>/.cache/texture_preview`: decoded texture top mips for the model and level viewers (at most 2 GB).
 - `<repo>/.cache/shared_index/file_hashes.json`, `located_roots.json`: file hashes by size and modification time, and the located archive root per game folder.
 - `<repo>/.cache/reviews`: isolated Blender review runs.
 - `<repo>/.cache/environment`: shared HDRI lighting maps (`<hdri hash>_v<version>.npz`).
