@@ -244,7 +244,7 @@ def _role(path):
 
 
 def _graph_info(archive, graph_id):
-    """(texture paths, slots, parameter key hashes, defaults) of one material graph entry.
+    """(texture paths, slots, parameter keys, defaults, verified skin roles) of one graph.
 
     Many materials share a graph (a level loads hundreds of materials over a few dozen graphs),
     so the parse is kept on the archive object, per entry id. Callers must not mutate the result.
@@ -267,7 +267,21 @@ def _graph_info(archive, graph_id):
             keys = frozenset(row['key_hash'] for table in tables for row in table)
         except (ValueError, struct.error):
             defaults = {}
-        cache[graph_id] = (textures, slots, keys, defaults)
+        # Reuse the pipeline's path-and-hash verified skin slot roles. Stale
+        # swarmer bindings and the secondary normal must not win by suffix.
+        import hashlib
+        from rc2016.shaders.families import FAMILY_REGISTRY
+        graph_path = archive.entries[graph_id]['path'].replace('\\', '/').lower()
+        spec = FAMILY_REGISTRY.get((graph_path, hashlib.sha256(graph_data).hexdigest()), {})
+        role_slots = {}
+        if spec.get('family') in ('basic_skin', 'skin_emissive'):
+            roles = {'base_color': '_c', 'colored_specular_gloss': '_g', 'normal': '_n'}
+            for key, role in spec['texture_slots'].items():
+                if role in roles:
+                    matches = [slot for slot in slots if slot & 0xFFFFFFFF == int(key, 16)]
+                    if len(matches) == 1:
+                        role_slots[roles[role]] = matches[0]
+        cache[graph_id] = (textures, slots, keys, defaults, role_slots)
     return cache[graph_id]
 
 
@@ -301,20 +315,28 @@ def material_texture_paths(archive, material_path: str) -> dict:
     found = [r['path'] for r in references(data) if not r.get('resolution_error')]
     textures = [p for p in found if p.endswith('.texture')]
     graphs = [p for p in found if p.endswith('.materialgraph')]
-    graph_keys, defaults, slots = set(), {}, {}
+    graph_keys, defaults, slots, role_slots = set(), {}, {}, {}
     for graph in graphs:
         ids = [k for k in archive.resolve(graph) if archive.entries[k]['type'] == 'materialgraph']
         if len(ids) == 1:
-            graph_textures, graph_slots, keys, graph_defaults = _graph_info(archive, ids[0])
+            graph_textures, graph_slots, keys, graph_defaults, graph_roles = _graph_info(archive, ids[0])
             textures += graph_textures
             slots.update(graph_slots)
             graph_keys |= keys
             defaults.update(graph_defaults)
+            role_slots.update(graph_roles)
     result = {}
     for path in dict.fromkeys(textures):
         role = _role(path)
         if role and role not in result:
             result[role] = path
+    if role_slots:
+        instance_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
+        for role, slot in role_slots.items():
+            result.pop(role, None)
+            path = instance_slots.get(slot) or slots.get(slot)
+            if path:
+                result[role] = path
     rows = {}
     try:
         from rc2016.formats.materials import extract_material_parameters
