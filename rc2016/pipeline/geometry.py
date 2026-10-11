@@ -8,7 +8,8 @@ from mathutils import Matrix
 from rc2016.formats.container import game_crc32
 from rc2016.common import asset_path,file_hash
 from rc2016.formats.texture_transport import image_interpretation_identity,image_interpretation_key
-from rc2016.pipeline.blender_support import targets,structural_snapshot
+from rc2016.pipeline.blender_support import targets,structural_snapshot,read_values,write_values
+from rc2016.pipeline.bulk_checks import per_loop,signed_int32,weight_batches
 from rc2016.formats.native_model import blender_safe_triangles,decode_model,validate_mesh_position_correction
 
 
@@ -92,25 +93,51 @@ def import_fbx(job,rig):
         materials='FBX materials preserved; exact game shader reconstruction is not implemented')
 
 
+# Source images by their custom-property identity, so each binding looks up candidates
+# instead of scanning bpy.data.images. Only _image sets these properties; the index is
+# rebuilt whenever the image count changes behind its back. The colourspace, alpha mode
+# and conversion parts of the key are still read live from each candidate.
+_IMAGE_INDEX=dict(count=-1,source={},payload={})
+
+
+def _index_image(image):
+    try:source=(asset_path(image.get('source_texture_path','')),str(image.get('source_texture_sha256','')).lower())
+    except (ValueError,AttributeError):source=None
+    if source is not None:_IMAGE_INDEX['source'].setdefault(source,[]).append(image)
+    payload=(image.get('source_texture_payload_sha256'),image.get('source_texture_payload_conversion'))
+    _IMAGE_INDEX['payload'].setdefault(payload,[]).append(image)
+
+
+def _image_index():
+    if _IMAGE_INDEX['count']!=len(bpy.data.images):
+        _IMAGE_INDEX.update(count=len(bpy.data.images),source={},payload={})
+        for image in bpy.data.images:_index_image(image)
+    return _IMAGE_INDEX
+
+
 def _image(binding):
     identity=image_interpretation_identity(binding)
     key=image_interpretation_key(binding)
-    existing=[]
-    for image in bpy.data.images:
-        try:
-            candidate=(asset_path(image.get('source_texture_path','')),
-                str(image.get('source_texture_sha256','')).lower(),
-                image.colorspace_settings.name,image.alpha_mode,
-                image.get('blender_conversion') or 'DDS_NATIVE_V1')
-        except (ValueError,AttributeError):
-            continue
-        if candidate==key:existing.append(image)
+    try:
+        index=_image_index();existing=[]
+        for image in index['source'].get(key[:2],()):
+            try:
+                candidate=(asset_path(image.get('source_texture_path','')),
+                    str(image.get('source_texture_sha256','')).lower(),
+                    image.colorspace_settings.name,image.alpha_mode,
+                    image.get('blender_conversion') or 'DDS_NATIVE_V1')
+            except (ValueError,AttributeError):
+                continue
+            if candidate==key:existing.append(image)
+        prototypes=[image for image in index['payload'].get((identity['dds_sha256'],identity['conversion']),())
+            if image.get('source_texture_payload_sha256')==identity['dds_sha256'] and
+            image.get('source_texture_payload_conversion')==identity['conversion']]
+    except ReferenceError:   # an indexed image was removed and replaced: rebuild once
+        _IMAGE_INDEX['count']=-1
+        return _image(binding)
     if len(existing)>1:raise ValueError('Duplicate Blender images share one texture interpretation identity: '+repr(identity))
     if existing:return existing[0]
     source_path=Path(binding['dds_path']).resolve()
-    prototypes=[image for image in bpy.data.images
-        if image.get('source_texture_payload_sha256')==identity['dds_sha256'] and
-        image.get('source_texture_payload_conversion')==identity['conversion']]
     payload_prototype_name=None
     if prototypes:
         prototype=min(prototypes,key=lambda image:image.name)
@@ -165,6 +192,8 @@ def _image(binding):
         image['blender_conversion']='R8_UNORM_DDS_TO_RGBA8_PNG_V1'
         image['blender_packed_sha256']=hashlib.sha256(bytes(image.packed_file.data)).hexdigest()
         image['blender_dimensions']=list(image.size)
+    if _IMAGE_INDEX['count']==len(bpy.data.images)-1:
+        _IMAGE_INDEX['count']+=1;_index_image(image)
     return image
 
 
@@ -500,35 +529,37 @@ def _import_native_descriptor(job,rig,descriptor):
             raw=section.get('source_positions_i16')
             if raw is None or len(raw)!=len(local_positions):
                 raise ValueError('Source raw position attributes were not preserved for the profiled mesh correction')
+            raw_columns=np.asarray(raw,dtype=np.int64).reshape(-1,3).astype(np.int32)
             for axis,label in enumerate(('X','Y','Z')):
                 attr=mesh.attributes.new(name='SourcePositionI16_'+label,type='INT',domain='POINT')
-                for item,value in zip(attr.data,(row[axis] for row in raw)):item.value=int(value)
-        for polygon in mesh.polygons:polygon.use_smooth=True
+                write_values(attr.data,'value',np.ascontiguousarray(raw_columns[:,axis]))
+        write_values(mesh.polygons,'use_smooth',np.ones(len(mesh.polygons),dtype=bool))
+        # Per-loop values are gathered from the per-vertex source rows in one call per layer.
+        loop_vertices=read_values(mesh.loops,'vertex_index',1,np.int32)
         uv=mesh.uv_layers.new(name='UV0')
-        for loop in mesh.loops:uv.data[loop.index].uv=section['uv0'][loop.vertex_index]
+        write_values(uv.data,'uv',per_loop(section['uv0'],loop_vertices),2)
         if section['uv1']:
             layer=mesh.uv_layers.new(name='UV1')
-            for loop in mesh.loops:layer.data[loop.index].uv=section['uv1'][loop.vertex_index]
+            write_values(layer.data,'uv',per_loop(section['uv1'],loop_vertices),2)
         if section['colors']:
             colors=mesh.color_attributes.new(name='Color',type='FLOAT_COLOR',domain='CORNER')
-            for loop in mesh.loops:colors.data[loop.index].color=section['colors'][loop.vertex_index]
+            write_values(colors.data,'color',per_loop(section['colors'],loop_vertices),4)
         # The +12 vertex word is kept exactly (SourceTangentPacked) and also as
         # its shader-observed 10:10:10:2 UNORM tangent decode (SourceTangent,
         # native mesh space). Blender's Normal Map node still uses its own
         # UV-derived tangents; the bitangent sign is not stored in this word.
         tangent=mesh.attributes.new(name='SourceTangentPacked',type='INT',domain='POINT')
-        for item,value in zip(tangent.data,section['packed_tangents']):
-            item.value=value if value < (1<<31) else value-(1<<32)
+        write_values(tangent.data,'value',signed_int32(section['packed_tangents']))
         decoded_tangent=mesh.attributes.new(name='SourceTangent',type='FLOAT_VECTOR',domain='POINT')
-        for item,value in zip(decoded_tangent.data,section['tangents']):
-            item.vector=value
+        write_values(decoded_tangent.data,'vector',np.asarray(section['tangents'],dtype=np.float32).reshape(-1),3)
         if section['uv0_secondary_packed'] is not None:
             mesh.attributes.new(name='SourceUV0SecondaryU',type='INT',domain='POINT')
             mesh.attributes.new(name='SourceUV0SecondaryV',type='INT',domain='POINT')
             secondary_u=mesh.attributes.get('SourceUV0SecondaryU')
             secondary_v=mesh.attributes.get('SourceUV0SecondaryV')
-            for item,(u,v) in zip(secondary_u.data,section['uv0_secondary_packed']):item.value=u
-            for item,(_,v) in zip(secondary_v.data,section['uv0_secondary_packed']):item.value=v
+            secondary=np.asarray(section['uv0_secondary_packed'],dtype=np.int64).reshape(-1,2).astype(np.int32)
+            write_values(secondary_u.data,'value',np.ascontiguousarray(secondary[:,0]))
+            write_values(secondary_v.data,'value',np.ascontiguousarray(secondary[:,1]))
         try:mesh.normals_split_custom_set_from_vertices(section['normals'])
         except AttributeError:mesh.normals_split_custom_set([section['normals'][loop.vertex_index] for loop in mesh.loops])
         if section['material_index']>=len(materials):raise ValueError('Mesh references missing material index')
@@ -546,15 +577,10 @@ def _import_native_descriptor(job,rig,descriptor):
         if any(w is not None for w in section['weights']):
             if not rig:raise ValueError('Skinned mesh has no model armature')
             groups={name:obj.vertex_groups.new(name=name) for name in dict.fromkeys(x for x in joint_names if x)}
-            for vertex_index,weights in enumerate(section['weights']):
-                if weights is None:
-                    weight_errors.append((section['index'],vertex_index,'missing'))
-                    continue
-                total=sum(value for _,value in weights)
-                if abs(total-1)>.005:weight_errors.append((section['index'],vertex_index,total))
-                for joint,value in weights:
-                    if joint>=len(joint_names) or not joint_names[joint]:raise ValueError('Skin weight references a joint outside the selected actor skeleton')
-                    if value:groups[joint_names[joint]].add([vertex_index],value,'REPLACE')
+            # One REPLACE add per (joint, weight) instead of per vertex and influence.
+            batches,errors=weight_batches(section['weights'],joint_names)
+            weight_errors.extend((section['index'],*row) for row in errors)
+            for name,value,indices in batches:groups[name].add(indices,value,'REPLACE')
             modifier=obj.modifiers.new('Exact source skin','ARMATURE');modifier.object=rig
         visible=descriptor.get('visible',True)
         obj.hide_set(not visible);obj.hide_render=not visible

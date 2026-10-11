@@ -264,8 +264,12 @@ def _configure_optix_gpu(bpy: Any) -> None:
         raise RuntimeError("Could not configure the Cycles OptiX GPU") from exc
 
 
-def audit_scene(scene: Any = None) -> Dict[str, Any]:
-    """Return a read-only snapshot of relevant defaults and camera state."""
+def audit_scene(scene: Any = None, check_gpu: bool = True) -> Dict[str, Any]:
+    """Return a read-only snapshot of relevant defaults and camera state.
+
+    ``check_gpu=False`` skips the process-level OptiX device preferences (not saved in
+    the .blend) for a process that never renders; the saved Cycles settings are still checked.
+    """
     import bpy  # type: ignore
 
     scene = scene or bpy.context.scene
@@ -350,12 +354,13 @@ def audit_scene(scene: Any = None) -> Dict[str, Any]:
                 matches = actual == value
             if not matches:
                 result["mismatches"].append("cycles." + key)
-    if result["gpu"].get("compute_device_type") != "OPTIX":
-        result["mismatches"].append("gpu.compute_device_type")
-    if not any(device.get("type") == "OPTIX" and device.get("use") for device in result["gpu"]["devices"]):
-        result["mismatches"].append("gpu.optix_device")
-    if any(device.get("type") != "OPTIX" and device.get("use") for device in result["gpu"]["devices"]):
-        result["mismatches"].append("gpu.non_optix_device_enabled")
+    if check_gpu:
+        if result["gpu"].get("compute_device_type") != "OPTIX":
+            result["mismatches"].append("gpu.compute_device_type")
+        if not any(device.get("type") == "OPTIX" and device.get("use") for device in result["gpu"]["devices"]):
+            result["mismatches"].append("gpu.optix_device")
+        if any(device.get("type") != "OPTIX" and device.get("use") for device in result["gpu"]["devices"]):
+            result["mismatches"].append("gpu.non_optix_device_enabled")
     if camera is None or camera.data.type != "PERSP":
         result["mismatches"].append("camera.perspective")
     lights = [o for o in scene.objects if o.type == "LIGHT"]

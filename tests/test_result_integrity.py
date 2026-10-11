@@ -29,5 +29,19 @@ class ResultIntegrityTests(unittest.TestCase):
             self.assertEqual(stale.validation.hash_status,'mismatch')
             self.assertFalse(normalize_details(stale)['integrity_verified'])
             self.assertEqual(catalog.verify_preview(stale.previews[0]).status,'stale')
+    def test_result_without_previews_verifies(self):
+        # Runs no longer render review previews; their manifest rows carry no previews key.
+        import json
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            test_catalog.CatalogTests().make_output(root)
+            manifest=root/'reports'/'manifest.json'
+            data=json.loads(manifest.read_text(encoding='utf-8'))
+            for row in data['models'].values():row.pop('previews',None)
+            manifest.write_text(json.dumps(data),encoding='utf-8')
+            ref=catalog.discover_results([root])[0]
+            details=catalog.inspect_result(ref)
+            self.assertEqual(details.previews,())
+            self.assertTrue(normalize_details(details)['integrity_verified'])
 
 if __name__=='__main__':unittest.main()
