@@ -37,6 +37,12 @@ class SelectionTests(unittest.TestCase):
             self.assertEqual(c.candidates(), [])
             self.assertTrue(a['reason'])
 
+    def test_vfx_actor_does_not_enter_layer_through_an_environment_model(self):
+        a=actor();a['actor_path']='visualeffect/bridge.actor'
+        c=catalog(a);c.descriptors[a['actor_path']]=c.descriptors.pop('object.actor')
+        self.assertEqual(c.candidates(),[])
+        self.assertEqual(a['reason'],'VFX outside actor layer')
+
     def test_unproven_drawing_components_fail_closed(self):
         a=actor(); c=catalog(a)
         a['drawing_components']=[dict(name='ScalePrototyping', decoded=None)]

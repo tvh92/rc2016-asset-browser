@@ -117,7 +117,7 @@ class ActorCatalog:
                 reason = 'known unsupported model: ' + lower
             elif lower in AMBIGUOUS_PLACEMENT:
                 reason = 'airlock placement disagrees with static control'
-            elif lower.startswith('visualeffect/'):
+            elif lower.startswith('visualeffect/') or actor['actor_path'].lower().startswith('visualeffect/'):
                 reason = 'VFX outside actor layer'
             elif tuple(x for row in descriptor['matrix_rows'] for x in row) != IDENTITY:
                 reason = 'nonidentity actor-local transform unproven'
