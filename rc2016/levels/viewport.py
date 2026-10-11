@@ -7,6 +7,7 @@ presentation basis (x, y, z) -> (x, -z, y), so the fly camera works in Blender-l
 from __future__ import annotations
 
 import ctypes
+import itertools
 import math
 import struct
 import sys
@@ -105,6 +106,88 @@ def draw_items(models, level, visible_groups, use_overrides=True):
     return items
 
 
+def _mat4_mul(a, b):
+    """Product of two column-major 4x4 matrices (as glMultMatrixf: a * b)."""
+    return tuple(sum(a[k * 4 + r] * b[c * 4 + k] for k in range(4)) for c in range(4) for r in range(4))
+
+
+def projection_matrix(width, height, near, far):
+    """Column-major glFrustum matrix of LevelViewport._setup_camera."""
+    top = near * math.tan(math.radians(FOV_DEGREES) * 0.5)
+    right = top * width / height
+    return (near / right, 0.0, 0.0, 0.0, 0.0, near / top, 0.0, 0.0,
+            0.0, 0.0, -(far + near) / (far - near), -1.0, 0.0, 0.0, -2.0 * far * near / (far - near), 0.0)
+
+
+def frustum_planes(projection, modelview):
+    """The six clip planes (left, right, bottom, top, near, far) of column-major GL matrices as an
+    (6, 4) array in the modelview's object space, normalised so that a.x + b.y + c.z + d is the
+    signed distance (positive inside)."""
+    import numpy as np
+    clip = np.asarray(projection, np.float64).reshape(4, 4).T @ np.asarray(modelview, np.float64).reshape(4, 4).T
+    planes = np.array([clip[3] + clip[0], clip[3] - clip[0], clip[3] + clip[1], clip[3] - clip[1],
+                       clip[3] + clip[2], clip[3] - clip[2]])
+    return planes / np.linalg.norm(planes[:, :3], axis=1)[:, None]
+
+
+def model_sphere(geometry):
+    """(centre, radius) bounding all vertices in model space: the smaller of the origin sphere
+    (``radius``) and the sphere around the ``bounds`` box; None when neither is known."""
+    radius, bounds = geometry.get("radius"), geometry.get("bounds")
+    best = ((0.0, 0.0, 0.0), float(radius)) if radius is not None else None
+    if bounds:
+        low, high = bounds
+        box = (tuple((a + b) * 0.5 for a, b in zip(low, high)), 0.5 * math.dist(low, high))
+        if best is None or box[1] < best[1]:
+            best = box
+    return best
+
+
+def instance_spheres(rows, sphere):
+    """World-space bounding spheres of instances: ``rows`` is (n, 16) row-vector matrices (p' = p * M).
+    The radius scales by the spectral norm of each 3x3 part, so sheared and mirrored matrices stay
+    conservative. Returns (centres (n, 3), radii (n,)) in float64."""
+    import numpy as np
+    rows = np.asarray(rows, np.float64).reshape(-1, 16)
+    if not len(rows):
+        return np.zeros((0, 3)), np.zeros(0)
+    if sphere is None:
+        return rows[:, 12:15].copy(), np.full(len(rows), np.inf)
+    linear = rows.reshape(-1, 4, 4)[:, :3, :3]
+    centres = np.asarray(sphere[0], np.float64) @ linear + rows[:, 12:15]
+    return centres, np.linalg.norm(linear, ord=2, axis=(1, 2)) * float(sphere[1])
+
+
+def sphere_visibility(centres, radii, planes, margin=1e-3):
+    """True where a sphere is not entirely outside one of ``planes``. ``margin`` (relative to the
+    radius, plus a small absolute term) keeps float rounding from dropping spheres touching a plane."""
+    import numpy as np
+    if not len(centres):
+        return np.zeros(0, bool)
+    distances = centres @ planes[:, :3].T + planes[:, 3]
+    reach = radii * (1.0 + margin) + 1e-4
+    return np.all(distances >= -reach[:, None], axis=1)
+
+
+_VERSIONS = itertools.count(1)
+
+
+def cached_draw_items(models, level, visible_groups, use_overrides=True):
+    """draw_items over ``models``, reusing each model's items while its key holds: (groups version,
+    level, overrides, visible). Equal to draw_items(models, ...): items of one model keep their
+    relative order and the final sort is stable on (material key, model path)."""
+    items = []
+    for model in models:
+        groups = visible_groups(model)
+        key = (model.get("groups_version"), level, use_overrides, bool(groups))
+        cached = model.get("draw_items_for")
+        if cached is None or cached[0] != key or key[0] is None:
+            cached = model["draw_items_for"] = (key, draw_items([model], level, visible_groups, use_overrides))
+        items.extend(cached[1])
+    items.sort(key=lambda item: (item[0], item[1]["path"]))
+    return items
+
+
 def pick_colour(index):
     """RGB in 0..1 encoding draw id ``index`` (0 is the background) in 24 bits."""
     value = index + 1
@@ -151,7 +234,9 @@ class LevelViewport(ModelViewport):
     material and follow each other merge; each (model, instance buffer) pair has a vertex array
     object, so a draw binds one object instead of eight buffers and pointers; and material uniforms
     and texture bindings are recorded once per material and only re-issued where they differ from
-    the previous material's."""
+    the previous material's. Instances whose bounding sphere lies outside the view frustum are left
+    out: when the camera moves, each instance buffer whose visible set changed is refilled with its
+    visible rows (glBufferSubData) and drawn with that count."""
     GL_ARRAY_BUFFER, GL_ELEMENT_ARRAY_BUFFER, GL_STATIC_DRAW = 0x8892, 0x8893, 0x88E4
     GL_CW, GL_CCW = 0x0900, 0x0901
     MODES = ("Shaded", "Textured", "Solid", "Wireframe", "Solid + wireframe")
@@ -169,6 +254,13 @@ class LevelViewport(ModelViewport):
         "glDeleteVertexArrays": (None, [ctypes.c_int, ctypes.c_void_p]),
         "glBindVertexArray": (None, [ctypes.c_uint]),
     }
+    # Optional: without it every instance is drawn (no frustum culling).
+    OPTIONAL_EXT = {"glBufferSubData": (None, [ctypes.c_uint, ctypes.c_ssize_t, ctypes.c_ssize_t, ctypes.c_void_p])}
+    MATERIAL_BUDGET_SECONDS = 0.008   # texture uploads and shader compiles per Tk tick while loading
+    STATS_INTERVAL = 0.25             # status-line refresh while drawing (4 Hz)
+    culling = True
+    _cull = None
+    _frame_lighting = None
 
     def __init__(self, parent, **kwargs):
         super().__init__(parent, **kwargs)
@@ -183,6 +275,14 @@ class LevelViewport(ModelViewport):
         self._material_ops = {}    # (material path, level) -> recorded uniform/texture calls
         self._texture_names = {}   # texture path -> (GL id, sRGB) or None
         self._draw_list = None
+        self._material_queue = {}  # material path -> entry waiting for its textures to upload
+        self._material_pump = None # pending after() id of _pump_materials
+        self._compile_queue = []   # material paths whose surface program is compiled ahead of use
+        self._cull_masks = {}      # instance buffer -> rows it holds now (bool mask), absent when all
+        self._cull_counts = {}     # instance buffer -> instances to draw from it
+        self._cull_camera = None
+        self._stats_base = None
+        self._stats_time, self._stats_pending = 0.0, False
         self.show_hidden = False
         self.show_actors = True
         self.show_spawn_preview = False
@@ -246,12 +346,12 @@ class LevelViewport(ModelViewport):
         self.show_actors = bool(show)
         self.picked_actor = None
         self._draw_list = None
-        self._draw()
+        self._schedule_draw()
 
     def set_zone_visible(self, zone, visible):
         (self._hidden_zones.discard if visible else self._hidden_zones.add)(zone)
         self._draw_list = None
-        self._draw()
+        self._schedule_draw()
 
     def instance_count(self, path):
         """Visible instances of a model, or 0."""
@@ -274,16 +374,69 @@ class LevelViewport(ModelViewport):
         if not self._make_current():
             self._pending_materials.update(entries)
             return
+        queue = self.__dict__.setdefault("_material_queue", {})
         for path, entry in entries.items():
             if path not in self._materials:
-                self._materials[path] = self._gl_entry(entry, self._texture_names)
-                # Early frames can record an empty entry before its textures arrive.
-                # Invalidate every mode/program variant of that material.
-                for key in [k for k in self._material_ops if k[0] == path]:
-                    self._material_ops.pop(key)
-        self._gl.glBindTexture(self.GL_TEXTURE_2D, 0)
-        self._draw_list = None
-        self._schedule_draw()
+                queue.setdefault(path, entry)
+        self._pump_materials()
+
+    def _pump_materials(self, budget=None):
+        """Upload queued materials for up to ``budget`` seconds (MATERIAL_BUDGET_SECONDS; at least one
+        material per call), then compile their native programs in the time left; what remains
+        continues on a later Tk tick, so a large batch does not freeze the window."""
+        self.__dict__["_material_pump"] = None
+        queue = self.__dict__.setdefault("_material_queue", {})
+        compile_queue = self.__dict__.setdefault("_compile_queue", [])
+        if not (queue or compile_queue) or not self._make_current():
+            return
+        deadline = time.perf_counter() + (self.MATERIAL_BUDGET_SECONDS if budget is None else budget)
+        uploaded = False
+        while queue:
+            path = next(iter(queue))
+            entry = queue.pop(path)
+            if path in self._materials:
+                continue
+            self._materials[path] = self._gl_entry(entry, self._texture_names)
+            # Early frames can record an empty entry before its textures arrive.
+            # Invalidate every mode/program variant of that material.
+            for key in [k for k in self._material_ops if k[0] == path]:
+                self._material_ops.pop(key)
+            compile_queue.append(path)
+            uploaded = True
+            if time.perf_counter() >= deadline:
+                break
+        if uploaded:
+            self._gl.glBindTexture(self.GL_TEXTURE_2D, 0)
+            self._draw_list = None
+            self._stats_base = None
+            self._schedule_draw()
+        while compile_queue and time.perf_counter() < deadline:
+            self._precompile(compile_queue.pop(0))
+        if queue or compile_queue:
+            self._material_pump = self.after(15, self._pump_materials)
+
+    def _precompile(self, path):
+        """Link a material's native surface program before its first draw (Shaded mode only); a
+        failure shows up again, and is reported, when the material is drawn."""
+        entry = self._materials.get(path) or {}
+        if getattr(self, "_shading", None) is None or self._mode != "Shaded" or not entry.get("native_translation"):
+            return
+        try:
+            self._surface_program(entry, 2, instanced=True)
+        except Exception:
+            pass
+
+    def flush_materials(self):
+        """Upload every queued material now (captures need the complete frame)."""
+        pump = self.__dict__.get("_material_pump")
+        if pump:
+            self.after_cancel(pump)
+        if self._make_current():
+            self._pump_materials(budget=float("inf"))
+        pump = self.__dict__.get("_material_pump")
+        if pump:
+            self.after_cancel(pump)
+            self._material_pump = None
 
     def set_mode(self, mode):
         self._draw_list = None   # material keys carry the shading level
@@ -292,13 +445,13 @@ class LevelViewport(ModelViewport):
     def set_show_hidden(self, show):
         self.show_hidden = bool(show)
         self._draw_list = None
-        self._draw()
+        self._schedule_draw()
 
     def set_material_overrides(self, enabled):
         """Draw instances with (True) or without their per-instance material overrides."""
         self.material_overrides = bool(enabled)
         self._draw_list = None
-        self._draw()
+        self._schedule_draw()
 
     def set_sky(self, sky):
         """The level's sky (sky.level_sky with a 'textures' {path: load_texture} map), or None."""
@@ -308,7 +461,7 @@ class LevelViewport(ModelViewport):
 
     def set_show_sky(self, show):
         self.show_sky = bool(show)
-        self._draw()
+        self._schedule_draw()
 
     def _visible_groups(self, model):
         if model["hidden"] and not self.show_hidden:
@@ -316,17 +469,40 @@ class LevelViewport(ModelViewport):
         return model["groups"]
 
     def stats(self):
-        counts = [(m["triangles"], sum(g[1] for g in self._visible_groups(m))) for m in self._models.values()]
-        actors = sum(len(m['actors']) - sum(a['zone'] in self._hidden_zones for a in m['actors'])
-                     for m in self._models.values() if not m['hidden'] or self.show_hidden) if self.show_actors else 0
-        spawns = sum(sum(a['zone'] not in self._hidden_zones for a in m.get('spawns', []))
-                     for m in self._models.values() if not m['hidden'] or self.show_hidden) if self.show_spawn_preview else 0
-        return dict(actors=actors, spawns=spawns, models=len(self._models), instances=sum(n for _t, n in counts),
-                    triangles=sum(t * n for t, n in counts),
-                    materials=len(self._materials), textures=sum(1 for v in self._texture_names.values() if v),
-                    draws=len(self._draw_list or ()), draw_ms=self.last_draw_ms, speed=self._speed,
-                    eye=self._eye, yaw=self._yaw, pitch=self._pitch,
+        """Scene counts (cached until the draw list, the culled set or the materials change) plus the
+        current frame time and camera. ``instances``/``triangles`` are drawn after frustum culling;
+        ``placed`` counts the instances of the visible zones and layers."""
+        base = self._stats_base
+        if base is None:
+            counts = [(m["triangles"], sum(g[1] for g in self._visible_groups(m)),
+                       sum(self._cull_counts.get(g[0], g[1]) for g in self._visible_groups(m))) for m in self._models.values()]
+            actors = sum(len(m['actors']) - sum(a['zone'] in self._hidden_zones for a in m['actors'])
+                         for m in self._models.values() if not m['hidden'] or self.show_hidden) if self.show_actors else 0
+            spawns = sum(sum(a['zone'] not in self._hidden_zones for a in m.get('spawns', []))
+                         for m in self._models.values() if not m['hidden'] or self.show_hidden) if self.show_spawn_preview else 0
+            base = self._stats_base = dict(
+                actors=actors, spawns=spawns, models=len(self._models), placed=sum(n for _t, n, _d in counts),
+                instances=sum(d for _t, _n, d in counts), triangles=sum(t * d for t, _n, d in counts),
+                materials=len(self._materials), textures=sum(1 for v in self._texture_names.values() if v),
+                draws=len(self._draw_list or ()))
+        return dict(base, draw_ms=self.last_draw_ms, speed=self._speed, eye=self._eye, yaw=self._yaw, pitch=self._pitch,
                     native_translation=self.native_translation, program_switches=self.native_program_switches)
+
+    def _emit_stats(self):
+        """on_stats at most every STATS_INTERVAL; a skipped update follows when the interval ends."""
+        if not self.on_stats:
+            return
+        now = time.perf_counter()
+        if now - self._stats_time >= self.STATS_INTERVAL:
+            self._stats_time = now
+            self.on_stats(self.stats())
+        elif not self._stats_pending:
+            self._stats_pending = True
+            self.after(int(self.STATS_INTERVAL * 1000), self._trailing_stats)
+
+    def _trailing_stats(self):
+        self._stats_pending = False
+        self._emit_stats()
 
     def clear(self, message="Loading level…"):
         if self._make_current():
@@ -341,6 +517,12 @@ class LevelViewport(ModelViewport):
         self._sky = None
         self._models, self._materials, self._texture_names, self._draw_list = {}, {}, {}, None
         self._material_ops = {}
+        pump = self.__dict__.get("_material_pump")
+        if pump:
+            self.after_cancel(pump)
+        self._material_pump, self._material_queue, self._compile_queue = None, {}, []
+        self._cull, self._cull_masks, self._cull_counts, self._cull_camera = None, {}, {}, None
+        self._stats_base = None
         self._hidden_zones = set()
         self._pending, self._pending_materials = [], {}
         self.selected = None
@@ -360,6 +542,10 @@ class LevelViewport(ModelViewport):
                 self._show_error(self._error)
                 return False
             ext[name] = ctypes.WINFUNCTYPE(result, *arguments)(address)
+        for name, (result, arguments) in self.OPTIONAL_EXT.items():
+            address = gl.wglGetProcAddress(name.encode())
+            if address:
+                ext[name] = ctypes.WINFUNCTYPE(result, *arguments)(address)
         gl.glFrontFace.argtypes = [ctypes.c_uint]
         gl.glLoadMatrixf.argtypes = [ctypes.c_void_p]; gl.glMultMatrixf.argtypes = [ctypes.c_void_p]
         gl.glReadPixels.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p]
@@ -383,7 +569,8 @@ class LevelViewport(ModelViewport):
                       nbo=self._buffer(self.GL_ARRAY_BUFFER, geometry["normals"]),
                       tbo=self._buffer(self.GL_ARRAY_BUFFER, geometry["uvs"]),
                       ibo=self._buffer(self.GL_ELEMENT_ARRAY_BUFFER, geometry["indices"]),
-                      zones=[], actor_zones=[], actors=[], spawn_zones=[], spawns=[], groups=[], groups_for=None)
+                      zones=[], actor_zones=[], actors=[], spawn_zones=[], spawns=[], groups=[], groups_for=None,
+                      sphere=model_sphere(geometry))
         record["buffers"] = [record[k] for k in ("vbo", "nbo", "tbo", "ibo")]
         self._ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0); self._ext["glBindBuffer"](self.GL_ELEMENT_ARRAY_BUFFER, 0)
         self._models[path] = record
@@ -412,28 +599,42 @@ class LevelViewport(ModelViewport):
 
     def _merge_groups(self):
         """One instance buffer per model, handedness and set of material changes over the visible zones:
-        [(buffer, count, mirrored, changes)]."""
+        [(buffer, count, mirrored, changes)]. A model is rebuilt only when its own data changed or a
+        toggle touches it: a zone it has rows in, or a layer (actors, spawn preview) it has rows in."""
         from array import array
         hidden = frozenset(self._hidden_zones)
         preview = getattr(self, 'show_spawn_preview', False)
-        state = (hidden, self.show_actors, preview)
+        masks, counts = getattr(self, '_cull_masks', None), getattr(self, '_cull_counts', None)
         for model in self._models.values():
+            spawn_zones = model.get("spawn_zones", [])
+            zones = {zone for zone, _key, _rows in model["zones"] + model["actor_zones"] + spawn_zones}
+            state = (hidden & zones, self.show_actors if model["actor_zones"] else None,
+                     preview if spawn_zones else None)
             if model["groups_for"] == state:
                 continue
             old = [g[0] for g in model["groups"]]
             if old:
                 self._ext["glDeleteBuffers"](len(old), (ctypes.c_uint * len(old))(*old))
+                for name in old:   # GL reuses deleted names
+                    if masks is not None:
+                        masks.pop(name, None)
+                    if counts is not None:
+                        counts.pop(name, None)
             self._delete_vaos([model])
             merged = {}
             layers = model["zones"] + (model["actor_zones"] if self.show_actors else [])
             if preview:
-                layers += model.get("spawn_zones", [])
+                layers += spawn_zones
             for zone, key, rows in layers:
                 if zone not in hidden:
                     merged.setdefault(key, array("f")).extend(rows)
             model["groups"] = [(self._buffer(self.GL_ARRAY_BUFFER, rows), len(rows) // 16, flip, changes)
                                for (flip, changes), rows in sorted(merged.items())]
+            model["instance_rows"] = {group[0]: rows for group, rows in zip(model["groups"], (merged[k] for k in sorted(merged)))}
             model["groups_for"] = state
+            model["groups_version"] = next(_VERSIONS)
+            model["instance_spheres"] = {}
+            self._cull = None
         self._ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0)
 
     def _delete_vaos(self, models):
@@ -486,10 +687,14 @@ class LevelViewport(ModelViewport):
         return {"Shaded": 2, "Textured": 1}.get(self._mode, 0)
 
     def _build_draw_list(self):
-        """Draw items sorted by material so uniforms change once per material (draw_items)."""
+        """Draw items sorted by material so uniforms change once per material (draw_items). Each model's
+        items are kept until its groups, the shading level or the override setting change, so models
+        arriving during a load cost only their own items (the result equals draw_items over all)."""
         self._merge_groups()
-        self._draw_list = draw_items(self._models.values(), self._level(), self._visible_groups,
-                                     self.material_overrides)
+        self._draw_list = cached_draw_items(self._models.values(), self._level(), self._visible_groups,
+                                            self.material_overrides)
+        self._cull = None
+        self._stats_base = None
         # Keep all draws of one native program together, then retain material/model ordering.
         def program_key(item):
             key = item[0]; entry = self._materials.get(key[0]) or {}
@@ -508,6 +713,70 @@ class LevelViewport(ModelViewport):
         gl.glLoadMatrixf((ctypes.c_float * 16)(*view_matrix(self._eye, self._yaw, self._pitch)))
         gl.glMultMatrixf((ctypes.c_float * 16)(*BASIS))
         self._near = near
+        self._frame_lighting = None   # the lighting frames follow this modelview
+
+    # Frustum culling -----------------------------------------------------------------------
+    def _prepare_culling(self):
+        """Bounding spheres of every instance in the visible models' buffers, as one array, so a camera
+        change costs a few NumPy operations, not one per buffer."""
+        import numpy as np
+        buffers, rows, centres, radii = [], [], [], []
+        for model in self._models.values():
+            spheres = model.setdefault("instance_spheres", {})
+            for group in self._visible_groups(model):
+                data = model.get("instance_rows", {}).get(group[0])
+                if data is None:
+                    continue
+                if group[0] not in spheres:
+                    spheres[group[0]] = instance_spheres(np.frombuffer(data, np.float32).reshape(-1, 16), model.get("sphere"))
+                buffers.append(group[0]); rows.append(data)
+                centres.append(spheres[group[0]][0]); radii.append(spheres[group[0]][1])
+        sizes = np.array([len(c) for c in centres], np.int64)
+        self._cull = dict(buffers=buffers, rows=rows, sizes=sizes, starts=np.concatenate(([0], np.cumsum(sizes)[:-1])) if len(sizes) else sizes,
+                          centres=np.concatenate(centres) if centres else np.zeros((0, 3)),
+                          radii=np.concatenate(radii) if radii else np.zeros(0),
+                          owner=np.repeat(np.arange(len(buffers)), sizes))
+        self._cull_camera = None
+
+    def _update_culling(self, width, height):
+        """Refill the instance buffers whose visible set changed since the last camera state."""
+        import numpy as np
+        if not (self.culling and self._ext and self._ext.get("glBufferSubData")):
+            return
+        camera = (self._eye, self._yaw, self._pitch, self._near, self._far, width, height)
+        if self._cull is None:
+            self._prepare_culling()
+        elif camera == self._cull_camera:
+            return
+        self._cull_camera = camera
+        cull = self._cull
+        if not len(cull["radii"]):
+            return
+        modelview = _mat4_mul(view_matrix(self._eye, self._yaw, self._pitch), BASIS)
+        planes = frustum_planes(projection_matrix(width, height, self._near, self._far), modelview)
+        visible = sphere_visibility(cull["centres"], cull["radii"], planes)
+        previous = np.ones(len(visible), bool)
+        for index, name in enumerate(cull["buffers"]):
+            mask = self._cull_masks.get(name)
+            if mask is not None:
+                start = cull["starts"][index]
+                previous[start:start + len(mask)] = mask
+        changed = np.unique(cull["owner"][visible != previous]).tolist()
+        if not changed:
+            return
+        ext, sub = self._ext, self._ext["glBufferSubData"]
+        for index in changed:
+            name, start, size = cull["buffers"][index], int(cull["starts"][index]), int(cull["sizes"][index])
+            mask = visible[start:start + size]
+            count = int(mask.sum())
+            if count:   # with nothing visible the stale rows are simply not drawn
+                rows = np.ascontiguousarray(np.frombuffer(cull["rows"][index], np.float32).reshape(-1, 16)[mask])
+                ext["glBindBuffer"](self.GL_ARRAY_BUFFER, name)
+                sub(self.GL_ARRAY_BUFFER, 0, rows.nbytes, rows.ctypes.data)
+            self._cull_masks[name] = mask.copy()
+            self._cull_counts[name] = count
+        ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0)
+        self._stats_base = None
 
     def _draw(self):
         if not self._make_current():
@@ -524,6 +793,7 @@ class LevelViewport(ModelViewport):
             self._setup_camera(width, height)
             if self._draw_list is None:
                 self._build_draw_list()
+            self._cull_frame(width, height)
             if self._sky and self.show_sky and self._mode in ("Shaded", "Textured"):
                 try:
                     self._draw_sky()
@@ -540,8 +810,18 @@ class LevelViewport(ModelViewport):
                 self._models = {}
         self.last_draw_ms = (time.perf_counter() - started) * 1000.0
         self._gdi32.SwapBuffers(self._hdc)
-        if self.on_stats:
-            self.on_stats(self.stats())
+        self._emit_stats()
+
+    def _cull_frame(self, width, height):
+        try:
+            self._update_culling(width, height)
+        except Exception as exc:   # draw everything instead: refill every buffer with all its rows
+            print(f"level viewer: culling disabled: {type(exc).__name__}: {exc}", file=sys.stderr)
+            self.culling = False
+            self._cull, self._cull_masks, self._cull_counts = None, {}, {}
+            for model in self._models.values():
+                model["groups_for"] = None
+            self._build_draw_list()
 
     def _begin_attributes(self):
         self._bound_vao = self._front = None
@@ -674,7 +954,11 @@ class LevelViewport(ModelViewport):
         gl, ext = self._gl, self._ext
         first, count = span
         offset = ctypes.c_void_p(first * 12)
+        culled = self._cull_counts
         for group in groups:
+            instances = culled.get(group[0], group[1])
+            if not instances:
+                continue
             vao = self._vao(model, group)
             if self._bound_vao != vao:
                 ext["glBindVertexArray"](vao)
@@ -684,7 +968,7 @@ class LevelViewport(ModelViewport):
             if self._front != flip:
                 gl.glFrontFace(self.GL_CW if flip else self.GL_CCW)
                 self._front = flip
-            ext["glDrawElementsInstanced"](self.GL_TRIANGLES, count * 3, self.GL_UNSIGNED_INT, offset, group[1])
+            ext["glDrawElementsInstanced"](self.GL_TRIANGLES, count * 3, self.GL_UNSIGNED_INT, offset, instances)
 
     def _draw_level_glass(self, items):
         """Forward materials after all opaque ones: material blend/cull state, no depth write.
@@ -746,7 +1030,7 @@ class LevelViewport(ModelViewport):
         record = dict(domes=[], textures={},
                       cube=((ctypes.c_float * 24)(*self.SKY_CUBE), (ctypes.c_uint * 36)(*self.SKY_CUBE_INDICES)))
         for path, texture in sky.get("textures", {}).items():
-            record["textures"][path] = self._upload_texture(texture) if texture else 0
+            record["textures"][path] = self._upload_texture(texture, mipmaps=False) if texture else 0
         self._gl.glBindTexture(self.GL_TEXTURE_2D, 0)
         for dome in sky["domes"]:
             geometry = dome["geometry"]
@@ -840,6 +1124,7 @@ class LevelViewport(ModelViewport):
         gl.glClearColor(0.0, 0.0, 0.0, 1.0)
         gl.glClear(self.GL_COLOR_BUFFER_BIT | self.GL_DEPTH_BUFFER_BIT)
         self._setup_camera(width, height)
+        self._cull_frame(width, height)   # the id pass draws the frame's visible set
         program, u = sh.pick_program()
         sh.glUseProgram(program)
         self._begin_attributes()
@@ -955,7 +1240,8 @@ class LevelViewport(ModelViewport):
             self.on_open(path)
 
     def capture_png(self, path):
-        """Write the current frame (redrawn now) to a PNG; True on success."""
+        """Write the current frame (redrawn now, with every queued material uploaded) to a PNG; True on success."""
+        self.flush_materials()
         self._draw()
         if not self._make_current():
             return False
@@ -979,7 +1265,7 @@ class LevelViewport(ModelViewport):
         if not hasattr(self, "_bounds_native"):   # ModelViewport.__init__ runs before ours
             return
         self._eye, self._yaw, self._pitch, self._speed = overview_camera(self._bounds_native)
-        self._draw()
+        self._schedule_draw()
 
     def _begin_look(self, event):
         self.focus_set()
@@ -991,7 +1277,7 @@ class LevelViewport(ModelViewport):
             x, y, yaw, pitch = self._drag
             self._yaw = yaw - (event.x - x) * 0.25
             self._pitch = max(-89.0, min(89.0, pitch - (event.y - y) * 0.25))
-            self._draw()
+            self._schedule_draw()
 
     def _begin_pan(self, event):
         self.focus_set()
@@ -1004,7 +1290,7 @@ class LevelViewport(ModelViewport):
             scale = self._speed * 0.01
             dx, dy = -(event.x - x) * scale, (event.y - y) * scale
             self._eye = tuple(e + r[i] * dx + up[i] * dy for i, e in enumerate(eye))
-            self._draw()
+            self._schedule_draw()
 
     def _wheel(self, event):
         if event.state & 0x4:   # Ctrl: change fly speed
@@ -1013,13 +1299,13 @@ class LevelViewport(ModelViewport):
             f, _r, _u = look_vectors(self._yaw, self._pitch)
             step = self._speed * (0.5 if event.delta > 0 else -0.5)
             self._eye = tuple(e + fi * step for e, fi in zip(self._eye, f))
-        self._draw()
+        self._schedule_draw()
 
     def _zoom_by(self, factor):   # Button-4/5 (X11 wheel) from ModelViewport
         f, _r, _u = look_vectors(self._yaw, self._pitch)
         step = self._speed * (0.5 if factor > 1 else -0.5)
         self._eye = tuple(e + fi * step for e, fi in zip(self._eye, f))
-        self._draw()
+        self._schedule_draw()
 
     def _key_down(self, event):
         key = event.keysym.lower()
@@ -1056,7 +1342,7 @@ class LevelViewport(ModelViewport):
         step = self._speed * boost * dt
         dx = sum(m[0] for m in moving); dy = sum(m[1] for m in moving); dz = sum(m[2] for m in moving)
         self._eye = tuple(e + (f[i] * dx + r[i] * dy + (1.0 if i == 2 else 0.0) * dz) * step for i, e in enumerate(self._eye))
-        self._draw()
+        self._schedule_draw()
         self.after(8, self._tick)
 
 
