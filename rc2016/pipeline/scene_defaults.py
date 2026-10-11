@@ -175,11 +175,13 @@ def pack_scene_images_except_shared_hdri(scene: Any) -> Dict[str, Any]:
 
 
 def apply_new_scene_defaults(scene: Any = None, hdri_path: Optional[str] = None, configure_world: bool = True,
-                             lighting: Optional[Any] = None) -> Any:
+                             lighting: Optional[Any] = None, configure_gpu: bool = True) -> Any:
     """Apply repository defaults to a new/current scene and return the scene.
 
     Camera transforms are deliberately never changed.  If an active camera is
     present, only its projection type is normalized to perspective.
+    ``configure_gpu=False`` leaves the OptiX denoisers, Cycles device and GPU
+    preferences untouched (for files that are saved, not rendered).
     """
     import bpy  # type: ignore
 
@@ -202,10 +204,12 @@ def apply_new_scene_defaults(scene: Any = None, hdri_path: Optional[str] = None,
     _set_if_present(cycles, "use_denoising", True)
     _set_if_present(cycles, "preview_samples", 32)
     _set_if_present(cycles, "use_preview_denoising", True)
-    cycles.denoiser = "OPTIX"
-    cycles.preview_denoiser = "OPTIX"
+    if configure_gpu:
+        cycles.denoiser = "OPTIX"
+        cycles.preview_denoiser = "OPTIX"
     _set_if_present(render, "use_persistent_data", True)
-    _set_if_present(cycles, "device", "GPU")
+    if configure_gpu:
+        _set_if_present(cycles, "device", "GPU")
     camera = getattr(scene, "camera", None)
     if camera is not None and getattr(camera, "type", None) == "CAMERA":
         camera.data.type = "PERSP"
@@ -218,7 +222,8 @@ def apply_new_scene_defaults(scene: Any = None, hdri_path: Optional[str] = None,
         for area in screen.areas:
             if area.type == "VIEW_3D":
                 _set_if_present(area.spaces.active, "lock_camera", True)
-    _configure_optix_gpu(bpy)
+    if configure_gpu:
+        _configure_optix_gpu(bpy)
     if configure_world:
         apply_shared_lighting(scene, lighting, hdri_path)
     return scene

@@ -33,6 +33,7 @@ import shutil
 import struct
 import subprocess
 import tempfile
+import weakref
 
 import numpy as np
 
@@ -77,7 +78,11 @@ def safe_name(value, maximum=70):
 
 # ---------------------------------------------------------------- textures / materials
 def _srgb_to_linear(x):
-    return np.where(x <= 0.04045, x / 12.92, ((x + 0.055) / 1.055) ** 2.4)
+    x = np.asarray(x)
+    low = x <= 0.04045
+    out = x / 12.92
+    out[~low] = ((x[~low] + 0.055) / 1.055) ** 2.4   # the power only on the curved branch
+    return out
 
 
 def _linear_to_srgb(x):
@@ -85,23 +90,75 @@ def _linear_to_srgb(x):
     return np.where(x <= 0.0031308, x * 12.92, 1.055 * np.power(x, 1 / 2.4) - 0.055)
 
 
-def _rgba(texture, size=None):
-    """Float RGBA array (h, w, 4) in 0..1, values as stored; optionally resized."""
+_SRGB_LUT = _srgb_to_linear(np.arange(256, dtype=np.float32) / 255.0)   # float32 sRGB -> linear for 8-bit input
+
+
+def _unit(u8):
+    """uint8 -> float32 0..1 (exactly ``float32(v) / 255``)."""
+    return u8.astype(np.float32) / 255.0
+
+
+def _rgba_u8(texture, size=None):
+    """uint8 RGBA array (h, w, 4), values as stored; optionally resized."""
     from PIL import Image
     from rc2016.viewer.textures import to_image
     image = to_image(texture).convert('RGBA')
     if size and image.size != size:
         image = image.resize(size, Image.BILINEAR)
-    return np.asarray(image, dtype=np.float32) / 255.0
+    return np.asarray(image)
+
+
+def _rgba(texture, size=None):
+    """Float RGBA array (h, w, 4) in 0..1, values as stored; optionally resized."""
+    return _unit(_rgba_u8(texture, size))
+
+
+def _u8(array):
+    """0..1 float -> 8-bit, the quantisation every exported PNG uses."""
+    return np.clip(np.rint(array * 255.0), 0, 255).astype(np.uint8)
 
 
 def _png(array, mode='RGB'):
     from PIL import Image
     import io
-    data = np.clip(np.rint(array * 255.0), 0, 255).astype(np.uint8)
+    data = np.ascontiguousarray(array if array.dtype == np.uint8 else _u8(array))
     buffer = io.BytesIO()
-    Image.fromarray(data, mode).save(buffer, 'PNG', optimize=False)
+    Image.fromarray(data, mode).save(buffer, 'PNG', optimize=False, compress_level=1)
     return buffer.getvalue()
+
+
+class _MapCache:
+    """Converted material maps (8-bit arrays plus their PNG bytes) keyed by source textures and mode, LRU by size."""
+
+    def __init__(self, limit_bytes=768 << 20):
+        from collections import OrderedDict
+        self.items, self.limit = OrderedDict(), limit_bytes
+
+    @staticmethod
+    def size(entry):
+        return sum(entry[k].nbytes for k in ('base', 'mr', 'normal', 'emissive') if entry[k] is not None)
+
+    def get(self, key):
+        entry = self.items.get(key)
+        if entry is not None:
+            self.items.move_to_end(key)
+        return entry
+
+    def put(self, key, entry):
+        self.items[key] = entry
+        while len(self.items) > 1 and sum(self.size(e) for e in self.items.values()) > self.limit:
+            self.items.popitem(last=False)
+
+
+def cached_png(material, key, array, mode='RGB'):
+    """PNG bytes of one map, encoded once per converted-map entry (shared across formats and exports)."""
+    store = material.get('png')
+    png = store.get((key, mode)) if store is not None else None
+    if png is None:
+        png = _png(array, mode)
+        if store is not None:
+            store[(key, mode)] = png
+    return png
 
 
 def _perceived(c):
@@ -134,7 +191,7 @@ def facing_glow_rgb(term, n_dot_v):
     return [term['amplitude'] * 2.0 * a * (1.0 + a), term['amplitude'] * term['g_scale'] * f * (1.0 + a), 0.0]
 
 
-def material_maps(archive, material, cache):
+def material_maps(archive, material, cache, map_cache=None):
     """PBR maps for one material slot: dict(name, base, mr, normal, emissive, factors, notes)."""
     from rc2016.formats.archive import decompress
     from rc2016.viewer.textures import (blend_state, load_texture_full, material_flags,
@@ -187,23 +244,42 @@ def material_maps(archive, material, cache):
     elif c_tex is None and g_tex is None:
         out['base_factor'] = [0.8, 0.8, 0.8]
         out['notes'].append('no base colour texture: the colour comes from a compiled shader this exporter does not run; white-grey placeholder')
+    textured = c_tex is not None or g_tex is not None or n_tex is not None
+    key = (paths.get('_c'), paths.get('_g'), paths.get('_n'), paths.get('g_mode', 'colored'), paths.get('spec', 1.0),
+           paths.get('gloss', 1.0), float(paths.get('k', 0.0) or 0.0), paths.get('self_lit'))
+    entry = map_cache.get(key) if map_cache is not None and textured else None
+    if entry is None:
+        entry = _convert_maps(c_tex, g_tex, n_tex, paths)
+        entry['png'] = {}
+        if map_cache is not None and textured:
+            map_cache.put(key, entry)
+    for name in ('base', 'mr', 'normal', 'emissive', 'emissive_strength', 'png'):
+        out[name] = entry[name]
+    out['notes'] += entry['notes']
+    return out
+
+
+def _convert_maps(c_tex, g_tex, n_tex, paths):
+    """The pixel work of ``material_maps``: 8-bit base / metal-rough / normal / emissive maps for one texture set."""
+    from rc2016.viewer.textures import SRGB_FORMATS
+    out = dict(base=None, mr=None, normal=None, emissive=None, emissive_strength=0.0, notes=[])
     size = None
     for tex in (c_tex, g_tex):
         if tex is not None:
             size = max(size or (0, 0), (tex['width'], tex['height']))
     h_w = size
     if c_tex is not None:
-        c = _rgba(c_tex, h_w)
-        albedo = _srgb_to_linear(c[..., :3]) if c_tex['format'] in SRGB_FORMATS else c[..., :3]
-        c_alpha = c[..., 3]
+        c = _rgba_u8(c_tex, h_w)
+        albedo = _SRGB_LUT[c[..., :3]] if c_tex['format'] in SRGB_FORMATS else _unit(c[..., :3])
+        c_alpha = _unit(c[..., 3])
     else:
         albedo = np.full((h_w[1], h_w[0], 3) if h_w else (1, 1, 3), 0.6, np.float32)
         c_alpha = np.zeros(albedo.shape[:2], np.float32)
     mode, spec, gloss_scale = paths.get('g_mode', 'colored'), paths.get('spec', 1.0), paths.get('gloss', 1.0)
     g_blue = None
     if g_tex is not None:
-        g = _rgba(g_tex, h_w)
-        gl = _srgb_to_linear(g[..., :3]) if g_tex['format'] in SRGB_FORMATS else g[..., :3]
+        g = _rgba_u8(g_tex, h_w)
+        gl = _SRGB_LUT[g[..., :3]] if g_tex['format'] in SRGB_FORMATS else _unit(g[..., :3])
         g_blue = gl[..., 2]
         if mode == 'grey_skin':
             f0 = np.repeat(np.minimum(0.5, gl[..., 1:2]), 3, axis=-1)
@@ -216,7 +292,7 @@ def material_maps(archive, material, cache):
             gloss = np.full(gl.shape[:2], 0.948681, np.float32)
         else:
             f0 = spec * gl
-            gloss = np.sqrt(np.clip(gloss_scale * g[..., 3] ** 2, 0, 1))
+            gloss = np.sqrt(np.clip(gloss_scale * _unit(g[..., 3]) ** 2, 0, 1))
         f0 = np.clip(f0, 0.0, 1.0)
         base, metallic = spec_gloss_to_metal_rough(albedo, f0)
         rough = np.power(2.0, -2.75 * gloss)
@@ -225,19 +301,19 @@ def material_maps(archive, material, cache):
         base, metallic, rough = albedo, np.zeros(albedo.shape[:2], np.float32), np.ones(albedo.shape[:2], np.float32)
         out['notes'].append('no _g texture: no game specular; exported fully rough')
     if c_tex is not None or g_tex is not None:
-        out['base'] = _linear_to_srgb(base)
-        out['mr'] = np.stack([np.ones_like(rough), rough, metallic], axis=-1)
+        out['base'] = _u8(_linear_to_srgb(base))
+        out['mr'] = _u8(np.stack([np.ones_like(rough), rough, metallic], axis=-1))
     k = float(paths.get('k', 0.0) or 0.0)
     mask = g_blue if paths.get('self_lit') == 'g_blue' else (c_alpha if c_tex is not None else None)
     if k > 0 and mask is not None and float(mask.max()) > 0.0:
-        out['emissive'] = _linear_to_srgb(albedo * mask[..., None])
+        out['emissive'] = _u8(_linear_to_srgb(albedo * mask[..., None]))
         out['emissive_strength'] = k
         out['notes'].append(f"self-lit = _c.rgb x {'_g.B' if paths.get('self_lit') == 'g_blue' else '_c.a'} x K {k:g}")
     if n_tex is not None:
         n = _rgba(n_tex)
         x, y = n[..., 0] * 2 - 1, n[..., 1] * 2 - 1
         z = np.sqrt(np.clip(1 - x * x - y * y, 0, 1))
-        out['normal'] = np.stack([n[..., 0], n[..., 1], z * 0.5 + 0.5], axis=-1)
+        out['normal'] = _u8(np.stack([n[..., 0], n[..., 1], z * 0.5 + 0.5], axis=-1))
     return out
 
 
@@ -280,54 +356,97 @@ def mesh_arrays(mesh, joint_count):
 
 
 def _quat_from_matrix(m):
-    t = m[0, 0] + m[1, 1] + m[2, 2]
-    if t > 0:
-        s = math.sqrt(t + 1.0) * 2
-        q = [(m[2, 1] - m[1, 2]) / s, (m[0, 2] - m[2, 0]) / s, (m[1, 0] - m[0, 1]) / s, 0.25 * s]
-    elif m[0, 0] > m[1, 1] and m[0, 0] > m[2, 2]:
-        s = math.sqrt(1.0 + m[0, 0] - m[1, 1] - m[2, 2]) * 2
-        q = [0.25 * s, (m[0, 1] + m[1, 0]) / s, (m[0, 2] + m[2, 0]) / s, (m[2, 1] - m[1, 2]) / s]
-    elif m[1, 1] > m[2, 2]:
-        s = math.sqrt(1.0 + m[1, 1] - m[0, 0] - m[2, 2]) * 2
-        q = [(m[0, 1] + m[1, 0]) / s, 0.25 * s, (m[1, 2] + m[2, 1]) / s, (m[0, 2] - m[2, 0]) / s]
-    else:
-        s = math.sqrt(1.0 + m[2, 2] - m[0, 0] - m[1, 1]) * 2
-        q = [(m[0, 2] + m[2, 0]) / s, (m[1, 2] + m[2, 1]) / s, 0.25 * s, (m[1, 0] - m[0, 1]) / s]
-    q = np.asarray(q)
-    return q / np.linalg.norm(q)
+    """Unit xyzw quaternions of rotation matrices (..., 3, 3); same branch rule as the classic trace method."""
+    m = np.asarray(m, float)
+    m00, m01, m02 = m[..., 0, 0], m[..., 0, 1], m[..., 0, 2]
+    m10, m11, m12 = m[..., 1, 0], m[..., 1, 1], m[..., 1, 2]
+    m20, m21, m22 = m[..., 2, 0], m[..., 2, 1], m[..., 2, 2]
+    tiny = 1e-300
+
+    def root(v):
+        return np.sqrt(np.maximum(v, tiny)) * 2
+    t = m00 + m11 + m22
+    s0 = root(t + 1.0)
+    s1 = root(1.0 + m00 - m11 - m22)
+    s2 = root(1.0 + m11 - m00 - m22)
+    s3 = root(1.0 + m22 - m00 - m11)
+    q0 = np.stack([(m21 - m12) / s0, (m02 - m20) / s0, (m10 - m01) / s0, 0.25 * s0], axis=-1)
+    q1 = np.stack([0.25 * s1, (m01 + m10) / s1, (m02 + m20) / s1, (m21 - m12) / s1], axis=-1)
+    q2 = np.stack([(m01 + m10) / s2, 0.25 * s2, (m12 + m21) / s2, (m02 - m20) / s2], axis=-1)
+    q3 = np.stack([(m02 + m20) / s3, (m12 + m21) / s3, 0.25 * s3, (m10 - m01) / s3], axis=-1)
+    c0 = t > 0
+    c1 = ~c0 & (m00 > m11) & (m00 > m22)
+    c2 = ~c0 & ~c1 & (m11 > m22)
+    q = np.where(c0[..., None], q0, np.where(c1[..., None], q1, np.where(c2[..., None], q2, q3)))
+    return q / np.linalg.norm(q, axis=-1, keepdims=True)
+
+
+def decompose_batch(matrix):
+    """(translation, rotation xyzw, scale) of affine 4x4 matrices (..., 4, 4); shear is dropped."""
+    matrix = np.asarray(matrix, float)
+    t = matrix[..., :3, 3].copy()
+    basis = matrix[..., :3, :3]
+    scale = np.linalg.norm(basis, axis=-2)
+    scale[..., 0] = np.where(np.linalg.det(basis) < 0, -scale[..., 0], scale[..., 0])
+    rotation = basis / np.where(np.abs(scale) > 1e-12, scale, 1.0)[..., None, :]
+    u, _s, vt = np.linalg.svd(rotation)   # nearest pure rotation
+    rotation = u @ vt
+    flip = np.linalg.det(rotation) < 0
+    if flip.any():
+        u[..., :, -1] = np.where(flip[..., None], -u[..., :, -1], u[..., :, -1])
+        rotation = u @ vt
+    return t, _quat_from_matrix(rotation), scale
 
 
 def decompose(matrix):
-    """(translation, rotation xyzw, scale) of an affine 4x4; shear is dropped."""
-    t = matrix[:3, 3].copy()
-    basis = matrix[:3, :3].copy()
-    scale = np.linalg.norm(basis, axis=0)
-    if np.linalg.det(basis) < 0:
-        scale[0] = -scale[0]
-    rotation = basis / np.where(np.abs(scale) > 1e-12, scale, 1.0)
-    u, _s, vt = np.linalg.svd(rotation)   # nearest pure rotation
-    rotation = u @ vt
-    if np.linalg.det(rotation) < 0:
-        u[:, -1] = -u[:, -1]; rotation = u @ vt
-    return t, _quat_from_matrix(rotation), scale
+    """(translation, rotation xyzw, scale) of one affine 4x4; shear is dropped."""
+    return decompose_batch(matrix)
+
+
+def local_trs_batch(rows, worlds):
+    """Local TRS arrays (T, R, S) of shape (F, J, 3/4/3) so the hierarchy reproduces ``worlds`` (F, J, 4, 4)."""
+    worlds = np.asarray(worlds, float)
+    parent = np.array([r['parent'] for r in rows], np.intp)
+    local = worlds.copy()
+    child = np.nonzero(parent >= 0)[0]
+    if len(child):
+        unique, inverse = np.unique(parent[child], return_inverse=True)
+        inv = np.linalg.inv(worlds[:, unique])
+        local[:, child] = inv[:, inverse] @ worlds[:, child]
+    return decompose_batch(local)
 
 
 def local_trs(rows, world):
     """Per-joint local TRS so that the glTF hierarchy reproduces ``world`` (any inheritance rule)."""
-    result = []
-    for j, row in enumerate(rows):
-        parent = row['parent']
-        local = np.linalg.inv(world[parent]) @ world[j] if parent >= 0 else world[j]
-        result.append(decompose(local))
-    return result
+    t, r, s = local_trs_batch(rows, np.asarray(world, float)[None])
+    return [(t[0, j], r[0, j], s[0, j]) for j in range(len(rows))]
+
+
+class Tracks:
+    """Local TRS of every frame: translation (F, J, 3), rotation xyzw (F, J, 4), scale (F, J, 3); len = frames."""
+
+    def __init__(self, translation, rotation, scale):
+        self.translation, self.rotation, self.scale = translation, rotation, scale
+
+    def __len__(self):
+        return len(self.translation)
+
+
+_TRACK_MEMO = weakref.WeakKeyDictionary()   # AnimationLibrary -> {clip index: (kind, fps, Tracks)}
 
 
 def clip_tracks(library, index):
-    """(name, fps, [per-frame local TRS list]) for one clip, or raises ValueError when unplayable."""
+    """(kind, fps, Tracks) for one clip, or raises ValueError when unplayable. Memoised per library and clip."""
+    memo = _TRACK_MEMO.setdefault(library, {})
+    if index not in memo:
+        memo[index] = _clip_tracks(library, index)
+    return memo[index]
+
+
+def _clip_tracks(library, index):
     from rc2016.formats.animation_samples import decode_clip
     from rc2016.formats.animation_transforms import sample_transforms
-    from rc2016.formats.clips import classify
-    from rc2016.formats.skeleton import worlds
+    from rc2016.formats.clips import classify, worlds_batch
     from rc2016.viewer.animation import PLAYABLE, _quat_mul
     entry = library.clips[index]
     clip = decode_clip(library.animset_data[entry['animset']], entry['offset'], library.names)
@@ -342,7 +461,7 @@ def clip_tracks(library, index):
                         scale=[a * b for a, b in zip(rest[row['hash']]['scale'], row['scale'])])
                    for row in frame if row['hash'] in rest] for frame in frames]
     fps = float(clip['metadata'].get('sample_rate_fps') or 30.0)
-    tracks = [local_trs(library.rows, worlds(library.rows, frame, library.inheritance)) for frame in frames]
+    tracks = Tracks(*local_trs_batch(library.rows, worlds_batch(library.rows, frames, library.inheritance)))
     return kind, fps, tracks
 
 
@@ -472,6 +591,7 @@ class ModelExporter:
         self.index_root = Path(index_root) if index_root else self.output_root
         self.loader = SourcePreviewLoader()
         self.texture_cache = {}
+        self.map_cache = _MapCache()   # converted material maps, shared by every export of this run
         self.log, self.cancelled = log, cancelled
         self.process = None
 
@@ -508,7 +628,8 @@ class ModelExporter:
             raise ValueError(f"{', '.join(FORMATS[f][1] for f in needs_blender)} needs Blender: set its path in Options")
         self.log(f'Decoding {source_path}')
         index_root = self.index_root if (self.index_root / 'reports' / 'asset_references.sqlite').is_file() else None
-        load_animation = options.animations != 'none'
+        gltf_based = any(f in options.formats for f in ('glb', 'gltf', 'fbx', 'usd', 'blend'))
+        load_animation = options.animations != 'none' and gltf_based   # OBJ is the static rest pose only
         self.loader.load(self.source_root, model_id, source_path, options.lod, options.look,
                          index_root if load_animation else None, False)
         decoded, library = self.loader.current, self.loader.animation if load_animation else None
@@ -542,9 +663,9 @@ class ModelExporter:
             self._check()
             material = by_index.get(slot, {})
             self.log(f"  material {slot}: {material.get('name') or material.get('path') or '(none)'}")
-            maps[slot] = material_maps(archive, material, self.texture_cache) if options.textures else \
+            maps[slot] = material_maps(archive, material, self.texture_cache, self.map_cache) if options.textures else \
                 dict(name=material.get('name') or f'material_{slot}', base=None, mr=None, normal=None, emissive=None,
-                     emissive_strength=0.0, alpha_mode='OPAQUE', alpha=1.0, double_sided=False, notes=['textures not exported'], sources={})
+                     emissive_strength=0.0, alpha_mode='OPAQUE', alpha=1.0, double_sided=False, notes=['textures not exported'], sources={}, png={})
         names = set()
         for slot, m in maps.items():
             name = safe_name(m['name'], 50)
@@ -631,13 +752,13 @@ class ModelExporter:
                        metallicFactor=1.0 if m['mr'] is not None else 0.0, roughnessFactor=1.0)
             entry = dict(name=m['obj_name'], pbrMetallicRoughness=pbr)
             if m['base'] is not None:
-                pbr['baseColorTexture'] = dict(index=g.image(f"{m['obj_name']}_basecolor", _png(m['base'])))
+                pbr['baseColorTexture'] = dict(index=g.image(f"{m['obj_name']}_basecolor", cached_png(m, 'base', m['base'])))
             if m['mr'] is not None:
-                pbr['metallicRoughnessTexture'] = dict(index=g.image(f"{m['obj_name']}_metal_rough", _png(m['mr'])))
+                pbr['metallicRoughnessTexture'] = dict(index=g.image(f"{m['obj_name']}_metal_rough", cached_png(m, 'mr', m['mr'])))
             if m['normal'] is not None:
-                entry['normalTexture'] = dict(index=g.image(f"{m['obj_name']}_normal", _png(m['normal'])))
+                entry['normalTexture'] = dict(index=g.image(f"{m['obj_name']}_normal", cached_png(m, 'normal', m['normal'])))
             if m['emissive'] is not None:
-                entry['emissiveTexture'] = dict(index=g.image(f"{m['obj_name']}_emissive", _png(m['emissive'])))
+                entry['emissiveTexture'] = dict(index=g.image(f"{m['obj_name']}_emissive", cached_png(m, 'emissive', m['emissive'])))
                 entry['emissiveFactor'] = [1.0, 1.0, 1.0]
                 if m['emissive_strength'] != 1.0:
                     entry['extensions'] = dict(KHR_materials_emissive_strength=dict(emissiveStrength=m['emissive_strength']))
@@ -677,9 +798,8 @@ class ModelExporter:
         rigid_parts = [p for p in parts if p not in skinned_parts]
         joint_nodes = []
         if library is not None:
-            from rc2016.formats.skeleton import worlds
-            rest_world = worlds(library.rows, (), library.inheritance)
-            rest = local_trs(library.rows, rest_world)
+            from rc2016.formats.clips import worlds_batch
+            rest = local_trs(library.rows, worlds_batch(library.rows, [()], library.inheritance)[0])
             first = len(doc['nodes'])
             for row, (t, r, s) in zip(library.rows, rest):
                 g.node(name=row['name'], translation=[float(v) for v in t], rotation=[float(v) for v in r],
@@ -711,16 +831,20 @@ class ModelExporter:
                 times = g.accessor(np.arange(frames, dtype=np.float32) / np.float32(clip['fps']), 'SCALAR', minmax=True)
                 single = g.accessor(np.zeros(1, np.float32), 'SCALAR', minmax=True)
                 samplers, channels = [], []
+                tr = clip['tracks']
+                rotation = tr.rotation
+                if frames > 1:   # keep neighbouring quaternions on one hemisphere
+                    d = np.einsum('fjk,fjk->fj', rotation[1:], rotation[:-1])
+                    sign = np.concatenate([np.ones((1, rotation.shape[1])), np.cumprod(np.where(d < 0, -1.0, 1.0), axis=0)])
+                    rotation = rotation * sign[..., None]
+                channels_by_path = (('translation', tr.translation, 'VEC3'), ('rotation', rotation, 'VEC4'), ('scale', tr.scale, 'VEC3'))
+                constant = {path: np.all(np.abs(v - v[:1]) <= 1e-6 + 1e-5 * np.abs(v[:1]), axis=(0, 2)) for path, v, _k in channels_by_path}
                 for j, node in enumerate(joint_nodes):
-                    for path, n, kind in (('translation', 0, 'VEC3'), ('rotation', 1, 'VEC4'), ('scale', 2, 'VEC3')):
-                        values = np.array([frame[j][n] for frame in clip['tracks']], np.float64)
-                        if path == 'rotation':   # keep neighbouring quaternions on one hemisphere
-                            for f in range(1, frames):
-                                if np.dot(values[f], values[f - 1]) < 0:
-                                    values[f] = -values[f]
-                        constant = np.allclose(values, values[0], atol=1e-6)
-                        output = g.accessor((values[:1] if constant else values).astype(np.float32), kind)
-                        samplers.append(dict(input=single if constant else times, output=output, interpolation='LINEAR'))
+                    for path, v, kind in channels_by_path:
+                        const = bool(constant[path][j])
+                        values = v[:1, j] if const else v[:, j]
+                        output = g.accessor(values.astype(np.float32), kind)
+                        samplers.append(dict(input=single if const else times, output=output, interpolation='LINEAR'))
                         channels.append(dict(sampler=len(samplers) - 1, target=dict(node=node, path=path)))
                 doc['animations'].append(dict(name=clip['name'], samplers=samplers, channels=channels))
         return g
@@ -739,7 +863,7 @@ class ModelExporter:
 
             def save(suffix, array, mode='RGB'):
                 file = f'{name}_{suffix}'
-                png = texture_files.get(file) or _png(array, mode)
+                png = texture_files.get(file) or cached_png(m, suffix, array, mode)
                 (tex_dir / f'{file}.png').write_bytes(png)
                 texture_files[file] = png
                 return f'textures/{file}.png'

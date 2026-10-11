@@ -10,6 +10,55 @@ from rc2016.formats.skeleton import worlds
 import numpy as np
 
 
+def worlds_batch(rows, frames, inheritance='full'):
+    """``skeleton.worlds`` for many frames at once: (F, J, 4, 4) float64, frame f equal to
+    ``worlds(rows, frames[f], inheritance)`` (pass ``[()]`` for the rest pose). The loop is over joints only."""
+    count = len(rows)
+    rest_s = np.array([r['scale'] for r in rows], float).reshape(count, 3)
+    rest_q = np.array([r['rotation_xyzw'] for r in rows], float).reshape(count, 4)
+    rest_t = np.array([r['translation'] for r in rows], float).reshape(count, 3)
+    n = len(frames)
+    S, Q, T = np.empty((n, count, 3)), np.empty((n, count, 4)), np.empty((n, count, 3))
+    positions = {}
+    for f, frame in enumerate(frames):
+        if not len(frame):
+            S[f], Q[f], T[f] = rest_s, rest_q, rest_t
+            continue
+        hashes = tuple(r['hash'] for r in frame)
+        pos = positions.get(hashes)
+        if pos is None:
+            where = {h: i for i, h in enumerate(hashes)}   # last duplicate wins, like worlds()
+            pos = positions[hashes] = np.array([where.get(r['hash'], -1) for r in rows], np.intp)
+        have = (pos >= 0)[:, None]
+        pos = np.maximum(pos, 0)
+        fq = [r['rotation_xyzw'] for r in frame]
+        has_q = np.array([bool(q) for q in fq])[pos][:, None] & have
+        fq = np.array([q or (0., 0., 0., 1.) for q in fq], float)
+        S[f] = np.where(have, np.array([r['scale'] for r in frame], float)[pos], rest_s)
+        T[f] = np.where(have, np.array([r['translation'] for r in frame], float)[pos], rest_t)
+        Q[f] = np.where(has_q, fq[pos], rest_q)
+    x, y, z, w = (Q / np.linalg.norm(Q, axis=2, keepdims=True)).transpose(2, 0, 1)
+    R = np.empty((n, count, 3, 3))
+    R[..., 0, 0], R[..., 0, 1], R[..., 0, 2] = 1 - 2*(y*y + z*z), 2*(x*y - z*w), 2*(x*z + y*w)
+    R[..., 1, 0], R[..., 1, 1], R[..., 1, 2] = 2*(x*y + z*w), 1 - 2*(x*x + z*z), 2*(y*z - x*w)
+    R[..., 2, 0], R[..., 2, 1], R[..., 2, 2] = 2*(x*z - y*w), 2*(y*z + x*w), 1 - 2*(x*x + y*y)
+    R *= S[:, :, None, :]   # R @ diag(S)
+    ssc = inheritance == 'segment_scale_compensation_bit0'
+    out = np.empty((n, count, 4, 4))
+    for j, r in enumerate(rows):
+        m = np.zeros((n, 4, 4)); m[:, 3, 3] = 1.0
+        m[:, :3, :3] = R[:, j]; m[:, :3, 3] = T[:, j]
+        parent = r['parent']
+        if parent >= 0:
+            if ssc and r['flags'] & 1:
+                ps = S[:, parent]
+                inv = np.divide(1.0, ps, out=np.zeros_like(ps), where=ps != 0)
+                m[:, :3, :3] *= inv[:, :, None]   # diag(1/parent scale) @ basis
+            m = out[:, parent] @ m
+        out[:, j] = m
+    return out
+
+
 def classify(rows, frames):
     rest = {r['hash']:r for r in rows}
     matched = [r for r in frames[0] if r['hash'] in rest]
@@ -152,10 +201,8 @@ def extract_set(path, rows, cache, profile, log, experimental_ambiguous_inherita
             if entry['status']=='included' and not profile.get('inheritance'):
                 candidates=profile['inheritance_candidates']
                 if len(candidates)==2:
-                    worst=0.
-                    for frame in frames:
-                        a=worlds(rows,frame,'full');b=worlds(rows,frame,'segment_scale_compensation_bit0')
-                        worst=max(worst,max(float(np.max(np.abs(x-y))) for x,y in zip(a,b)))
+                    a=worlds_batch(rows,frames,'full');b=worlds_batch(rows,frames,'segment_scale_compensation_bit0')
+                    worst=float(np.max(np.abs(a-b))) if a.size else 0.
                     if worst < 1e-7:
                         entry['inheritance']='full'; entry['inheritance_evidence']='Both inverse-bind-compatible rules are numerically equivalent on every source sample'
                     else:

@@ -3,7 +3,7 @@
     blender --background --factory-startup --python blender_convert.py -- --glb in.glb [--fbx out.fbx] [--usd out.usdc] [--blend out.blend]
 
 Factory settings, nothing saved to the user's preferences. The .blend gets the repository's
-shared scene defaults (rc2016.pipeline.scene_defaults.apply_new_scene_defaults) and packs its images.
+plain scene/render defaults (rc2016.pipeline.scene_defaults.apply_new_scene_defaults, without the HDRI world or OptiX GPU setup) and packs its images.
 """
 import argparse
 from pathlib import Path
@@ -37,7 +37,8 @@ if args.usd:
     print('EXPORTED', args.usd, flush=True)
 if args.blend:
     from rc2016.pipeline.scene_defaults import apply_new_scene_defaults
-    apply_new_scene_defaults(bpy.context.scene)
+    # Plain scene/render defaults only: no shared-lighting world (HDRI load) and no OptiX device setup.
+    apply_new_scene_defaults(bpy.context.scene, configure_world=False, configure_gpu=False)
     bpy.ops.file.pack_all()
     bpy.ops.wm.save_as_mainfile(filepath=args.blend, compress=True)
     print('EXPORTED', args.blend, flush=True)
