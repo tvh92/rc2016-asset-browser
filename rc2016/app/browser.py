@@ -816,9 +816,17 @@ class AssetBrowser:
             if not inside:   # the grab sends outside clicks here: close the list
                 self._close_clip_picker();return 'break'
 
+        pressed=[None]   # row the current press started on
+
+        def press(event):
+            pressed[0]=tree.identify_row(event.y)
+
         def release(event):
-            if event.widget is tree and tree.identify_element(event.x,event.y)!='Treeitem.indicator':
-                choose(tree.identify_row(event.y))
+            # A click counts only on the row it started on: opening a folder in a flipped list grows it
+            # upward, so the pointer can end up over a clip that was never clicked.
+            row,pressed[0]=pressed[0],None
+            if event.widget is tree and row and row==tree.identify_row(event.y) and tree.identify_element(event.x,event.y)!='Treeitem.indicator':
+                choose(row)
 
         def first_match(_event=None):
             leaves=[i for i in tree.get_children() if i.startswith('clip:') and i!='clip:-1']
@@ -862,6 +870,9 @@ class AssetBrowser:
         tree.bind('<<TreeviewClose>>',lambda _e:top.after_idle(place))
         search.trace_add('write',refill);fill()
         top.bind('<ButtonPress-1>',click,add='+')
+        tree.bind('<ButtonPress-1>',press)
+        # The second press of a double-click must not toggle or choose: the first click already acted.
+        tree.bind('<Double-ButtonPress-1>',lambda _e:'break')
         tree.bind('<ButtonRelease-1>',release)
         tree.bind('<Return>',lambda _e:choose(tree.focus()))
         entry.bind('<Return>',first_match)
