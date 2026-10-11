@@ -842,8 +842,7 @@ class AssetBrowser:
             pressed[0]=tree.identify_row(event.y)
 
         def release(event):
-            # A click counts only on the row it started on: opening a folder in a flipped list grows it
-            # upward, so the pointer can end up over a clip that was never clicked.
+            # A click counts only on the row it started on, so a press dragged off a row does nothing.
             row,pressed[0]=pressed[0],None
             if event.widget is tree and row and row==tree.identify_row(event.y) and tree.identify_element(event.x,event.y)!='Treeitem.indicator':
                 choose(row)
@@ -874,17 +873,19 @@ class AssetBrowser:
         def visible_rows(parent=''):
             return sum(1+(visible_rows(i) if tree.item(i,'open') else 0) for i in tree.get_children(parent))
 
-        def all_rows(parent=''):
-            return sum(1+all_rows(i) for i in tree.get_children(parent))
+        pinned=[None]   # a flipped list keeps the top edge it opened with
 
         def place(_event=None):
             if self.clip_popup is not top:return
             top.update_idletasks()
-            # A flipped list grows upward from the button, which would shift every row under the pointer
-            # when a folder opens; it is sized for all rows instead, so folders open in place.
-            rows=max(4,min(18,all_rows() if flip else visible_rows()))
+            rows=max(4,min(18,visible_rows()))
             height=min(rows*row_height+entry.winfo_reqheight()+16,max_height)
-            y=max(0,button.winfo_rooty()-height) if flip else below
+            if flip:
+                # Growing downward from a fixed top edge keeps every row under the pointer when a folder
+                # opens; the list may cover the button while it is open.
+                if pinned[0] is None:pinned[0]=max(0,button.winfo_rooty()-height)
+                y=pinned[0];height=min(height,top.winfo_screenheight()-y)
+            else:y=below
             top.geometry(f'{width}x{height}+{x}+{y}')
 
         def refill(*_args):
