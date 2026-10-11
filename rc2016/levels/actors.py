@@ -53,6 +53,7 @@ class ActorCatalog:
         self.references = defaultdict(set)
         self.static = defaultdict(list)
         self.duplicates = []
+        self.factories, self.zone_actors = [], {}
 
     def descriptor(self, path):
         key = path.lower()
@@ -97,6 +98,10 @@ class ActorCatalog:
                 for ident in _references(root, {'SpawnTemplate', 'SpawneeTemplate'}):
                     self.references[ident].add('spawn template, not an initial placement')
             self.actors.append(actor)
+        from rc2016.levels.spawn_format import decode_factories
+        placed = self.actors[-len(zone['actors']):] if zone['actors'] else []
+        self.zone_actors[path] = placed
+        self.factories.extend(dict(f, zone=path, zone_sha256=digest) for f in decode_factories(data, placed))
         for model in static_scene['models']:
             for key, rows in model['groups'].items():
                 for i in range(0, len(rows), 16):
