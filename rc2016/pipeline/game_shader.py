@@ -756,7 +756,7 @@ def apply_deferred_family(mat, pre, family):
 
 
 GLASS_GROUP_NAME = "RC PS4 character_glass forward"
-GLASS_GROUP_VERSION = 3
+GLASS_GROUP_VERSION = 4
 
 
 def _glass_value(pre, key):
@@ -798,8 +798,9 @@ def build_character_glass_group(force=False):
     alpha = (1.001-N.V)^P8 * (P10 + sat(P11 + sat(4*(1-N.V)^P13)))   (instance fade 0, attr0.w 1)
     F = (1.001-N.V)^P12,  T = sat(4*sqrt(1-N.V)).  A = "Attenuate background": 0 = additive
     (SRC_ALPHA, ONE), 1 = alpha-over (SRC_ALPHA, ONE_MINUS_SRC_ALPHA); set from the material's flags
-    word (rc2016.pipeline.render_state), never from the graph. Back faces are culled (flags bit 2 clear):
-    without the cull, back faces have N.V < 0, so alpha -> 1 and they block the view under alpha-over.
+    word (rc2016.pipeline.render_state), never from the graph. "Two sided" is the flags bit 2 (1 = back
+    faces shown, 0 = culled). With back faces culled, they are hidden; without the cull, back faces have
+    N.V < 0, so alpha -> 1 and they block the view under alpha-over.
     """
     g = bpy.data.node_groups.get(GLASS_GROUP_NAME)
     if g is not None and not force and g.get("rc_version") == GLASS_GROUP_VERSION:
@@ -816,7 +817,7 @@ def build_character_glass_group(force=False):
                                 ("Alpha exponent P8", "NodeSocketFloat", 2.0), ("Env scale P9", "NodeSocketFloat", 0.3),
                                 ("Alpha bias P10", "NodeSocketFloat", 0.15), ("Rim bias P11", "NodeSocketFloat", 0.25),
                                 ("Env exponent P12", "NodeSocketFloat", 2.0), ("Rim exponent P13", "NodeSocketFloat", 3.245),
-                                ("Attenuate background", "NodeSocketFloat", 1.0)):
+                                ("Attenuate background", "NodeSocketFloat", 1.0), ("Two sided", "NodeSocketFloat", 0.0)):
         _sock(g, name, kind, "INPUT", default)
     _sock(g, "Shader", "NodeSocketShader", "OUTPUT")
     _sock(g, "Alpha", "NodeSocketFloat", "OUTPUT")
@@ -864,7 +865,10 @@ def build_character_glass_group(force=False):
     L.new(clear.outputs[0], out.inputs[0]); L.new(weighted.outputs[0], out.inputs[1])
     culled = N.new("ShaderNodeBsdfTransparent"); culled.name = culled.label = "Culled back face"
     cull = N.new("ShaderNodeMixShader"); cull.name = cull.label = "Cull back faces"
-    L.new(geo.outputs["Backfacing"], cull.inputs[0]); L.new(out.outputs[0], cull.inputs[1])
+    one_sided = _math(N, "SUBTRACT", 1.0, None, "1 - two sided"); L.new(p["Two sided"], one_sided.inputs[1])
+    cull_factor = _math(N, "MULTIPLY", label="Backfacing * one sided"); L.new(geo.outputs["Backfacing"], cull_factor.inputs[0])
+    L.new(one_sided.outputs[0], cull_factor.inputs[1])
+    L.new(cull_factor.outputs[0], cull.inputs[0]); L.new(out.outputs[0], cull.inputs[1])
     L.new(culled.outputs[0], cull.inputs[2])
     L.new(cull.outputs[0], go.inputs["Shader"]); L.new(alpha.outputs[0], go.inputs["Alpha"])
     for i, n in enumerate(N):
@@ -876,10 +880,13 @@ GLASS_BLEND_BY_FLAGS = {1: ("additive_alpha", 0.0), 2: ("alpha_over", 1.0)}   # 
 
 
 def character_glass_blend(material_path):
-    """Blend of a character_glass material from its .material flags word; fails closed."""
+    """Blend of a character_glass material from its .material flags word; fails closed.
+
+    Bit 2 (two-sided) is not a blend input; apply_character_glass reads it for the back-face cull.
+    """
     from rc2016.pipeline import render_state
     flags = render_state.material_flags(material_path)
-    if flags is None or (flags & 3) not in GLASS_BLEND_BY_FLAGS or flags & 4:
+    if flags is None or (flags & 3) not in GLASS_BLEND_BY_FLAGS:
         raise ValueError('character_glass blend unresolved for %s (flags %s)' % (material_path, flags))
     return flags, GLASS_BLEND_BY_FLAGS[flags & 3]
 
@@ -917,7 +924,9 @@ def apply_character_glass(mat, pre, material_path):
                        ("Env exponent P12", "env_exponent"), ("Rim exponent P13", "rim_exponent")):
         grp.inputs[sock].default_value = float(v[name])
     grp.inputs["Attenuate background"].default_value = attenuate
-    mat.use_backface_culling = True                    # flags bit 2 clear: back faces culled
+    two_sided = bool(flags & 4)
+    grp.inputs["Two sided"].default_value = 1.0 if two_sided else 0.0
+    mat.use_backface_culling = not two_sided           # flags bit 2: back faces shown when set
     if hasattr(mat, "surface_render_method"):
         mat.surface_render_method = "BLENDED"
     params = dict(v, reflection_tint_normalised=refl, gloss_effective=gloss, blender_roughness=rough, env_probe_radiance_E=E)
@@ -928,7 +937,7 @@ def apply_character_glass(mat, pre, material_path):
     mat["rc_shader_preflight"] = json.dumps(pre, sort_keys=True)
     mat["rc_shader"] = "%s v%d" % (GLASS_GROUP_NAME, GLASS_GROUP_VERSION)
     mat["rc_shader_frontend"] = "native forward pixel shader 0x34D5B21C (straight-line slices)"
-    mat["rc_shader_frontend_limitation"] = ("Blend %s from material flags 0x%08X; back faces culled; instance fade 0, " % (blend, flags) +
+    mat["rc_shader_frontend_limitation"] = ("Blend %s from material flags 0x%08X; back faces %s; instance fade 0, " % (blend, flags, "shown" if two_sided else "culled") +
                                             "attr0.w 1; engine reflections as a tinted GGX lobe; E constant; no fog")
     mat["game_equivalence"] = False
     return True

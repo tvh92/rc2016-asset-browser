@@ -315,7 +315,11 @@ def _validate_character_glass(source, material, preflight):
     flags, (blend, attenuate) = character_glass_blend(material["source_material_path"])
     assert abs(float(group.inputs["Attenuate background"].default_value) - attenuate) < 1e-6 and \
         material.get("rc_glass_blend") == blend, "Glass blend differs from the material flags word"
-    assert material.use_backface_culling and inner.get("Cull back faces"),         "Glass back faces must be culled in viewport and Cycles (flags bit 2 clear)"
+    two_sided = bool(flags & 4)
+    assert float(group.inputs["Two sided"].default_value) == (1.0 if two_sided else 0.0), \
+        "Glass two-sided input differs from the material flags word (bit 2)"
+    assert material.use_backface_culling == (not two_sided) and inner.get("Cull back faces"), \
+        "Glass back-face culling differs from the material flags word (bit 2)"
     return dict(status="passed_partial_character_glass_native", family="character_glass",
                 source_path=preflight["source_path"], source_sha256=preflight["source_sha256"],
                 parameters=dict(values, reflection_tint_normalised=expected, blender_roughness=rough,

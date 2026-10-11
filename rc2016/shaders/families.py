@@ -83,7 +83,7 @@ FAMILY_REGISTRY = {
         "parameter_semantics": {t: {key: (name, "float32x3" if name in _GLASS_VEC3 else "float32")
                                     for name, key in CHARACTER_GLASS_KEYS.items()} for t in (0, 1)},
         "limitations": [
-            "Blend and cull come from each material's flags word (.material section 0xE1275683; rc2016.pipeline.render_state): flags & 3 = 1 additive, 2 alpha-over. The Blarg visor (0x0020003A) is alpha-over. No capture of a character_glass draw exists.",
+            "Blend and cull come from each material's flags word (.material section 0xE1275683; rc2016.pipeline.render_state): flags & 3 = 1 additive, 2 alpha-over; bit 2 set = two-sided (back faces shown, no cull). The Blarg visor (0x0020003A) is alpha-over. No capture of a character_glass draw exists, so two-sided character glass is taken from the decoded flag rule, not a draw.",
             "Per-instance fade (instance buffer) and interpolant attr0.w are taken as 0 and 1; the flag-gated dissolve/alpha-test block is not modelled.",
             "Light-loop specular and probe/SSR reflection are represented by a Cycles GGX lobe tinted by the decoded reflection tint; their inner engine equations are not traced.",
             "The env-probe colour E in the body term is a constant (captured ambient radiance when available).",
