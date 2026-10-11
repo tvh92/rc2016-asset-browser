@@ -171,6 +171,13 @@ WATER_PRESENTATION = dict(opacity=0.8, f0=0.02, gloss=0.9, normal_strength=0.5,
 GRAPH_SLOT_SECTION, MATERIAL_SLOT_SECTION = 0x1CAFE804, 0xB967FF7A
 # Blend/cull per material: .material section 0xE1275683, u32 at byte 16 (rc2016.pipeline.render_state).
 MATERIAL_FLAGS_SECTION = 0xE1275683
+# Fur-shell render-state bit (flags & 0x80000): the engine draws extra alpha-over passes that are not modelled.
+FUR_SHELL_FLAG = 0x80000
+# Fur-shell materials with no material graph in the file, read as 'grey' like their sibling skin material
+# (Skin_Only, same _c/_g/_n textures). An inference from the shared textures, not a decoded rule. Without
+# it the body reads coloured F0 = _g.rgb, which turns the grey-layout _g (B about 1) into a blue specular.
+# Lower-case archive paths; the fur-shell bit must also be set.
+FUR_SHELL_GREY_READING = frozenset({'material/character/npc/npc_big_al_tools/npc_big_al_skin_and_fur.material'})
 BLEND_MODES = {0: 'opaque', 1: 'additive', 2: 'alpha_over'}   # flags & 3; mode 3 has no captured example
 
 
@@ -207,6 +214,14 @@ def blend_state(flags):
     if flags is None:
         return dict(blend=None, two_sided=False)
     return dict(blend=BLEND_MODES.get(flags & 3), two_sided=bool(flags & 4))
+
+
+def fur_shell_grey_reading(material_path, graphs, data):
+    """True for a listed fur-shell material that names no graph and has the fur-shell flag bit."""
+    if graphs or not material_path or material_path.lower() not in FUR_SHELL_GREY_READING:
+        return False
+    flags = material_flags(data)
+    return flags is not None and bool(flags & FUR_SHELL_FLAG)
 
 
 def _graph_rule(graphs):
@@ -324,6 +339,9 @@ def material_texture_paths(archive, material_path: str) -> dict:
 
     rule = _graph_rule(graphs)
     result['g_mode'] = rule.get('g_mode', 'colored')
+    if fur_shell_grey_reading(material_path, graphs, data):
+        result['g_mode'] = 'grey'
+        result['g_mode_source'] = 'fur_shell_sibling_inferred'
     if 'g_switch' in rule:
         result['g_mode'] = 'colored' if value(rule['g_switch'], 0.0) >= 0.5 else 'grey'
     result['self_lit'] = rule.get('self_lit', 'c_alpha')

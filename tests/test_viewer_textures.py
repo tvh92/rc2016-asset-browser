@@ -917,5 +917,21 @@ class GroundPuddlesTests(unittest.TestCase):
                 for x,y in zip(a,b):self.assertAlmostEqual(x,y,places=10)
         with self.assertRaises(ValueError):tp.puddle_texture_atlas(dict(textures[0],srgb=True),textures[1])
 
+    def test_fur_shell_grey_reading_is_exact_and_flag_bound(self):
+        skin='material/character/npc/npc_big_al_tools/npc_big_al_skin_and_fur.material'
+        def data_with_flags(flags):
+            # Minimal DAT1 blob: one section-table row for the flags section, flags word at byte 16.
+            body=bytearray(36);body[16:20]=struct.pack('<I',flags)
+            header=bytearray(28);header[0:4]=b'DAT1';struct.pack_into('<H',header,12,1)
+            struct.pack_into('<III',header,16,tp.MATERIAL_FLAGS_SECTION,28,len(body))
+            return bytes(header)+bytes(body)
+        fur=data_with_flags(tp.FUR_SHELL_FLAG|0x30)
+        self.assertEqual(tp.material_flags(fur),tp.FUR_SHELL_FLAG|0x30)
+        self.assertTrue(tp.fur_shell_grey_reading(skin,[],fur))
+        self.assertTrue(tp.fur_shell_grey_reading(skin.upper(),[],fur))
+        self.assertFalse(tp.fur_shell_grey_reading(skin,['required/materials/basic_normal_gloss.materialgraph'],fur))
+        self.assertFalse(tp.fur_shell_grey_reading(skin,[],data_with_flags(0x30)))
+        self.assertFalse(tp.fur_shell_grey_reading('material/character/hero/test/other.material',[],fur))
+
 if __name__ == '__main__':
     unittest.main()
