@@ -165,7 +165,7 @@ The specular and gloss scales (keys `0x62835AF9` and `0x24F4CA4C`) come from the
 
 | Graph | Reading |
 |---|---|
-| `basic_skin/*` | R = gloss (sqrt), G = grey specular capped at 0.5. Coloured F0 would give red specular on skin |
+| `basic_skin/*` | R = gloss (sqrt), G = grey specular capped at 0.5. Verified graph identities select C/G/N by the pipeline slot roles; stale instance slots and the secondary normal cannot win by suffix. Coloured F0 would give red specular on skin |
 | `basic_normal_gloss`, `_detail`, `_monitor_dep`, `_aniso` (writer `5EBDECA4`) | Grey, no self-lit |
 | `basic_incandescence` | Grey; self-lit = `0x5FD56522` x `_g.B` |
 | `basic_normal_gloss_emissive`, `_emissive_detail`, `_fresnel_detail`, `_emissive_colored_spec`, `_aniso_incan`, `_specfresnel_emissive` | Six separately traced writers: grey, with graph-specific tint, glow, rim and detail terms; detail uses texture unit 11; pulses show t=0 |

@@ -370,6 +370,14 @@ The full-zone probe finds 21 same-model near pairs for 17 actors, including unre
 
 The airlock class stays excluded while other proven primary bindings draw. A RenderDoc capture of the Nebula airlock draws, especially both Trespasser doors, with identified model/vertex buffers, full world and bind/bone matrices, and the visibility/state of coinciding static doors would settle whether runtime applies a transform/pose adjustment or the source intentionally represents opposite-facing geometry. No rotation or scale is tuned to hide the disagreement.
 
+## Enemy factory coverage
+
+Source actor counts are not runtime enemy population counts. In Novalis the four Peckbot and two Birdbot model records are templates used by script factories, not six independent encounter placements. The actor preview currently shows those source records at their stored matrices; it does not expand factory spawns. Only templates referenced by the supported actor-component IDs are suppressed. Script factory template bindings are not yet part of the drawing policy.
+
+Novalis `gp_base.zone` has 39 `SunsetSpawnerFactoryScriptAction` nodes. Structural parameter bindings connect `Templates` (CRC32 `0xEDD5E282`) and `Locations` (`0x951BD5B6`) to actor IDs or actor-group IDs. Group members come from `0x0CF58A6E` / `0x041071EF`. Bound `InitialCount` (`0x90D607B0`) values sum to 84 across 18 Peckbot factories, including one with two Peckbot template variants, and 20 across 11 Birdbot factories. These totals span conditional encounter/checkpoint states and are not a simultaneous population. Other factories configure Blarg troopers/transports and Amoeboids.
+
+Locations include points, spatial volumes, paths and groups. For example, Peckbot factory node 229 requests five enemies from one StaticVolume, while node 465 requests five from a group of eight paths. A location matrix alone therefore cannot determine the spawned model matrices, spacing or which template/path is selected. Factory counts and references are confirmed source data; exact spawn placement and activation remain unsupported. The viewer must not duplicate a model at a volume centre or invent a distribution to match a count. A runtime capture of those two encounters with individual enemy world matrices, factory/template IDs and path/volume choices would settle the placement rule. Animation and script execution remain outside the viewer.
+
 ## Actor material swaps (runtime, not applied)
 
 Zones also hold actors and their scripts. Their runtime material swaps do not apply to the model-instance table or the source-placement actor preview. The script-table layouts below were checked on all 113 main-game zones that have script nodes (42,587 nodes) without a failure and remain research-only. Actor placement and component ownership are now decoded separately by `actor_format.py`:
