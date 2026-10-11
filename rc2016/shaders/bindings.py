@@ -100,6 +100,38 @@ def _parameter_values(contract,instance):
     return values,receipt
 
 
+def guard_source_zero_powers(ir,roots):
+    """Preserve the finite result of native LOG/MUL/EXP at zero.
+
+    GCN log2(0) is -infinity; a proven positive exponent followed by exp2
+    produces zero. Both portable emitters intentionally use finite log guards,
+    so retain the original positive-input instruction chain and gate its result.
+    Only abs() or a nonnegative literal proves the base's domain here. Unknown,
+    zero and negative exponents and standalone logarithms are left intact.
+    """
+    memo={};guards=[]
+    def visit(i):
+        if i in memo:return memo[i]
+        n=ir.nodes[i];args=[visit(j) for j in n['args']]
+        value=(ir.op(n['op'],*args) if n['op'] in PORTABLE_OPS-{'const','input','texture'}
+            else ir.node(n['op'],args,**{k:v for k,v in n.items() if k not in ('op','args')}))
+        if n['op']=='exp2':
+            term=ir.nodes[args[0]];exponent=1.;log=args[0]
+            if term['op']=='mul':
+                pair=term['args'];j=next((j for j,q in enumerate(pair) if ir.value(q) is not None),None)
+                if j is not None:exponent=ir.value(pair[j]);log=pair[1-j]
+                else:exponent=None
+            entry=ir.nodes[log]
+            if entry['op']=='log2' and exponent is not None and exponent>0:
+                base=entry['args'][0];source=ir.nodes[base];literal=ir.value(base)
+                if source['op']=='abs' or (literal is not None and literal>=0):
+                    zero=ir.const(0.);positive=ir.op('gt',base,zero)
+                    value=ir.op('select',positive,value,zero)
+                    guards.append(dict(source_exp2_node=i,exponent=exponent))
+        memo[i]=value;return value
+    return [visit(i) for i in roots],guards
+
+
 def _bind(program,contract,material_data,instance):
     from rc2016.formats.materials import texture_slot_records, MATERIAL_TEXTURE_SLOTS
     overrides={}
@@ -125,6 +157,9 @@ def _bind(program,contract,material_data,instance):
     substitutions={i:ir.const(values[n['dword']]) for i,n in enumerate(list(ir.nodes))
         if n['op']=='input' and n.get('kind')=='cb' and n['api']==2 and n['dword'] in values}
     replaced=ir.replace(roots,substitutions)
+    replaced,zero_guards=guard_source_zero_powers(ir,replaced)
+    if zero_guards:
+        lowered['limitations'].append('Source LOG/MUL/EXP with a proven nonnegative base and positive bound exponent preserves zero; positive-input arithmetic is unchanged. Other singular math retains portable frontend semantics.')
     outputs=dict(albedo=replaced[:3],F0=replaced[3:6],gloss=replaced[6],emission=replaced[7])
     if normal:normal=dict(normal,xyz=replaced[8:11])
     used=ir.reachable(replaced);errors=[]
@@ -149,7 +184,7 @@ def _bind(program,contract,material_data,instance):
     active={n['api'] for n in compact.nodes if n['op']=='texture'}
     return dict(nodes=compact.nodes,outputs=outputs,normal=normal,
         texture_bindings=[bound[a] for a in sorted(active)],parameters=receipt,
-        pass_contract_index=contract['index'],limitations=lowered['limitations'])
+        pass_contract_index=contract['index'],limitations=lowered['limitations'],source_zero_power_guards=zero_guards)
 
 
 def program_contracts(data,program,contracts):
@@ -233,7 +268,7 @@ def prepare_translation(graph_datas,material_data,instance):
     candidate=candidates[0];program=candidate['program']
     result.update(candidate['bound'],status='ready',graph_sha256=graph['graph_sha256'],
         code_sha256=program['code_sha256'],code_offset=program['code_offset'],shader_id=program['shader_id'],
-        equivalent_candidates=len(candidates),translator_version=graph['translator_version'],binding_version=2,
+        equivalent_candidates=len(candidates),translator_version=graph['translator_version'],binding_version=3,
         surface_sha256=candidate['surface_signature'],candidate_sources=[dict(
             shader_id=c['program']['shader_id'],code_sha256=c['program']['code_sha256'],
             pass_contract_index=c['bound']['pass_contract_index']) for c in candidates])
