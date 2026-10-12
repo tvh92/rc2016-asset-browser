@@ -78,7 +78,8 @@ Unlisted scales default to one. Negative packed scales are not yet validated.
     return scales
 
 
-def sample_transforms(clip):
+def _sample_transforms_loop(clip):
+    """Reference per-frame/per-joint loop; also the exact error source for malformed clips."""
     scales = packed_scales(clip)
     base = clip['joints']
     frames = []
@@ -106,6 +107,59 @@ def sample_transforms(clip):
                                rotation_sentinel=sentinel,
                                translation=[math.ldexp(v, -translation_exp) for v in values[7:]]))
         frames.append(result)
+    return frames
+
+
+_COMPONENTS = (0, 4, 8, 16, 20, 24, 28, 32, 36, 40)   # S xyz, padding, Q xyzw, padding, T xyz byte offsets
+
+
+def _sample_transforms_fast(clip):
+    """Batched numpy sampler (F, J, 10 integer channels); None when the data needs the exact loop."""
+    import numpy as np
+    base, frames_n = clip['joints'], clip['metadata']['original_frame_count']
+    if not frames_n or not base:
+        return None
+    exps = np.array([r['packed_base_control_bytes'] for r in base], np.int64).reshape(-1, 2)
+    if (exps > 30).any() or (exps < 0).any():
+        return None
+    scales = packed_scales(clip)
+    raw = np.empty((frames_n, len(base), 10), np.int64)
+    raw[:, :, :3] = np.array(scales, np.int64).reshape(-1, 3)[None]
+    raw[:, :, 3:] = np.array([r['packed_base_i16'][:7] for r in base], np.int64).reshape(-1, 7)[None]
+    for channel in clip['channels']:
+        offset = channel['component_byte_offset']
+        require(offset in _COMPONENTS, 'unknown SQT component')
+        component = offset // 4 if offset < 12 else offset // 4 - 1
+        deltas = channel['unsigned_deltas']
+        if len(deltas) < frames_n:
+            return None
+        raw[:, channel['joint_index'], component] += np.asarray(deltas[:frames_n], np.int64)
+    q = raw[:, :, 3:7]
+    sentinel = (q == -32768).all(axis=2)
+    length = np.sqrt((q * q).sum(axis=2).astype(np.float64))
+    scale = np.ldexp(raw[:, :, :3].astype(np.float64), -exps[None, :, :1].astype(np.int32))
+    if (length <= 0).any() or (sentinel & (scale.min(axis=2) != 0)).any():
+        return None
+    rotation = q / length[:, :, None]
+    translation = np.ldexp(raw[:, :, 7:].astype(np.float64), -exps[None, :, 1:].astype(np.int32))
+    return scale.tolist(), rotation.tolist(), sentinel.tolist(), translation.tolist()
+
+
+def sample_transforms(clip):
+    try:
+        fast = _sample_transforms_fast(clip)
+    except (ImportError, OverflowError, TypeError, ValueError, IndexError, KeyError):
+        fast = None   # e.g. no numpy, huge deltas, malformed rows: the loop reproduces the exact outcome
+    if fast is None:
+        return _sample_transforms_loop(clip)
+    scale, rotation, sentinel, translation = fast
+    base = clip['joints']
+    frames = []
+    for f in range(len(scale)):
+        frames.append([dict(name=row['name'], hash=row['hash'], scale=scale[f][j],
+                            rotation_xyzw=None if sentinel[f][j] else rotation[f][j],
+                            rotation_sentinel=sentinel[f][j], translation=translation[f][j])
+                       for j, row in enumerate(base)])
     return frames
 
 

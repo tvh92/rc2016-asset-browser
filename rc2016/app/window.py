@@ -142,6 +142,8 @@ class AssetBrowserApp:
         self.runner: BatchRunner | PipelineBatchRunner | None = None
         self.worker: threading.Thread | None = None
         self.item_by_record: dict[str, ModelCandidate | PipelineModelCandidate] = {}
+        self.item_by_path: dict[str, str] = {}
+        self._refresh_after = None
         self.progress_done = 0
         self.progress_total = 0
         self._build_variables()
@@ -574,6 +576,8 @@ class AssetBrowserApp:
         open_folders = {item for item in self._folder_items() if self.table.item(item, "open")} if hasattr(self, "table") else set()
         terms = needle.split()
         self.filtered_records = []
+        self._cancel_pending_refresh()
+        statuses: list[tuple[str, str]] = []
         for record in self.records:
             is_pipeline = isinstance(record, PipelineModelCandidate)
             relative_model = record.archive_path if is_pipeline else record.relative_model
@@ -581,7 +585,7 @@ class AssetBrowserApp:
                         else " " + (record.relative_animset or ""))).casefold()
             if terms and not all(term in haystack for term in terms):
                 continue
-            state, _reason = self._record_status(record, output)
+            state, _reason = self._record_status(record, output)   # once per record; reused for the row
             if state_filter != "All" and state != state_filter:
                 continue
             if shading_filter != "All":
@@ -590,9 +594,11 @@ class AssetBrowserApp:
                 if not kinds or (kinds != {"exact rule"} if wanted is None else wanted not in kinds):
                     continue
             self.filtered_records.append(record)
+            statuses.append((state, _reason))
         for child in self.table.get_children():
             self.table.delete(child)
         self.item_by_record.clear()
+        self.item_by_path.clear()
         paths = [self._record_path(record) for record in self.filtered_records]
         parents = folder_layout(paths)
         # Open everything for a search or a short list; otherwise keep what was open.
@@ -605,10 +611,10 @@ class AssetBrowserApp:
             while folder:
                 counts[folder] = counts.get(folder, 0) + 1
                 folder = folder.rpartition("/")[0]
-        for number, (record, parent) in enumerate(zip(self.filtered_records, parents)):
-            state, reason = self._record_status(record, output)
+        for number, (record, parent, (state, reason)) in enumerate(zip(self.filtered_records, parents, statuses)):
             item = f"model-{number}"
             self.item_by_record[item] = record
+            self.item_by_path[self._record_path(record)] = item
             self.table.insert(self._ensure_folder(parent, counts, open_folders, expand), "end", iid=item,
                               text=Path(self._record_path(record)).stem, values=(
                 record.used_by if isinstance(record, PipelineModelCandidate) else "",
@@ -635,7 +641,38 @@ class AssetBrowserApp:
         if self.folder_mode != "auto":
             self.folder_mode = "auto"
             self.expand_button.configure(text="Expand all")
-        self.refresh_table()
+        self._debounce_refresh()
+
+    def _cancel_pending_refresh(self) -> None:
+        if self._refresh_after is not None:
+            self.root.after_cancel(self._refresh_after)
+            self._refresh_after = None
+
+    def _debounce_refresh(self, delay_ms: int = 200) -> None:
+        """Typing: restart the timer so only the last keystroke of a burst rebuilds the tree."""
+        self._cancel_pending_refresh()
+        self._refresh_after = self.root.after(delay_ms, self.refresh_table)
+
+    def _coalesce_refresh(self, delay_ms: int = 200) -> None:
+        """Batch progress: one rebuild per window however many models finish in it."""
+        if self._refresh_after is None:
+            self._refresh_after = self.root.after(delay_ms, self.refresh_table)
+
+    def update_record_row(self, path: str, record: ModelCandidate | PipelineModelCandidate) -> None:
+        """Refresh one model's row after its status changed; a coalesced full refresh if that cannot be done in place."""
+        if self._refresh_after is not None:
+            return  # a full refresh is already queued and will pick this up
+        item = self.item_by_path.get(path)
+        if (item is None or not self.table.exists(item) or self.state_var.get() != "All"
+                or self.shading_var.get() != "All"):
+            self._coalesce_refresh()
+            return
+        output = Path(self.output_var.get()).expanduser() if self.output_var.get().strip() else None
+        state, reason = self._record_status(record, output)
+        self.item_by_record[item] = record
+        is_pipeline = isinstance(record, PipelineModelCandidate)
+        self.table.item(item, values=(record.used_by if is_pipeline else "",
+                                      record.model_id if is_pipeline else record.relative_animset or "—", state, reason))
 
     def toggle_expand_all(self) -> None:
         # Cycles expanded -> collapsed -> expanded; the first press from auto opens everything.
@@ -943,14 +980,23 @@ class AssetBrowserApp:
             self._append_log(f"{name}: {status} — {values['message']}", tag)
             if "candidate" not in values:
                 model_path = str(values.get("model", ""))
-                self.records = [replace(r, previous_status=status)
-                                if isinstance(r, PipelineModelCandidate) and r.archive_path == model_path else r
-                                for r in self.records]
+                changed = None
+                records = []
+                for r in self.records:
+                    if isinstance(r, PipelineModelCandidate) and r.archive_path == model_path:
+                        r = changed = replace(r, previous_status=status)
+                    records.append(r)
+                self.records = records
                 if status in {"exported", "skipped"}:
                     self._scan_exported()
+                if changed is not None:
+                    self.update_record_row(model_path, changed)
+                else:
+                    self._coalesce_refresh()
+            else:
+                self.update_record_row(self._record_path(candidate), candidate)
             self.progress_done += 1
             self.progressbar.configure(value=self.progress_done)
-            self.refresh_table()
         elif kind == "batch_done":
             if "summary" in values:
                 summary = values["summary"]

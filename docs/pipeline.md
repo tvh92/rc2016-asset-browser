@@ -8,15 +8,15 @@ For each model it:
 2. decodes native geometry, skeleton, skin weights, materials and textures;
 3. builds the scene in Blender (materials, the model's own skeleton, persistent Actions, an NLA overview, embedded controls);
 4. reopens the saved file in a second Blender process and validates it;
-5. promotes the file to its final location, and writes machine-readable reports and review PNGs.
+5. promotes the file to its final location, and writes machine-readable reports.
 
-Review images are for manual inspection only; no automated visual review is performed.
+The pipeline renders no images; visual review of the delivered blend is manual, and no automated visual review is performed.
 
 Related documents: [shading](shading.md) (game BRDF, capture facts, lighting), [animation](animation.md) (clip format and baking), [viewer](viewer.md) (the asset viewer, which shares the material reading), [levels](levels.md).
 
 ## Running it
 
-Requirements: Windows, Blender 5.0 or newer, and an OptiX-capable GPU (scenes use Cycles on GPU with CPU disabled). The runner itself (`rc2016/pipeline/run.py`) does not import `bpy`; it needs Python 3 with NumPy and starts Blender as a child process. The optional `lz4` package speeds up archive reads (see [Archive loading](#archive-loading-and-caches)).
+Requirements: Windows, Blender 5.0 or newer, and an OptiX-capable GPU for the build process (saved scenes use Cycles on GPU with CPU disabled; the reopen-validation process renders nothing and configures no GPU). The runner itself (`rc2016/pipeline/run.py`) does not import `bpy`; it needs Python 3 with NumPy and starts Blender as a child process. The optional `lz4` package speeds up archive reads; without it the runner logs a `warning` event and prints a warning naming the interpreter (see [Archive loading](#archive-loading-and-caches)).
 
 ### PowerShell wrapper
 
@@ -52,7 +52,6 @@ python rc2016/pipeline/run.py --extracted-root ... --output-root ... --blender .
 | `--export-textures` | `-ExportTextures` | Debug only. Keep converted DDS files under the model folder; they duplicate images already packed in the blend. |
 | `--keep-intermediates` | `-KeepIntermediates` | Keep `blender/`, `compressed_assets/`, `decoded_sources/`, `work/tmp` and `cache/t` after a fully successful run. By default they are deleted because they are regenerable and dominate disk use (about 85% of a run). A failed run always keeps them. Evidence that needs a decoded file must copy it elsewhere. |
 | `--fail-on-missing-assets` | `-FailOnMissingAssets` | Fail instead of delivering a result with documented material, texture, attachment or dependency limitations. |
-| `--skip-previews` | | Keep build and separate-process validation; skip manual-review renders. |
 | `--lighting-source hdri\|veldin\|novalis` | `-LightingSource` | Default `hdri`. See [Lighting](#lighting). |
 | `--lighting-config <file>` | `-LightingConfig` | Shared-lighting file; default `assets/lighting/shared_lighting.json`. |
 | `--hdri <file>` | `-HdriPath` | Override only the HDRI file of the shared lighting. |
@@ -76,7 +75,6 @@ Tests: `python -m unittest discover -s tests -t .`. Tests that need game data re
     animation_cache/<animset>/          raw clips and compressed per-clip samples
     reports/                            references.json, limitations.json, ...
     validation/validation.json          fresh-process reopen report
-    review_images/                      manual-review PNGs
     part_assets/                        material/texture evidence for multipart-character parts
   final/                                source-linked weapon assemblies (see Weapon assemblies)
   variant_assemblies/                   their candidates, receipts, logs and validation
@@ -86,7 +84,8 @@ Tests: `python -m unittest discover -s tests -t .`. Tests that need game data re
                                         unsupported_clips.json, asset_index.json, asset_references.sqlite,
                                         logs/pipeline.jsonl, lighting_inventory.json (novalis only)
   work/                                 job JSONs, pipeline.lock, tmp
-  cache/  review/
+  cache/                                textures/ (decoded DDS and transport outcomes) and actor_index/ (kept);
+                                        t/ (per-model converted DDS, pruned by default)
 ```
 
 - The source archive is read-only. Asset IDs, archive occurrences, compressed and decoded hashes, source paths, implementation hashes and final hashes are recorded in the manifests.
@@ -104,6 +103,8 @@ Tests: `python -m unittest discover -s tests -t .`. Tests that need game data re
 - **Decode cache.** `decode()` cache hits compare a `[size, mtime_ns]` stamp stored in `source_mapping.json` (`decoded_stat`, `compressed_stat`) from when the file's SHA-256 was last verified; any difference falls back to the full hash and refreshes the stamp. Source bytes are still read and hashed from the archive every time. `checkpoint()` rewrites `source_mapping.json` only when the mapping changed.
 - **Open handles.** Archive files of 16 MB or more stay open per thread; smaller files are opened and closed per read so fixture folders can be deleted. `Archive.close()` releases the calling thread's handles.
 - **Asset index.** The archive-wide `assets` table (about 194k rows, about 55 MB) is stored once as `<repo>/.cache/shared_index/assets_<rows-hash>.sqlite`. Each run keeps only its `references_found` table in `reports/asset_references.sqlite`; `reports/asset_index.json` names both. Read them through `rc2016.formats.index.open_asset_index(output_root)`, which exposes both tables and also reads legacy single-file runs; `migrate_legacy_index(output_root)` converts an old run. `write_split_index` reuses the assets table's content hash through `rows_<identity>.txt` (identity = `Archive.layout_identity` plus the `index.py` source hash), and leaves `asset_index.json` and `asset_references.sqlite` untouched when their content is unchanged.
+- **Actor index.** The actor reference graph (every actor decoded and scanned once) is stored as `cache/actor_index/<stamp>.json`. The stamp covers `Archive.layout_identity`, the metadata hashes, the `index.py` source hash and the size and mtime of every file in the archive folder; while it matches, later runs load the graph instead of decoding every actor. Each model run still decodes the actors related to it, so their source hashes and decoded files are current.
+- **Texture decode cache.** Decoded DDS files and the byte-level part of the texture transport check (header parse, LZ4, deswizzle and DDS comparison) are stored under `cache/textures/`, named by SHA-256 of the built, stream and DDS bytes plus a fingerprint of the decoder sources (`texture.py`, `texture_transport.py`, `archive.py`, `container.py`, `common.py`). Every model and later run of the output root reuses them; source identity, archive-occurrence and stream-hash checks always run. A cached DDS whose bytes no longer match its recorded hash is decoded again. This folder and the actor index are not pruned.
 - **GUI scan stamp.** The GUI's `PipelineIndexScanner.scan()` writes `reports/gui_scan_stamp.json`: size and mtime of every file under the extracted root, hashes of `run.py`, `archive.py`, `index.py` and `common.py`, and size and mtime of the index outputs. If everything matches, the previous `gui_model_index.json` is reused without running the CLI; any difference runs it. `scan(reuse=False)` forces a run.
 
 ## Native model data
@@ -180,8 +181,6 @@ Fresh-process validation (`rc2016/shaders/validation.py`) asserts, for every pol
 - **`veldin` (opt-in): captured game look** (`game_look.py`, `game_view_compositor.py`, data in `assets/game_view/`). It sets the captured key light (strength = pi * game light colour), a fitted ambient world, the captured exposure (+2.19 stops) and the "RC PS4 Game" tonemap built as compositor nodes (view transform `Raw`, so no OCIO setup). The key light is placed on the camera's side because the captured direction is relative to the game camera. It is numerically faithful to the capture but washes out on standalone models, so it is not the default.
 - **`novalis`: decoded reflection probe.** Uses the validated RefHash-linked reflection asset `0xad76696216314d22` (six 512x512 DXGI 95 BC6H faces). The pipeline PS4-untiles the faces, picks the face orientation that passes every cube-seam test (state `(6,6,6,6,6,6)`, seam ratio about 1.268), samples through the game-to-Blender basis, writes a 1024x512 float EXR, packs it, and uses it as the sole world light at strength 1.0. Source path, hash, face states, seam measurements and EXR hash are embedded and rechecked after reopening. `--novalis-atmosphere-sun` adds the Sun from `atm_novalis.atmosphere` (unit ray at offset 72, RGB96 at offset 96 used directly with no exposure scaling). Only this source runs the light-grid inventory (`lighting.py`, about 60 s per run, written to `reports/lighting_inventory.json`).
 
-Manual-review PNGs for any source are rendered with the shared HDRI at strength 2 with separate lights hidden; the saved world is unchanged, and `preview_lighting` plus each preview row record source, path, SHA-256 and presentation-only status.
-
 Decoded Novalis lighting data (established in the research notes, not included): the day light-grid probe-selector association, the `lighting.zone` tile map (727 entries), the reflection-volume side table, and the atmosphere ray and RGB96. The EUR archive has 21 `volumereflections` probes, 21,158 light-grid assets and 153 local 512x256 BC6H env probes, and no `lightmap` or `irradiance` paths. Not decoded: packed light-grid irradiance words, runtime field names for the RGB96 value, authored light-record semantics, and a world position for a standalone weapon. The `1000` field next to the Novalis ray is not Sun strength.
 
 ## Animation in the pipeline
@@ -191,7 +190,7 @@ The decoder, container layout and baker are documented in [animation](animation.
 - **Default coverage.** Every supported source clip becomes a persistent Action (fake user) on the exact armature. Each model's animsets are found from its actor and model references; unsampled joints use source rest. Unsupported codecs, ambiguous classifications, unrelated clips, path-style root motion and VFX are reported (`unsupported_clips.json`, `limitations.json`), never substituted.
 - **Selection.** `--clip` selections keep the complete source catalog with original decoder statuses and provenance, plus a separate selection status (`included`, `omitted_by_user_selection`). The delivery is labelled `delivery_complete_animation_library=false` with an explicit enumeration of every clip. Selection is part of the cache fingerprint, so a selected delivery is never reused as a complete library; rebuild without selectors and use `--force`. Fixed-coverage weapon assemblies are skipped in explicit-selection mode, with a logged reason. Selecting one experimental FULL or SSC0 Action keeps both interpretations of its source clip.
 - **Channel library.** The baker omits only channels exactly invariant (float32 equality) across source rest and the whole library; a channel that first moves in a later clip backfills constant reset curves into all preceding Actions. Canonical values and the moving-channel mask persist on the rig (`source_channel_library_state`) for checkpoint resume and are checked after reopening. The right SVD factor uses its algebraic unit scale after a rigid-rest guard, and an identity right factor where singular values are equal within `2^-19`; native scale, reflection, collapse and shear stay in the left factor. Source samples and timing are unchanged; derived matrices are held to a `1e-4` tolerance. A 520-clip library remains expensive.
-- **NLA overview and controls.** One sequential NLA track holds every Action on a common timeline clock (half-open logical intervals, Blender-safe physical endpoints, mixed frame rates supported; a rate set needing an overview FPS outside 1 to 32767 is rejected rather than resampled), with a scene marker per clip boundary. A catalog and `Animation Controls.py` (`rc2016/pipeline/controls.py`) are embedded as text blocks. Boundaries, held ticks, one-frame clips, markers, selection, Action playback and NLA playback are checked numerically after reopening. Because Blender evaluates the channel domain of every unmuted strip each frame, the full overview of a 520-clip library plays at about 0.12 s per frame; the controls offer a temporary 24-clip range track for fast playback.
+- **NLA overview and controls.** One sequential NLA track holds every Action on a common timeline clock (half-open logical intervals, Blender-safe physical endpoints, mixed frame rates supported; a rate set needing an overview FPS outside 1 to 32767 is rejected rather than resampled), with a scene marker per clip boundary. A catalog and `Animation Controls.py` (`rc2016/pipeline/controls.py`) are embedded as text blocks. Boundaries, held ticks, one-frame clips, markers, selection, Action playback and NLA playback are checked numerically after reopening (see [Reopen validation](#reopen-validation-and-promotion)). Because Blender evaluates the channel domain of every unmuted strip each frame, the full overview of a 520-clip library plays at about 0.12 s per frame; the controls offer a temporary 24-clip range track for fast playback.
 - **Cameras.** The review camera is fitted to the rest-shape mesh bounds using the camera's limiting field of view (joint motion bounds only for mesh-less rigs). Source armatures are saved with ordinary viewport-eye hiding and `hide_render=True`; Actions and modifiers stay active.
 
 ### Inheritance rule
@@ -227,11 +226,18 @@ Contracts:
 
 ## Reopen validation and promotion
 
-Every build writes a candidate under `blender/`, which a second Blender process reopens and validates; only then is it promoted (`common.promote`) to the model folder. Replacing an existing final requires `--force`. Before promotion the runner also re-hashes the source assets and archive metadata to confirm nothing changed during the build.
+Every build writes a candidate under `blender/`, which a second Blender process reopens and validates; only then is it promoted (`common.promote`) to the model folder. Replacing an existing final requires `--force`. Before promotion the runner confirms that no source changed during the build: when every file in the archive folder keeps the size and mtime it had when the run started and every related source was hashed during this run with its recorded hash, nothing is re-read; otherwise every related source asset and the archive metadata are re-read and re-hashed.
 
-Validation checks mesh, material and image presence; source hashes; packed images and the texture transport gate; normalized in-range skin weights; native geometry round trip and the degenerate-triangle record; material wiring per polygon-used material; scene defaults (Cycles on OptiX, perspective camera, transparent RGBA film, 96 samples and the other render defaults); shared-lighting record; the upright presentation transform; Actions, slots, markers, NLA boundaries and every admitted animation sample (matrix error tolerance `1e-4`).
+Validation checks mesh, material and image presence; source hashes; packed images and the texture transport gate; normalized in-range skin weights; native geometry round trip and the degenerate-triangle record; material wiring per polygon-used material; scene defaults saved in the file (Cycles GPU device and OptiX denoiser, perspective camera, transparent RGBA film, 96 samples and the other render defaults; the process-level OptiX device selection is not checked because nothing is rendered); shared-lighting record; the upright presentation transform; Actions, slots, markers and NLA strips. Geometry, UV, tangent, raw-word and material-slot comparisons read Blender data in bulk (`foreach_get`); vertex-group memberships are read per vertex.
 
-Scene defaults come from `rc2016/pipeline/scene_defaults.py` (`apply_new_scene_defaults`, `audit_scene`): 3840 x 2560 at 100%, PNG RGBA, transparent film, adaptive sampling with denoising, 96 samples (32 preview), adaptive threshold 0.04, 5 total bounces (2 diffuse, 2 glossy, 4 transmission, 6 transparent, 0 volume), Light Tree, Persistent Data.
+Animation (matrix error tolerance `1e-4`, `rc2016/pipeline/bulk_checks.py`):
+
+- every clip's raw bytes and sample hash are re-decoded, and the cached sample file must hold exactly the freshly decoded frames (serialized-text comparison);
+- every key of every F-curve is read (`foreach_get`) and must use CONSTANT interpolation; the pose those keys define at every source frame is composed in numpy from the bake rig's rest matrices (helper root plus bone, full inheritance, local location, quaternion channels; asserted on the rig) and compared with the source matrices (`keyframe_max_matrix_error`);
+- Blender's own evaluation is checked on sampled frames per clip: first, middle, last and the frame of largest motion (plus the pinned deformation-probe frame), through the selected Action (`action_evaluated_frames`) and, after one switch to the NLA overview, the same samples on the timeline plus each strip's held final tick (`nla_evaluated_frames`);
+- `jump_to` is exercised on the first, middle and last clip; markers and strip boundaries are checked for every clip; the rest pose is evaluated once.
+
+Scene defaults come from `rc2016/pipeline/scene_defaults.py` (`apply_new_scene_defaults`, `audit_scene`): 3840 x 2560 at 100%, PNG RGBA, transparent film, adaptive sampling with denoising, 96 samples (32 viewport preview), adaptive threshold 0.04, 5 total bounces (2 diffuse, 2 glossy, 4 transmission, 6 transparent, 0 volume), Light Tree, Persistent Data.
 
 ## Cache reuse and the implementation hash
 
@@ -239,7 +245,7 @@ The runner hashes every `.py` file under `rc2016/formats`, `rc2016/shaders` and 
 
 The model fingerprint also covers archive metadata hashes, the model profile, source asset hashes, built and stream texture hashes, import LOD, `--export-textures`, `--experimental-ambiguous-inheritance`, the clip selection identity, the lighting identity (probe and face hashes for Novalis; the capture-data and script hashes for Veldin; the HDRI hash plus shared-lighting settings otherwise) and the Blender path.
 
-`--reuse-cache` accepts an existing final only if its recorded fingerprint, file hash, validation report and preview hashes still match. If only variant-assembly orchestration code changed, an existing complete-library model delivery is reused after its source dependencies are re-audited (`reused_source_audited_delivery`). Otherwise the runner refuses to overwrite without `--force`. Log events (`reused_verified_delivery`, `*_assembly_reused`) are in `reports/logs/pipeline.jsonl`.
+`--reuse-cache` accepts an existing final only if its recorded fingerprint, file hash and validation report still match (and any preview image hashes an older report recorded). If only variant-assembly orchestration code changed, an existing complete-library model delivery is reused after its source dependencies are re-audited (`reused_source_audited_delivery`). Otherwise the runner refuses to overwrite without `--force`. Log events (`reused_verified_delivery`, `*_assembly_reused`) are in `reports/logs/pipeline.jsonl`.
 
 ## Known limitations
 

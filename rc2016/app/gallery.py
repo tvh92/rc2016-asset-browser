@@ -9,10 +9,12 @@ from __future__ import annotations
 
 from collections import OrderedDict
 import math
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import queue
 
 from rc2016.app.thumbnails import (DEFAULT_SIZE, RendererProcess, ThumbnailIndex, cache_dir)
+from rc2016.app.workers import LatestWork
 
 IMAGE_CACHE_SIZE = 300      # PhotoImages kept; the tiles on screen are a small subset
 FILTER_CAP = 2000           # largest search-result list shown when nothing is selected
@@ -155,6 +157,25 @@ def needs_restart(visible_missing, pending, head=QUEUE_HEAD):
     return not set(visible_missing) <= set(pending[:head])
 
 
+def decode_thumbnail(path):
+    """Decode one thumbnail PNG to an RGBA Pillow image (worker thread; no Tk objects). None without Pillow."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    with Image.open(path) as image:
+        return image.convert('RGBA')
+
+
+def photo_from_image(image, master):
+    """A Tk PhotoImage from a decoded image (UI thread). None when Pillow's Tk bridge is unavailable."""
+    try:
+        from PIL import ImageTk
+        return ImageTk.PhotoImage(image, master=master)
+    except Exception:
+        return None
+
+
 # Tk view ---------------------------------------------------------------------
 class Gallery:
     """The Gallery notebook tab. All Tk work happens on the UI thread; the renderer is a child process."""
@@ -171,6 +192,14 @@ class Gallery:
         self.index = ThumbnailIndex(Path('.'))
         self.cache_root = None
         self.images = ImageCache()
+        self.index_work = LatestWork()     # index.json is parsed off the UI thread
+        self.index_loading = False
+        self.decoder = ThreadPoolExecutor(max_workers=2, thread_name_prefix='thumbnail-decode')
+        self.decoded = queue.Queue()       # (model_id, token, image or None) from decoder threads
+        self.inflight = {}                 # model_id -> token of the decode whose result is still wanted
+        self.unreadable = set()
+        self.decode_job = None
+        self.token = 0
         self.live = {}                 # id -> (status, reason) learned from renderer events this session
         self.item_by_id = {}
         self.current_id = None
@@ -261,8 +290,9 @@ class Gallery:
         root = Path(output)
         if root != self.cache_root:
             self.cache_root = root
-            self.images.clear()
+            self._clear_images()
             self.live.clear()
+            self.index = ThumbnailIndex(cache_dir(root))
             self.stop_renderer()
             self.blocked = ''
         self.item_by_id = {getattr(r, 'model_id', None): item for item, r in app.item_by_record.items()}
@@ -274,10 +304,47 @@ class Gallery:
             self.records, self.kind, self.total, self.ids = records, kind, total, {r.model_id for r in records}
             self.canvas.yview_moveto(0)
         if kind != 'keep' or not self.index.models:
-            self.index = ThumbnailIndex.load(cache_dir(root))
+            self._load_index(cache_dir(root))
         self._describe()
         self._relayout()
         self.schedule_render()
+
+    def _load_index(self, folder):
+        """Parse index.json on a worker; the previous index keeps serving until the new one arrives."""
+        self.index_loading = True
+        self.index_work.submit(ThumbnailIndex.load, folder)
+        self._poll_index()
+
+    def _poll_index(self):
+        if self.closed:
+            return
+        try:
+            while True:
+                generation, index, error = self.index_work.events.get_nowait()
+                if generation != self.index_work.generation:
+                    continue
+                self.index_loading = False
+                if error:
+                    continue   # unreadable index: keep what is shown; missing models are simply rendered again
+                self.index = index
+                self.live.clear()
+                self._clear_images()
+                self.redraw()
+                self.schedule_render()
+        except queue.Empty:
+            pass
+        if self.index_loading:
+            self.app.root.after(30, self._poll_index)
+
+    def _clear_images(self):
+        self.images.clear()
+        self.unreadable.clear()
+        self.inflight.clear()
+
+    def _discard_image(self, model_id):
+        self.images.discard(model_id)
+        self.unreadable.discard(model_id)
+        self.inflight.pop(model_id, None)
 
     def _describe(self):
         if not self.records:
@@ -349,6 +416,8 @@ class Gallery:
         live = self.live.get(model_id)
         if live:
             return live
+        if self.index_loading and not self.index.models:
+            return 'loading', ''
         if self.index.is_current(model_id, self.THUMB):
             entry = self.index.get(model_id)
             return entry['status'], entry.get('reason', '')
@@ -356,13 +425,52 @@ class Gallery:
 
     def _photo(self, model_id):
         photo = self.images.get(model_id)
-        if photo is None:
-            try:
-                photo = self.tk.PhotoImage(file=str(self.index.png_path(model_id)), master=self.canvas)
-            except Exception:
-                return None
-            self.images.put(model_id, photo)
+        if photo is None and model_id not in self.unreadable and model_id not in self.inflight:
+            path = str(self.index.png_path(model_id))
+            self.token += 1
+            self.inflight[model_id] = token = self.token
+            self.decoder.submit(self._decode, model_id, token, path)
+            self._poll_decoded()
         return photo
+
+    def _decode(self, model_id, token, path):
+        try:
+            image = decode_thumbnail(path)
+        except Exception:
+            image = None
+        self.decoded.put((model_id, token, image, path))
+
+    def _poll_decoded(self):
+        """Wrap decoded images into PhotoImages here, on the UI thread (Tk objects are not thread safe)."""
+        if self.decode_job is not None:
+            self.app.root.after_cancel(self.decode_job)
+            self.decode_job = None
+        if self.closed:
+            return
+        changed = False
+        try:
+            while True:
+                model_id, token, image, path = self.decoded.get_nowait()
+                if self.inflight.get(model_id) != token:
+                    continue   # superseded: the thumbnail was re-rendered or the cache changed
+                del self.inflight[model_id]
+                photo = photo_from_image(image, self.canvas) if image is not None else None
+                if photo is None:   # no Pillow / ImageTk: let Tk decode the PNG itself
+                    try:
+                        photo = self.tk.PhotoImage(file=path, master=self.canvas)
+                    except Exception:
+                        photo = None
+                if photo is None:
+                    self.unreadable.add(model_id)
+                else:
+                    self.images.put(model_id, photo)
+                changed = True
+        except queue.Empty:
+            pass
+        if changed:
+            self._schedule_redraw()
+        if self.inflight:
+            self.decode_job = self.app.root.after(30, self._poll_decoded)
 
     def redraw(self):
         self.redraw_job = None
@@ -395,9 +503,9 @@ class Gallery:
                 canvas.create_image(left, top, anchor='nw', image=photo)
             else:
                 canvas.create_rectangle(left, top, left + self.THUMB, top + self.THUMB, fill=placeholder, outline='')
-                label = {'queued': 'queued…', 'unsupported': 'unsupported', 'error': 'error'}.get(status, status)
+                label = {'queued': 'queued…', 'loading': 'loading…', 'unsupported': 'unsupported', 'error': 'error'}.get(status, status)
                 if status == 'ok':
-                    label = 'unreadable'
+                    label = 'unreadable' if record.model_id in self.unreadable else 'loading…'
                 canvas.create_text(left + self.THUMB // 2, top + self.THUMB // 2, text=label, fill=muted, font=self.font)
             name = elide(display_name(record), self.font.measure, width)
             canvas.create_text(left + self.THUMB // 2, top + self.THUMB + self.pad, anchor='n', text=name,
@@ -527,6 +635,8 @@ class Gallery:
         self.queue_job = None
         if self.closed or not self.records or not self.visible() or self.cache_root is None or not self._source():
             return
+        if self.index_loading:
+            return   # the loaded index decides what is missing; it schedules rendering itself
         if self.blocked and self.mode != 'all':
             return
         first, last = self._visible
@@ -618,7 +728,7 @@ class Gallery:
                 self.live.pop(model_id, None)
             else:
                 self.live[model_id] = (event.get('status', 'error'), event.get('reason', ''))
-            self.images.discard(model_id)
+            self._discard_image(model_id)
             if self.mode == 'all':
                 done = event.get('n', 0)
                 total = event.get('total', 0)
@@ -643,9 +753,11 @@ class Gallery:
             finished_all = self.mode == 'all'
             self.proc, self.proc_pending, self.mode = None, [], 'view'
             self.cancel_button.configure(state='disabled')
-            self.index = ThumbnailIndex.load(cache_dir(self.cache_root)) if self.cache_root else self.index
-            self.live.clear()
-            self.images.clear()
+            if self.cache_root:
+                self._load_index(cache_dir(self.cache_root))   # live results keep serving until it arrives
+            else:
+                self.live.clear()
+                self._clear_images()
             if code not in (0, None) and not self.blocked:
                 self.blocked = f'renderer exited with code {code}; see .cache/thumbnails/renderer.log'
                 self.app._append_log(f'Thumbnail renderer exited with code {code}; see .cache/thumbnails/renderer.log in the output folder.', 'error')
@@ -666,3 +778,5 @@ class Gallery:
                     pass
         self._hide_tip()
         self.stop_renderer()
+        self.index_work.close()
+        self.decoder.shutdown(wait=False, cancel_futures=True)

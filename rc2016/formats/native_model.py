@@ -129,7 +129,7 @@ def _cstring(data, offset, string_start=0, string_end=None):
 def _sections(data):
     if len(data) < 16 or data[:4] != DAT1_MAGIC:
         raise UnsupportedModelError('Native adapter requires a direct PS4 1TAD model, not a compressed payload')
-    root = read_container(data, 0, {})
+    root = read_container(data, 0, {}, light=True)
     if root['declared_size'] != len(data):
         raise ValueError('Model has bytes outside DAT1 container')
     type_hash = struct.unpack_from('<I', data, 4)[0]
@@ -416,6 +416,9 @@ def decode_model(path, lod='Highest', look=0, expected_sha256=None, preserve_sou
             raise ValueError(f'Mesh {mesh_index} index base/flags are unsupported')
         triangles=local_indices.reshape(-1,3)
         weights=[None]*local_count
+        assigned=np.zeros(local_count,dtype=bool)
+        # as_arrays: (n, 8) zero-padded joint ids and weights beside the per-vertex lists.
+        skin_arrays=(np.zeros((local_count,8),dtype=np.int64),np.zeros((local_count,8),dtype=np.float64)) if as_arrays else None
         if batch_count:
             if not skin_batches or not skin:
                 raise ValueError(f'Mesh {mesh_index} references missing skin data')
@@ -432,25 +435,8 @@ def decode_model(path, lod='Highest', look=0, expected_sha256=None, preserve_sou
                 packed_count=influences
                 if first+count>local_count or skin_offset+count*stride>len(skin):
                     raise ValueError(f'Skin batch {batch_index} exceeds mesh/skin range')
-                for i in range(count):
-                    skin_record=skin[skin_offset+i*stride:skin_offset+(i+1)*stride]
-                    ids=list(skin_record[:influences])
-                    raw=list(skin_record[packed_count:packed_count+influences])
-                    if palette is not None:
-                        if max(ids)>=len(palette):
-                            raise ValueError(f'Skin batch {batch_index} local joint id exceeds its remap palette')
-                        ids=[palette[x] for x in ids]
-                    elif id_base:
-                        ids=[x+id_base for x in ids]
-                        if max(ids)>=joint_count:
-                            raise ValueError(f'Skin batch {batch_index} joint id base exceeds the skeleton')
-                    values=[1.0] if influences==1 else ([v/sum(raw) for v in raw] if sum(raw) else [])
-                    if not values:
-                        raise ValueError(f'Zero-sum skin weights in batch {batch_index}')
-                    target=first+i
-                    if weights[target] is not None:
-                        raise ValueError(f'Overlapping skin batches on mesh {mesh_index} vertex {target}')
-                    weights[target]=list(zip(ids,values))
+                _skin_batch_weights(skin,skin_offset,count,stride,influences,palette,id_base,joint_count,
+                                    first,weights,assigned,batch_index,mesh_index,skin_arrays)
         unweighted=sum(x is None for x in weights)
         if batch_count and unweighted:
             raise ValueError(f'Mesh {mesh_index} skin batches leave {unweighted} vertices without weights')
@@ -468,6 +454,7 @@ def decode_model(path, lod='Highest', look=0, expected_sha256=None, preserve_sou
             uv1=uv1[first_vertex:first_vertex+local_count] if uv1 else None,
             colors=colors[first_vertex:first_vertex+local_count] if colors else None,
             weights=weights,unweighted_vertices=unweighted,
+            **(dict(skin_joint_array=skin_arrays[0],skin_weight_array=skin_arrays[1]) if as_arrays else {}),
             material=materials[material_index] if material_index<len(materials) else None,
             index_base='local' if mesh_flags&0x10 else 'global',
             memberships=membership[mesh_index])
@@ -551,6 +538,48 @@ def validate_mesh_position_correction(correction, source_sha256, meshes):
         bound_signature_sha256=actual_signature,max_center_error=max(center_errors),
         radius_ratio_min=min(radius_ratios),radius_ratio_max=max(radius_ratios),
         gate='source hash, selected mesh count/order, bound-record signature, 2x AABB-center match, and 2x bound-radius match')
+
+
+def _skin_batch_weights(skin, skin_offset, count, stride, influences, palette, id_base, joint_count,
+                        first, weights, assigned, batch_index, mesh_index, arrays=None):
+    """Decode one skin batch into ``weights[first:first+count]`` (lists of (joint, weight)).
+
+    Vectorized form of the former per-vertex loop: same values (float64 raw/sum), same
+    ValueErrors, raised for the first failing vertex in the former check order. ``arrays``
+    ((n, 8) joint ids, (n, 8) weights) also receive the batch, zero-padded.
+    """
+    if not count:
+        return
+    records = np.frombuffer(skin, dtype=np.uint8, count=count*stride, offset=skin_offset).reshape(count, stride)
+    ids = records[:, :influences].astype(np.int64)
+    raw = records[:, influences:2*influences].astype(np.int64)
+    checks = []
+    if palette is not None:
+        checks.append((ids.max(axis=1) >= len(palette), f'Skin batch {batch_index} local joint id exceeds its remap palette'))
+    elif id_base:
+        ids = ids + id_base
+        checks.append((ids.max(axis=1) >= joint_count, f'Skin batch {batch_index} joint id base exceeds the skeleton'))
+    sums = raw.sum(axis=1)
+    if influences != 1:
+        checks.append((sums == 0, f'Zero-sum skin weights in batch {batch_index}'))
+    checks.append((assigned[first:first+count], None))
+    failing = np.zeros(count, dtype=bool)
+    for flags, _message in checks:
+        failing |= flags
+    if failing.any():
+        i = int(np.argmax(failing))
+        for flags, message in checks:
+            if flags[i]:
+                raise ValueError(message or f'Overlapping skin batches on mesh {mesh_index} vertex {first+i}')
+    if palette is not None:
+        ids = np.asarray(palette, dtype=np.int64)[ids]
+    id_rows = ids.tolist()
+    values = np.ones((count, 1)) if influences == 1 else raw.astype(np.float64) / sums.astype(np.float64)[:, None]
+    weights[first:first+count] = [list(zip(a, b)) for a, b in zip(id_rows, values.tolist())]
+    assigned[first:first+count] = True
+    if arrays is not None:
+        arrays[0][first:first+count, :influences] = ids
+        arrays[1][first:first+count, :influences] = values
 
 
 def _influence_layout(code):

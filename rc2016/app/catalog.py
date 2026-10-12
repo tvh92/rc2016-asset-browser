@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Literal
-import hashlib, json
+import hashlib, json, threading
 
 ResultKind = Literal["static", "skinned", "unknown"]
 PreviewStatus = Literal["missing", "stale", "invalid", "hash_verified"]
@@ -82,6 +82,49 @@ def _json(path: Path | None) -> Any:
     except (OSError, ValueError, AttributeError):
         return None
 
+_REPORTS: dict = {}   # report path -> ((mtime_ns, size), doc, row index); newest last
+_REPORTS_LOCK = threading.Lock()
+_REPORTS_MAX = 16
+
+def _report(path: Path | None) -> tuple[Any, dict]:
+    """Parse a result report once per (path, mtime_ns, size); returns (doc, row index)."""
+    try:
+        st = path.stat()
+        key = (st.st_mtime_ns, st.st_size)
+    except (OSError, AttributeError):
+        return None, {}
+    with _REPORTS_LOCK:
+        hit = _REPORTS.pop(path, None)
+        if hit is not None and hit[0] == key:
+            _REPORTS[path] = hit
+            return hit[1], hit[2]
+    doc = _json(path)
+    index: dict = {}
+    if isinstance(doc, dict):
+        # First match wins, like the linear scan in _row.
+        for case in doc.get("cases", []):
+            if isinstance(case, dict):
+                actual = case.get("actual") or {}
+                a, b = actual.get("asset_id"), actual.get("source_model_path")
+                if isinstance(a, str) and isinstance(b, str):
+                    index.setdefault(("case", a, b), case)
+        models = doc.get("models")
+        for ident, row in (models.items() if isinstance(models, dict) else ()):
+            if isinstance(row, dict):
+                src = row.get("source_model_path") or row.get("source_path") or row.get("model")
+                if isinstance(src, str):
+                    index[("model", ident, src)] = row
+    with _REPORTS_LOCK:
+        _REPORTS[path] = (key, doc, index)
+        while len(_REPORTS) > _REPORTS_MAX:
+            _REPORTS.pop(next(iter(_REPORTS)))
+    return doc, index
+
+def report_row(ref: "ResultRef") -> dict | None:
+    """The cached report record for a ref, or None."""
+    doc, index = _report(ref.report_path)
+    return _row(ref, doc, index)
+
 def _hash(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -140,7 +183,7 @@ def discover_results(roots: Iterable[str | Path]) -> list[ResultRef]:
         if not root.is_dir():
             continue
         for report, base, kind in _reports(root):
-            doc = _json(report)
+            doc = _report(report)[0]
             records = []
             if kind == "aggregate" and isinstance(doc, dict):
                 for case in doc.get("cases", []):
@@ -170,7 +213,7 @@ def discover_results(roots: Iterable[str | Path]) -> list[ResultRef]:
 
 def _assembly_refs(report: Path, root: Path) -> list[ResultRef]:
     """List a passed source-linked assembly under its single V1 source identity, or nothing."""
-    doc = _json(report)
+    doc = _report(report)[0]
     if not isinstance(doc, dict) or doc.get("schema") != ASSEMBLY_SCHEMA or doc.get("status") != "passed":
         return []
     inputs = doc.get("inputs") if isinstance(doc.get("inputs"), dict) else {}
@@ -189,7 +232,7 @@ def _assembly_refs(report: Path, root: Path) -> list[ResultRef]:
 
 def _inspect_assembly(ref: ResultRef, verify_blend: bool) -> ResultDetails:
     """Describe a combined assembly. Its V1/V5 selectors come only from the optional Blender inspection."""
-    doc = _json(ref.report_path)
+    doc = _report(ref.report_path)[0]
     listed = any(r.model_id == ref.model_id and r.source_path == ref.source_path
                  for r in _assembly_refs(ref.report_path, ref.root_path))
     if not listed or not isinstance(doc, dict):
@@ -219,9 +262,11 @@ def _inspect_assembly(ref: ResultRef, verify_blend: bool) -> ResultDetails:
         (), (), (), tuple(dict.fromkeys(limits)), (), None, None, (), validation, tuple(summary),
         review if isinstance(review, bool) else None, animation_status)
 
-def _row(ref: ResultRef, doc: Any) -> dict | None:
+def _row(ref: ResultRef, doc: Any, index: dict | None = None) -> dict | None:
     if not isinstance(doc, dict):
         return None
+    if index is not None:
+        return index.get(("model" if ref.report_kind == "manifest" else "case", ref.model_id, ref.source_path))
     if ref.report_kind == "manifest":
         row = (doc.get("models") or {}).get(ref.model_id)
         if isinstance(row, dict) and (row.get("source_model_path") or row.get("source_path") or row.get("model")) == ref.source_path:
@@ -273,7 +318,7 @@ def inspect_result(ref: ResultRef, verify_blend: bool = True) -> ResultDetails:
     """Inspect a selected record. The large blend hash is opt-in."""
     if ref.report_kind == "assembly":
         return _inspect_assembly(ref, verify_blend)
-    row = _row(ref, _json(ref.report_path))
+    row = report_row(ref)
     if row is None:
         empty = ArtifactRef(None, None, None, "unavailable")
         return ResultDetails(ref.model_id, ref.source_path, ref.label, "UNKNOWN", "unknown", empty,

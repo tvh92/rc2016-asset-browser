@@ -680,13 +680,7 @@ class AssetBrowser:
         refs=catalog.discover_results(roots)
         priority={str(Path(r).resolve()):i for i,r in enumerate(roots)}
         refs.sort(key=lambda ref:(priority.get(str(ref.root_path),len(roots)),ref.report_kind!='aggregate',ref.label,str(ref.report_path)))
-        metadata={}
-        for ref in refs:
-            detail=catalog.inspect_result(ref,verify_blend=False)
-            d=normalize_details(detail)
-            d['source_root']=AssetBrowser._recorded_source_root(ref)
-            metadata.setdefault((ref.model_id,ref.source_path),d)
-        return refs,metadata
+        return refs,{}   # per-ref inspection is lazy: see _choose_result
 
     def select_asset(self,record):
         identity=(getattr(record,'model_id',None),getattr(record,'archive_path',None))
@@ -703,20 +697,23 @@ class AssetBrowser:
 
     @staticmethod
     def _recorded_source_root(ref):
-        paths=[ref.report_path]
-        # Result summaries point at deliveries below a run directory.
+        # Result summaries point at deliveries below a run directory; reports are parsed once (catalog cache).
         try:
-            doc=json.loads(ref.report_path.read_text(encoding='utf8'))
-            for case in doc.get('cases',[]):
-                a=case.get('actual',{})
-                if a.get('asset_id')==ref.model_id and a.get('source_model_path')==ref.source_path:
-                    blend=case.get('delivery',{}).get('blend',{}).get('path')
-                    if blend:paths.append(Path(blend).parent.parent/'reports'/'manifest.json')
-            for file in paths:
-                data=json.loads(file.read_text(encoding='utf8'))
+            paths=[catalog._report(ref.report_path)[0]]
+            case=catalog.report_row(ref) if ref.report_kind=='aggregate' else None
+            if case:
+                blend=case.get('delivery',{}).get('blend',{}).get('path')
+                if blend:paths.append(catalog._report(Path(blend).parent.parent/'reports'/'manifest.json')[0])
+            for data in paths:
                 if data.get('source_root'):return data['source_root']
-        except (OSError,ValueError):pass
+        except (OSError,ValueError,AttributeError):pass
         return ''
+
+    def _source_root(self,ref):
+        # First ref per identity wins; computed on selection instead of for every saved result.
+        entry=self.metadata.setdefault((ref.model_id,ref.source_path),{})
+        if 'source_root' not in entry:entry['source_root']=self._recorded_source_root(ref)
+        return entry['source_root']
 
     def _load_source(self,record):
         if getattr(record,'model_id',None):
@@ -1014,7 +1011,7 @@ class AssetBrowser:
         self._reset('Checking selected result receipts and files…')
         self.active_ref=self.refs[index]
         ref=self.active_ref
-        self._load_source_identity(ref.model_id,ref.source_path,self.app.source_var.get().strip() or self.metadata.get((ref.model_id,ref.source_path),{}).get('source_root',''))
+        self._load_source_identity(ref.model_id,ref.source_path,self.app.source_var.get().strip() or self._source_root(ref))
         self.detail_work.submit(lambda ref:catalog.inspect_result(ref,verify_blend=True),self.active_ref)
 
     def _describe(self,message):

@@ -7,10 +7,10 @@ import struct
 from pathlib import Path
 
 from rc2016.formats.container import read_container
-from rc2016.common import asset_path, dump, file_hash, load, read, sha
+from rc2016.common import asset_path, dump, file_hash, load, read, sha, write
 from rc2016.formats.index import references
 from rc2016.formats.texture import decode_texture
-from rc2016.formats.texture_transport import validate_source_transport
+from rc2016.formats.texture_transport import TextureDecodeCache,validate_source_transport
 from rc2016.shaders.families import preflight_graph
 
 
@@ -523,8 +523,27 @@ def viewer_graph_rule(archive, material_path, bound_paths=None):
     return json.loads(json.dumps(rule))
 
 
-def prepare_materials(archive, model_geometry, output_dir, export_textures, log, model_root=None):
+def _decode_texture_cached(cache, built_path, built_sha256, stream_data, stream_hash, dds_path):
+    """decode_texture(), served from the shared hash-addressed cache when the same built
+    and stream bytes were decoded before by the same decoder sources."""
+    key=cache.key('dds',built_sha256,stream_hash) if cache is not None and built_sha256 else None
+    hit=cache.get_dds(key) if key else None
+    if hit:
+        report,data=hit
+        if report.get('built_sha256')==built_sha256 and report.get('stream_sha256')==stream_hash:
+            write(dds_path,data)
+            report=dict(report);report['dds_path']=str(dds_path)
+            return report
+    report=decode_texture(built_path,stream_data,dds_path)
+    if key and report.get('built_sha256')==built_sha256:
+        cache.put_dds(key,report,read(dds_path))
+    return report
+
+
+def prepare_materials(archive, model_geometry, output_dir, export_textures, log, model_root=None, decode_cache=None):
     output_dir=Path(output_dir)
+    # Decoded DDS and transport outcomes are shared by every model and run of this output root.
+    decode_cache=decode_cache if decode_cache is not None else TextureDecodeCache(Path(archive.output)/'cache'/'textures')
     material_dir=output_dir/'materials';material_dir.mkdir(parents=True,exist_ok=True)
     model_root=Path(model_root) if model_root is not None else output_dir
     texture_dir=preflight_texture_output(archive.output,model_root,export_textures)
@@ -597,7 +616,8 @@ def prepare_materials(archive, model_geometry, output_dir, export_textures, log,
                     built_path=archive.decode(built_id)
                     stream_data,stream_hash=archive.bytes(stream[0]) if stream else (None,None)
                     dds_path=texture_output_path(texture_dir,texture_path)
-                    report=decode_texture(built_path,stream_data,dds_path)
+                    built_sha256=(getattr(archive,'mapping',{}).get(built_id) or {}).get('decoded_sha256')
+                    report=_decode_texture_cached(decode_cache,built_path,built_sha256,stream_data,stream_hash,dds_path)
                 else:
                     built_id=decoded['built_asset_id'];stream_id=decoded.get('stream_asset_id')
                     built_path=Path(decoded['built_path'])
@@ -627,7 +647,8 @@ def prepare_materials(archive, model_geometry, output_dir, export_textures, log,
                     binding['built_path']=str(built_path)
                     transport=validate_source_transport(binding,archive.entries[built_id],
                         archive.entries[stream[0]] if stream else None,stream_data,read(dds_path),
-                        built_asset_id=built_id,stream_asset_id=stream[0] if stream else None)
+                        built_asset_id=built_id,stream_asset_id=stream[0] if stream else None,
+                        transport_cache=decode_cache)
                     transport['stream_sha256']=stream_hash
                     binding['source_exact_top_mip']=transport['source_exact_top_mip']
                     binding['texture_transport']=transport

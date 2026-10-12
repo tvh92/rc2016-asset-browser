@@ -6,7 +6,9 @@ package (C) decodes raw LZ4 blocks when installed; the pure-Python decoder below
 fallback and the reference (byte-identical on the archive corpus, 2026-10-09).
 """
 import csv
+from collections import OrderedDict
 import io
+import json
 import os
 from pathlib import Path
 import pickle
@@ -26,13 +28,95 @@ LAYOUT_CACHE_DIR = Path(__file__).resolve().parents[2]/'.cache'/'shared_index'
 LAYOUT_CACHE_VERSION = 1
 LAYOUT_CACHE_MIN_ENTRIES = 5000
 KEEP_OPEN_MIN_BYTES = 16 * 1024 * 1024
+# Decompressed assets and their reference lists kept per Archive (viewer/level loads read one
+# material, graph or texture header several times). Bounded by total bytes; larger assets bypass it.
+ASSET_MEMO_BYTES = 256 * 1024 * 1024
+ASSET_MEMO_MAX_ITEM = 32 * 1024 * 1024
+# (path, size, mtime_ns) -> sha256 of large files hashed on every open (archive metadata, shared index).
+FILE_HASH_SIDECAR = LAYOUT_CACHE_DIR/'file_hashes.json'
+FILE_HASH_MIN_BYTES = 1024 * 1024   # smaller files (test fixtures) are simply hashed
+# Game folder -> archive root found by locate(); revalidated on use.
+LOCATE_SIDECAR = LAYOUT_CACHE_DIR/'located_roots.json'
+_SIDECAR_LOCK = threading.Lock()
 try:
     _PARSER_SOURCE_SHA256 = sha(b''.join(Path(__file__).with_name(n).read_bytes() for n in ('archive.py', 'common.py')))
 except OSError:              # frozen executable without .py sources: the version alone keys the cache
     _PARSER_SOURCE_SHA256 = 'frozen'
 
 
-def locate(root):
+def _is_archive_root(path):
+    try:
+        files = os.listdir(extended(path))
+    except OSError:
+        return False
+    return (all(name in files for name in METADATA)
+            and any(re.fullmatch(r'[a-z]\d+s\d+(?:\.[a-z]+)?', f) for f in files))
+
+
+def _read_sidecar(path):
+    try:
+        with open(extended(path), encoding='utf-8') as f:
+            value = json.load(f)
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _update_sidecar(path, key, value, limit=256):
+    """Merge one key into a small JSON sidecar (atomic replace; failures only lose the speed-up)."""
+    with _SIDECAR_LOCK:
+        data = _read_sidecar(path)
+        data.pop(key, None); data[key] = value
+        while len(data) > limit:
+            data.pop(next(iter(data)))
+        try:
+            os.makedirs(extended(Path(path).parent), exist_ok=True)
+            temp = extended(f'{path}.{os.getpid()}.{threading.get_ident()}.tmp')
+            with open(temp, 'w', encoding='utf-8') as f:
+                json.dump(data, f)
+            os.replace(temp, extended(path))
+        except OSError:
+            pass
+
+
+def stat_file_hash(path, sidecar=None):
+    """file_hash(path), reused while the file's (size, mtime_ns) stamp is unchanged.
+
+    Same value as file_hash; the stamp approach is Archive._cached_file_matches'. Any stamp
+    difference re-hashes the file and refreshes the record.
+    """
+    sidecar = FILE_HASH_SIDECAR if sidecar is None else sidecar
+    stamp = _stat(path)
+    if stamp is None or stamp[0] < FILE_HASH_MIN_BYTES:
+        return file_hash(path)    # raises like file_hash for a missing file
+    key = os.path.normcase(os.path.abspath(path))
+    known = _read_sidecar(sidecar).get(key)
+    if isinstance(known, list) and len(known) == 3 and known[:2] == stamp and re.fullmatch(r'[0-9a-f]{64}', str(known[2])):
+        return known[2]
+    digest = file_hash(path)
+    if _stat(path) == stamp:      # unchanged while hashing
+        _update_sidecar(sidecar, key, [*stamp, digest], limit=4096)
+    return digest
+
+
+def locate(root, sidecar=None):
+    """The one archive root under ``root``; the result is remembered and revalidated
+    (metadata and a segment file still present) instead of walking the game folder again."""
+    sidecar = LOCATE_SIDECAR if sidecar is None else sidecar
+    key = os.path.normcase(os.path.abspath(root))
+    known = _read_sidecar(sidecar).get(key)
+    if isinstance(known, str):
+        plain = known[8:] if known.startswith('\\\\?\\UNC\\') else known[4:] if known.startswith('\\\\?\\') else known
+        plain = os.path.normcase(('\\\\' + plain) if known.startswith('\\\\?\\UNC\\') else plain)
+        inside = plain == key or plain.startswith(key.rstrip(os.sep) + os.sep)
+        if inside and _is_archive_root(known):
+            return Path(known)   # same value the walk returned (extended form on Windows)
+    found = _locate_walk(root)
+    _update_sidecar(sidecar, key, str(found))
+    return found
+
+
+def _locate_walk(root):
     found = []
     for folder, dirs, files in os.walk(extended(root)):
         dirs.sort()
@@ -138,6 +222,21 @@ def decompress(data, maximum=2**31):
     return out, codec
 
 
+def asset_data(archive, key):
+    """Decompressed asset bytes; memoized on a real Archive, read directly on stand-ins."""
+    method = getattr(archive, 'asset_data', None)
+    return method(key) if method is not None else decompress(archive.bytes(key)[0])[0]
+
+
+def asset_references(archive, key):
+    """index.references of one asset; memoized on a real Archive. Do not mutate the result."""
+    method = getattr(archive, 'asset_references', None)
+    if method is not None:
+        return method(key)
+    from rc2016.formats.index import references
+    return references(asset_data(archive, key))
+
+
 class Archive:
     def __init__(self, root, output, log):
         self.root, self.output, self.log = Path(root), Path(output), log
@@ -145,7 +244,7 @@ class Archive:
         # this False to read only the first one (most assets repeat across several archive files).
         self.verify_repeats = True
         self.entries, self.warnings = {}, []
-        self.metadata = {name: file_hash(self.root/name) for name in METADATA}
+        self.metadata = {name: stat_file_hash(self.root/name) for name in METADATA}
         cached = self._cached_layout()
         if cached:
             self.entries, missing = cached
@@ -164,6 +263,7 @@ class Archive:
         self.mapping = load(self.map_path) if self.map_path.exists() else {}
         self._mapping_dirty = not self.map_path.exists()
         self._handles = threading.local()   # per-thread open handles of large archive files
+        self._memo, self._memo_bytes, self._memo_lock = OrderedDict(), 0, threading.Lock()
 
     def _layout_cache_path(self):
         # The parser's own source (this file and common.asset_path) is part of the key,
@@ -254,6 +354,38 @@ class Archive:
         if len(set(hashes)) != 1:
             raise ValueError('Conflicting repeated asset occurrences: '+e['path'])
         return first, hashes[0]
+
+    def _memo_get(self, name, key, build, size):
+        """Thread-safe byte-bounded LRU of derived per-entry values; ``build`` runs unlocked."""
+        with self._memo_lock:
+            hit = self._memo.get((name, key))
+            if hit is not None:
+                self._memo.move_to_end((name, key))
+                return hit[0]
+        value = build()
+        cost = size(value)
+        if cost > ASSET_MEMO_MAX_ITEM:
+            return value
+        with self._memo_lock:
+            hit = self._memo.get((name, key))
+            if hit is not None:   # another thread built it first: keep one shared object
+                return hit[0]
+            self._memo[(name, key)] = (value, cost)
+            self._memo_bytes += cost
+            while self._memo_bytes > ASSET_MEMO_BYTES and self._memo:
+                _k, (_v, dropped) = self._memo.popitem(last=False)
+                self._memo_bytes -= dropped
+        return value
+
+    def asset_data(self, key):
+        """decompress(bytes(key))[0], memoized (callers must not mutate it; bytes are immutable)."""
+        return self._memo_get('data', key, lambda: decompress(self.bytes(key)[0])[0], len)
+
+    def asset_references(self, key):
+        """index.references(asset_data(key)), memoized. Shared result: do not mutate."""
+        from rc2016.formats.index import references
+        return self._memo_get('refs', key, lambda: references(self.asset_data(key)),
+                              lambda refs: 64 + 160 * len(refs))
 
     def _read_range(self, archive, offset, size, label):
         """Bytes [offset, offset+size) of one archive file.

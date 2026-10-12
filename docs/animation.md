@@ -15,7 +15,7 @@ Related documents: [pipeline](pipeline.md) (how the build uses the baker, clip s
 | `rc2016/pipeline/animation_bake.py` | Affine bone baking and numerical verification (`make_bake_rig`, `bake_clip`, `world_samples`, `matrix_error`); no character names. The pipeline's buffered production baker is `rc2016/pipeline/blender_support.py` (`bake`), which uses the same SVD scheme. |
 | `rc2016/pipeline/controls.py` | Embedded 3D View **Animations** panel; no external dependencies. (`legacy_controls.py` is an older panel kept so previously delivered files still validate.) |
 
-`rc2016/formats/animation_samples.py` and `rc2016/formats/animation_transforms.py` need only the Python standard library. Exports refuse existing output directories; choose a new one.
+`rc2016/formats/animation_samples.py` and `rc2016/formats/animation_transforms.py` need only the Python standard library; `sample_transforms` uses a batched numpy path when numpy is importable (identical values) and otherwise, or for data that fails a validity check, the exact per-frame loop that raises the reference errors. `clips.worlds_batch` is the all-frames form of `skeleton.worlds` (used by `extract_set` and the portable export, which also batches the local-TRS decomposition and memoises per-clip tracks). Exports refuse existing output directories; choose a new one.
 
 ```text
 python rc2016/formats/animation_transforms.py <actor.animset> --model <actor.model> [--prefix <clip prefix>] --out <new directory>
