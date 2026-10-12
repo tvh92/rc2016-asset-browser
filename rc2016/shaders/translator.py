@@ -13,7 +13,7 @@ import sys
 
 from rc2016.shaders.ir import DAG
 
-VERSION=2
+VERSION=3
 ROOT=Path(__file__).resolve().parents[2]
 SHADER_SECTION=0x873D1E6C
 # VALU instructions that also write a scalar carry/flag register pair.
@@ -227,6 +227,15 @@ class Compiler:
             elif name=='S_WQM_B64' and dst==126:self.invalidate_exec_snapshot(dst,count)
             else:self.clobber_s(dst,count,name)
             return
+        if k==13 and name in ('TBUFFER_LOAD_FORMAT_X','TBUFFER_LOAD_FORMAT_XY',
+                               'TBUFFER_LOAD_FORMAT_XYZ','TBUFFER_LOAD_FORMAT_XYZW'):
+            # MTBUF loads write only their component span, plus the optional
+            # texture-failure status VGPR (TFE bit 55). Values remain unknown;
+            # preserving neighbouring registers does not bind the buffer.
+            count={'X':1,'XY':2,'XYZ':3,'XYZW':4}[name.rsplit('_',1)[1]]+((q>>55)&1)
+            dst=f['dst'][0]
+            for j in range(count):self.v[dst+j]=self.unknown(name)
+            return
         if k in (11,12,13):
             dst=f.get('dst',[0])[0]
             for j in range(4):self.v[dst+j]=self.unknown(name)
@@ -373,7 +382,12 @@ def lower_deferred(program):
     if no_aa is not None:
         gloss=no_aa;limitations.append('Derivative/geometric specular-AA width is 1; gloss is the native flat-surface value.')
     normal=_native_normal(ir,exports['0'][:3])
-    if normal:limitations.append('Native tangent-normal slice is used with Blender UV tangents; original packed vertex TBN is not reconstructed.')
+    if normal:
+        limitations.append('Native tangent-normal slice is used with Blender UV tangents; original packed vertex TBN is not reconstructed.')
+        samples={ir.nodes[i]['sample'] for i in ir.reachable(exports['0'][:3])
+            if ir.nodes[i]['op']=='texture'}
+        if samples-{normal['sample']}:
+            limitations.append('Normal recovery retains one decoded texture slice; composition involving other samples in the native normal output is not reproduced.')
     else:limitations.append('No portable tangent-normal slice was recovered; geometry normal is used.')
     alpha=exports['1'][3]
     emission=ir.op('sub',ir.op('exp2',ir.op('mul',ir.const(5.),alpha)),ir.const(1.))

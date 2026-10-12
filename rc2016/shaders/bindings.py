@@ -24,31 +24,54 @@ def compiled(data):
 
 
 def pass_contracts(data):
+    """Partition raw layout rows by source counts, including empty passes.
+
+    Offset resets cannot represent an empty layout or one whose first key has
+    a nonzero offset. BC counts bound both row slices; padded CB blocks also
+    partition A59 defaults. Every row and default byte must be assigned.
+    """
     from rc2016.formats.materials import texture_slot_records, GRAPH_TEXTURE_SLOTS
     spans=sections(data)
     base,size=spans.get(0xBC93FB5E,(0,0))
     if not size or size%24:raise ValueError('Missing bounded 24-byte pass contracts')
     resources=texture_slot_records(data,GRAPH_TEXTURE_SLOTS)
-    tables,defaults=graph_parameter_tables(data)
-    contracts=[];cursor=0
-    if len(tables)!=size//24:raise ValueError('Pass/parameter table count mismatch')
-    for index,table in enumerate(tables):
+    tables,_=graph_parameter_tables(data)  # bounds and dword alignment
+    entries=[entry for table in tables for entry in table]
+    default_base,default_size=spans.get(0xA59F667B,(0,0))
+    contracts=[];cursor=parameter_cursor=default_cursor=0
+    for index in range(size//24):
         pos=base+index*24
         count=struct.unpack_from('<H',data,pos+14)[0]
         params=struct.unpack_from('<H',data,pos+18)[0]
         padded=struct.unpack_from('<I',data,pos+20)[0]
+        if parameter_cursor+params>len(entries):
+            raise ValueError('Pass parameter count exceeds layout rows')
+        table=entries[parameter_cursor:parameter_cursor+params]
         extent=max((e['dword']*4+e['size_bytes'] for e in table),default=0)
-        if params!=len(table) or padded!=(extent+15)//16*16 or cursor+count>len(resources):
+        if padded!=(extent+15)//16*16 or cursor+count>len(resources):
             raise ValueError('Pass contract does not partition resources and padded CB layout')
         if any(e['size_bytes'] not in (4,8,12,16) for e in table):
             raise ValueError('Unsupported material parameter width')
         occupied=[]
         for e in table:occupied+=list(range(e['dword'],e['dword']+e['size_bytes']//4))
         if len(occupied)!=len(set(occupied)):raise ValueError('Overlapping material parameter layout')
+        if len({e['key_hash'] for e in table})!=len(table):
+            raise ValueError('Duplicate material parameter key in pass layout')
+        if default_cursor+padded>default_size:
+            raise ValueError('Pass defaults exceed padded default blocks')
+        defaults={}
+        for entry in table:
+            width=entry['size_bytes']//4
+            values=struct.unpack_from('<%df'%width,data,default_base+default_cursor+entry['dword']*4)
+            if not all(math.isfinite(v) for v in values):
+                raise ValueError('Non-finite graph parameter default')
+            defaults[entry['key_hash']]=values[0] if width==1 else list(values)
         contracts.append(dict(index=index,resources=resources[cursor:cursor+count],
             table=table,cb_bytes=padded,defaults=defaults))
-        cursor+=count
+        cursor+=count;parameter_cursor+=params;default_cursor+=padded
     if cursor!=len(resources):raise ValueError('Unassigned graph resource records')
+    if parameter_cursor!=len(entries):raise ValueError('Unassigned graph parameter records')
+    if default_cursor!=default_size:raise ValueError('Unassigned graph default bytes')
     return contracts
 
 
@@ -77,6 +100,38 @@ def _parameter_values(contract,instance):
     return values,receipt
 
 
+def guard_source_zero_powers(ir,roots):
+    """Preserve the finite result of native LOG/MUL/EXP at zero.
+
+    GCN log2(0) is -infinity; a proven positive exponent followed by exp2
+    produces zero. Both portable emitters intentionally use finite log guards,
+    so retain the original positive-input instruction chain and gate its result.
+    Only abs() or a nonnegative literal proves the base's domain here. Unknown,
+    zero and negative exponents and standalone logarithms are left intact.
+    """
+    memo={};guards=[]
+    def visit(i):
+        if i in memo:return memo[i]
+        n=ir.nodes[i];args=[visit(j) for j in n['args']]
+        value=(ir.op(n['op'],*args) if n['op'] in PORTABLE_OPS-{'const','input','texture'}
+            else ir.node(n['op'],args,**{k:v for k,v in n.items() if k not in ('op','args')}))
+        if n['op']=='exp2':
+            term=ir.nodes[args[0]];exponent=1.;log=args[0]
+            if term['op']=='mul':
+                pair=term['args'];j=next((j for j,q in enumerate(pair) if ir.value(q) is not None),None)
+                if j is not None:exponent=ir.value(pair[j]);log=pair[1-j]
+                else:exponent=None
+            entry=ir.nodes[log]
+            if entry['op']=='log2' and exponent is not None and exponent>0:
+                base=entry['args'][0];source=ir.nodes[base];literal=ir.value(base)
+                if source['op']=='abs' or (literal is not None and literal>=0):
+                    zero=ir.const(0.);positive=ir.op('gt',base,zero)
+                    value=ir.op('select',positive,value,zero)
+                    guards.append(dict(source_exp2_node=i,exponent=exponent))
+        memo[i]=value;return value
+    return [visit(i) for i in roots],guards
+
+
 def _bind(program,contract,material_data,instance):
     from rc2016.formats.materials import texture_slot_records, MATERIAL_TEXTURE_SLOTS
     overrides={}
@@ -102,6 +157,9 @@ def _bind(program,contract,material_data,instance):
     substitutions={i:ir.const(values[n['dword']]) for i,n in enumerate(list(ir.nodes))
         if n['op']=='input' and n.get('kind')=='cb' and n['api']==2 and n['dword'] in values}
     replaced=ir.replace(roots,substitutions)
+    replaced,zero_guards=guard_source_zero_powers(ir,replaced)
+    if zero_guards:
+        lowered['limitations'].append('Source LOG/MUL/EXP with a proven nonnegative base and positive bound exponent preserves zero; positive-input arithmetic is unchanged. Other singular math retains portable frontend semantics.')
     outputs=dict(albedo=replaced[:3],F0=replaced[3:6],gloss=replaced[6],emission=replaced[7])
     if normal:normal=dict(normal,xyz=replaced[8:11])
     used=ir.reachable(replaced);errors=[]
@@ -126,7 +184,7 @@ def _bind(program,contract,material_data,instance):
     active={n['api'] for n in compact.nodes if n['op']=='texture'}
     return dict(nodes=compact.nodes,outputs=outputs,normal=normal,
         texture_bindings=[bound[a] for a in sorted(active)],parameters=receipt,
-        pass_contract_index=contract['index'],limitations=lowered['limitations'])
+        pass_contract_index=contract['index'],limitations=lowered['limitations'],source_zero_power_guards=zero_guards)
 
 
 def program_contracts(data,program,contracts):
@@ -154,6 +212,34 @@ def program_contracts(data,program,contracts):
     return matches
 
 
+def surface_signature(bound):
+    """Exact structural identity of the portable, source-bound surface slice.
+
+    API registers, sample labels and DAG indices do not change a pure sample
+    operation. Source image identity, normal interpretation, UV expressions,
+    channels, literals and ordered math operations do. This is not an
+    algebraic simplifier or a proof that omitted runtime terms agree.
+    """
+    bindings={b['api']:b for b in bound['texture_bindings']}
+    normal=bound['normal'];normal_api=normal['api'] if normal else None
+    memo={}
+    def node(i):
+        if i not in memo:
+            n=bound['nodes'][i];op=n['op'];args=[node(j) for j in n['args']]
+            if op=='const':record=[op,n['value']]
+            elif op=='input':record=[op,n['kind'],n['attribute'],n['channel']]
+            elif op=='texture':
+                b=bindings[n['api']]
+                record=[op,b['path'],b['type_hash'],n['api']==normal_api,n['channel'],args]
+            else:record=[op,args]
+            memo[i]=hashlib.sha256(json.dumps(record,separators=(',',':')).encode()).hexdigest()
+        return memo[i]
+    result={key:[node(i) for i in value] if isinstance(value,list) else node(value)
+        for key,value in bound['outputs'].items()}
+    result['normal']=[node(i) for i in normal['xyz']] if normal else None
+    return hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest()
+
+
 def prepare_translation(graph_datas,material_data,instance):
     result=dict(schema='rcps4-bound-shader-translation-v1',status='unsupported',diagnostics=[],game_equivalence=False)
     if len(graph_datas)!=1:
@@ -172,18 +258,25 @@ def prepare_translation(graph_datas,material_data,instance):
             except ValueError as exc:
                 result['diagnostics'].append(dict(shader_id=program['shader_id'],contract=contract['index'],reason=str(exc)));continue
             signature=json.dumps({k:bound[k] for k in ('nodes','outputs','normal','texture_bindings')},sort_keys=True)
-            candidates.append(dict(bound=bound,program=program,signature=signature))
+            candidates.append(dict(bound=bound,program=program,signature=signature,
+                surface_signature=surface_signature(bound)))
     if not candidates:
         result['diagnostics'].append('No portable deferred writer with a bounded source pass contract');return result
-    signatures={c['signature'] for c in candidates}
+    signatures={c['surface_signature'] for c in candidates}
     if len(signatures)!=1:
         result['diagnostics'].append('Multiple portable native variants produce different material programs');return result
     candidate=candidates[0];program=candidate['program']
     result.update(candidate['bound'],status='ready',graph_sha256=graph['graph_sha256'],
         code_sha256=program['code_sha256'],code_offset=program['code_offset'],shader_id=program['shader_id'],
-        equivalent_candidates=len(candidates),translator_version=graph['translator_version'])
+        equivalent_candidates=len(candidates),translator_version=graph['translator_version'],binding_version=3,
+        surface_sha256=candidate['surface_signature'],candidate_sources=[dict(
+            shader_id=c['program']['shader_id'],code_sha256=c['program']['code_sha256'],
+            pass_contract_index=c['bound']['pass_contract_index']) for c in candidates])
+    result['limitations']=list(dict.fromkeys(
+        limitation for c in candidates for limitation in c['bound']['limitations']))
     result['limitations']+=graph['limitations']+[
-        'B6 native-envelope pointer selects its 13-record pass partition; BC counts partition resources/parameters. Material APIs start at 5, bitmap/span and padded CB2 checks bound support. Conflicting candidates are rejected.',
+        'B6 native-envelope pointer selects its 13-record pass partition; BC counts partition resources/parameters and padded default blocks. Material APIs start at 5, bitmap/span and padded CB2 checks bound support.',
+        'Portable candidates must have identical source-bound surface expressions, including UV arithmetic, channels and normal interpretation. API/sample labels are ignored only for this comparison; omitted runtime terms and runtime variant selection are not established.',
         'UV attribute 0.xy is source UV0 in game space (V unflipped for arithmetic, flipped back per sample). Runtime draw selection is not established.',
         'Texture sampling uses Blender linear filtering and repeat addressing; native sampler-state translation is not implemented.',
         'Shared deferred BRDF is the existing Blender approximation; this is not full game shader equivalence.']
