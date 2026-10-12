@@ -13,7 +13,7 @@ import sys
 
 from rc2016.shaders.ir import DAG
 
-VERSION=2
+VERSION=3
 ROOT=Path(__file__).resolve().parents[2]
 SHADER_SECTION=0x873D1E6C
 # VALU instructions that also write a scalar carry/flag register pair.
@@ -226,6 +226,15 @@ class Compiler:
                 self.s[dst]=self.ir.const(simm);self.scalar_bits[dst]=simm&0xffffffff;self.descriptors.pop(dst,None)
             elif name=='S_WQM_B64' and dst==126:self.invalidate_exec_snapshot(dst,count)
             else:self.clobber_s(dst,count,name)
+            return
+        if k==13 and name in ('TBUFFER_LOAD_FORMAT_X','TBUFFER_LOAD_FORMAT_XY',
+                               'TBUFFER_LOAD_FORMAT_XYZ','TBUFFER_LOAD_FORMAT_XYZW'):
+            # MTBUF loads write only their component span, plus the optional
+            # texture-failure status VGPR (TFE bit 55). Values remain unknown;
+            # preserving neighbouring registers does not bind the buffer.
+            count={'X':1,'XY':2,'XYZ':3,'XYZW':4}[name.rsplit('_',1)[1]]+((q>>55)&1)
+            dst=f['dst'][0]
+            for j in range(count):self.v[dst+j]=self.unknown(name)
             return
         if k in (11,12,13):
             dst=f.get('dst',[0])[0]
