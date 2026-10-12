@@ -153,7 +153,7 @@ Validation (agreement with the Blender review render, not game accuracy): a unit
 | Matte, albedo 0.47 (sRGB 0.72-0.78 grey) | 0.5/255 | 1/255 |
 | Glossy (diffuse 0.2 + GGX F0 0.039, gloss 0.6, added as the game BRDF) | 1.4/255 | 5/255 |
 
-Limitations of the lighting: no shadowing, ambient occlusion or interreflection. Cycles has them, so concave or occluded parts of real models differ. Forward and glass materials use the same lighting, with the tonemap applied per fragment before blending. The shared HDRI mode predicts the Blender review render; it is not game lighting.
+The standalone model viewer has no shadowing, ambient occlusion or interreflection. The level viewer adds independently switchable [scene AO, key shadows and supported authored points](levels.md); these are bounded previews with unverified native runtime allocation. Cycles has them, so concave or occluded parts of real models differ. Forward and glass materials use the same lighting, with the tonemap applied per fragment before blending. The shared HDRI mode predicts the Blender review render; it is not game lighting.
 
 ### `_g` meaning per material graph
 
@@ -431,7 +431,7 @@ Data-dependent tests read the `RC2016_RESEARCH` environment variable and skip wi
 
 ## Limitations
 
-- The 3D view shows the bind pose or a played clip, not attachments or runtime blending. Lighting is the viewer rig or the shared review HDRI, with no shadows, ambient occlusion or interreflection; neither is the game's lighting. Materials follow the rules above.
+- The 3D view shows the bind pose or a played clip, not attachments or runtime blending. Lighting is the viewer rig or the shared review HDRI, with no shadows, ambient occlusion or interreflection in the standalone model viewer; the level viewer adds the scene previews described above. Neither selector reproduces the game's lighting. Materials follow the rules above.
 - The rule coverage and Shading filter describe the viewer's rules, not game accuracy.
 - Several graph rules rest on bounded decodes; runtime draw-time inputs (time, instance interpolants, constant-buffer binding) are frozen or unproven.
 - Forward materials other than the character glass, saucer dome, screen, puddle and bulb graphs, and the water preview, draw opaque.
