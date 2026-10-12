@@ -8,7 +8,7 @@ from pathlib import Path
 from rc2016.formats.archive import lz4_block
 from rc2016.common import asset_path, sha, write
 from rc2016.formats.texture import (BLOCK_BYTES, UNCOMPRESSED_BPP, parse_header,
-    ps4_deswizzle_top, read, top_mip_size)
+    ps4_deswizzle_top, read, tiled_top_mip_size, top_mip_size)
 
 # Everything that decides decoded DDS bytes and transport outcomes: a change to any of
 # these sources starts a new cache namespace instead of serving stale results.
@@ -198,10 +198,12 @@ def top_mip_outcome(built_data, stream_bytes, dds_bytes):
     if len(expanded)!=info['stream_size']:
         return done(status='failed',source_exact_top_mip=False,reason='HD stream LZ4 output size disagrees with built header')
     size=top_mip_size(width,height,fmt)
-    if len(expanded)<size:
+    # The stream holds the tile-padded top mip; the DDS holds the unpadded one.
+    tiled=tiled_top_mip_size(width,height,fmt)
+    if len(expanded)<tiled:
         return done(status='failed',source_exact_top_mip=False,reason='expanded HD stream is smaller than its top mip')
     try:
-        expected=ps4_deswizzle_top(expanded[:size],width,height,fmt)
+        expected=ps4_deswizzle_top(expanded[:tiled],width,height,fmt)
     except Exception as exc:
         return done(status='failed',source_exact_top_mip=False,reason='HD top mip deswizzle failed: '+str(exc))
     if len(dds_bytes)<148 or dds_bytes[:4]!=b'DDS ' or dds_bytes[84:88]!=b'DX10':
