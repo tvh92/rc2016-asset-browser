@@ -46,6 +46,33 @@ class PaddedRegionTests(unittest.TestCase):
         vertical = camera_distance_for_fill(points, (0, 0, 0), np.eye(3), projection, 1, 0.25)
         self.assertAlmostEqual(vertical, 4.0, places=6)
 
+    def test_meshless_diagnostic_rig_keeps_camera_and_resets_crop_to_full_frame(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import numpy as np
+        from rc2016.pipeline.scene_defaults import fit_render_region
+
+        camera = SimpleNamespace(type="CAMERA", location=(1, 2, 3),
+                                 matrix_world=SimpleNamespace(inverted=lambda: np.eye(4)),
+                                 calc_matrix_camera=lambda *args, **kwargs: np.eye(4))
+        render = SimpleNamespace(resolution_x=3840, resolution_y=2560,
+                                 use_border=False, use_crop_to_border=False,
+                                 border_min_x=0.2, border_min_y=0.3,
+                                 border_max_x=0.8, border_max_y=0.9)
+        scene = SimpleNamespace(camera=camera, render=render,
+                                objects=[SimpleNamespace(type="ARMATURE", hide_render=False)])
+        bpy = SimpleNamespace(context=SimpleNamespace(
+            view_layer=SimpleNamespace(update=lambda: None), evaluated_depsgraph_get=lambda: None))
+        with patch.dict("sys.modules", {"bpy": bpy}):
+            receipt = fit_render_region(scene)
+        self.assertEqual(camera.location, (1, 2, 3))
+        self.assertEqual(receipt["status"], "full_frame_no_visible_mesh")
+        self.assertEqual(receipt["region"], [0.0, 0.0, 1.0, 1.0])
+        self.assertTrue(render.use_border)
+        self.assertTrue(render.use_crop_to_border)
+        self.assertEqual((render.border_min_x, render.border_min_y,
+                          render.border_max_x, render.border_max_y), (0.0, 0.0, 1.0, 1.0))
+
     def test_default_padding_is_ten_long_and_seven_short_percent(self):
         self.assertEqual((REGION_PADDING_LONG, REGION_PADDING_SHORT), (0.10, 0.07))
 

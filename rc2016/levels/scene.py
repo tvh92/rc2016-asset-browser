@@ -15,7 +15,7 @@ import tempfile
 from rc2016.formats.archive import Archive, decompress, locate
 
 from rc2016.levels.level_format import decode_level
-from rc2016.levels.zone_format import decode_zone, name_crc32
+from rc2016.levels.zone_format import decode_zone_arrays, name_crc32
 
 # The Blender assembler keeps these but hides them (docs/levels.md).
 HIDDEN_MARKERS = ('collision', 'environment/template/')
@@ -26,6 +26,8 @@ def open_archive(source_root):
     root = locate(Path(source_root).expanduser().resolve())
     archive = Archive(root, Path(tempfile.gettempdir()) / 'rcps4-level-view', lambda *_a, **_k: None)
     archive.verify_repeats = False   # preview only: skip re-reading every repeated copy of an asset
+    from rc2016.viewer.textures import TextureDiskCache
+    archive.texture_disk_cache = TextureDiskCache(Path(__file__).resolve().parents[2] / '.cache' / 'texture_preview')
     return archive
 
 
@@ -69,9 +71,11 @@ def zone_scene(archive, zone_path):
 
     ``groups`` is {(mirrored, overrides): array('f') of 16-float rows}, where ``overrides`` is the
     instance's raw material-override entries as ((slot hash, material path or None, material hash), ...);
-    effective_groups() resolves them against the model's material slots."""
+    effective_groups() resolves them against the model's material slots. Rows keep instance order and
+    each model's groups keep first-appearance order."""
+    import numpy as np
     try:
-        zone = decode_zone(asset_bytes(archive, zone_path))
+        zone = decode_zone_arrays(asset_bytes(archive, zone_path))
     except ValueError as exc:
         if 'lacks instance sections' not in str(exc):
             raise
@@ -79,17 +83,42 @@ def zone_scene(archive, zone_path):
         return dict(zone=zone_path, models=[], instances=0, points=[])
     models = [dict(path=p.replace('\\', '/'), hidden=hidden_by_default(p), count=0, groups={})
               for p in zone['models']]
-    points = []
-    for instance in zone['instances']:
-        rows = instance['matrix_rows']
-        model = models[instance['model_index']]
-        overrides = tuple((o['slot_hash'], o['material'], o['material_hash']) for o in instance['material_overrides'])
-        model['groups'].setdefault((mirrored(rows), overrides), array('f')).extend(x for row in rows for x in row)
-        model['count'] += 1
-        if not model['hidden']:
-            points.append(tuple(rows[3][:3]))
-    return dict(zone=zone_path, models=[m for m in models if m['count']], instances=len(zone['instances']),
+    matrices, model_index = zone['matrices'], zone['model_index'].astype(np.int64)
+    if not len(model_index):
+        return dict(zone=zone_path, models=[], instances=zone['instances'], points=[])
+    flips = mirrored_array(matrices)
+    # One code per (model, mirrored, overrides) key; override-bearing instances get codes past 2 * models.
+    codes = model_index * 2 + flips
+    keys, extra = {}, {}
+    for i, entries in zone['overrides'].items():
+        overrides = tuple((o['slot_hash'], o['material'], o['material_hash']) for o in entries)
+        codes[i] = extra.setdefault((int(model_index[i]), bool(flips[i]), overrides), 2 * len(models) + len(extra))
+    for (index, flip, overrides), code in extra.items():
+        keys[code] = (index, flip, overrides)
+    unique, first, inverse = np.unique(codes, return_index=True, return_inverse=True)
+    order = np.argsort(inverse, kind='stable')
+    ends = np.cumsum(np.bincount(inverse, minlength=len(unique)))
+    for u in np.argsort(first, kind='stable').tolist():
+        code = int(unique[u])
+        index, flip, overrides = keys.get(code) or (code // 2, bool(code % 2), ())
+        rows = array('f')
+        rows.frombytes(np.ascontiguousarray(matrices[order[(ends[u - 1] if u else 0):ends[u]]]).tobytes())
+        models[index]['groups'][(flip, overrides)] = rows
+    for index, count in enumerate(np.bincount(model_index, minlength=len(models)).tolist()):
+        models[index]['count'] = count
+    shown = ~np.array([m['hidden'] for m in models], bool)[model_index]
+    points = [tuple(p) for p in matrices[shown, 12:15].tolist()]
+    return dict(zone=zone_path, models=[m for m in models if m['count']], instances=zone['instances'],
                 points=points)
+
+
+def mirrored_array(matrices):
+    """mirrored() of each (n, 16) row-vector matrix, evaluated in float64 in the same order."""
+    import numpy as np
+    m = np.asarray(matrices, np.float64).reshape(-1, 16)
+    a0, a1, a2, b0, b1, b2, c0, c1, c2 = (m[:, i] for i in (0, 1, 2, 4, 5, 6, 8, 9, 10))
+    det = a0 * (b1 * c2 - b2 * c1) - a1 * (b0 * c2 - b2 * c0) + a2 * (b0 * c1 - b1 * c0)
+    return det < 0
 
 
 # Outcomes of one override entry; only APPLIED (and SAME, which changes nothing) affect drawing.
@@ -156,27 +185,134 @@ def core_bounds(points, trim=0.02):
     """(low, high) per axis between the ``trim`` and 1 - ``trim`` quantiles, or None without points.
 
     Levels ring their play space with distant backdrops (Novalis: mountains ~10x farther out than
-    the city), so full bounds frame mostly empty sky."""
-    if not points:
+    the city), so full bounds frame mostly empty sky. The quantiles are order statistics of the
+    sorted values (np.partition), not interpolated."""
+    import numpy as np
+    if points is None or not len(points):
         return None
-    low, high = [], []
-    for axis in range(3):
-        values = sorted(p[axis] for p in points)
-        cut = int(len(values) * trim)
-        low.append(values[cut]); high.append(values[len(values) - 1 - cut])
-    return tuple(low), tuple(high)
+    values = np.asarray([tuple(p[:3]) for p in points] if not isinstance(points, np.ndarray) else points[:, :3],
+                        dtype=np.float64)
+    count = len(values)
+    cut = int(count * trim)
+    part = np.partition(values, sorted({cut, count - 1 - cut}), axis=0)
+    return tuple(float(x) for x in part[cut]), tuple(float(x) for x in part[count - 1 - cut])
 
 
-def model_geometry(archive, model_path, lod='Highest', look=0):
+# Decoded level geometry (.npz), keyed by the model's archive bytes and the decoder sources.
+GEOMETRY_CACHE_DIR = Path(__file__).resolve().parents[2] / '.cache' / 'level_geometry'
+GEOMETRY_CACHE_VERSION = 1
+GEOMETRY_ARRAYS = (('positions', 'f', '<f4'), ('normals', 'f', '<f4'), ('uvs', 'f', '<f4'), ('indices', 'I', '<u4'))
+_fingerprint = []
+
+
+def decoder_fingerprint():
+    """SHA-256 of the sources that turn model bytes into level geometry (rc2016/formats, common.py and
+    this module), or None when they cannot be read (frozen build): then nothing is cached."""
+    if not _fingerprint:
+        import hashlib
+        package = Path(__file__).resolve().parents[1]
+        digest = hashlib.sha256()
+        try:
+            for source in sorted([*(package / 'formats').glob('*.py'), package / 'common.py', Path(__file__).resolve()]):
+                digest.update(source.name.encode() + b'\0' + source.read_bytes())
+            _fingerprint.append(digest.hexdigest())
+        except OSError:
+            _fingerprint.append(None)
+    return _fingerprint[0]
+
+
+def geometry_cache_key(model_path, lod, look, source_sha256, fingerprint):
+    import hashlib
+    identity = repr((GEOMETRY_CACHE_VERSION, fingerprint, model_path.replace('\\', '/').lower(), lod, look, source_sha256))
+    return hashlib.sha256(identity.encode()).hexdigest()[:40]
+
+
+def _restore_meta(meta):
+    meta['batches'] = [tuple(b) for b in meta['batches']]
+    meta['bounds'] = tuple(meta['bounds'])
+    return meta
+
+
+def save_cached_geometry(path, geometry):
+    """Write ``geometry`` (model_geometry's dict) as an uncompressed .npz; atomic. Nothing is written
+    when the fields would not read back equal; write errors only lose the speed-up."""
+    import io
+    import json
+    import os
+    import threading
+    import numpy as np
+    names = {name for name, _code, _dtype in GEOMETRY_ARRAYS}
+    meta = {k: v for k, v in geometry.items() if k not in names}
+    try:
+        text = json.dumps(meta)
+        if _restore_meta(json.loads(text)) != meta:
+            return
+    except (TypeError, ValueError, KeyError):
+        return
+    buffer = io.BytesIO()
+    np.savez(buffer, meta=np.frombuffer(text.encode(), np.uint8),
+             **{name: np.frombuffer(geometry[name], dtype) for name, _code, dtype in GEOMETRY_ARRAYS})
+    path = Path(path)
+    temp = path.with_name(f'{path.name}.{os.getpid()}.{threading.get_ident():x}.tmp')
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp.write_bytes(buffer.getvalue())
+        os.replace(temp, path)
+    except OSError:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+
+
+def load_cached_geometry(path):
+    """model_geometry's dict from save_cached_geometry, or None if absent or unreadable."""
+    import json
+    import numpy as np
+    try:
+        with np.load(path, allow_pickle=False) as stored:
+            geometry = _restore_meta(json.loads(stored['meta'].tobytes().decode()))
+            for name, code, dtype in GEOMETRY_ARRAYS:
+                values = array(code)
+                values.frombytes(np.ascontiguousarray(stored[name], dtype).tobytes())
+                geometry[name] = values
+    except Exception:
+        return None
+    return geometry
+
+
+def model_geometry(archive, model_path, lod='Highest', look=0, cache=True):
     """Packed native-space geometry of one model's selected look/LOD.
 
     {'positions', 'normals', 'uvs' (array 'f'), 'indices' (array 'I'),
      'batches': [(material slot, first triangle, triangle count, has UV0)],
      'materials': [{'index', 'name', 'path'}], 'radius', 'triangles', 'source_sha256'}
+
+    With ``cache`` the result is kept under GEOMETRY_CACHE_DIR, keyed by the asset's archive bytes
+    (SHA-256), the selection and decoder_fingerprint(); an unreadable file is decoded again.
     """
+    ids = archive.resolve(model_path.replace('\\', '/'))
+    if len(ids) != 1:
+        raise ValueError(f'{model_path}: expected one archive entry, found {len(ids)}')
+    raw, raw_sha256 = archive.bytes(ids[0])
+    fingerprint = decoder_fingerprint() if cache else None
+    target = None
+    if fingerprint:
+        target = GEOMETRY_CACHE_DIR / f'{geometry_cache_key(model_path, lod, look, raw_sha256, fingerprint)}.npz'
+        cached = load_cached_geometry(target) if target.is_file() else None
+        if cached is not None:
+            return cached
+    geometry = decode_geometry(model_path, decompress(raw)[0], lod, look)
+    if target is not None:
+        save_cached_geometry(target, geometry)
+    return geometry
+
+
+def decode_geometry(model_path, data, lod='Highest', look=0):
+    """model_geometry from decompressed model bytes, without the cache."""
     import numpy as np
     from rc2016.formats.native_model import decode_model
-    decoded = decode_model(model_path, lod=lod, look=look, data=asset_bytes(archive, model_path), as_arrays=True)
+    decoded = decode_model(model_path, lod=lod, look=look, data=data, as_arrays=True)
     positions, normals, uvs, indices, batches = [], [], [], [], []
     skinned = any(any(bool(pairs) for pairs in m.get('weights', [])) for m in decoded['meshes'])
     vertex_total = triangle_total = 0

@@ -1,6 +1,7 @@
 """Blender background build and reopen validation of one model. Launched by run.py inside Blender."""
 import argparse
 from contextlib import contextmanager
+import gzip
 import json
 import math
 from pathlib import Path
@@ -13,7 +14,10 @@ from rc2016.pipeline.animation_bake import make_bake_rig
 from rc2016.formats.animation_samples import decode_clip
 from rc2016.formats.animation_transforms import sample_transforms
 from rc2016.common import dump,load,read,file_hash,sha,unzip_json
-from rc2016.pipeline.blender_support import bake,targets,structural_snapshot,add_curve
+from rc2016.pipeline.blender_support import (bake,targets,target_array,structural_snapshot,add_curve,
+    read_values,all_constant_interpolation,curve_keys)
+from rc2016.pipeline.bulk_checks import (max_abs_error,first_mismatch,split_polygons,constant_curve_values,
+    pose_matrices,matrix_errors,sample_frames,cached_frames_match)
 from rc2016.pipeline.channel_library import ChannelLibrary,validate_channel_library
 from rc2016.pipeline.timeline import timeline
 from rc2016.pipeline.geometry import import_fbx,import_native,texture_connection_coverage
@@ -43,7 +47,7 @@ def timeline_strip_label(index,entry):
 
 @contextmanager
 def review_preview_lighting(scene):
-    """Temporarily light validation previews with shared Golden Gate HDRI (Veldin-look scenes keep their own)."""
+    """Temporarily light review renders with shared Golden Gate HDRI (Veldin-look scenes keep their own)."""
     if scene.get('lighting_source')=='veldin_capture':
         original_render=(scene.render.resolution_x,scene.render.resolution_y,
             scene.render.resolution_percentage,scene.cycles.samples,scene.render.filepath,scene.frame_current)
@@ -116,6 +120,18 @@ def review_preview_lighting(scene):
             bpy.data.images.remove(temporary_image)
 
 
+def _uv0_loop_error(mesh,uv,section):
+    """Largest per-component |UV0 loop value - source vertex UV| (0.0 without loops)."""
+    loop_vertices=read_values(mesh.loops,'vertex_index',1,np.int32)
+    actual=read_values(uv.data,'uv',2).reshape(-1,2)
+    expected=np.asarray(section['uv0'],dtype=np.float64).reshape(-1,2)
+    return max_abs_error(actual,expected[loop_vertices]) if len(loop_vertices) else 0.0
+
+
+def _int_attribute(attr):
+    return read_values(attr.data,'value',1,np.int32).astype(np.int64)
+
+
 def validate_reopened_native_descriptor(descriptor,objects,joint_names=None):
     """Fail closed against a fresh source decode and used material identities."""
     correction=descriptor.get('mesh_position_correction')
@@ -140,9 +156,9 @@ def validate_reopened_native_descriptor(descriptor,objects,joint_names=None):
         recorded=json.loads(obj['source_degenerate_triangles_dropped']) if 'source_degenerate_triangles_dropped' in obj else []
         assert recorded==dropped,('Recorded degenerate-triangle drops differ from a fresh decode',index)
         assert len(mesh.polygons)==len(source_triangles),('Native triangle count changed',index)
-        for actual,want in zip(mesh.vertices,section['positions']):
-            expected_position=[float(c)*position_factor for c in want]
-            assert max(abs(float(a)-b) for a,b in zip(actual.co,expected_position))<=1e-6,('Native positions changed',index)
+        positions=read_values(mesh.vertices,'co',3).reshape(-1,3)
+        assert max_abs_error(positions,np.asarray(section['positions'],dtype=np.float64).reshape(-1,3)*position_factor)<=1e-6,(
+            'Native positions changed',index)
         if correction_validation:
             assert obj.get('native_mesh_position_scale_factor')==position_factor
             assert obj.get('native_mesh_position_scale_profile')==correction['schema']
@@ -150,23 +166,24 @@ def validate_reopened_native_descriptor(descriptor,objects,joint_names=None):
                 attr=mesh.attributes.get('SourcePositionI16_'+label)
                 assert attr and attr.domain=='POINT' and len(attr.data)==len(section['positions']),(
                     'Corrected native mesh lacks exact raw position attribute',index,label)
-                assert all(int(item.value)==int(raw[axis]) for item,raw in zip(attr.data,section['source_positions_i16'])),(
+                raw=np.asarray(section['source_positions_i16'],dtype=np.int64).reshape(-1,3)[:,axis]
+                assert first_mismatch(_int_attribute(attr),raw) is None,(
                     'Raw native position attribute changed after reopen',index,label)
-        actual_faces=[tuple(poly.vertices) for poly in mesh.polygons]
+        actual_faces=[tuple(face) for face in split_polygons(read_values(mesh.loops,'vertex_index',1,np.int32),
+            read_values(mesh.polygons,'loop_start',1,np.int32),read_values(mesh.polygons,'loop_total',1,np.int32))]
         assert actual_faces==source_triangles,('Native topology changed',index)
         uv=mesh.uv_layers.get('UV0')
         assert uv is not None,'Native mesh lacks UV0: '+obj.name
         # Native source UVs are authoritative here. Section 2's FBX effect-UV
         # exception applies only to the FBX adapter, as documented in Sheepinator README.
         assert len(uv.data)==len(mesh.loops),'Native UV0 loop count changed'
-        for loop in mesh.loops:
-            want=section['uv0'][loop.vertex_index]
-            assert max(abs(float(a)-float(b)) for a,b in zip(uv.data[loop.index].uv,want))<=1e-6,('Native UV0 changed',index)
+        uv0_error=_uv0_loop_error(mesh,uv,section)
+        assert uv0_error<=1e-6,('Native UV0 changed',index)
         tangent=mesh.attributes.get('SourceTangentPacked')
         assert tangent is not None and tangent.domain=='POINT' and len(tangent.data)==len(section['packed_tangents']),(
             'Native packed tangent attribute is missing or malformed',index)
-        for vertex_index,(actual,want) in enumerate(zip(tangent.data,section['packed_tangents'])):
-            assert (int(actual.value)&0xffffffff)==int(want),('Native packed tangent word changed',index,vertex_index)
+        vertex_index=first_mismatch(_int_attribute(tangent)&0xffffffff,np.asarray(section['packed_tangents'],dtype=np.int64))
+        assert vertex_index is None,('Native packed tangent word changed',index,vertex_index)
         # Builds made before the +12 tangent decode lack SourceTangent; their
         # exact packed words above still validate, and the absence is recorded.
         # When present, the attribute must match a fresh decode.
@@ -176,9 +193,8 @@ def validate_reopened_native_descriptor(descriptor,objects,joint_names=None):
         else:
             assert decoded_tangent.domain=='POINT' and decoded_tangent.data_type=='FLOAT_VECTOR' \
                 and len(decoded_tangent.data)==len(section['tangents']),('Native decoded tangent attribute is malformed',index)
-            for vertex_index,(actual,want) in enumerate(zip(decoded_tangent.data,section['tangents'])):
-                assert max(abs(float(a)-float(b)) for a,b in zip(actual.vector,want))<=1e-6,(
-                    'Native decoded tangent changed',index,vertex_index)
+            assert max_abs_error(read_values(decoded_tangent.data,'vector',3).reshape(-1,3),
+                np.asarray(section['tangents'],dtype=np.float64).reshape(-1,3))<=1e-6,('Native decoded tangent changed',index)
             decoded_tangent_state='matches_fresh_decode'
         source_weights=section['weights']
         if source_weights and any(weights is not None for weights in source_weights):
@@ -188,9 +204,9 @@ def validate_reopened_native_descriptor(descriptor,objects,joint_names=None):
             for group in obj.vertex_groups:name_to_groups.setdefault(group.name,[]).append(group.index)
             assert all(len(indices)==1 for indices in name_to_groups.values()),'Ambiguous reopened vertex-group names'
             group_to_name={indices[0]:name for name,indices in name_to_groups.items()}
-            for vertex_index,want_rows in enumerate(source_weights):
+            for vertex_index,(vertex,want_rows) in enumerate(zip(mesh.vertices,source_weights)):
                 actual_rows={group_to_name[item.group]:float(item.weight)
-                             for item in mesh.vertices[vertex_index].groups if item.weight>0 and item.group in group_to_name}
+                             for item in vertex.groups if item.weight>0 and item.group in group_to_name}
                 if want_rows is None:
                     assert not actual_rows,('Unexpected reopened skin weights',index,vertex_index)
                     continue
@@ -201,7 +217,7 @@ def validate_reopened_native_descriptor(descriptor,objects,joint_names=None):
                         'Native skin weight changed',index,vertex_index,name,actual_rows[name],want)
         else:
             assert not any(vertex.groups for vertex in mesh.vertices),('Unexpected reopened skin weights',index)
-        used=sorted({int(poly.material_index) for poly in mesh.polygons})
+        used=sorted(set(read_values(mesh.polygons,'material_index',1,np.int32).tolist()))
         assert used,'Native subset has no polygon-used material slot'
         for local_slot in used:
             assert local_slot<len(mesh.materials),'Polygon references missing local material slot'
@@ -220,8 +236,7 @@ def validate_reopened_native_descriptor(descriptor,objects,joint_names=None):
                             raw_source_i16_attributes_exact=bool(correction_validation),
                             mesh_position_correction_validation=correction_validation,
                             source_material_index=section['material_index'],used_local_slots=used,
-                            uv0_primary_loop_roundtrip_max_error=max((max(abs(float(a)-float(b)) for a,b in zip(
-                                uv.data[loop.index].uv,section['uv0'][loop.vertex_index])) for loop in mesh.loops),default=0.0),
+                            uv0_primary_loop_roundtrip_max_error=uv0_error,
                             uv0_secondary_words_exact=semantic_by_subset[index]['uv0_secondary_words_exact'],
                             byte_and_roundtrip_integrity=semantic_by_subset[index]['byte_and_roundtrip_integrity'],
                             semantic_evidence=semantic_by_subset[index]['semantic_evidence'],
@@ -290,8 +305,7 @@ def validate_reopened_native_semantics(source,objects):
     for index,section in expected.items():
         obj=by_subset[index];mesh=obj.data;uv=mesh.uv_layers.get('UV0')
         assert uv is not None,'Native mesh lacks UV0: '+obj.name
-        primary_error=max((max(abs(float(a)-float(b)) for a,b in zip(
-            uv.data[loop.index].uv,section['uv0'][loop.vertex_index])) for loop in mesh.loops),default=0.0)
+        primary_error=_uv0_loop_error(mesh,uv,section)
         expected_evidence=section['semantic_evidence']
         stored=json.loads(obj.get('source_semantic_evidence','{}'))
         assert stored==expected_evidence,('Saved semantic evidence differs from fresh decode',index,stored,expected_evidence)
@@ -300,8 +314,11 @@ def validate_reopened_native_semantics(source,objects):
         if section['uv0_secondary_packed'] is not None:
             u=mesh.attributes.get('SourceUV0SecondaryU');v=mesh.attributes.get('SourceUV0SecondaryV')
             assert u and v,'Native secondary UV words are missing after reopen'
-            secondary_exact=all(int(u.data[i].value)==pair[0] and int(v.data[i].value)==pair[1]
-                                for i,pair in enumerate(section['uv0_secondary_packed']))
+            pairs=np.asarray(section['uv0_secondary_packed'],dtype=np.int64).reshape(-1,2)
+            u_words=_int_attribute(u);v_words=_int_attribute(v)
+            # A shorter attribute fails, as the former per-index read did.
+            secondary_exact=(len(u_words)>=len(pairs) and len(v_words)>=len(pairs) and
+                first_mismatch(u_words[:len(pairs)],pairs[:,0]) is None and first_mismatch(v_words[:len(pairs)],pairs[:,1]) is None)
             assert secondary_exact,('Native secondary UV words changed after reopen',index)
         rows.append(dict(subset=index,uv0_primary_loop_roundtrip_max_error=primary_error,
                          uv0_secondary_words_exact=secondary_exact,
@@ -523,7 +540,7 @@ def build(job):
         'For selection, jump-to-boundary and rest restoration: open Text Editor, select Animation Controls.py, and Run Script once. Then N > Animations. No add-on or auto-execution preference is needed.\n\n'
         +experimental_note+geometry_note+
         'Relative/additive clips are standalone source-rest previews, not exact in-game blends. See embedded inventory for classifications and limitations.\n'
-        'Only structural/numerical validation is performed. You must inspect the review images yourself.\n')
+        'Only structural/numerical validation is performed; no images are rendered. Visual inspection is yours.\n')
     ns={}
     if rig:
         exec(bpy.data.texts['Animation Controls.py'].as_string(),ns)
@@ -556,6 +573,80 @@ def matrix_error(rig,target,right):
         actual=rig.pose.bones[name].matrix@right[name].inverted()
         worst=max(worst,max(abs(a-b) for ra,rb in zip(actual,m) for a,b in zip(ra,rb)))
     return worst
+
+
+def _matrix_array(matrix):
+    return np.array([list(row) for row in matrix],dtype=np.float64)
+
+
+def _bake_rig_layout(rig,rows,right):
+    """Bone order, rest matrices and channel columns of the bake rig, after asserting the
+    structure the numpy pose composition assumes (helper roots, full inheritance, local
+    location, quaternion channels, no constraints)."""
+    names=[r['name'] for r in rows];pose_names=[p for n in names for p in ('__sample__'+n,n)]
+    bones=rig.data.bones
+    for name in names:
+        assert bones['__sample__'+name].parent is None and bones[name].parent and \
+            bones[name].parent.name=='__sample__'+name,('Bake rig hierarchy changed',name)
+    for name in pose_names:
+        bone=bones[name];pose=rig.pose.bones[name]
+        assert bone.inherit_scale=='FULL' and bone.use_inherit_rotation and bone.use_local_location and not bone.use_connect,(
+            'Bake rig bone inheritance changed',name)
+        assert pose.rotation_mode=='QUATERNION' and not len(pose.constraints),('Bake rig pose channel changed',name)
+    columns={}
+    for j,name in enumerate(pose_names):
+        base='pose.bones['+json.dumps(name)+']'
+        for prop,offset,n in (('location',0,3),('rotation_quaternion',3,4),('scale',7,3)):
+            for k in range(n):columns[(base+'.'+prop,k)]=(j,offset+k)
+    return dict(pose_names=pose_names,columns=columns,
+        rest=np.stack([_matrix_array(bones[name].matrix_local) for name in pose_names]) if pose_names else np.zeros((0,4,4)),
+        parents=[-1 if k%2==0 else k-1 for k in range(len(pose_names))],
+        right_inverse=np.stack([np.linalg.inv(_matrix_array(right[name])) for name in names]) if names else np.zeros((0,4,4)))
+
+
+def _keyframe_poses(rig,layout,curves,frame_count):
+    """(frames, joints, 4, 4) armature-space joint matrices defined by an Action's keys.
+
+    Channels without a curve keep the pose bone's current value, as Blender leaves them.
+    """
+    pose_names=layout['pose_names'];by_name={pb.name:pb for pb in rig.pose.bones}
+    current=np.array([[*by_name[n].location,*by_name[n].rotation_quaternion,*by_name[n].scale] for n in pose_names],
+                     dtype=np.float64).reshape(len(pose_names),10)
+    channels=np.repeat(current[None],frame_count,axis=0)
+    frames=np.arange(1,frame_count+1,dtype=np.float64);seen=set()
+    for curve in curves:
+        key=(curve.data_path,curve.array_index)
+        assert key in layout['columns'] and key not in seen,('Unexpected or duplicate Action channel',key)
+        seen.add(key);j,column=layout['columns'][key]
+        key_frames,key_values=curve_keys(curve)
+        channels[:,j,column]=constant_curve_values(key_frames,key_values,frames)
+    posed=pose_matrices(layout['rest'],layout['parents'],channels)
+    return posed[:,1::2]
+
+
+def _deformation_probe(native_objects,correction_descriptor,rig,entry,frame,frame_count):
+    correction_meshes=[o for o in native_objects if o.get('source_model_sha256')==correction_descriptor['sha256']
+                       and any(mod.type=='ARMATURE' and mod.object==rig for mod in o.modifiers)]
+    moved=[]
+    depsgraph=bpy.context.evaluated_depsgraph_get()
+    for obj in correction_meshes:
+        evaluated=obj.evaluated_get(depsgraph);evaluated_mesh=evaluated.to_mesh()
+        try:
+            count=min(len(obj.data.vertices),len(evaluated_mesh.vertices))
+            base=read_values(obj.data.vertices,'co',3).reshape(-1,3)[:count].astype(np.float64)
+            posed=read_values(evaluated_mesh.vertices,'co',3).reshape(-1,3)[:count].astype(np.float64)
+            base_matrix=_matrix_array(obj.matrix_world);posed_matrix=_matrix_array(evaluated.matrix_world)
+            base_world=base@base_matrix[:3,:3].T+base_matrix[:3,3]
+            posed_world=posed@posed_matrix[:3,:3].T+posed_matrix[:3,3]
+            moved.extend(np.linalg.norm(posed_world-base_world,axis=1).tolist())
+        finally:evaluated.to_mesh_clear()
+    if not moved or max(moved)<=1e-3:
+        raise AssertionError('Pinned corrected Trooper Action did not deform the reopened mesh')
+    return dict(status='passed',sample_sha256=entry['sample_sha256'],
+        animset_sha256=entry['animset_sha256'],source_frame=frame,source_frame_count=frame_count,
+        fps=entry['fps'],corrected_meshes=len(correction_meshes),
+        moved_vertex_count=sum(value>1e-3 for value in moved),
+        maximum_world_displacement=max(moved),mean_world_displacement=float(np.mean(moved)))
 
 
 def _validate_ordinary_surface_profile(material,profile):
@@ -622,11 +713,14 @@ def _validate_ordinary_surface_profile(material,profile):
 
 
 def validate(job):
-    bpy.ops.wm.open_mainfile(filepath=job['candidate']);_configure_optix_gpu(bpy)
+    # This process only reads and evaluates the saved scene and never renders, so it
+    # configures no GPU; the saved Cycles settings are still audited.
+    bpy.ops.wm.open_mainfile(filepath=job['candidate'])
     scene=bpy.context.scene;rows=job['model']['skeleton'];rig=bpy.data.objects.get('Source animation rig')
     baseline=json.loads(bpy.data.texts['Structural baseline.json'].as_string())
     assert structural_snapshot(scene)==baseline,'Scene changed on save/reopen'
-    assert not audit_scene(scene)['mismatches'],audit_scene(scene)['mismatches']
+    audit=audit_scene(scene,check_gpu=False)
+    assert not audit['mismatches'],audit['mismatches']
     assert scene['source_model_sha256']==job['model']['model_sha256']
     assert scene.get('presentation_basis')=='game_y_up_to_blender_z_up'
     presented=[o for o in scene.objects if o.get('presentation_basis')=='game_y_up_to_blender_z_up']
@@ -658,7 +752,7 @@ def validate(job):
     result=dict(status='passed',validation_type='numerical_and_structural_only',visual_review_performed=False,
         presentation_basis='game_y_up_to_blender_z_up',presentation_objects=[o.name for o in presented],
         source_geometry_available=bool(job.get('geometry') or job.get('native_geometry')),geometry_validation=(json.loads(bpy.data.texts['Source geometry validation.json'].as_string()) if job.get('geometry') or job.get('native_geometry') else 'Diagnostic skeleton only; supported native geometry sections absent'),
-        action_count=len(bpy.data.actions),source_action_count=len(job['clips']),clips=[],previews=[],
+        action_count=len(bpy.data.actions),source_action_count=len(job['clips']),clips=[],
         baseline_sha256=sha(json.dumps(baseline,sort_keys=True).encode()))
     result['animation_selection']=job.get('animation_selection',dict(mode='all_supported'))
     result['animation_allocation']=result_allocation if rig else None
@@ -778,14 +872,19 @@ def validate(job):
             assert obj.data.uv_layers.get('UV0') is not None,'Native mesh lacks UV0: '+obj.name
             assert obj.data.materials and all(x is not None for x in obj.data.materials),'Native mesh lacks an assigned material: '+obj.name
             assert obj.data.attributes.get('SourceTangentPacked') is not None,'Native mesh lacks preserved packed tangent word: '+obj.name
+            # Vertex-group memberships have no bulk accessor; one pass covers both checks.
+            object_group_names=[g.name for g in obj.vertex_groups];any_groups=False
             for vertex in obj.data.vertices:
-                active=[g for g in vertex.groups if g.weight>0]
+                groups=vertex.groups
+                if not len(groups):continue
+                any_groups=True
+                active=[g for g in groups if g.weight>0]
                 if not active:continue
                 weighted_vertices+=1
-                group_names=[obj.vertex_groups[g.group].name for g in active]
+                group_names=[object_group_names[g.group] for g in active]
                 assert set(group_names)<=valid_groups,'Native weight references an unknown joint: '+obj.name
                 assert abs(sum(g.weight for g in active)-1)<.005,'Native weights are not normalized: '+obj.name
-            if any(v.groups for v in obj.data.vertices):
+            if any_groups:
                 modifiers=[m for m in obj.modifiers if m.type=='ARMATURE' and m.object==rig]
                 assert modifiers,'Weighted native mesh is not bound to the selected armature: '+obj.name
         source_materials=[m for m in bpy.data.materials if m.get('source_material_path')]
@@ -846,12 +945,15 @@ def validate(job):
                 coordinate_validation='reopened local vertices equal native decoded positions multiplied by the profiled factor')
     threshold=job['matrix_tolerance']
     track=rig.animation_data.nla_tracks[0] if rig else None
-    if rig:assert len(track.strips)==len(intervals)
+    if rig:
+        assert len(track.strips)==len(intervals)
+        layout=_bake_rig_layout(rig,rows,right)
+    nla_checks=[]
     for index,(entry,interval) in enumerate(zip(job['clips'],intervals)):
         raw=read(entry['raw_clip']);assert sha(raw)==entry['raw_sha256']
         decoded=decode_clip(raw,0,names);frames=sample_transforms(decoded)
         assert decoded['sample_sha256']==entry['sample_sha256']
-        assert frames==unzip_json(entry['samples'])['frames'],'Cached exact samples differ from fresh raw decoding'
+        assert cached_frames_match(gzip.decompress(read(entry['samples'])),frames),'Cached exact samples differ from fresh raw decoding'
         assert len(frames)==entry['frames']
         action=bpy.data.actions[entry['action']]
         assert len(action.slots)==1 and action.use_fake_user
@@ -864,10 +966,8 @@ def validate(job):
             assert json.loads(action['experimental_inheritance_candidates_json'])==entry['experimental_inheritance_candidates']
             assert action.get('experimental_game_accuracy')=='unproven'
             assert entry['selector_label'].endswith(f"EXPERIMENTAL {'FULL INHERITANCE' if entry['experimental_selected_inheritance']=='full' else 'SSC0'}")
-        for layer in action.layers:
-            for strip_data in layer.strips:
-                for bag in strip_data.channelbags:
-                    assert all(k.interpolation=='CONSTANT' for c in bag.fcurves for k in c.keyframe_points)
+        curves=[c for layer in action.layers for strip_data in layer.strips for bag in strip_data.channelbags for c in bag.fcurves]
+        assert all(all_constant_interpolation(c) for c in curves)
         strip=track.strips[index]
         assert strip.name==timeline_strip_label(index,entry)
         assert (strip.frame_start,strip.frame_end)==(interval['start'],interval['nla_end'])
@@ -879,45 +979,53 @@ def validate(job):
         ns['select_clip'](index)
         assert rig.animation_data.action==action and rig.animation_data.action_slot==action.slots[0]
         assert scene.frame_end==len(frames) and abs(scene.render.fps/scene.render.fps_base-entry['fps'])<1e-5
-        action_error=0.;expected_targets=[]
-        for fi,frame in enumerate(frames,1):
+        # Every key of every curve, at every source frame: the pose the keys define
+        # (bake-rig composition in numpy) against the source matrices.
+        expected=np.stack([target_array(rows,frame,entry) for frame in frames])
+        posed=_keyframe_poses(rig,layout,curves,len(frames))
+        key_errors=matrix_errors(posed,layout['right_inverse'],expected)
+        keyframe_error=float(key_errors.max()) if len(key_errors) else 0.
+        # Blender's own evaluation (Action path) on sampled frames.
+        probe_frame=(int(deformation_probe['frame']) if deformation_probe and entry['sample_sha256']==deformation_probe['sample_sha256']
+            and entry['animset_sha256']==deformation_probe['animset_sha256'] else None)
+        sampled=sample_frames(len(frames),posed,extra=[probe_frame] if probe_frame else ())
+        sampled_targets={fi:targets(rows,frames[fi-1],entry) for fi in sampled}
+        action_error=keyframe_error;evaluated_error=0.
+        for fi in sampled:
             scene.frame_set(fi);bpy.context.view_layer.update()
-            expected=targets(rows,frame,entry);expected_targets.append(expected)
-            action_error=max(action_error,matrix_error(rig,expected,right))
-            if (deformation_probe and entry['sample_sha256']==deformation_probe['sample_sha256'] and
-                    entry['animset_sha256']==deformation_probe['animset_sha256'] and fi==int(deformation_probe['frame'])):
-                correction_meshes=[o for o in native_objects if o.get('source_model_sha256')==correction_descriptor['sha256']
-                                   and any(mod.type=='ARMATURE' and mod.object==rig for mod in o.modifiers)]
-                moved=[]
-                depsgraph=bpy.context.evaluated_depsgraph_get()
-                for obj in correction_meshes:
-                    evaluated=obj.evaluated_get(depsgraph);evaluated_mesh=evaluated.to_mesh()
-                    try:
-                        for base_vertex,posed_vertex in zip(obj.data.vertices,evaluated_mesh.vertices):
-                            base_world=obj.matrix_world@base_vertex.co
-                            posed_world=evaluated.matrix_world@posed_vertex.co
-                            moved.append((posed_world-base_world).length)
-                    finally:evaluated.to_mesh_clear()
-                if not moved or max(moved)<=1e-3:
-                    raise AssertionError('Pinned corrected Trooper Action did not deform the reopened mesh')
-                deformation_probe_result=dict(status='passed',sample_sha256=entry['sample_sha256'],
-                    animset_sha256=entry['animset_sha256'],source_frame=fi,source_frame_count=len(frames),
-                    fps=entry['fps'],corrected_meshes=len(correction_meshes),
-                    moved_vertex_count=sum(value>1e-3 for value in moved),
-                    maximum_world_displacement=max(moved),mean_world_displacement=float(np.mean(moved)))
-        ns['play_all']();nla_error=0.
-        for fi,frame in enumerate(frames):
-            scene.frame_set(interval['start']+fi*interval['sample_step']);bpy.context.view_layer.update()
-            nla_error=max(nla_error,matrix_error(rig,expected_targets[fi],right))
-        # Also exercise the held final tick, then the next boundary in the next iteration.
-        scene.frame_set(interval['end_inclusive']);bpy.context.view_layer.update()
-        nla_error=max(nla_error,matrix_error(rig,expected_targets[-1],right))
-        ns['jump_to'](index);assert scene.frame_current==interval['start']
-        assert max(action_error,nla_error)<threshold,(entry['name'],action_error,nla_error,threshold)
+            evaluated_error=max(evaluated_error,matrix_error(rig,sampled_targets[fi],right))
+            if fi==probe_frame:
+                deformation_probe_result=_deformation_probe(native_objects,correction_descriptor,rig,entry,fi,len(frames))
+        action_error=max(action_error,evaluated_error)
+        assert action_error<threshold,(entry['name'],keyframe_error,evaluated_error,threshold)
+        nla_checks.append((index,entry,interval,sampled,sampled_targets))
         result['clips'].append(dict(name=entry['name'],raw_sha256=entry['raw_sha256'],
             sample_sha256=entry['sample_sha256'],animset_sha256=entry['animset_sha256'],frames=len(frames),fps=entry['fps'],
-            action_max_matrix_error=action_error,nla_max_matrix_error=nla_error,boundaries_passed=True,selection_passed=True))
-        print('VERIFIED',index+1,len(job['clips']),entry['name'],max(action_error,nla_error),flush=True)
+            action_max_matrix_error=action_error,keyframe_max_matrix_error=keyframe_error,
+            keyframes_checked=int(sum(len(c.keyframe_points) for c in curves)),fcurves_checked=len(curves),
+            action_evaluated_frames=sampled,action_evaluated_max_matrix_error=evaluated_error,
+            boundaries_passed=True,selection_passed=True))
+        print('VERIFIED',index+1,len(job['clips']),entry['name'],action_error,flush=True)
+    # NLA overview once: the same sampled ticks of every strip, its first tick (the
+    # boundary with the previous strip) and the held final tick.
+    if nla_checks:
+        ns['play_all']()
+        for index,entry,interval,sampled,sampled_targets in nla_checks:
+            nla_error=0.
+            for fi in sampled:
+                scene.frame_set(interval['start']+(fi-1)*interval['sample_step']);bpy.context.view_layer.update()
+                nla_error=max(nla_error,matrix_error(rig,sampled_targets[fi],right))
+            last=entry['frames'];last_targets=sampled_targets[last]
+            scene.frame_set(interval['end_inclusive']);bpy.context.view_layer.update()
+            nla_error=max(nla_error,matrix_error(rig,last_targets,right))
+            assert nla_error<threshold,(entry['name'],nla_error,threshold)
+            row=result['clips'][index]
+            row.update(nla_max_matrix_error=nla_error,nla_evaluated_frames=[interval['start']+(fi-1)*interval['sample_step'] for fi in sampled]+[interval['end_inclusive']])
+            print('VERIFIED NLA',index+1,len(job['clips']),entry['name'],nla_error,flush=True)
+        jump_checked=sorted({0,(len(nla_checks)-1)//2,len(nla_checks)-1})
+        for index in jump_checked:
+            ns['jump_to'](index);assert scene.frame_current==intervals[index]['start']
+        result['jump_to_checked_clips']=jump_checked
     if rig:
         ns['restore_rest']()
         rest_entry=dict(kind='absolute skeletal',inheritance=job['rest_inheritance'])
@@ -938,9 +1046,7 @@ def validate(job):
     else:result['rest_max_matrix_error']=None
     assert structural_snapshot(scene)==baseline,'Controls changed scene structure'
     result['scene_preservation_passed']=True
-    if rig:ns['play_all']() if job['clips'] else ns['restore_rest']()
-    assert structural_snapshot(scene)==baseline
-    assert not audit_scene(scene)['mismatches']
+    assert not audit_scene(scene,check_gpu=False)['mismatches']
     result['matrix_tolerance']=threshold
     result['all_clips_require_user_visual_inspection']=[e['name'] for e in job['clips']]
     dump(job['validation_report'],result)

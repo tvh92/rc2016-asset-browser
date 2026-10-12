@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import sqlite3
 import uuid
-from rc2016.common import asset_path, dump, file_hash, read, sha
+from rc2016.common import asset_path, dump, read, sha
 
 SHARED_INDEX_DIR = Path(__file__).resolve().parents[2]/'.cache'/'shared_index'
 try:
@@ -172,7 +172,7 @@ def write_split_index(reports, asset_rows, reference_rows, rows_identity=None):
         db.close()
     pointer = dict(
         schema='ps4-split-asset-index-v1', assets=str(shared.resolve()), assets_rows_sha256=content,
-        assets_file_sha256=file_hash(shared), references=refs.name,
+        assets_file_sha256=_stat_file_hash(shared), references=refs.name,
         open_with='rc2016.formats.index.open_asset_index(output_root)')
     try:
         unchanged = json.loads((reports/'asset_index.json').read_text(encoding='utf-8')) == pointer
@@ -212,6 +212,11 @@ def migrate_legacy_index(output_root):
     check.close()
 
 
+def _stat_file_hash(path):
+    from rc2016.formats.archive import stat_file_hash
+    return stat_file_hash(path)
+
+
 def open_asset_index(output_root):
     """Read-only connection exposing tables `assets` and `references_found` for a run.
 
@@ -227,7 +232,8 @@ def open_asset_index(output_root):
         return sqlite3.connect(f'file:{legacy.as_posix()}?mode=ro', uri=True)
     info = json.loads(pointer.read_text(encoding='utf-8'))
     assets = Path(info['assets'])
-    if not assets.is_file() or file_hash(assets) != info['assets_file_sha256']:
+    # The ~55 MB shared table is re-hashed only when its size or mtime changes.
+    if not assets.is_file() or _stat_file_hash(assets) != info['assets_file_sha256']:
         raise FileNotFoundError(f'Shared asset table is missing or changed: {assets}')
     db = sqlite3.connect(f'file:{assets.as_posix()}?mode=ro', uri=True)
     db.execute('ATTACH DATABASE ? AS run', (f'file:{(reports/info["references"]).as_posix()}?mode=ro',))

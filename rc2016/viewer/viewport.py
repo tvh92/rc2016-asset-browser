@@ -27,6 +27,13 @@ GL_TEXTURE_ROLES = ("_c", "_g", "_n", "_pick", "_h", "_sequence", "_tint_detail"
                     "_glow_parallax", "_puddle_atlas", "_parallax_height", "_cma")
 
 
+# GL_TEXTURE_ROLES sampled as ordinary surface textures by UV. Palettes and sequences (_pick,
+# _vehicle_p2, _sequence) are lookup tables, and the puddle atlas is sampled through fract(), so those
+# keep their top mip only.
+MIPMAP_ROLES = frozenset(("_c", "_g", "_n", "_h", "_tint_detail", "_bng_detail", "_glow_parallax",
+                          "_parallax_height", "_cma"))
+
+
 def _mat3_mul(a, b):
     return tuple(tuple(sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)) for i in range(3))
 
@@ -531,47 +538,89 @@ class ModelViewport(_TkFrame):
             self._environment_texture = name.value
         return self._environment_texture
 
+    _frame_lighting = None   # _lighting_state() of the current frame; reset when the camera is set
+
+    def _lighting_state(self):
+        """Lighting and tonemap values for the current frame, read once (one modelview readback and
+        the ctypes conversions) and reused by every program the frame uses."""
+        state = self._frame_lighting
+        if state is None:
+            from rc2016.viewer.shading import ENVIRONMENT_TEXTURE_UNIT
+            gl = self._gl
+            hdri = self.lighting == "Shared HDRI" and bool(self._environment) and bool(self._upload_environment())
+            modelview = (ctypes.c_float * 16)()
+            gl.glGetFloatv.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+            gl.glGetFloatv(self.GL_MODELVIEW_MATRIX, modelview)
+            view_to_world, rig = light_frames(list(modelview), self.OBJECT_TO_WORLD, self.RIG_FIXED_TO_WORLD)
+            state = dict(hdri=hdri, tonemap=self.TONEMAPS.index(self.tonemap),
+                         exposure=2.0 ** self._environment["exposure"] if hdri else 1.0,
+                         view_to_world=(ctypes.c_float * 9)(*column_major3(view_to_world)),
+                         rig=(ctypes.c_float * 9)(*column_major3(rig)), unit=ENVIRONMENT_TEXTURE_UNIT,
+                         texture=self._environment_texture if hdri else 0)
+            if hdri:
+                strength = self._environment["strength"]
+                coefficients = [float(x) * strength for x in self._environment["sh"].reshape(-1)]
+                state.update(sh=(ctypes.c_float * 27)(*coefficients),
+                             sun_direction=tuple(float(x) for x in self._environment["sun_direction"]),
+                             sun_colour=tuple(float(x) * strength for x in self._environment["sun"]))
+            self._frame_lighting = state
+        return state
+
     def _apply_lighting(self, u):
         """Lighting and tonemap uniforms for the program in use (every opaque and glass program)."""
-        from rc2016.viewer.shading import ENVIRONMENT_TEXTURE_UNIT
         gl, sh = self._gl, self._shading
-        for name in ('uSceneEnabled','uSceneAOEnabled','uSceneShadowEnabled','uSceneGeometry','uSceneLightCount'):
-            sh.glUniform1i(u.get(name,-1),0)
-        sh.glUniform1i(u.get('uSceneAO',-1),16);sh.glUniform1i(u.get('uSceneShadow',-1),17)
-        hdri = self.lighting == "Shared HDRI" and bool(self._environment) and bool(self._upload_environment())
-        sh.glUniform1i(u["uLighting"], 1 if hdri else 0)
-        sh.glUniform1i(u["uTonemap"], self.TONEMAPS.index(self.tonemap))
-        sh.glUniform1f(u["uExposure"], 2.0 ** self._environment["exposure"] if hdri else 1.0)
-        modelview = (ctypes.c_float * 16)()
-        gl.glGetFloatv.argtypes = [ctypes.c_uint, ctypes.c_void_p]
-        gl.glGetFloatv(self.GL_MODELVIEW_MATRIX, modelview)
-        view_to_world, rig = light_frames(list(modelview), self.OBJECT_TO_WORLD, self.RIG_FIXED_TO_WORLD)
-        sh.glUniformMatrix3fv(u["uViewToWorld"], 1, 0, (ctypes.c_float * 9)(*column_major3(view_to_world)))
-        sh.glUniformMatrix3fv(u["uLightFrame"], 1, 0, (ctypes.c_float * 9)(*column_major3(rig)))
-        sh.glUniform1i(u["uEnvTex"], ENVIRONMENT_TEXTURE_UNIT)
-        sh.glActiveTexture(self.GL_TEXTURE0 + ENVIRONMENT_TEXTURE_UNIT)
-        gl.glBindTexture(self.GL_TEXTURE_2D, self._environment_texture if hdri else 0)
+        if getattr(self, 'scene_effects_active', lambda: False)():
+            for name in ('uSceneEnabled','uSceneAOEnabled','uSceneShadowEnabled','uSceneGeometry','uSceneLightCount'):
+                sh.glUniform1i(u.get(name,-1),0)
+            sh.glUniform1i(u.get('uSceneAO',-1),16);sh.glUniform1i(u.get('uSceneShadow',-1),17)
+        state = self._lighting_state()
+        sh.glUniform1i(u["uLighting"], 1 if state["hdri"] else 0)
+        sh.glUniform1i(u["uTonemap"], state["tonemap"])
+        sh.glUniform1f(u["uExposure"], state["exposure"])
+        sh.glUniformMatrix3fv(u["uViewToWorld"], 1, 0, state["view_to_world"])
+        sh.glUniformMatrix3fv(u["uLightFrame"], 1, 0, state["rig"])
+        sh.glUniform1i(u["uEnvTex"], state["unit"])
+        sh.glActiveTexture(self.GL_TEXTURE0 + state["unit"])
+        gl.glBindTexture(self.GL_TEXTURE_2D, state["texture"])
         sh.glActiveTexture(self.GL_TEXTURE0)
-        if hdri:
-            strength = self._environment["strength"]
-            coefficients = [float(x) * strength for x in self._environment["sh"].reshape(-1)]
-            sh.glUniform3fv(u["uSH"], 9, (ctypes.c_float * 27)(*coefficients))
-            sh.glUniform3f(u["uSunDir"], *(float(x) for x in self._environment["sun_direction"]))
-            sh.glUniform3f(u["uSunColour"], *(float(x) * strength for x in self._environment["sun"]))
+        if state["hdri"]:
+            sh.glUniform3fv(u["uSH"], 9, state["sh"])
+            sh.glUniform3f(u["uSunDir"], *state["sun_direction"])
+            sh.glUniform3f(u["uSunColour"], *state["sun_colour"])
 
     def set_native_translation(self, enabled):
         self.native_translation = bool(enabled)
         if hasattr(self, '_draw_list'): self._draw_list = None
         if hasattr(self, '_material_ops'): self._material_ops.clear()
+        self.__dict__.pop('_program_memo', None)
         self._schedule_draw()
 
     def _surface_program(self, entry, level, instanced=False):
+        """(program, uniform locations) of a material entry, memoised per entry, level and variant;
+        the memo belongs to the current Shading object and keeps the entry it was computed for."""
+        memo = self.__dict__.get('_program_memo')
+        if memo is None or memo[0] is not self._shading:
+            memo = self._program_memo = (self._shading, {})
+        scene = instanced and bool(getattr(self, 'scene_effects_active', lambda: False)())
+        key = (id(entry), level, instanced, scene, self.native_translation, 0 if instanced else self._bone_count)
+        found = memo[1].get(key)
+        if found is not None and found[0] is entry:
+            return found[1]
+        result = self._resolve_surface_program(entry, level, instanced)
+        memo[1][key] = (entry, result)
+        return result
+
+    def _resolve_surface_program(self, entry, level, instanced=False):
         scene = instanced and bool(getattr(self, 'scene_effects_active', lambda: False)())
         translation = entry.get('native_translation') if self.native_translation and level == 2 else None
         if translation:
             srgb = {api: texture[1] for api, texture in entry['native_textures'].items()}
-            return self._shading.native_program(translation, srgb, instanced, scene=scene)
-        return self._shading.instanced_program(scene=scene) if instanced else self._shading.program(self._bone_count or 1)[:2]
+            if scene:
+                return self._shading.native_program(translation, srgb, instanced, scene=True)
+            return self._shading.native_program(translation, srgb, instanced)
+        if instanced:
+            return self._shading.instanced_program(scene=True) if scene else self._shading.instanced_program()
+        return self._shading.program(self._bone_count or 1)[:2]
 
     def set_mode(self, mode):
         """Solid shading, wireframe (mesh only), or both."""
@@ -631,11 +680,16 @@ class ModelViewport(_TkFrame):
             texture = entry.get(role)
             if not texture:
                 continue
-            if texture["path"] not in by_path:
-                name = self._upload_texture(texture)
-                by_path[texture["path"]] = (name, bool(texture.get("srgb"))) if name else None
-            if by_path[texture["path"]]:
-                uploaded[role] = by_path[texture["path"]]
+            key = texture["path"] if role in MIPMAP_ROLES else (texture["path"], "no_mipmaps")
+            if key not in by_path:
+                self._mipmap_next = role in MIPMAP_ROLES   # read by _upload_texture
+                try:
+                    name = self._upload_texture(texture)
+                finally:
+                    self._mipmap_next = True
+                by_path[key] = (name, bool(texture.get("srgb"))) if name else None
+            if by_path[key]:
+                uploaded[role] = by_path[key]
         if entry.get('native_translation'):
             native = {}
             normal_api = (entry['native_translation'].get('normal') or {}).get('api')
@@ -671,9 +725,49 @@ class ModelViewport(_TkFrame):
             gl.glDeleteTextures(1,ctypes.byref(name)); raise RuntimeError('RockBlend volume upload failed')
         return name.value
 
-    def _upload_texture(self, texture, decode_srgb=False):
-        """One GL texture from GPU-ready blocks; 0 if the driver rejects the format."""
+    GL_LINEAR_MIPMAP_LINEAR = 0x2703
+    GL_TEXTURE_MAX_ANISOTROPY = 0x84FE        # EXT_texture_filter_anisotropic
+    GL_MAX_TEXTURE_MAX_ANISOTROPY = 0x84FF
+    MAX_ANISOTROPY = 8.0
+    MIPMAPS = True   # class switch: False keeps every texture on its top mip with GL_LINEAR
+    _mipmap_support = None
+
+    def _texture_features(self):
+        """{'generate': glGenerateMipmap or None, 'anisotropy': level or 0}, probed once per context."""
+        if self._mipmap_support is None:
+            gl = self._gl
+            gl.wglGetProcAddress.argtypes = [ctypes.c_char_p]; gl.wglGetProcAddress.restype = ctypes.c_void_p
+            address = gl.wglGetProcAddress(b"glGenerateMipmap")
+            generate = ctypes.WINFUNCTYPE(None, ctypes.c_uint)(address) if address else None
+            anisotropy = 0.0
+            try:
+                gl.glGetString.restype = ctypes.c_char_p
+                extensions = (gl.glGetString(0x1F03) or b"").split()   # GL_EXTENSIONS (compatibility context)
+                if b"GL_EXT_texture_filter_anisotropic" in extensions or b"GL_ARB_texture_filter_anisotropic" in extensions:
+                    value = ctypes.c_float(0.0)
+                    gl.glGetFloatv.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+                    gl.glGetFloatv(self.GL_MAX_TEXTURE_MAX_ANISOTROPY, ctypes.byref(value))
+                    anisotropy = min(self.MAX_ANISOTROPY, value.value) if value.value > 1.0 else 0.0
+            except Exception:
+                anisotropy = 0.0
+            gl.glGetError()
+            self._mipmap_support = dict(generate=generate, anisotropy=anisotropy, compressed=True)
+        return self._mipmap_support
+
+    _mipmap_next = True
+
+    def _upload_texture(self, texture, decode_srgb=False, mipmaps=None):
+        """One GL texture from GPU-ready blocks; 0 if the driver rejects the format.
+
+        With ``mipmaps`` (and MIPMAPS) the driver builds the mip chain from the uploaded top mip
+        (glGenerateMipmap) and the texture samples trilinear plus anisotropic filtering where the
+        extension exists. The chain is filtered in the texture's own colourspace (linear for sRGB
+        formats, as GL specifies). A driver that refuses to generate mips for block-compressed
+        formats leaves those on the top mip with GL_LINEAR (it is not asked again). ``mipmaps`` None
+        follows ``_mipmap_next`` (set per role by _gl_entry)."""
         gl = self._gl
+        if mipmaps is None:
+            mipmaps = self._mipmap_next
         if self._compressed_upload is None:
             gl.wglGetProcAddress.argtypes = [ctypes.c_char_p]; gl.wglGetProcAddress.restype = ctypes.c_void_p
             address = gl.wglGetProcAddress(b"glCompressedTexImage2D")
@@ -688,11 +782,13 @@ class ModelViewport(_TkFrame):
                                  (self.GL_TEXTURE_WRAP_S, self.GL_REPEAT), (self.GL_TEXTURE_WRAP_T, self.GL_REPEAT)):
             gl.glTexParameteri(self.GL_TEXTURE_2D, parameter, value)
         pixels = texture["pixels"]
+        compressed = False
         if texture.get("gl_format") and self._compressed_upload:
             srgb_formats = {72: 0x8C4D, 75: 0x8C4E, 78: 0x8C4F, 99: 0x8E8D}
             internal = srgb_formats.get(texture.get('format'), texture['gl_format']) if decode_srgb else texture['gl_format']
             self._compressed_upload(self.GL_TEXTURE_2D, 0, internal, texture["width"],
                                     texture["height"], 0, len(pixels), pixels)
+            compressed = True
         elif texture.get("gl_pixel_format"):
             gl.glPixelStorei(self.GL_UNPACK_ALIGNMENT, 1)
             internal = 0x8C43 if decode_srgb else texture['gl_pixel_format'] # SRGB8_ALPHA8: alpha remains linear
@@ -702,7 +798,27 @@ class ModelViewport(_TkFrame):
             # Driver rejected this format: show the material without it.
             gl.glDeleteTextures(1, ctypes.byref(name))
             name.value = 0
+        elif mipmaps and self.MIPMAPS:
+            self._build_mipmaps(compressed)
         return name.value
+
+    def _build_mipmaps(self, compressed):
+        """Mip chain and filtering for the bound texture; on any GL error it stays top-mip GL_LINEAR
+        (an incomplete chain must never be sampled with a mipmap filter)."""
+        gl, features = self._gl, self._texture_features()
+        if features["generate"] is None or (compressed and not features["compressed"]):
+            return
+        features["generate"](self.GL_TEXTURE_2D)
+        if gl.glGetError():
+            if compressed:
+                features["compressed"] = False
+            return
+        gl.glTexParameteri(self.GL_TEXTURE_2D, self.GL_TEXTURE_MIN_FILTER, self.GL_LINEAR_MIPMAP_LINEAR)
+        if features["anisotropy"]:
+            gl.glTexParameterf.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_float]
+            gl.glTexParameterf(self.GL_TEXTURE_2D, self.GL_TEXTURE_MAX_ANISOTROPY, features["anisotropy"])
+        if gl.glGetError():   # keep the generated chain, drop what the driver refused
+            gl.glTexParameteri(self.GL_TEXTURE_2D, self.GL_TEXTURE_MIN_FILTER, self.GL_LINEAR)
 
     def clear(self, message="Select a model with decoded mesh geometry to preview it."):
         self._release_textures()
@@ -832,6 +948,7 @@ class ModelViewport(_TkFrame):
             gl.glTranslatef(self._pan[0], self._pan[1], -c["distance"])
             gl.glRotatef(self._pitch, 1.0, 0.0, 0.0); gl.glRotatef(self._yaw, 0.0, 0.0, 1.0)
             gl.glTranslatef(-c["center"][0], -c["center"][1], -c["center"][2])
+            self._frame_lighting = None
             if self._arrays is None:
                 flat_vertices = [x for row in vertices for x in row]
                 flat_normals = [x for row in normals for x in row]

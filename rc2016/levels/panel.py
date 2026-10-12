@@ -6,7 +6,9 @@ reads and decoding run on a background thread; Tk and GL are touched only from t
 """
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, deque
+from concurrent.futures import ThreadPoolExecutor
+import os
 import queue
 import sys
 import threading
@@ -85,17 +87,78 @@ def drop_uploaded_pixels(cache, entries, uploaded):
                     if (texture := entry.get(role)))
     uploaded.update(texture['path'] for entry in entries.values()
                     for texture in entry.get('native_textures', {}).values())
-    for key, texture in cache.items():
+    for key, texture in list(cache.items()):   # loader threads may add entries meanwhile
         if texture and texture.get("path") in uploaded and len(texture.get("pixels") or b"") > 65536:
             cache[key] = {k: v for k, v in texture.items() if k not in ("pixels", "slices")}
 
 
-def load_level(get_archive, level_path, out, cancel, zone_filter=None):
+# Worker threads for model geometry and materials. Archive reads keep per-thread handles; NumPy, zlib
+# and file reads release the GIL, so a few workers overlap decoding with I/O.
+LOAD_WORKERS = max(2, min(6, (os.cpu_count() or 2) - 1))
+
+
+def ordered_results(pool, items, function, window, cancel=None):
+    """Yield (item, future) in ``items`` order, keeping at most ``window`` calls submitted ahead, so
+    work queued behind them (material jobs) starts early instead of after every item."""
+    items, pending = iter(items), deque()
+    for item in items:
+        pending.append((item, pool.submit(function, item)))
+        if len(pending) >= window:
+            break
+    while pending:
+        if cancel is not None and cancel.is_set():
+            return
+        item, future = pending.popleft()
+        following = next(items, _END)
+        if following is not _END:
+            pending.append((following, pool.submit(function, following)))
+        yield item, future
+
+
+_END = object()
+
+
+class MaterialJobs:
+    """Material and texture loading on the pool, posted in submission order. Each material path is
+    loaded once (``claimed``); ``done`` holds the paths whose entries were posted."""
+
+    def __init__(self, archive, pool, out):
+        self.archive, self.pool, self.out = archive, pool, out
+        self.claimed, self.done, self.cache, self.uploaded, self.jobs = set(), set(), {}, set(), deque()
+
+    def submit(self, geometry):
+        todo = [m for m in geometry["materials"] + geometry.get("override_materials", [])
+                if m.get("path") and m["path"] not in self.claimed]
+        if todo:
+            self.claimed.update(m["path"] for m in todo)
+            self.jobs.append(self.pool.submit(level_scene.material_entries, self.archive, todo, frozenset(), self.cache))
+
+    def post(self, wait=False, cancel=None):
+        """Post finished jobs from the front of the queue; with ``wait``, all of them."""
+        while self.jobs and (wait or self.jobs[0].done()):
+            if cancel is not None and cancel.is_set():
+                return
+            job = self.jobs.popleft()
+            try:
+                entries = job.result()
+            except Exception as exc:
+                self.out.put(("error", "materials", f"{type(exc).__name__}: {exc}"))
+                continue
+            self.done.update(entries)
+            if entries:
+                self.out.put(("materials", entries))
+            drop_uploaded_pixels(self.cache, entries, self.uploaded)
+
+
+def load_level(get_archive, level_path, out, cancel, zone_filter=None, workers=None):
     """Background loader. Posts, in order: ('zones', paths), ('zone', scene summary) per zone,
     ('bounds', native bounds), ('sky', level_sky result or None) for a .level, ('model', path, geometry, hidden, [(zone, groups)]) per model with
     groups keyed by (mirrored, effective material changes), ('overrides', running totals) after each
     model, ('materials', {path: entry}) batches, then ('done', timings). Errors: ('error', what, message)
-    or ('fatal', message)."""
+    or ('fatal', message).
+
+    Geometry decodes on a small thread pool, most-placed model first; each model's materials are
+    queued right after its geometry, so the view becomes textured progressively."""
     started = time.perf_counter()
     try:
         archive = get_archive()
@@ -144,12 +207,24 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
             out.put(("sky", load_sky(archive, all_zones)))
         except Exception as exc:
             out.put(("error", "sky", f"{type(exc).__name__}: {exc}"))
+    workers = workers or LOAD_WORKERS
+    pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="level-load")
+    try:
+        _load_models(archive, pool, workers, models, catalog, actor_groups, points, out, cancel, started,
+                     actor_decode_seconds)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+def _load_models(archive, pool, workers, models, catalog, actor_groups, points, out, cancel, started, actor_decode_seconds):
+    materials = MaterialJobs(archive, pool, out)
+    geometry_of = lambda path: level_scene.model_geometry(archive, path)
     geometries, geometry_cache, geometry_paths, overrides = [], {}, {}, dict(outcomes=Counter(), instances=0, models=set())
-    for path, entry in sorted(models.items(), key=lambda item: -item[1]["count"]):
-        if cancel.is_set():
-            return
+    ordered = sorted(models.items(), key=lambda item: -item[1]["count"])
+    for (path, entry), future in ordered_results(pool, ordered, lambda item: geometry_of(item[0]), workers, cancel):
+        materials.post(cancel=cancel)
         try:
-            geometry = level_scene.model_geometry(archive, path)
+            geometry = future.result()
         except Exception as exc:
             out.put(("error", path, f"{type(exc).__name__}: {exc}"))
             continue
@@ -163,7 +238,7 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
                 replacements.update((material, None) for _slot, material in applied)
         if replacements:
             overrides["models"].add(path)
-        # Replacement materials load with the model's own (material_entries skips loaded paths).
+        # Replacement materials load with the model's own (each material path loads once).
         geometry["override_materials"] = [dict(path=material) for material in replacements]
         geometries.append(geometry)
         geometry_cache[path.lower()] = geometry
@@ -171,6 +246,9 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
         out.put(("model", path, geometry, entry["hidden"], zones))
         out.put(("overrides", dict(outcomes=dict(overrides["outcomes"]), instances=overrides["instances"],
                                    models=len(overrides["models"]))))
+        materials.submit(geometry)
+    if cancel.is_set():
+        return
     actor_time = time.perf_counter()
     candidates = catalog.candidates()
     from rc2016.levels.spawn_format import preview_placements, preview_summary
@@ -178,15 +256,16 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
     actor_models = {}
     for actor in candidates + spawn_candidates:
         actor_models.setdefault(actor['model'].lower(), []).append(actor)
-    for key, placements in actor_models.items():
+
+    def actor_geometry(item):
+        key, placements = item
+        return geometry_cache.get(key) or geometry_of(placements[0]['model'])
+    for (key, placements), future in ordered_results(pool, list(actor_models.items()), actor_geometry, workers, cancel):
         path = placements[0]['model']
-        if cancel.is_set():
-            return
-        geometry = geometry_cache.get(path.lower())
-        upload = geometry is None
+        materials.post(cancel=cancel)
+        upload = key not in geometry_cache
         try:
-            if upload:
-                geometry = level_scene.model_geometry(archive, path)
+            geometry = future.result()
             for actor in placements:
                 actor['skinned'] = geometry['skinned']
                 actor['model_sha256'] = geometry['source_sha256']
@@ -201,12 +280,12 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
             continue
         if upload:
             geometry['override_materials'] = []
-            geometry_cache[path.lower()] = geometry
-            geometry_paths[path.lower()] = path
+            geometry_cache[key] = geometry
+            geometry_paths[key] = path
             geometries.append(geometry)
             out.put(("model", path, geometry, level_scene.hidden_by_default(path), []))
         # Canonical GPU path for a model shared with the static layer.
-        gpu_path = geometry_paths[path.lower()]
+        gpu_path = geometry_paths[key]
         by_zone = {}
         for actor in placements:
             by_zone.setdefault((actor['zone'], bool(actor.get('spawn_preview'))), []).append(actor)
@@ -215,6 +294,10 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
             groups, replacements = actor_groups(actors, geometry['materials'])
             geometry['override_materials'].extend(dict(path=p) for p in replacements)
             out.put(("spawns" if preview else "actors", zone, gpu_path, groups, actors))
+        if upload:
+            materials.submit(geometry)
+    if cancel.is_set():
+        return
     summary = catalog.summary()
     spawns = preview_summary(spawn_candidates, factories)
     out.put(("spawn_summary", spawns))
@@ -223,22 +306,13 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
     if not points:
         out.put(("bounds", level_scene.core_bounds([a['matrix_rows'][3][:3] for a in candidates if a.get('drawn')])))
     geometry_seconds = time.perf_counter() - started
-    done, cache, uploaded = set(), {}, set()
-    for geometry in geometries:
-        if cancel.is_set():
-            return
-        try:
-            entries = level_scene.material_entries(archive, geometry["materials"] + geometry["override_materials"],
-                                                   done, cache)
-        except Exception as exc:
-            out.put(("error", "materials", f"{type(exc).__name__}: {exc}"))
-            continue
-        done.update(entries)
-        if entries:
-            out.put(("materials", entries))
-        drop_uploaded_pixels(cache, entries, uploaded)
+    for geometry in geometries:   # actor replacement materials on models placed earlier
+        materials.submit(geometry)
+    materials.post(wait=True, cancel=cancel)
+    if cancel.is_set():
+        return
     out.put(("done", dict(geometry_seconds=geometry_seconds, total_seconds=time.perf_counter() - started,
-                          models=len(geometries), materials=len(done), actors=summary, spawns=spawns, actor_seconds=actor_seconds,
+                          models=len(geometries), materials=len(materials.done), actors=summary, spawns=spawns, actor_seconds=actor_seconds,
                           material_overrides=dict(outcomes=dict(overrides["outcomes"]), instances=overrides["instances"],
                                                   models=len(overrides["models"])))))
 
@@ -255,6 +329,7 @@ class LevelPanel:
         self.zone_filter, self.on_done, self.on_open_model = zone_filter, on_done, on_open_model
         self.archive, self.archive_root, self.archive_lock = None, None, threading.Lock()
         self.events, self.cancel, self.generation = queue.Queue(), threading.Event(), 0
+        self._stats_due = False
         self.zone_vars, self.zone_rows, self.progress = {}, {}, {}
         self.closed, self.loaded_level, self.levels = False, None, []
         self.frame = ttk.Panedwindow(parent, orient="horizontal")
@@ -493,6 +568,9 @@ class LevelPanel:
             if generation is not None and generation != self.generation:
                 continue   # a previous load or list request
             self._handle(item)
+        if self._stats_due:   # once per tick, not per event
+            self._stats_due = False
+            self._show_stats(self.view.stats())
         self.frame.after(30, self._poll)
 
     def _handle(self, item):
@@ -570,7 +648,7 @@ class LevelPanel:
             p["done"] = item[1]
             if self.on_done:
                 self.frame.after(300, lambda: self.on_done(self))
-        self._show_stats(self.view.stats())
+        self._stats_due = True
 
     def _show_stats(self, stats):
         scene=stats.get('scene_preview',{})
@@ -591,7 +669,8 @@ class LevelPanel:
                        f"{p.get('spawns', {}).get('unresolved', 0):,} unresolved")
         self.status_var.set(
             f"{p['state']}{actors} · {p['zones_with_models']}/{p['zones']} zones with placements · {p['models']} models{errors} · "
-            f"{stats['materials']} materials · {stats['textures']} textures{overrides}{sky} · showing {stats['instances']:,} instances, "
+            f"{stats['materials']} materials · {stats['textures']} textures{overrides}{sky} · "
+            f"showing {stats['instances']:,} of {stats.get('placed', stats['instances']):,} instances (frustum culled), "
             f"{stats['triangles']:,} triangles in {stats['draws']} draws · {stats['draw_ms']:.1f} ms/frame · "
             f"speed {stats['speed']:.1f}/s")
 

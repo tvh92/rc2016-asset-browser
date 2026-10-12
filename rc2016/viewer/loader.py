@@ -1,12 +1,11 @@
 """On-selection native geometry loading. No Blender, renders, receipt writes or shaders."""
 from __future__ import annotations
 from collections import OrderedDict
-import hashlib
 import json
 from pathlib import Path
-import tempfile
 import threading
-from rc2016.formats.archive import Archive, locate, decompress
+import numpy as np
+from rc2016.formats.archive import Archive, asset_references, locate, decompress
 from rc2016.formats.native_model import decode_model
 from rc2016.formats.container import section_table
 
@@ -16,9 +15,58 @@ def presentation_basis(value):
     return (x,-z,y)
 
 
+def _basis_array(values):
+    """presentation_basis over an (n, 3) array: columns (x, -z, y)."""
+    values=np.asarray(values,dtype=np.float64).reshape(-1,3)
+    out=np.empty_like(values)
+    out[:,0]=values[:,0];out[:,1]=-values[:,2];out[:,2]=values[:,1]
+    return out
+
+
+def _mesh_payload_arrays(decoded, meshes, selected):
+    """mesh_payload for decode_model(..., as_arrays=True) meshes: vertices, normals and triangles
+    as numpy arrays (viewport.prepare_viewport takes them as-is); uvs, skin and rock alpha as the
+    same flat lists as the list path, since the viewport tests those for truth."""
+    vertices,normals,triangles,uvs,batches,joints,weights,alpha,alpha_sources=[],[],[],[],[],[],[],[],[]
+    base=triangle_total=0
+    for mesh in meshes:
+        positions=np.asarray(mesh['positions'],dtype=np.float64).reshape(-1,3);count=len(positions)
+        vertices.append(_basis_array(positions));normals.append(_basis_array(mesh['normals']))
+        colors=mesh.get('colors')
+        alpha.append(np.asarray(colors,dtype=np.float64).reshape(-1,4)[:,3] if colors else np.ones(count))
+        alpha_sources.append(dict(mesh=mesh['index'], source='native_colors_alpha' if colors else 'viewer_white_default_1_runtime_input_unresolved'))
+        if mesh.get('skin_joint_array') is not None:
+            joints.append(np.asarray(mesh['skin_joint_array'],dtype=np.float64));weights.append(np.asarray(mesh['skin_weight_array'],dtype=np.float64))
+        else:
+            mesh_joints=np.zeros((count,8));mesh_weights=np.zeros((count,8))
+            for i,influences in enumerate(mesh.get('weights') or []):
+                for slot,(j,w) in enumerate((influences or [])[:8]):
+                    mesh_joints[i,slot]=float(j);mesh_weights[i,slot]=float(w)
+            joints.append(mesh_joints);weights.append(mesh_weights)
+        uv0=mesh.get('uv0')
+        if uvs is not None and uv0 is not None and len(uv0):
+            uv0=np.asarray(uv0,dtype=np.float64).reshape(-1,2)
+            uvs.append(np.stack((uv0[:,0],1.0-uv0[:,1]),axis=1))
+        else:uvs=None
+        tris=np.asarray(mesh['triangles'],dtype=np.int64).reshape(-1,3)
+        batches.append(((mesh.get('material') or {}).get('index'),triangle_total,len(tris)))
+        triangles.append(tris+base if base else tris)
+        base+=count;triangle_total+=len(tris)
+    if not base or not triangle_total:raise ValueError('Selected source look/LOD has no geometry')
+    return dict(vertices=np.concatenate(vertices),normals=np.concatenate(normals),triangles=np.concatenate(triangles),
+                uvs=np.concatenate(uvs).tolist() if uvs is not None else None,batches=batches,
+                skin_joints=np.concatenate(joints).ravel().tolist(),skin_weights=np.concatenate(weights).ravel().tolist(),
+                rock_alpha=np.concatenate(alpha).tolist(),rock_alpha_sources=alpha_sources,
+                source_sha256=decoded['source_sha256'],selected_mesh_indices=sorted(selected),
+                source_exact_geometry=True,game_equivalence=False,material_preview='neutral geometry inspection')
+
+
 def mesh_payload(decoded, lod='Highest', look=0):
     from rc2016.formats.native_model import _selected_meshes
     selected=set(_selected_meshes(decoded['looks'],decoded['mesh_record_count'],lod,look))
+    chosen=[m for m in decoded['meshes'] if m['index'] in selected]
+    if chosen and all(isinstance(m['positions'],np.ndarray) for m in chosen):
+        return _mesh_payload_arrays(decoded,chosen,selected)
     vertices,normals,triangles,uvs,batches=[],[],[],[],[]
     # Up to 8 skin influences per vertex as flat (joint, weight) lists; all-zero
     # weights mean "not skinned" and the vertex keeps its rest position.
@@ -52,10 +100,10 @@ def mesh_payload(decoded, lod='Highest', look=0):
                 source_exact_geometry=True,game_equivalence=False,material_preview='neutral geometry inspection')
 
 
-def material_rules(archive, materials):
+def material_rules(archive, materials, translations=None):
     """{material path: {'graphs', 'rule_kind', 'rule'}}: which viewer shading rule each material gets
-    (exact rule, selected native translation, family fallback or generic reading)."""
-    from rc2016.formats.index import references
+    (exact rule, selected native translation, family fallback or generic reading).
+    ``translations`` ({path: selected translation or None}, from material_textures) skips selecting it again."""
     from rc2016.formats.links import rule_coverage
     rules={}
     for material in materials:
@@ -64,13 +112,15 @@ def material_rules(archive, materials):
         try:
             ids=[k for k in archive.resolve(path) if archive.entries[k]['type']=='material']
             if len(ids)!=1:continue
-            graphs=[r['path'] for r in references(decompress(archive.bytes(ids[0])[0])[0])
+            graphs=[r['path'] for r in asset_references(archive,ids[0])
                     if not r.get('resolution_error') and r['path'].endswith('.materialgraph')]
         except (ValueError,KeyError,OSError):
             continue
         from rc2016.viewer.native_glsl import selected_translation
-        try: native = selected_translation(archive, path)
-        except (ValueError, KeyError, IndexError, OSError): native = None
+        if translations is not None and path in translations: native = translations[path]
+        else:
+            try: native = selected_translation(archive, path)
+            except (ValueError, KeyError, IndexError, OSError): native = None
         kind,rule=rule_coverage(graphs, native)
         rules[path]=dict(graphs=graphs,rule_kind=kind,rule=rule,
                          native_limitations=native.get('limitations', []) if native else [])
@@ -106,6 +156,9 @@ class SourcePreviewLoader:
             # Archive initialization reads metadata and prior source_mapping only.
             # This path is never checkpointed or decoded using Archive.decode().
             self.archive=Archive(archive_root,Path(__file__).resolve().parents[2]/'.cache'/'source_preview',lambda *_a,**_k:None)
+            self.archive.verify_repeats=False   # preview only: read the first of an asset's repeated copies
+            from rc2016.viewer.textures import TextureDiskCache
+            self.archive.texture_disk_cache=TextureDiskCache(Path(__file__).resolve().parents[2]/'.cache'/'texture_preview')
             self.source_root=source_root
             self.identity=None;self.current=None;self.texture_cache={}
             self._recent.clear();self._recent_identity=None
@@ -136,12 +189,16 @@ class SourcePreviewLoader:
         # ImportAssets URLs are bare file names; match them to archive UI files by name.
         name=url.replace('\\','/').rsplit('/',1)[-1].lower()
         stem=name.rsplit('.',1)[0]
-        for entry in self.archive.entries.values():
-            if entry['type'] in ('gfx','swf'):
-                base=entry['path'].rsplit('/',1)[-1].lower()
-                if base==name or base.rsplit('.',1)[0]==stem:
-                    return self._gfx_bytes(entry['path'])
-        return None
+        index=getattr(self,'_gfx_names',None)
+        if index is None or index[0] is not self.archive:
+            # First UI file (entry order) per lower-case stem: a file-name match implies a stem match.
+            names={}
+            for entry in self.archive.entries.values():
+                if entry['type'] in ('gfx','swf'):
+                    names.setdefault(entry['path'].rsplit('/',1)[-1].lower().rsplit('.',1)[0],entry['path'])
+            index=self._gfx_names=(self.archive,names)
+        path=index[1].get(stem)
+        return self._gfx_bytes(path) if path is not None else None
 
     def gfx_library(self, path):
         from rc2016.flash.gfx import Library, parse
@@ -206,12 +263,20 @@ class SourcePreviewLoader:
     RECENT_MODELS = 6
     RECENT_VERTEX_BUDGET = 1_500_000
 
-    def load(self, source_root, model_id, source_path, lod='Highest', look=0, output_root=None, defer_animation=False):
+    PURPOSES = ('view', 'export')
+
+    def load(self, source_root, model_id, source_path, lod='Highest', look=0, output_root=None, defer_animation=False, purpose='view'):
         """Payload for the viewport. With ``defer_animation`` a skinned model returns at once
         with ``animation_pending=True`` and no clips; call ``load_animation`` (another worker)
-        to build its clip library."""
-        with self.lock:
-            return self._load(source_root, model_id, source_path, lod, look, output_root, defer_animation)
+        to build its clip library.
+
+        ``purpose='export'`` decodes geometry, skeleton and material paths only (list-valued
+        meshes, as export.models.mesh_arrays reads them): no viewer textures, texture list,
+        headers, material rules, native translation or viewport arrays, and the returned
+        payload carries no geometry. Read ``current``/``animation`` afterwards as before.
+        """
+        if purpose not in self.PURPOSES:raise ValueError('Unknown load purpose: '+str(purpose))
+        return self._load(source_root, model_id, source_path, lod, look, output_root, defer_animation, purpose)
 
     def load_animation(self, source_root, model_id, source_path, output_root=None):
         """Build (or reuse) the selected model's clip library: {model_id, source_path, clips, animsets, animation_note}."""
@@ -255,61 +320,77 @@ class SourcePreviewLoader:
                 sum(c['vertices'] for c in self._recent.values())>self.RECENT_VERTEX_BUDGET):
             self._recent.popitem(last=False)
 
-    def _load(self, source_root, model_id, source_path, lod, look, output_root, defer_animation=False):
-        self._ensure_archive(source_root)
-        entry=self.archive.entries.get(model_id)
-        if not entry or entry['type']!='model' or entry['path']!=source_path:
-            raise ValueError('Selected asset ID and archive path do not match the canonical source index')
-        if self.identity!=self._recent_identity:
-            self._recent.clear()   # identity was reset from outside: decode afresh
-        # Animation sets are found through the output root, so it is part of the identity.
-        identity=(model_id,source_path,str(output_root) if output_root else None)
-        cached=self._recent.get(identity)
-        if cached is not None:
-            self._remember(identity,cached)
-        else:
-            packed,packed_hash=self.archive.bytes(model_id)
-            data,codec=decompress(packed)
-            # The existing decoder takes a file path. Keep just this selected model
-            # in a private temporary directory; never write extracted archive trees.
-            with tempfile.TemporaryDirectory(prefix='rcps4-view-') as tmp:
-                file=Path(tmp)/'selected.model';file.write_bytes(data)
-                decoded=decode_model(file,lod='All',expected_sha256=hashlib.sha256(data).hexdigest())
-            sections=section_table(data,0)
-            joint_count=next((s['size']//16 for s in sections if s['label_hash']=='0x15DF9D3B'),0)
-            decoded.update(packed_sha256=packed_hash,codec=codec,joint_count=joint_count)
-            from rc2016.viewer.textures import material_textures, model_texture_list
-            decoded['textures']=material_textures(self.archive,decoded['materials'],self.texture_cache)
-            decoded['texture_list']=model_texture_list(self.archive,decoded['materials'])
-            from rc2016.viewer.textures import FORMAT_NAMES, texture_header
+    def _decode(self, archive, model_id, source_path, purpose, texture_cache):
+        """Decode one model into a _recent entry. Runs without self.lock."""
+        packed,packed_hash=archive.bytes(model_id)
+        data,codec=decompress(packed)
+        decoded=decode_model(source_path,lod='All',data=data,as_arrays=purpose=='view')
+        sections=section_table(data,0)
+        joint_count=next((s['size']//16 for s in sections if s['label_hash']=='0x15DF9D3B'),0)
+        decoded.update(packed_sha256=packed_hash,codec=codec,joint_count=joint_count)
+        if purpose=='view':
+            from rc2016.viewer.textures import FORMAT_NAMES, material_textures, model_texture_list, texture_header
+            translations={}
+            decoded['textures']=material_textures(archive,decoded['materials'],texture_cache,translations)
+            decoded['texture_list']=model_texture_list(archive,decoded['materials'])
             for row in decoded['texture_list']:
                 try:
-                    header=texture_header(self.archive,row['path'])
+                    header=texture_header(archive,row['path'])
                     full=(header['hd_width'],header['hd_height']) if header['hd_width'] else (header['sd_width'],header['sd_height'])
                     row.update(format=header['format'],format_name=FORMAT_NAMES.get(header['format'],str(header['format'])),width=full[0],height=full[1])
                 except (ValueError,KeyError,OSError) as error:
                     row.update(format_name='unreadable',error=str(error))
-            decoded['material_rules']=material_rules(self.archive,decoded['materials'])
-            decoded['_archive_path']=source_path;decoded['animation_note']='';decoded['animsets']=[]
-            cached=dict(decoded=decoded,data=data,animation=None,animation_built=False,build_lock=threading.Lock(),
-                        vertices=sum(len(m['positions']) for m in decoded['meshes']))
-            self._remember(identity,cached)
+            decoded['material_rules']=material_rules(archive,decoded['materials'],translations)
+        else:
+            decoded.update(textures={},texture_list=[],material_rules={})
+        decoded['_archive_path']=source_path;decoded['animation_note']='';decoded['animsets']=[]
+        return dict(decoded=decoded,data=data,animation=None,animation_built=False,build_lock=threading.Lock(),
+                    vertices=sum(len(m['positions']) for m in decoded['meshes']))
+
+    def _load(self, source_root, model_id, source_path, lod, look, output_root, defer_animation=False, purpose='view'):
+        # self.lock covers loader state only; the decode, texture reads and viewport arrays run
+        # outside it so clip, pose and texture-list calls are not queued behind a model decode.
+        with self.lock:
+            archive=self._ensure_archive(source_root)
+            entry=archive.entries.get(model_id)
+            if not entry or entry['type']!='model' or entry['path']!=source_path:
+                raise ValueError('Selected asset ID and archive path do not match the canonical source index')
+            if self.identity!=self._recent_identity:
+                self._recent.clear()   # identity was reset from outside: decode afresh
+            # Animation sets are found through the output root, so it is part of the identity.
+            identity=(model_id,source_path,str(output_root) if output_root else None)+(('export',) if purpose=='export' else ())
+            cached=self._recent.get(identity)
+            if cached is not None:
+                self._remember(identity,cached)
+            texture_cache=self.texture_cache
+        if cached is None:
+            cached=self._decode(archive,model_id,source_path,purpose,texture_cache)
+            with self.lock:
+                if self.archive is not archive:
+                    raise ValueError('The source archive changed while the model loaded; select it again')
+                cached=self._recent.get(identity) or cached
+                self._remember(identity,cached)
         pending=bool(defer_animation and cached['decoded']['joint_count'] and not cached['animation_built'])
         if not pending:
             self._build_animation(cached,output_root)
-        self.current,self.animation=cached['decoded'],cached['animation']
-        self.identity=self._recent_identity=identity
-        result=mesh_payload(self.current,lod,look)
-        result.update(model_id=model_id,source_path=source_path,archive_root=str(self.archive.root),
-            source_packed_sha256=self.current['packed_sha256'],codec=self.current['codec'],
-            kind='skinned' if self.current['joint_count'] else 'static',joint_count=self.current['joint_count'],
-            looks=self.current['looks'],lod=lod,look=look,textures=self.current['textures'],
-            texture_list=self.current['texture_list'],mesh_record_count=self.current['mesh_record_count'],
-            materials=[dict(index=m.get('index',i),name=m.get('name'),path=m.get('path'),**self.current['material_rules'].get(m.get('path'),{}))
-                       for i,m in enumerate(self.current['materials'])],
-            animsets=self.current['animsets'],
-            clips=self.animation.labels() if self.animation else [],
-            animation_note='Loading animations…' if pending else self.current['animation_note'],animation_pending=pending,
+        with self.lock:
+            self.current,self.animation=cached['decoded'],cached['animation']
+            self.identity=self._recent_identity=identity
+        current,animation=cached['decoded'],cached['animation']
+        info=dict(model_id=model_id,source_path=source_path,archive_root=str(archive.root),
+            source_packed_sha256=current['packed_sha256'],codec=current['codec'],
+            kind='skinned' if current['joint_count'] else 'static',joint_count=current['joint_count'],
+            looks=current['looks'],lod=lod,look=look,mesh_record_count=current['mesh_record_count'],
+            animsets=current['animsets'],clips=animation.labels() if animation else [],
+            animation_note='Loading animations…' if pending else current['animation_note'],animation_pending=pending)
+        if purpose=='export':
+            info.update(purpose='export',materials=[dict(index=m.get('index',i),name=m.get('name'),path=m.get('path'))
+                                                    for i,m in enumerate(current['materials'])])
+            return info
+        result=mesh_payload(current,lod,look)
+        result.update(info,textures=current['textures'],texture_list=current['texture_list'],
+            materials=[dict(index=m.get('index',i),name=m.get('name'),path=m.get('path'),**current['material_rules'].get(m.get('path'),{}))
+                       for i,m in enumerate(current['materials'])],
             limitation='Native bind/rest geometry only. Neutral viewer shading; no runtime material, animation, attachment or game-equivalence claim.')
         from rc2016.viewer.viewport import prepare_viewport
         result["_prepared_viewport"]=prepare_viewport(result)

@@ -67,9 +67,11 @@ NO_BLOCK = 0xFFFFFFFF
 
 
 def sections(data):
-    if data[:4] != b'1TAD':
+    if len(data) < 16 or data[:4] != b'1TAD':
         raise ValueError('Not a DAT1 container')
     count, = struct.unpack_from('<I', data, 12)
+    if 16 + 12 * count > len(data):
+        raise ValueError('Truncated DAT1 section table')
     return {label: (offset, size) for label, offset, size in
             (struct.unpack_from('<III', data, 16 + 12 * i) for i in range(count))}
 
@@ -185,6 +187,67 @@ def decode_zone(data):
                 models_used=len({i['model_index'] for i in instances}))
 
 
+def decode_zone_arrays(data):
+    """decode_zone's placements as arrays, for the level viewer: the same invariants and errors, without
+    per-instance dicts, matrix lists or the tail hex.
+
+    {'models', 'override_materials', 'instances' (count), 'matrices' float32 (n, 16) row-vector,
+     'model_index' uint32 (n,), 'overrides' {instance number: decode_zone's material_overrides list}}.
+    Only instances with a nonzero override count appear in 'overrides'. Any invariant failure is
+    re-raised by decode_zone itself, so the message is the one the full decoder gives."""
+    import numpy as np
+    table = sections(data)
+    missing = [hex(t) for t in (DATA_HEAP, INSTANCE_OFFSETS, MODEL_PATHS) if t not in table]
+    if missing:
+        raise ValueError(f'Zone lacks instance sections {missing}')
+    heap, heap_size = table[DATA_HEAP]
+    off, size = table[MODEL_PATHS]
+    models = [_cstring(data, o).replace('\\', '/') for o in struct.unpack_from(f'<{size // 4}I', data, off)]
+    off, size = table[INSTANCE_OFFSETS]
+    rel = np.frombuffer(data, '<u4', size // 4, off).astype(np.int64)
+    replacements = override_materials(data, table)
+    n = len(rel)
+    result = dict(models=models, override_materials=replacements, instances=n, overrides={},
+                  matrices=np.zeros((0, 16), np.float32), model_index=np.zeros(0, np.uint32))
+    if not n:
+        return result
+    r = heap + rel
+    if int(r.min()) < 0 or int(r.max()) + RECORD_HEADER_SIZE > len(data):
+        return _arrays_from_full(data)
+    raw = np.frombuffer(data, np.uint8)[r[:, None] + np.arange(0x60)]
+    matrices = np.ascontiguousarray(raw[:, :64]).view('<f4')
+    record_size = np.ascontiguousarray(raw[:, 0x44:0x48]).view('<u4')[:, 0].astype(np.int64)
+    ids = np.ascontiguousarray(raw[:, 0x48:0x50]).view('<u8')[:, 0]
+    model_index = np.ascontiguousarray(raw[:, 0x58:0x5C]).view('<u4')[:, 0]
+    last = np.zeros(n, bool); last[-1] = True
+    ok = ((record_size >= RECORD_HEADER_SIZE) & (rel + RECORD_HEADER_SIZE <= heap_size)
+          & ((rel + record_size <= heap_size) | (last & (rel + record_size - heap_size < 8))))
+    ok[:-1] &= rel[1:] - rel[:-1] == (record_size[:-1] + 7) & ~7
+    ok &= (matrices[:, 3] == 0.0) & (matrices[:, 7] == 0.0) & (matrices[:, 11] == 0.0) & (matrices[:, 15] == 1.0)
+    ok &= model_index < len(models)
+    if not ok.all() or len(np.unique(ids)) != n:
+        return _arrays_from_full(data)
+    by_hash = {}
+    for path in replacements:
+        by_hash.setdefault(path_crc64(path), path)
+    counts = np.frombuffer(data, np.uint8)[r + 0x99]
+    for i in np.flatnonzero(counts).tolist():
+        result['overrides'][i] = _material_overrides(data, int(r[i]), int(record_size[i]), heap + heap_size, by_hash)
+    result.update(matrices=matrices, model_index=model_index)
+    return result
+
+
+def _arrays_from_full(data):
+    """decode_zone_arrays through the full decoder (it raises the exact invariant error)."""
+    import numpy as np
+    zone = decode_zone(data)
+    instances = zone['instances']
+    return dict(models=zone['models'], override_materials=zone['override_materials'], instances=len(instances),
+                matrices=np.array([[x for row in i['matrix_rows'] for x in row] for i in instances], np.float32).reshape(-1, 16),
+                model_index=np.array([i['model_index'] for i in instances], np.uint32),
+                overrides={n: i['material_overrides'] for n, i in enumerate(instances) if i['material_overrides']})
+
+
 def _unorm_1010102(word):
     v = [((word >> shift) & 0x3FF) / 1023 * 2 - 1 for shift in (0, 10, 20)]
     length = math.sqrt(sum(c * c for c in v)) or 1.0
@@ -196,9 +259,15 @@ def decode_decals(zone_data, static_data):
     table, static_table = sections(zone_data), sections(static_data)
     if DECAL_OFFSETS not in table:
         return []
+    if DATA_HEAP not in table:
+        raise ValueError('Zone lacks its data heap for decal records')
+    if DECAL_MESHES not in static_table:
+        raise ValueError('.zone_static lacks its decal mesh section')
     heap = table[DATA_HEAP][0]
     off, size = table[DECAL_OFFSETS]
     meshes_off, meshes_size = static_table[DECAL_MESHES]
+    if meshes_off + meshes_size > len(static_data):
+        raise ValueError('.zone_static decal mesh section outside file')
     count = meshes_size // DECAL_RECORD_SIZE
     decals, used = [], set()
     for n, rel in enumerate(struct.unpack_from(f'<{size // 4}I', zone_data, off)):
