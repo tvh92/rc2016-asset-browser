@@ -621,6 +621,23 @@ class ModelViewport(_TkFrame):
                 return entry['native_translation'], entry['native_textures'], False
         return None, {}, False
 
+    def set_ground_preview_controls(self, red, green, uv_scale):
+        """Uniform review controls; never alter native readiness or scene geometry."""
+        from rc2016.shaders.terrain_preview import CONTRACT, rebind_preview
+        values = tuple(float(v) for v in (red, green, uv_scale))
+        if not all(math.isfinite(v) for v in values) or not (0 <= values[0] <= 1 and 0 <= values[1] <= 1 and 0.01 <= values[2] <= 100):
+            raise ValueError('Ground blend channels must be 0–1 and UV scale 0.01–100')
+        entries = list((getattr(self, '_materials', None) or getattr(self, '_gl_textures', None) or {}).values())
+        updates = [(e, rebind_preview(e['experimental_preview'], values)) for e in entries
+                   if e.get('experimental_preview', {}).get('preview_contract') == CONTRACT]
+        self.ground_preview_controls = values
+        for entry, receipt in updates:
+            entry['experimental_preview'] = receipt
+        if hasattr(self, '_draw_list'): self._draw_list = None
+        if hasattr(self, '_material_ops'): self._material_ops.clear()
+        self.__dict__.pop('_program_memo', None)
+        self._schedule_draw()
+
     def _surface_program(self, entry, level, instanced=False):
         """(program, uniform locations) of a material entry, memoised per entry, level and variant;
         the memo belongs to the current Shading object and keeps the entry it was computed for."""
@@ -720,8 +737,13 @@ class ModelViewport(_TkFrame):
                 uploaded[role] = by_path[key]
         for receipt_key, texture_key in (('native_translation','native_textures'), ('experimental_preview','experimental_textures')):
             if not entry.get(receipt_key): continue
+            receipt = entry[receipt_key]
+            if receipt_key == 'experimental_preview' and hasattr(self, 'ground_preview_controls'):
+                from rc2016.shaders.terrain_preview import CONTRACT, rebind_preview
+                if receipt.get('preview_contract') == CONTRACT:
+                    receipt = rebind_preview(receipt, self.ground_preview_controls)
             native = {}
-            normal_api = (entry[receipt_key].get('normal') or {}).get('api')
+            normal_api = (receipt.get('normal') or {}).get('api')
             for api, texture in entry[texture_key].items():
                 path = texture['path']
                 linear_rgb = bool(texture.get('srgb')) and api != normal_api
@@ -734,7 +756,7 @@ class ModelViewport(_TkFrame):
                     break
                 native[api] = by_path[cache_key]
             else:
-                uploaded[receipt_key] = entry[receipt_key]
+                uploaded[receipt_key] = receipt
                 uploaded[texture_key] = native
         return uploaded
 

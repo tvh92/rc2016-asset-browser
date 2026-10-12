@@ -400,8 +400,18 @@ class LevelPanel:
         self.spawn_var = tk.BooleanVar(value=spawn_preview)
         ttk.Checkbutton(experimental, text="Enemy spawns", variable=self.spawn_var,
                         command=self._experimental_changed).grid(row=1, column=1, sticky="w", padx=(8, 0))
-        ttk.Label(experimental, text="Mountain albedo: matte preview; detail/variant unverified.",
+        ttk.Label(experimental, text="Mountains: matte preview. Ground: uniform blends; painted paths unavailable.",
                   foreground="gray", wraplength=250).grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        from rc2016.shaders.terrain_preview import DEFAULT_CONTROLS
+        self.ground_controls = [tk.DoubleVar(value=value) for value in DEFAULT_CONTROLS]
+        ground = ttk.Frame(experimental); ground.grid(row=3, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        for row, (label, variable, upper, step) in enumerate(zip(('Blend red', 'Blend green', 'Ground UV scale'), self.ground_controls, (1, 1, 100), (0.05, 0.05, 0.1))):
+            ttk.Label(ground, text=label).grid(row=row, column=0, sticky="w")
+            control = ttk.Spinbox(ground, from_=0.01 if row == 2 else 0, to=upper, increment=step,
+                                  width=7, textvariable=variable, command=self._ground_controls_changed)
+            control.grid(row=row, column=1, padx=(6, 0), sticky="w")
+            control.bind('<Return>', self._ground_controls_changed)
+            control.bind('<FocusOut>', self._ground_controls_changed)
         head = ttk.Frame(side); head.grid(row=9, column=0, sticky="ew", pady=(6, 2))
         ttk.Label(head, text="Zones").pack(side="left")
         ttk.Button(head, text="None", width=5, command=lambda: self._set_all(False)).pack(side="right")
@@ -540,6 +550,13 @@ class LevelPanel:
         enabled = self.experimental_var.get()
         self.view.set_experimental_materials(enabled and self.material_previews_var.get())
         self.view.set_spawn_preview(enabled and self.spawn_var.get())
+
+    def _ground_controls_changed(self, event=None):
+        try:
+            values = [v.get() for v in self.ground_controls]
+            self.view.set_ground_preview_controls(*values)
+        except (ValueError, self.tk.TclError):
+            return
 
     def _lighting_changed(self):
         if self.lighting_var.get() == "Shared HDRI":

@@ -33,8 +33,8 @@ def emit_surface(translation, srgb=None, *, experimental=False):
     """
     preview = experimental and translation.get('status') == 'experimental'
     if preview:
-        from rc2016.viewer.experimental_materials import CONTRACT, CODE_SHA, GRAPH_SHA, MATERIAL_SHA
-        if (translation.get('preview_contract'), translation.get('code_sha256'), translation.get('graph_sha256'), translation.get('material_sha256')) != (CONTRACT, CODE_SHA, GRAPH_SHA, MATERIAL_SHA):
+        from rc2016.viewer.experimental_materials import valid_contract
+        if not valid_contract(translation):
             raise ValueError('Unknown experimental surface contract')
     if translation.get('status') != 'ready' and not preview:
         raise ValueError('Native surface requires a ready translation')

@@ -111,6 +111,9 @@ def build_preview(material, graph):
 
 
 def prepare_preview(archive, path):
+    from rc2016.shaders import terrain_preview
+    if path.replace('\\','/').lower() == terrain_preview.MATERIAL:
+        return terrain_preview.prepare_preview(archive, path)
     if path.replace('\\','/').lower() != MATERIAL: return None
     from rc2016.formats.archive import asset_data
     from rc2016.viewer.textures import _archive_cache, _remember
@@ -122,3 +125,11 @@ def prepare_preview(archive, path):
             return asset_data(archive,ids[0])
         _remember(cache,path,build_preview(read(path,'material'),read(GRAPH,'materialgraph')))
     return cache[path]
+
+
+def valid_contract(receipt):
+    """Only independently pinned preview contracts reach experimental emitters."""
+    from rc2016.shaders import terrain_preview
+    identity = tuple(receipt.get(k) for k in ('preview_contract','code_sha256','graph_sha256','material_sha256'))
+    return identity in ((CONTRACT,CODE_SHA,GRAPH_SHA,MATERIAL_SHA),
+                       (terrain_preview.CONTRACT,terrain_preview.CODE_SHA,terrain_preview.GRAPH_SHA,terrain_preview.MATERIAL_SHA))

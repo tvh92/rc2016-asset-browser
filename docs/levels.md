@@ -183,7 +183,7 @@ A new load cancels the previous one (generation counter; stale events are droppe
 
 ### Modes
 
-The sidebar groups **Lighting**, **Display**, **Materials**, **Scene**, and **Experimental** controls. Experimental is off by default; its master gates the independently selected material and enemy-spawn previews. `--experimental-materials` enables the labelled Novalis mountain albedo-only matte preview while leaving spawns off. `--experimental-spawns` selects spawns without selecting material previews, and enables the master; both flags may be combined. See [experimental material previews](viewer.md#experimental-material-previews) for source inputs, preview substitutions and unsupported limits. Ordinary Native translation remains under Materials and is independent of Experimental.
+The sidebar groups **Lighting**, **Display**, **Materials**, **Scene**, and **Experimental** controls. Experimental is off by default; its master gates the independently selected material and enemy-spawn previews. `--experimental-materials` enables the labelled Novalis mountain albedo-only matte and ground-layer previews while leaving spawns off. Ground has uniform blend-channel and UV-scale review controls; its original painted path inputs remain unresolved. `--experimental-spawns` selects spawns without selecting material previews, and enables the master; both flags may be combined. See [experimental material previews](viewer.md#experimental-material-previews) for source inputs, preview substitutions and unsupported limits. Ordinary Native translation remains under Materials and is independent of Experimental.
 
 `Shaded` (model-viewer rules and eligible native translations), `Textured`, `Solid`, `Wireframe`, `Solid + wireframe`. Batches without UV0 draw as Solid.
 
