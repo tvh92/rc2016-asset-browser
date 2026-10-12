@@ -65,6 +65,35 @@ def prune_intermediates(output_root, log):
     log('intermediates_pruned', folders=list(INTERMEDIATE_DIRS), bytes=freed)
 
 
+# Working blends (candidates, checkpoints, assembly inputs) live in these folders; deliveries do not.
+WORKING_BLEND_DIRS = ('blender','variant_assemblies','work','cache','compressed_assets','decoded_sources')
+
+
+# The reference index the viewer reads to find each model's animsets (viewer/animation.model_animsets).
+# Without it every model in the folder loses its animation list, so blend-only output keeps these two files.
+VIEWER_INDEX_FILES = ('reports/asset_index.json','reports/asset_references.sqlite')
+
+
+def keep_only_blends(output_root):
+    """Blend-only output: delete every file below OutputRoot except delivered .blend files (each model's
+    <Model>.blend and final/*.blend), including deliveries from earlier runs in the same folder, and
+    except the viewer's reference index (VIEWER_INDEX_FILES)."""
+    def long_path(path):
+        path=str(Path(path).resolve())
+        return '\\\\?\\'+path if os.name=='nt' and not path.startswith('\\\\?\\') else path
+    root=long_path(output_root);removed=0
+    for folder,_dirs,files in os.walk(root):
+        top=os.path.relpath(folder,root).split(os.sep)[0]
+        for name in files:
+            relative=os.path.relpath(os.path.join(folder,name),root).replace(os.sep,'/')
+            if relative in VIEWER_INDEX_FILES:
+                continue
+            working=top in WORKING_BLEND_DIRS or 'candidate' in name.lower() or 'checkpoint' in name.lower()
+            if working or not name.lower().endswith('.blend'):
+                os.remove(os.path.join(folder,name));removed+=1
+    return removed
+
+
 def remove_empty_dirs(root):
     """Delete empty folders below ``root`` (deepest first); runs recreate the ones they need."""
     for folder,_dirs,_files in sorted(os.walk(root),key=lambda row:-len(row[0])):
@@ -368,7 +397,7 @@ def process_model(key,index,args,code_hash,previous,log):
     # Check the shortest generated texture path before decoding model/material
     # assets; late Blender image-load failures are difficult to diagnose.
     preflight_texture_output(args.output_root,model_root,args.export_textures)
-    for folder in ('meshes','textures','materials','decoded_sources','animation_cache','reports','validation','review_images'):
+    for folder in ('meshes','textures','materials','decoded_sources','animation_cache','reports','validation'):
         (model_root/folder).mkdir(parents=True,exist_ok=True)
     report_dir=model_root/'reports'
     related=index.related(key)
@@ -592,10 +621,10 @@ def process_model(key,index,args,code_hash,previous,log):
                 source_evidence=check))
     job=dict(schema=VERSION,fingerprint=fingerprint,model=model,geometry=geometry,native_geometry=native_geometry,native_parts=native_parts,
         animation_selection=selection_identity,clip_catalog=entries,
-        texture_transport=texture_transport,skip_previews=args.skip_previews,
+        texture_transport=texture_transport,
         experimental_ambiguous_inheritance=args.experimental_ambiguous_inheritance,
         clips=action_entries,limitations=limitations,candidate=str(candidate),checkpoint=str(checkpoint),
-        review=str(model_root/'review_images'),validation_report=str(model_root/'validation/validation.json'),
+        validation_report=str(model_root/'validation/validation.json'),
         hdri=str(args.hdri) if args.hdri else None,game_lighting=args.game_lighting,veldin_look=args.veldin_look,
         shared_lighting=args.shared_lighting,
         game_lighting_exr=(args.game_lighting['environment_exr'] if args.game_lighting else None),
@@ -1325,7 +1354,7 @@ def main():
     parser.add_argument('--fail-on-missing-assets',action='store_true')
     parser.add_argument('--experimental-ambiguous-inheritance',action='store_true',
         help='Include both decoded full and SSC0 experimental Actions for source-related clips blocked by inheritance ambiguity; SSC0 is preferred, runtime accuracy remains unproven')
-    parser.add_argument('--skip-previews',action='store_true',help='Validate the reopened blend without rendering manual-review previews')
+    parser.add_argument('--blend-only',action='store_true',help='After a fully successful run, keep only the delivered .blend files and the viewer animation index: delete reports, meshes, textures, caches and validation')
     parser.add_argument('--lighting-source',choices=('veldin','novalis','hdri'),default='hdri',
         help='hdri (default): the shared review lighting from --lighting-config; veldin: opt-in captured Veldin key light, ambient, exposure and RC PS4 Game tonemap; novalis: decoded probe')
     parser.add_argument('--novalis-atmosphere-sun',action='store_true',help='Add the source-valued Novalis RGB96 Sun candidate; runtime field names remain pending')
@@ -1368,6 +1397,7 @@ def main():
     prior_manifest=load(manifest_path) if manifest_path.exists() else {}
     previous=prior_manifest.get('models',{})
     args.previous_implementation_sha256=prior_manifest.get('implementation_sha256',{})
+    keep_blends_only=False
     manifest=dict(schema='ps4-animation-pipeline-v1',version=VERSION,source_root=str(args.extracted_root),output_root=str(args.output_root),models=previous.copy(),errors=[])
     try:
         archive=Archive(locate(args.extracted_root),args.output_root,log);archive.index_loose(args.extracted_root)
@@ -1480,6 +1510,9 @@ def main():
         dump(manifest_path,manifest)
         if not manifest['errors'] and not args.keep_intermediates:
             prune_intermediates(args.output_root,log)
+        if args.blend_only:
+            if manifest['errors']:log('blend_only_skipped',reason='the run had errors, so all output was kept for diagnosis')
+            else:keep_blends_only=True
         log('finished',models=len(selection),failed=len(manifest['errors']))
         return 1 if manifest['errors'] else 0
     except Exception as exc:
@@ -1489,6 +1522,9 @@ def main():
         log.file.close();lock_stream.close()
         try:lock.unlink()
         except OSError:pass
+        if keep_blends_only:
+            # Runs after the log and lock are closed, so their files can be removed too.
+            print('blend-only output: removed %d files other than the delivered .blend files'%keep_only_blends(args.output_root),flush=True)
         remove_empty_dirs(args.output_root)
 
 

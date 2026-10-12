@@ -23,7 +23,7 @@ from rc2016.formats.texture_transport import validate_reopened_texture_bindings
 from rc2016.shaders.validation import validate_polygon_used_material_preflights
 from rc2016.pipeline.material_presentation_collector import collect_material_presentation_status
 from rc2016.pipeline.scene_defaults import (apply_new_scene_defaults,audit_scene,_configure_optix_gpu,check_shared_lighting,load_shared_lighting,
-    pack_scene_images_except_shared_hdri)
+    fit_render_region,frame_camera_zoom,visible_mesh_points,pack_scene_images_except_shared_hdri)
 
 
 # The game stores assets in Y-up coordinates.  Keep source mesh/bone/action data in
@@ -114,37 +114,6 @@ def review_preview_lighting(scene):
             bpy.data.worlds.remove(temporary_world)
         if temporary_image and temporary_image.users==0 and not temporary_image.packed_file:
             bpy.data.images.remove(temporary_image)
-
-
-def render_review_previews(scene,job,result,ns):
-    """Render the review set under shared presentation lighting and restore scene state."""
-    with review_preview_lighting(scene) as lighting:
-        scene.render.resolution_percentage=25;scene.cycles.samples=32
-        representatives={}
-        for index,entry in enumerate(job['clips']):representatives.setdefault(entry['family'],index)
-        if not representatives:representatives['static']=None
-        for group,index in representatives.items():
-            entry=job['clips'][index] if index is not None else None
-            if entry:ns['select_clip'](index)
-            for frame in (sorted({1,(entry['frames']+1)//2,entry['frames']}) if entry else [1]):
-                scene.frame_set(frame)
-                label=index if index is not None else 0
-                path=Path(job['review'])/group/f'{label:05d}_frame_{frame:05d}.png';path.parent.mkdir(parents=True,exist_ok=True)
-                scene.render.filepath=str(path);bpy.ops.render.render(write_still=True)
-                header=read(path)[:24]
-                assert header[:8]==b'\x89PNG\r\n\x1a\n','Preview is not a PNG'
-                check_image=bpy.data.images.load(str(path),check_existing=False)
-                pixels=np.empty(len(check_image.pixels),dtype=np.float32);check_image.pixels.foreach_get(pixels)
-                alpha=pixels[3::4]
-                alpha_summary=dict(width=check_image.size[0],height=check_image.size[1],
-                    transparent_pixels=int(np.count_nonzero(alpha==0)),partial_alpha_pixels=int(np.count_nonzero((alpha>0)&(alpha<1))),
-                    nontransparent_pixels=int(np.count_nonzero(alpha>0)),finite=bool(np.isfinite(pixels).all()))
-                bpy.data.images.remove(check_image)
-                assert alpha_summary['finite'] and alpha_summary['transparent_pixels']>0,'Transparent RGBA integrity check failed'
-                result['previews'].append(dict(path=str(path),sha256=file_hash(path),source_clip=entry['name'] if entry else None,frame=frame,
-                    purpose='Manual review of decoded source geometry' if job.get('geometry') or job.get('native_geometry') else 'Manual review of diagnostic source skeleton',
-                    alpha_integrity=alpha_summary,lighting=dict(lighting),ai_visual_review=False))
-        result['preview_lighting']=dict(lighting)
 
 
 def validate_reopened_native_descriptor(descriptor,objects,joint_names=None):
@@ -510,14 +479,13 @@ def build(job):
         center=Vector(((lo+hi)/2).tolist());radius=max(float(np.linalg.norm(hi-lo))/2,.05)
         camera_data=bpy.data.cameras.new('Source motion review camera');camera_data.type='PERSP';camera_data.lens=50
         camera=bpy.data.objects.new('Source motion review camera',camera_data);scene.collection.objects.link(camera)
-        # Limiting half field of view: the shorter render axis of the 36 mm sensor.
-        aspect=scene.render.resolution_x/max(scene.render.resolution_y,1)
-        short_sensor=camera_data.sensor_width/max(aspect,1/aspect)
-        half_fov=math.atan(short_sensor/2/camera_data.lens)
-        camera.location=center+Vector((1,-1.6,.85)).normalized()*(radius/math.sin(half_fov))*1.1
-        camera.rotation_euler=(center-camera.location).to_track_quat('-Z','Y').to_euler()
         camera_data.clip_start=max(.0001,radius/10000);camera_data.clip_end=radius*100
         scene.camera=camera
+        # Every build keeps the reference angle; the camera is dollied along it so the model fills the frame.
+        model_points=visible_mesh_points(scene)
+        embed('Camera zoom.json',frame_camera_zoom(scene,model_points if len(model_points) else np.asarray(bounds)))
+    # Render Region around the model in the zoomed camera, with padding (applied after the zoom).
+    embed('Render region.json',fit_render_region(scene))
     if job.get('veldin_look') and scene.get('lighting_source')!='veldin_capture':
         toolkit=str(Path(job['veldin_look']['view_dir']).parent)
         if toolkit not in sys.path:sys.path.insert(0,toolkit)
@@ -970,10 +938,6 @@ def validate(job):
     else:result['rest_max_matrix_error']=None
     assert structural_snapshot(scene)==baseline,'Controls changed scene structure'
     result['scene_preservation_passed']=True
-    if not job.get('skip_previews'):
-        render_review_previews(scene,job,result,ns)
-    else:
-        result['preview_status']='skipped_by_request'
     if rig:ns['play_all']() if job['clips'] else ns['restore_rest']()
     assert structural_snapshot(scene)==baseline
     assert not audit_scene(scene)['mismatches']

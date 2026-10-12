@@ -84,6 +84,50 @@ class PipelineGuiBackendTests(unittest.TestCase):
                                                skip_verified=False)
             self.assertIn("--force", force_runner.command())
 
+    def test_blend_only_runner_passes_flag_and_always_rebuilds(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            py, blender = root / "python.exe", root / "blender.exe"
+            py.touch(); blender.touch()
+            runner = PipelineBatchRunner(["hero"], root / "source", root / "out", py, blender,
+                                         skip_verified=True, blend_only=True)
+            command = runner.command()
+            self.assertIn("--blend-only", command)
+            self.assertIn("--force", command)
+            self.assertNotIn("--reuse-cache", command)
+            self.assertNotIn("--blend-only", PipelineBatchRunner(["hero"], root / "source", root / "out", py,
+                                                                 blender, skip_verified=True).command())
+
+    def test_blend_only_keeps_deliveries_and_removes_everything_else(self):
+        from rc2016.pipeline.run import keep_only_blends
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "out"
+            model = root / "hero_1234"
+            other = root / "villain_5678"
+            for directory in (model / "reports", model / "meshes", other, root / "final",
+                              root / "blender", root / "variant_assemblies" / "fusion", root / "work"):
+                directory.mkdir(parents=True)
+            (model / "hero.blend").write_bytes(b"hero")
+            (other / "villain.blend").write_bytes(b"villain")
+            (root / "final" / "Assembly.blend").write_bytes(b"assembly")
+            (model / "reports" / "manifest.json").write_text("{}")
+            (model / "meshes" / "manifest.json").write_text("{}")
+            (root / "blender" / "hero_candidate.blend").write_bytes(b"candidate")
+            (root / "variant_assemblies" / "fusion" / "Assembly.candidate.blend").write_bytes(b"candidate")
+            (root / "work" / "pipeline.lock").write_bytes(b"0")
+            (root / "reports").mkdir()
+            (root / "reports" / "asset_index.json").write_text("{}")
+            (root / "reports" / "asset_references.sqlite").write_bytes(b"refs")
+            self.assertEqual(5, keep_only_blends(root))
+            self.assertEqual(b"{}", (root / "reports" / "asset_index.json").read_bytes())
+            self.assertEqual(b"refs", (root / "reports" / "asset_references.sqlite").read_bytes())
+            self.assertEqual(b"hero", (model / "hero.blend").read_bytes())
+            self.assertEqual(b"villain", (other / "villain.blend").read_bytes())
+            self.assertEqual(b"assembly", (root / "final" / "Assembly.blend").read_bytes())
+            self.assertFalse((model / "reports" / "manifest.json").exists())
+            self.assertFalse((root / "blender" / "hero_candidate.blend").exists())
+            self.assertFalse((root / "variant_assemblies" / "fusion" / "Assembly.candidate.blend").exists())
+
     def test_transform_backend_command_remains_compatible(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

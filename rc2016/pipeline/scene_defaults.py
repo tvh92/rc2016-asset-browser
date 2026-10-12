@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -19,7 +20,18 @@ from typing import Any, Dict, List, Optional
 # in assets/lighting/shared_lighting.json, so it can be replaced in one place.  Every scene
 # records the values it was given (scene["shared_lighting"]); checks compare against that.
 SHARED_LIGHTING_FILE = Path(__file__).resolve().parents[2] / "assets" / "lighting" / "shared_lighting.json"
-_LIGHTING_KEYS = ("hdri", "world_strength", "view_transform", "look", "exposure", "gamma", "use_compositing")
+_LIGHTING_KEYS = ("hdri", "hdri_rotation_z_degrees", "world_strength", "view_transform", "look", "exposure", "gamma",
+                  "use_compositing")
+# Render Region padding (fractions of the model's own screen size): the longer screen axis gets the
+# first value, the shorter axis the second.
+REGION_PADDING_LONG = 0.10
+REGION_PADDING_SHORT = 0.07
+# Build camera: the exact orientation of the hand-framed reference npc_grimroth.blend (Euler XYZ, degrees).
+# Every pipeline build keeps this angle and only dollies the camera along its view axis.
+CAMERA_EULER_DEGREES = (77.90851178661542, -1.7045135013369456e-05, 21.765396705411746)
+# The model's longer screen axis fills this fraction of the frame; the Render Region crop then adds
+# the padding, so the padded box stays inside the frame.
+CAMERA_FILL_LONG_AXIS = 1.0 / (1.0 + REGION_PADDING_LONG)
 
 
 def load_shared_lighting(path: Optional[Any] = None) -> Dict[str, Any]:
@@ -60,6 +72,11 @@ def check_shared_lighting(scene: Any, expected: Optional[Dict[str, Any]] = None)
         path = Path(bpy.path.abspath(image.filepath)).expanduser().resolve() if image else None
         if bg.type != "BACKGROUND" or abs(bg.inputs["Strength"].default_value - float(expected["world_strength"])) > 1e-5:
             problems.append("lighting.world_strength")
+        # Scenes built before the rotation existed have no Mapping node, which is a zero rotation.
+        mapping = scene.world.node_tree.nodes.get("PS4 HDRI Rotation")
+        turned = mapping.inputs["Rotation"].default_value[2] if mapping is not None else 0.0
+        if abs(turned - math.radians(float(expected.get("hdri_rotation_z_degrees", 0.0)))) > 1e-5:
+            problems.append("lighting.hdri_rotation")
         if image is None or path is None or str(path) != expected["hdri_path"] or tuple(image.size) == (0, 0):
             problems.append("lighting.hdri_file")
         elif not image.packed_file and image.get("shared_external_hdri_path") != str(path):
@@ -102,11 +119,14 @@ def _set_cycles_defaults(scene: Any) -> None:
         _set_if_present(cycles, name, value)
 
 
-def _set_world_hdri(scene: Any, hdri_path: Optional[Path], strength: Optional[float] = None) -> None:
+def _set_world_hdri(scene: Any, hdri_path: Optional[Path], strength: Optional[float] = None,
+                    rotation_z_degrees: Optional[float] = None) -> None:
     if hdri_path is None:
         hdri_path = Path(load_shared_lighting()["hdri_path"])
     if strength is None:
         strength = float(load_shared_lighting()["world_strength"])
+    if rotation_z_degrees is None:
+        rotation_z_degrees = float(load_shared_lighting()["hdri_rotation_z_degrees"])
     hdri_path = Path(hdri_path).expanduser().resolve()
     if not hdri_path.is_file():
         raise FileNotFoundError("Shared HDRI not found: %s" % hdri_path)
@@ -124,6 +144,14 @@ def _set_world_hdri(scene: Any, hdri_path: Optional[Path], strength: Optional[fl
     if environment is None:
         environment = nodes.new("ShaderNodeTexEnvironment")
         environment.name = "PS4 Golden Gate HDRI"
+    # Texture Coordinate -> Mapping -> Environment. The Mapping rotates the lookup direction, so a
+    # positive Z value makes the light appear turned by the opposite angle in world space: the same
+    # relative light as turning the model by +N degrees, without rotating the model.
+    coords = nodes.get("PS4 HDRI Coordinates") or nodes.new("ShaderNodeTexCoord")
+    coords.name = "PS4 HDRI Coordinates"
+    mapping = nodes.get("PS4 HDRI Rotation") or nodes.new("ShaderNodeMapping")
+    mapping.name = "PS4 HDRI Rotation"
+    mapping.inputs["Rotation"].default_value = (0.0, 0.0, math.radians(rotation_z_degrees))
     try:
         image = bpy.data.images.load(str(hdri_path), check_existing=True)
         environment.image = image
@@ -134,10 +162,12 @@ def _set_world_hdri(scene: Any, hdri_path: Optional[Path], strength: Optional[fl
     background.inputs["Strength"].default_value = strength
     # Remove only duplicate links into these sockets; leave unrelated nodes intact.
     for link in list(links):
-        if link.to_node in (background, output) and link.to_socket in (
-            background.inputs.get("Color"), output.inputs.get("Surface")
+        if link.to_node in (background, output, environment) and link.to_socket in (
+            background.inputs.get("Color"), output.inputs.get("Surface"), environment.inputs.get("Vector")
         ):
             links.remove(link)
+    links.new(coords.outputs["Generated"], mapping.inputs["Vector"])
+    links.new(mapping.outputs["Vector"], environment.inputs["Vector"])
     links.new(environment.outputs["Color"], background.inputs["Color"])
     links.new(background.outputs["Background"], output.inputs["Surface"])
     output.is_active_output = True
@@ -195,7 +225,11 @@ def apply_new_scene_defaults(scene: Any = None, hdri_path: Optional[str] = None,
     render.resolution_percentage = 100
     render.image_settings.file_format = "PNG"
     render.image_settings.color_mode = "RGBA"
+    render.image_settings.compression = 100
     render.film_transparent = True
+    # Render Region with Crop to Render Region: the region is the full frame unless a scene sets one.
+    render.use_border = True
+    render.use_crop_to_border = True
     _set_cycles_defaults(scene)
     cycles = scene.cycles
     _set_if_present(cycles, "use_adaptive_sampling", True)
@@ -230,7 +264,8 @@ def apply_shared_lighting(scene: Any, lighting: Optional[Any] = None, hdri_path:
     settings = dict(lighting) if isinstance(lighting, dict) else load_shared_lighting(lighting)
     if hdri_path:
         settings["hdri_path"] = str(Path(hdri_path).expanduser().resolve())
-    _set_world_hdri(scene, Path(settings["hdri_path"]), float(settings["world_strength"]))
+    _set_world_hdri(scene, Path(settings["hdri_path"]), float(settings["world_strength"]),
+                    float(settings["hdri_rotation_z_degrees"]))
     view = scene.view_settings
     view.view_transform = settings["view_transform"]
     view.look = settings["look"]
@@ -239,6 +274,197 @@ def apply_shared_lighting(scene: Any, lighting: Optional[Any] = None, hdri_path:
     scene.render.use_compositing = bool(settings["use_compositing"])
     scene["shared_lighting"] = json.dumps(settings, sort_keys=True)
     return settings
+
+
+def padded_region(bounds: Any, pixel_size: Any, long_padding: float = REGION_PADDING_LONG,
+                  short_padding: float = REGION_PADDING_SHORT) -> tuple:
+    """Render Region fractions (min_x, min_y, max_x, max_y) around a model box.
+
+    ``bounds`` is (x0, y0, x1, y1) in normalised camera-frame coordinates (origin bottom-left).
+    Each padding is a fraction of the model's own size on that screen axis: the longer axis
+    (in pixels) takes ``long_padding`` and the shorter axis takes ``short_padding``.  The result
+    is clamped to the frame."""
+    x0, y0, x1, y1 = (float(v) for v in bounds)
+    width_px = (x1 - x0) * float(pixel_size[0])
+    height_px = (y1 - y0) * float(pixel_size[1])
+    if height_px >= width_px:  # taller than wide: vertical gets the long padding
+        pad_x, pad_y = short_padding, long_padding
+    else:
+        pad_x, pad_y = long_padding, short_padding
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    half_w, half_h = (x1 - x0) * (1 + pad_x) / 2, (y1 - y0) * (1 + pad_y) / 2
+    return (max(0.0, cx - half_w), max(0.0, cy - half_h), min(1.0, cx + half_w), min(1.0, cy + half_h))
+
+
+def fit_render_region(scene: Any, long_padding: float = REGION_PADDING_LONG,
+                      short_padding: float = REGION_PADDING_SHORT) -> Dict[str, Any]:
+    """Set the Render Region (with Crop to Render Region on) around the visible meshes as seen
+    through the scene camera, plus padding.  Only ``render.border_*`` changes; the camera is untouched.
+
+    The mesh vertices are evaluated at the scene's current frame, so animated clips that move
+    outside this region will be cropped; frame the region on the clip's own frame if needed."""
+    import bpy  # type: ignore
+    import numpy as np  # type: ignore
+
+    camera = getattr(scene, "camera", None)
+    if camera is None or camera.type != "CAMERA":
+        raise RuntimeError("Render Region fitting needs a scene camera")
+    render = scene.render
+    bpy.context.view_layer.update()
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    projection = camera.calc_matrix_camera(depsgraph, x=render.resolution_x, y=render.resolution_y)
+    to_clip = np.array(projection @ camera.matrix_world.inverted())
+    clip_points = []
+    for obj in scene.objects:
+        if obj.type != "MESH" or obj.hide_render:
+            continue
+        evaluated = obj.evaluated_get(depsgraph)
+        mesh = evaluated.to_mesh()
+        try:
+            co = np.empty(len(mesh.vertices) * 3, dtype=np.float64)
+            mesh.vertices.foreach_get("co", co)
+        finally:
+            evaluated.to_mesh_clear()
+        if co.size == 0:
+            continue
+        co = np.c_[co.reshape(-1, 3), np.ones(co.size // 3)]
+        clip_points.append(co @ (to_clip @ np.array(evaluated.matrix_world)).T)
+    if not clip_points:
+        raise RuntimeError("No visible mesh to frame the Render Region around")
+    clip = np.vstack(clip_points)
+    if np.any(clip[:, 3] <= 0):
+        raise RuntimeError("Model vertices lie behind the scene camera; set the Render Region by hand")
+    ndc = clip[:, :2] / clip[:, 3:4]
+    frame = (ndc + 1) / 2  # normalised, origin bottom-left, as Blender's border
+    lo, hi = frame.min(axis=0), frame.max(axis=0)
+    bounds = (lo[0], lo[1], hi[0], hi[1])
+    region = padded_region(bounds, (render.resolution_x, render.resolution_y), long_padding, short_padding)
+    render.use_border = True
+    render.use_crop_to_border = True
+    render.border_min_x, render.border_min_y, render.border_max_x, render.border_max_y = region
+    return {"model_bounds": [float(v) for v in bounds], "region": [float(v) for v in region],
+            "padding_long": long_padding, "padding_short": short_padding}
+
+
+def camera_distance_for_fill(points: Any, centre: Any, rotation: Any, projection: Any, axis: int, fill: float) -> float:
+    """Distance from ``centre`` along the camera's back axis (its +Z) at which ``points`` span ``fill``
+    of the frame on ``axis`` (0 = horizontal, 1 = vertical).
+
+    Pure numpy.  ``rotation`` is the camera's 3x3 world rotation (columns: right, up, back) and
+    ``projection`` its 4x4 projection matrix.  The span shrinks as the camera moves away, so a
+    bisection finds the nearest distance that keeps every point inside the frame."""
+    import numpy as np  # type: ignore
+
+    points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    centre = np.asarray(centre, dtype=np.float64)
+    rotation = np.asarray(rotation, dtype=np.float64)
+    proj = np.asarray(projection, dtype=np.float64)
+    back = rotation[:, 2]
+    rel = points - centre
+    scale = max(float(np.ptp(rel, axis=0).max()), 1e-6)
+    ones = np.ones((len(rel), 1))
+
+    def span(distance: float) -> float:
+        cam = (rel - back * distance) @ rotation  # points in camera space, camera at centre + back * distance
+        clip = np.c_[cam, ones] @ proj.T
+        if np.any(clip[:, 3] <= 1e-9):  # a point is at or behind the camera
+            return float("inf")
+        ndc = (clip[:, :2] / clip[:, 3:4] + 1) / 2
+        return float(ndc[:, axis].max() - ndc[:, axis].min())
+
+    low = float((rel @ back).max()) + 1e-6 * scale  # nearest distance with every point in front
+    high = low + scale
+    for _ in range(64):
+        if span(high) <= fill:
+            break
+        high = low + 2 * (high - low)
+    else:
+        raise RuntimeError("Could not frame the model on axis %d at fill %.3f" % (axis, fill))
+    for _ in range(200):
+        middle = (low + high) / 2
+        if span(middle) > fill:
+            low = middle
+        else:
+            high = middle
+    return high
+
+
+def visible_mesh_points(scene: Any) -> Any:
+    """World-space vertices of the visible meshes at the scene's current frame, as an N x 3 array."""
+    import bpy  # type: ignore
+    import numpy as np  # type: ignore
+
+    bpy.context.view_layer.update()
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    chunks = []
+    for obj in scene.objects:
+        if obj.type != "MESH" or obj.hide_render:
+            continue
+        evaluated = obj.evaluated_get(depsgraph)
+        mesh = evaluated.to_mesh()
+        try:
+            co = np.empty(len(mesh.vertices) * 3, dtype=np.float64)
+            mesh.vertices.foreach_get("co", co)
+        finally:
+            evaluated.to_mesh_clear()
+        if co.size:
+            world = np.c_[co.reshape(-1, 3), np.ones(co.size // 3)] @ np.array(evaluated.matrix_world).T
+            chunks.append(world[:, :3])
+    return np.vstack(chunks) if chunks else np.empty((0, 3))
+
+
+def frame_camera_zoom(scene: Any, points: Any = None) -> Dict[str, Any]:
+    """Set the scene camera to the reference angle (CAMERA_EULER_DEGREES) and dolly it along its
+    view axis, so the model fills CAMERA_FILL_LONG_AXIS of the frame on its longer screen axis.
+
+    ``points`` defaults to the visible mesh vertices.  The camera's lens and sensor are unchanged;
+    only its rotation and location are set.  Call ``fit_render_region`` afterwards to crop."""
+    import bpy  # type: ignore
+    import numpy as np  # type: ignore
+
+    camera = getattr(scene, "camera", None)
+    if camera is None or camera.type != "CAMERA":
+        raise RuntimeError("Camera zoom needs a scene camera")
+    if points is None:
+        points = visible_mesh_points(scene)
+    points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    if not len(points):
+        raise RuntimeError("No model points to frame the camera on")
+    camera.rotation_euler = tuple(math.radians(v) for v in CAMERA_EULER_DEGREES)
+    bpy.context.view_layer.update()
+    rotation = np.array(camera.matrix_world.to_3x3())
+    render = scene.render
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    projection = np.array(camera.calc_matrix_camera(depsgraph, x=render.resolution_x, y=render.resolution_y))
+    centre = (points.min(axis=0) + points.max(axis=0)) / 2
+    horizontal = camera_distance_for_fill(points, centre, rotation, projection, 0, CAMERA_FILL_LONG_AXIS)
+    vertical = camera_distance_for_fill(points, centre, rotation, projection, 1, CAMERA_FILL_LONG_AXIS)
+    # The axis that needs the larger distance is the one the model fills most, i.e. its longer screen axis.
+    distance = max(horizontal, vertical)
+    dominant = "horizontal" if horizontal >= vertical else "vertical"
+    location = centre + rotation[:, 2] * distance
+
+    def screen_centre(at: Any) -> Any:
+        # Centre of the model's projected box in normalised -1..1 coordinates.
+        cam = (points - at) @ rotation
+        clip = np.c_[cam, np.ones(len(cam))] @ projection.T
+        ndc = clip[:, :2] / clip[:, 3:4]
+        return (ndc.min(axis=0) + ndc.max(axis=0)) / 2
+
+    # Slide the camera (rotation untouched) until the model is centred on screen, so the padded
+    # Render Region is not clipped by the frame edge.  A camera-space shift of d * ndc / projection.
+    for _ in range(4):
+        offset = screen_centre(location)
+        if np.allclose(offset, 0.0, atol=1e-6):
+            break
+        location = location + rotation[:, 0] * (offset[0] * distance / projection[0, 0]) \
+            + rotation[:, 1] * (offset[1] * distance / projection[1, 1])
+    camera.location = tuple(float(v) for v in location)
+    bpy.context.view_layer.update()
+    return {"dominant_axis": dominant, "distance": float(distance), "fill": CAMERA_FILL_LONG_AXIS,
+            "location": [float(v) for v in camera.location],
+            "rotation_degrees": [float(v) for v in CAMERA_EULER_DEGREES],
+            "screen_centre_offset": [float(v) for v in screen_centre(location)]}
 
 
 def _configure_optix_gpu(bpy: Any) -> None:
@@ -283,7 +509,10 @@ def audit_scene(scene: Any = None) -> Dict[str, Any]:
         "resolution": (render.resolution_x, render.resolution_y, render.resolution_percentage),
         "file_format": render.image_settings.file_format,
         "color_mode": render.image_settings.color_mode,
+        "png_compression": render.image_settings.compression,
         "film_transparent": render.film_transparent,
+        "use_border": render.use_border,
+        "use_crop_to_border": render.use_crop_to_border,
         "render_use_persistent_data": getattr(render, "use_persistent_data", None),
         "cycles": None if cycles is None else {
             "device": getattr(cycles, "device", None),
@@ -322,7 +551,10 @@ def audit_scene(scene: Any = None) -> Dict[str, Any]:
         "resolution": (OUTPUT_WIDTH, OUTPUT_HEIGHT, 100),
         "file_format": "PNG",
         "color_mode": "RGBA",
+        "png_compression": 100,
         "film_transparent": True,
+        "use_border": True,
+        "use_crop_to_border": True,
         "render_use_persistent_data": True,
     }
     result["mismatches"] = [key for key, value in expected.items() if result.get(key) != value]

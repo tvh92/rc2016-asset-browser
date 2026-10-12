@@ -102,6 +102,14 @@ GRAPH_RULES = (
          ('body', 0x7C456482, 3), ('gloss', 0x24F4CA4C, 1), ('tint', 0x4B4DAB19, 3), ('tint_scale', 0xEF9CE5DD, 1),
          ('alpha_exp', 0x2B68D24C, 1), ('env_scale', 0x80C092EE, 1), ('alpha_bias', 0x4E5B65FC, 1),
          ('rim_bias', 0x42170E5E, 1), ('env_exp', 0xACE4D867, 1), ('rim_exp', 0xECE213A3, 1)))),
+    # PROVISIONAL (review only, not game-matched). Writer 4DF1D438 is confirmed for veh_micron_ship_glass only;
+    # the other 10 materials are assumed. Alpha constants are grounded (module_10182). Colour is an approximation:
+    # the rim colour, rim multiplier/pow/cap, the env sample and fog are not in the kernel yet.
+    # Decode: Animation/pipeline/Research/Materials/NoRuleDecodes/character_glass_02/decode.md.
+    ('materialgraph/global/basic_glass/character_glass_02.',
+     dict(forward='character_glass', constants=dict(alpha_exp=0.0, alpha_bias=0.0), params=(
+         ('body', 0x7C456482, 3), ('gloss', 0x24F4CA4C, 1), ('tint', 0x4B4DAB19, 3), ('tint_scale', 0xEF9CE5DD, 1),
+         ('env_scale', 0x80C092EE, 1), ('rim_bias', 0x42170E5E, 1), ('env_exp', 0xACE4D867, 1), ('rim_exp', 0xECE213A3, 1)))),
     # Other models/enm_blarg_saucer/evidence/GLASS_DECODE.md (FEEC00CE). The graph binds two textures,
     # by slot hash: the colour-pick palette (api5) and Patterns_cma in the _n slot (api6). The
     # material's _c/_g use slots this graph does not have, so the writer never reads them.
@@ -658,6 +666,7 @@ def material_texture_paths(archive, material_path: str) -> dict:
             if path:
                 result[role] = path
         params = {name: vec3(key, (0.0, 0.0, 0.0)) if size == 3 else value(key, 0.0) for name, key, size in rule['params']}
+        params.update(rule.get('constants', {}))  # graph constants, not read from the material
         if rule['forward'] == 'water':
             params.update(WATER_PRESENTATION)
         result['forward'] = dict(kind=rule['forward'], params=params, **blend_state(material_flags(data)))
