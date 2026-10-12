@@ -67,9 +67,11 @@ NO_BLOCK = 0xFFFFFFFF
 
 
 def sections(data):
-    if data[:4] != b'1TAD':
+    if len(data) < 16 or data[:4] != b'1TAD':
         raise ValueError('Not a DAT1 container')
     count, = struct.unpack_from('<I', data, 12)
+    if 16 + 12 * count > len(data):
+        raise ValueError('Truncated DAT1 section table')
     return {label: (offset, size) for label, offset, size in
             (struct.unpack_from('<III', data, 16 + 12 * i) for i in range(count))}
 
@@ -257,9 +259,15 @@ def decode_decals(zone_data, static_data):
     table, static_table = sections(zone_data), sections(static_data)
     if DECAL_OFFSETS not in table:
         return []
+    if DATA_HEAP not in table:
+        raise ValueError('Zone lacks its data heap for decal records')
+    if DECAL_MESHES not in static_table:
+        raise ValueError('.zone_static lacks its decal mesh section')
     heap = table[DATA_HEAP][0]
     off, size = table[DECAL_OFFSETS]
     meshes_off, meshes_size = static_table[DECAL_MESHES]
+    if meshes_off + meshes_size > len(static_data):
+        raise ValueError('.zone_static decal mesh section outside file')
     count = meshes_size // DECAL_RECORD_SIZE
     decals, used = [], set()
     for n, rel in enumerate(struct.unpack_from(f'<{size // 4}I', zone_data, off)):
