@@ -322,7 +322,8 @@ class LevelPanel:
     """Tk panel; ``source_root`` is a callable returning the current extracted source root."""
 
     def __init__(self, parent, tk, ttk, source_root, level=None, mode="Shaded", zone_filter=None, on_done=None,
-                 list_parent=None, on_open_model=None, material_overrides=True, sky=True, native_translation=True, actors=True, spawn_preview=False):
+                 list_parent=None, on_open_model=None, material_overrides=True, sky=True, native_translation=True, actors=True, spawn_preview=False,
+                 experimental_materials=False):
         """``list_parent``: a separate frame for the level list (the asset browser's left pane);
         by default the list sits at the top of the panel's own side column (standalone window).
         ``on_open_model(model path)``: open a picked model elsewhere (the browser's Model tab)."""
@@ -350,50 +351,63 @@ class LevelPanel:
         box = ttk.Combobox(options, textvariable=self.mode_var, values=LevelViewport.MODES, state="readonly", width=17)
         box.pack(side="left", padx=4)
         box.bind("<<ComboboxSelected>>", lambda _e: self.view.set_mode(self.mode_var.get()))
-        light = ttk.Frame(side); light.grid(row=4, column=0, sticky="ew", pady=(6, 0))
+        light = ttk.LabelFrame(side, text="Lighting", padding=(4, 2)); light.grid(row=4, column=0, sticky="ew", pady=(6, 0))
         self.lighting_var = tk.StringVar(value=LevelViewport.LIGHTINGS[0])
         self.tonemap_var = tk.StringVar(value=LevelViewport.TONEMAPS[0])
-        ttk.Label(light, text="Lighting").grid(row=0, column=0, sticky="w")
+        self.lighting_enabled_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(light, text="On", variable=self.lighting_enabled_var,
+                        command=self._lighting_enabled_changed).grid(row=0, column=0, sticky="w")
         lighting_box = ttk.Combobox(light, textvariable=self.lighting_var, values=LevelViewport.LIGHTINGS, state="readonly", width=12)
-        lighting_box.grid(row=0, column=1, sticky="w", padx=4)
+        lighting_box.grid(row=0, column=1, sticky="w", padx=(2, 4))
         lighting_box.bind("<<ComboboxSelected>>", lambda _e: self._lighting_changed())
-        ttk.Label(light, text="Tonemap").grid(row=1, column=0, sticky="w", pady=(4, 0))
-        tonemap_box = ttk.Combobox(light, textvariable=self.tonemap_var, values=LevelViewport.TONEMAPS, state="readonly", width=19)
-        tonemap_box.grid(row=1, column=1, sticky="w", padx=4, pady=(4, 0))
-        tonemap_box.bind("<<ComboboxSelected>>", lambda _e: self.view.set_lighting(tonemap=self.tonemap_var.get()))
-        self.lighting_note = ttk.Label(light, text="", foreground="gray", wraplength=240)
-        self.lighting_note.grid(row=2, column=0, columnspan=2, sticky="w")
         self.scene_ao_var=tk.BooleanVar(value=True);self.scene_shadows_var=tk.BooleanVar(value=True);self.scene_authored_var=tk.BooleanVar(value=True)
-        scene_options=ttk.Frame(light);scene_options.grid(row=3,column=0,columnspan=2,sticky='w',pady=(5,0))
-        for text,var,name in (('Scene AO',self.scene_ao_var,'ao'),('Scene shadows',self.scene_shadows_var,'shadows'),('Authored point lights',self.scene_authored_var,'authored')):
-            ttk.Checkbutton(scene_options,text=text,variable=var,command=lambda v=var,n=name:self.view.set_scene_effects(**{n:v.get()})).pack(anchor='w')
-        self.scene_note=ttk.Label(scene_options,text='Scene preview; game caster/probe allocation is unverified.',foreground='gray',wraplength=240)
-        self.scene_note.pack(anchor='w')
-        self.hidden_var = tk.BooleanVar(value=False)
-        toggles = ttk.Frame(side); toggles.grid(row=5, column=0, sticky="w", pady=4)
-        ttk.Checkbutton(toggles, text="Show collision/template models", variable=self.hidden_var,
-                        command=lambda: self.view.set_show_hidden(self.hidden_var.get())).pack(anchor="w")
-        self.overrides_var = tk.BooleanVar(value=material_overrides)
-        ttk.Checkbutton(toggles, text="Instance material overrides", variable=self.overrides_var,
-                        command=lambda: self.view.set_material_overrides(self.overrides_var.get())).pack(anchor="w")
-        self.sky_var = tk.BooleanVar(value=sky)
-        ttk.Checkbutton(toggles, text="Sky (atmosphere cloud dome)", variable=self.sky_var,
-                        command=lambda: self.view.set_show_sky(self.sky_var.get())).pack(anchor="w")
+        scene_options=ttk.Frame(light);scene_options.grid(row=1,column=0,columnspan=2,sticky='w',pady=(2,0))
+        for text,var,name in (("AO",self.scene_ao_var,"ao"),("Shadows",self.scene_shadows_var,"shadows"),("Authored lights",self.scene_authored_var,"authored")):
+            ttk.Checkbutton(scene_options,text=text,variable=var,command=lambda v=var,n=name:self.view.set_scene_effects(**{n:v.get()})).pack(side="left",padx=(0,5))
+        self.scene_note=ttk.Label(light,text='Scene preview; game caster/probe allocation is unverified.',foreground='gray',wraplength=240)
+        self.scene_note.grid(row=2,column=0,columnspan=2,sticky="w")
+        self.lighting_note = ttk.Label(light, text="", foreground="gray", wraplength=240)
+        self.lighting_note.grid(row=3, column=0, columnspan=2, sticky="w")
+        display = ttk.LabelFrame(side, text="Display", padding=(4, 2)); display.grid(row=5, column=0, sticky="ew", pady=(3, 0))
+        ttk.Label(display, text="Tonemap").pack(side="left")
+        tonemap_box = ttk.Combobox(display, textvariable=self.tonemap_var, values=LevelViewport.TONEMAPS, state="readonly", width=19)
+        tonemap_box.pack(side="left", padx=4)
+        tonemap_box.bind("<<ComboboxSelected>>", lambda _e: self.view.set_lighting(tonemap=self.tonemap_var.get()))
+        materials = ttk.LabelFrame(side, text="Materials", padding=(4, 2)); materials.grid(row=6, column=0, sticky="ew", pady=(3, 0))
         self.native_translation_var = tk.BooleanVar(value=native_translation)
-        ttk.Checkbutton(toggles, text="Native translation", variable=self.native_translation_var,
-                        command=lambda: self.view.set_native_translation(self.native_translation_var.get())).pack(anchor="w")
+        ttk.Checkbutton(materials, text="Native translation", variable=self.native_translation_var,
+                        command=lambda: self.view.set_native_translation(self.native_translation_var.get())).pack(side="left", padx=(8, 0))
+        scene = ttk.LabelFrame(side, text="Scene", padding=(4, 2)); scene.grid(row=7, column=0, sticky="ew", pady=(3, 0))
+        self.overrides_var = tk.BooleanVar(value=material_overrides)
+        ttk.Checkbutton(scene, text="Overrides", variable=self.overrides_var,
+                        command=lambda: self.view.set_material_overrides(self.overrides_var.get())).grid(row=0, column=0, sticky="w")
+        self.hidden_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(scene, text="Collision/helpers", variable=self.hidden_var,
+                        command=lambda: self.view.set_show_hidden(self.hidden_var.get())).grid(row=0, column=1, sticky="w", padx=(8, 0))
+        self.sky_var = tk.BooleanVar(value=sky)
+        ttk.Checkbutton(scene, text="Sky", variable=self.sky_var,
+                        command=lambda: self.view.set_show_sky(self.sky_var.get())).grid(row=1, column=0, sticky="w")
         self.actors_var = tk.BooleanVar(value=actors)
-        ttk.Checkbutton(toggles, text="Actors (source placements)", variable=self.actors_var,
-                        command=lambda: self.view.set_show_actors(self.actors_var.get())).pack(anchor="w")
+        ttk.Checkbutton(scene, text="Actors", variable=self.actors_var,
+                        command=lambda: self.view.set_show_actors(self.actors_var.get())).grid(row=1, column=1, sticky="w", padx=(8, 0))
+        experimental = ttk.LabelFrame(side, text="Experimental", padding=(4, 2)); experimental.grid(row=8, column=0, sticky="ew", pady=(3, 0))
+        self.experimental_var = tk.BooleanVar(value=bool(spawn_preview or experimental_materials))
+        ttk.Checkbutton(experimental, text="Enable", variable=self.experimental_var,
+                        command=self._experimental_changed).grid(row=0, column=0, sticky="w")
+        self.material_previews_var = tk.BooleanVar(value=bool(experimental_materials or not spawn_preview))
+        ttk.Checkbutton(experimental, text="Material previews", variable=self.material_previews_var,
+                        command=self._experimental_changed).grid(row=1, column=0, sticky="w")
         self.spawn_var = tk.BooleanVar(value=spawn_preview)
-        ttk.Checkbutton(toggles, text="Enemy spawns (experimental)", variable=self.spawn_var,
-                        command=lambda: self.view.set_spawn_preview(self.spawn_var.get())).pack(anchor="w")
-        head = ttk.Frame(side); head.grid(row=6, column=0, sticky="ew", pady=(8, 2))
+        ttk.Checkbutton(experimental, text="Enemy spawns", variable=self.spawn_var,
+                        command=self._experimental_changed).grid(row=1, column=1, sticky="w", padx=(8, 0))
+        ttk.Label(experimental, text="Mountain albedo: matte preview; detail/variant unverified.",
+                  foreground="gray", wraplength=250).grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        head = ttk.Frame(side); head.grid(row=9, column=0, sticky="ew", pady=(6, 2))
         ttk.Label(head, text="Zones").pack(side="left")
         ttk.Button(head, text="None", width=5, command=lambda: self._set_all(False)).pack(side="right")
         ttk.Button(head, text="All", width=5, command=lambda: self._set_all(True)).pack(side="right", padx=4)
-        side.rowconfigure(7, weight=1)
-        holder = ttk.Frame(side); holder.grid(row=7, column=0, sticky="nsew")
+        side.rowconfigure(10, weight=1)
+        holder = ttk.Frame(side); holder.grid(row=10, column=0, sticky="nsew")
         holder.columnconfigure(0, weight=1); holder.rowconfigure(0, weight=1)
         self.zone_canvas = tk.Canvas(holder, highlightthickness=0, width=250)
         self.zone_canvas.grid(row=0, column=0, sticky="nsew")
@@ -402,7 +416,7 @@ class LevelPanel:
         self.zone_list = ttk.Frame(self.zone_canvas)
         self.zone_canvas.create_window((0, 0), window=self.zone_list, anchor="nw")
         self.zone_list.bind("<Configure>", lambda _e: self.zone_canvas.configure(scrollregion=self.zone_canvas.bbox("all")))
-        ttk.Label(side, text=HELP, wraplength=250, foreground="gray").grid(row=8, column=0, sticky="ew", pady=(8, 0))
+        ttk.Label(side, text=HELP, wraplength=250, foreground="gray").grid(row=11, column=0, sticky="ew", pady=(8, 0))
         main.columnconfigure(0, weight=1); main.rowconfigure(0, weight=1)
         self.view = LevelViewport(main, width=420, height=300)
         self.view.grid(row=0, column=0, sticky="nsew")
@@ -411,6 +425,9 @@ class LevelPanel:
         self.view.show_actors = bool(actors)
         self.view.show_spawn_preview = bool(spawn_preview)
         self.view.native_translation = bool(native_translation)
+        self.view.set_lighting_enabled(self.lighting_enabled_var.get())
+        self.view.set_experimental_materials(self.experimental_var.get() and self.material_previews_var.get())
+        self.view.set_spawn_preview(self.experimental_var.get() and self.spawn_var.get())
         self.view.set_mode(mode)
         self.view.clear("Choose a level and click Load.")
         self.view.on_stats = self._show_stats
@@ -515,6 +532,14 @@ class LevelPanel:
         root = str(self.source_root() or "")
         threading.Thread(target=load_level, args=(lambda: self._archive(root), level, relay, cancel, self.zone_filter),
                          daemon=True).start()
+
+    def _lighting_enabled_changed(self):
+        self.view.set_lighting_enabled(self.lighting_enabled_var.get())
+
+    def _experimental_changed(self):
+        enabled = self.experimental_var.get()
+        self.view.set_experimental_materials(enabled and self.material_previews_var.get())
+        self.view.set_spawn_preview(enabled and self.spawn_var.get())
 
     def _lighting_changed(self):
         if self.lighting_var.get() == "Shared HDRI":

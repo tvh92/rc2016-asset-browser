@@ -16,6 +16,7 @@ class LeafPaletteTests(unittest.TestCase):
         recorder = _Recorder(object(),object())
         view = SimpleNamespace(_gl=recorder.gl,_shading=recorder.shading,native_translation=False,
                                GL_TEXTURE0=0x84C0,GL_TEXTURE_2D=0x0DE1)
+        view._selected_surface = lambda entry,level: ModelViewport._selected_surface(view,entry,level)
         uniforms = {name:i for i,name in enumerate(OPAQUE_UNIFORMS)}
         entry = dict(_cma=(77,True),leaf_colour=dict(exponent=4.,scale=.5,palette_rgb=[.1,.2,.3]))
         ModelViewport._apply_material(view,uniforms,entry,2)

@@ -710,8 +710,9 @@ class FrameStateTests(unittest.TestCase):
         view._apply_lighting(uniforms); view._apply_lighting(uniforms)
         self.assertEqual(view._gl.readbacks, 1)
         calls = [c for c in view._shading.calls if c[0] == 'glUniform1i']
-        self.assertEqual(calls[:2], [('glUniform1i', (uniforms['uLighting'], 0)), ('glUniform1i', (uniforms['uTonemap'], 1))])
-        self.assertEqual(calls[:3], calls[3:6])
+        self.assertEqual(calls[:3], [('glUniform1i', (uniforms['uLightingEnabled'], 1)),
+                                  ('glUniform1i', (uniforms['uLighting'], 0)), ('glUniform1i', (uniforms['uTonemap'], 1))])
+        self.assertEqual(calls[:4], calls[4:8])
         view._frame_lighting = None   # next frame
         view._apply_lighting(uniforms)
         self.assertEqual(view._gl.readbacks, 2)

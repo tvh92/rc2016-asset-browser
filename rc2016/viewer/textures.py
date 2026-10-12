@@ -1279,5 +1279,20 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
                     entry['native_textures'] = native_textures
             except (ValueError, KeyError, IndexError, OSError) as exc:
                 entry['native_error'] = str(exc)
+            from rc2016.viewer.experimental_materials import prepare_preview
+            try:
+                preview = prepare_preview(archive, material['path'])
+                if preview:
+                    preview_textures = {}
+                    for binding in preview['texture_bindings']:
+                        _cached_texture(archive, cache, binding['path'], tolerate=False)
+                        texture = _with_pixels(archive, cache, binding['path'])
+                        if not texture or texture.get('array_size',1) != 1:
+                            raise ValueError('Experimental source texture unavailable: '+binding['path'])
+                        preview_textures[binding['api']] = texture
+                    entry['experimental_preview'] = preview
+                    entry['experimental_textures'] = preview_textures
+            except (ValueError, KeyError, IndexError, OSError, StopIteration) as exc:
+                entry['experimental_error'] = str(exc)
         result[material['index']] = entry
     return result

@@ -32,14 +32,14 @@ ENVIRONMENT_TEXTURE_UNIT = 6   # shared review HDRI: prefiltered radiance bands 
 # historical factor 2 (diffuseScale); the HDRI's is physical (albedo x E / pi). display() applies exposure and the tonemap: 0 the ACES fit, 1 Khronos PBR
 # Neutral with the sRGB transfer function (the view transform of the Blender review renders).
 LIGHTING = """
-uniform int uLighting; uniform mat3 uLightFrame; uniform mat3 uViewToWorld;
+uniform int uLighting; uniform bool uLightingEnabled; uniform mat3 uLightFrame; uniform mat3 uViewToWorld;
 uniform vec3 uSH[9]; uniform sampler2D uEnvTex; uniform vec3 uSunDir; uniform vec3 uSunColour;
 uniform int uTonemap; uniform float uExposure;
 vec3 rigKey() { return uLighting == 1 ? uSunDir * uViewToWorld : uLightFrame * normalize(vec3(-0.45, 0.65, 0.62)); }
 vec3 rigFill() { return uLightFrame * normalize(vec3(0.7, 0.1, 0.4)); }
-vec3 keyColour() { return uLighting == 1 ? uSunColour : vec3(2.6, 2.5, 2.35); }
+vec3 keyColour() { return !uLightingEnabled ? vec3(0.0) : (uLighting == 1 ? uSunColour : vec3(2.6, 2.5, 2.35)); }
 float diffuseScale() { return uLighting == 1 ? 1.0 : 2.0; }
-vec3 fillColour() { return uLighting == 1 ? vec3(0.0) : vec3(0.55, 0.6, 0.7); }
+vec3 fillColour() { return !uLightingEnabled || uLighting == 1 ? vec3(0.0) : vec3(0.55, 0.6, 0.7); }
 vec3 irradiance(vec3 n) {
     return max(uSH[0] * 0.282095 + uSH[1] * (0.488603 * n.y) + uSH[2] * (0.488603 * n.z) + uSH[3] * (0.488603 * n.x)
         + uSH[4] * (1.092548 * n.x * n.y) + uSH[5] * (1.092548 * n.y * n.z) + uSH[6] * (0.315392 * (3.0 * n.z * n.z - 1.0))
@@ -47,6 +47,7 @@ vec3 irradiance(vec3 n) {
 }
 // Diffuse is albedo * (lights + ambient) / PI * diffuseScale().
 vec3 ambientLight(vec3 N) {
+    if (!uLightingEnabled) return vec3(0.0);
     if (uLighting == 1) return irradiance(uViewToWorld * N);
     return mix(vec3(0.10, 0.09, 0.08), vec3(0.30, 0.33, 0.38), dot(N, uLightFrame[1]) * 0.5 + 0.5);
 }
@@ -64,6 +65,7 @@ vec3 prefiltered(vec3 d, float r) {
 }
 // Environment specular for GGX alpha a; the rig's version is its sky/ground ambient term.
 vec3 envSpecular(vec3 N, vec3 V, vec3 F0, vec3 F90, float a, vec3 ambient) {
+    if (!uLightingEnabled) return vec3(0.0);
     if (uLighting == 1) {
         float r = sqrt(a), nv = max(dot(N, V), 1e-4);
         vec4 k = r * vec4(-1.0, -0.0275, -0.572, 0.022) + vec4(1.0, 0.0425, 1.04, -0.04);
@@ -93,7 +95,7 @@ vec3 display(vec3 color) {
 }
 """
 LIGHTING += "\n#ifdef RC_SCENE_EFFECTS\n" + SCENE_HELPERS + "\n#else\nfloat sceneAO(){return 1.0;}\nfloat sceneShadow(vec3 p){return 1.0;}\nfloat sceneSpecularOcclusion(vec3 N,vec3 V,float a){return 1.0;}\n#endif\n"
-LIGHTING_UNIFORMS = (*SCENE_UNIFORMS, "uLighting", "uLightFrame", "uViewToWorld", "uSH", "uEnvTex", "uSunDir", "uSunColour", "uTonemap", "uExposure")
+LIGHTING_UNIFORMS = (*SCENE_UNIFORMS, "uLighting", "uLightingEnabled", "uLightFrame", "uViewToWorld", "uSH", "uEnvTex", "uSunDir", "uSunColour", "uTonemap", "uExposure")
 
 # Attribute locations for the two 4-wide skin influence sets. NVIDIA aliases the
 # built-ins to fixed slots (0 vertex, 2 normal, 3 colour, 4 secondary colour,
@@ -257,6 +259,7 @@ vec3 ggx(vec3 N, vec3 V, vec3 L, vec3 F0, vec3 F90, float a) {
 }
 // Shared surface lighting: hand rules and native DAGs use identical closures.
 vec3 deferredDiffuse(vec3 N, vec3 albedo) {
+    if (!uLightingEnabled) return albedo;
 #ifndef RC_SCENE_EFFECTS
     return albedo * (max(dot(N, rigKey()), 0.0) * keyColour()
         + max(dot(N, rigFill()), 0.0) * fillColour() + ambientLight(N)) / PI * diffuseScale();
@@ -275,6 +278,7 @@ vec3 deferredDiffuse(vec3 N, vec3 albedo) {
 #endif
 }
 vec3 deferredSpecular(vec3 N, vec3 V, vec3 F0, float gloss) {
+    if (!uLightingEnabled) return vec3(0.0);
     vec3 F90 = clamp(60.0 * F0, 0.0, 1.0);
     float a = pow(2.0, -5.5 * gloss);
 #ifndef RC_SCENE_EFFECTS
@@ -346,7 +350,7 @@ vec3 puddleShade(vec3 G, vec3 V, vec3 c, vec2 g) {
     S+=envSpecular(N,V,F0,F90,aa,E);
 #endif
     S=clamp(mix(S,F0*E,uPuddle3.x),0.0,1.0); // probe opacity=0, instance fade=0
-    return S+D*Dl; // SSR off; fog=1; opacity=1; debug=0; no self-lit input
+    sceneCaptureNormal=N;return uLightingEnabled ? S+D*Dl : D; // unlit inspection; same source surface
 }
 void main() {
     if (uMode == 3) { gl_FragColor = vec4(uColor, 1.0); return; }
@@ -750,7 +754,6 @@ void sceneOutput(vec4 color){
 """
 FRAGMENT=_re.sub(r'gl_FragColor\s*=\s*([^;]+);',r'sceneOutput(\1);',FRAGMENT)
 FRAGMENT=FRAGMENT.replace('vec3 N = normalize(vNrm);','vec3 N = normalize(vNrm); sceneCaptureNormal=N;',1)
-FRAGMENT=FRAGMENT.replace('return S+D*Dl;', 'sceneCaptureNormal=N;return S+D*Dl;',1)
 FRAGMENT = FRAGMENT.replace("// @lighting\n", LIGHTING+_SCENE_OUTPUT)
 GLASS_FRAGMENT = GLASS_FRAGMENT.replace("// @lighting\n", LIGHTING)
 GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4}
@@ -1080,14 +1083,14 @@ class Shading:
             self.programs[size] = (*self._link(VERTEX, FRAGMENT, dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE), OPAQUE_UNIFORMS), size)
         return self.programs[size]
 
-    def native_program(self, translation, srgb, instanced=False, scene=False):
+    def native_program(self, translation, srgb, instanced=False, scene=False, experimental=False):
         from rc2016.viewer.native_glsl import fragment_source
         from rc2016.viewer.native_glsl import EMITTER_VERSION
         vertex = INSTANCED_VERTEX if instanced else VERTEX
-        key = ('native', EMITTER_VERSION, instanced, scene, translation['translation_sha256'],
+        key = ('native', EMITTER_VERSION, instanced, scene, experimental, translation['translation_sha256'],
                tuple(sorted(srgb.items())), FRAGMENT, vertex)
         if key not in self.programs:
-            surface = fragment_source(translation, srgb)
+            surface = fragment_source(translation, srgb, experimental=experimental)
             names = (*OPAQUE_UNIFORMS, *(s['uniform'] for s in surface['samplers']))
             attributes = INSTANCE_ATTRIBUTES if instanced else dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE)
             source=surface['source'].replace('#version 120', '#version 120\n#define RC_SCENE_EFFECTS 1',1) if scene else surface['source']

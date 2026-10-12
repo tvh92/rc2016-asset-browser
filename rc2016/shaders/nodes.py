@@ -47,6 +47,19 @@ def _frontend(translation,images):
         n=nodes.new('ShaderNodeMath');n.operation='SUBTRACT';n.inputs[0].default_value=1
         links.new(socket,n.inputs[1]);return n.outputs[0]
     game_uv=[xy.outputs[0],flip_v(xy.outputs[1])]
+    preview_inputs = {}
+    if translation.get('status') == 'experimental':
+        # Geometry is Blender world Z-up; the explicit preview adapter uses the
+        # viewer's native Y-up basis (x,z,-y). This does not bind engine CB0.
+        geometry = nodes.new('ShaderNodeNewGeometry');geometry.name='Experimental viewer geometry adapter'
+        for kind, socket in (('preview_position','Position'), ('preview_normal','Normal')):
+            separate = nodes.new('ShaderNodeSeparateXYZ');links.new(geometry.outputs[socket],separate.inputs[0])
+            native = [separate.outputs[0],separate.outputs[2],separate.outputs[1]]
+            negate = nodes.new('ShaderNodeMath');negate.operation='MULTIPLY';negate.inputs[1].default_value=-1
+            links.new(native[2],negate.inputs[0]);native[2]=negate.outputs[0]
+            for channel, value in enumerate(native):preview_inputs[(kind,channel)] = value
+        front = nodes.new('ShaderNodeMath');front.operation='SUBTRACT';front.inputs[0].default_value=1
+        links.new(geometry.outputs['Backfacing'],front.inputs[1]);preview_inputs[('preview_front_face',None)] = front.outputs[0]
     cache={};samples={};bindings={r['api']:r for r in translation['texture_bindings']}
     simple={'add':'ADD','sub':'SUBTRACT','mul':'MULTIPLY','div':'DIVIDE','abs':'ABSOLUTE',
         'min':'MINIMUM','max':'MAXIMUM','sqrt':'SQRT','sin':'SINE','cos':'COSINE',
@@ -61,7 +74,12 @@ def _frontend(translation,images):
         n=translation['nodes'][i];op=n['op'];args=n['args']
         if op=='const':
             node=nodes.new('ShaderNodeValue');node.outputs[0].default_value=n['value'];socket=node.outputs[0]
-        elif op=='input':socket=game_uv[n['channel']]
+        elif op=='input':
+            if n.get('kind') == 'attribute' and n.get('attribute') == 0 and n.get('channel') in (0,1):
+                socket=game_uv[n['channel']]
+            elif translation.get('status') == 'experimental' and (n.get('kind'),n.get('channel')) in preview_inputs:
+                socket=preview_inputs[(n['kind'],n.get('channel'))]
+            else:raise ValueError('Unbound Blender input '+n.get('name',''))
         elif op=='texture':
             key=(n['sample'],n['api'],tuple(args))
             if key not in samples:
@@ -129,10 +147,13 @@ def _frontend(translation,images):
     return g
 
 
-def apply_translated_material(material,source):
+def apply_translated_material(material,source, *, experimental=False):
     from rc2016.pipeline import game_shader
-    translation=source.get('shader_translation',{})
-    if translation.get('status')!='ready':return False
+    translation=source.get('shader_experimental_preview' if experimental else 'shader_translation',{})
+    if experimental:
+        from rc2016.viewer.native_glsl import emit_surface
+        emit_surface(translation,experimental=True)  # same explicit input/contract gate
+    elif translation.get('status')!='ready':return False
     # Hand-audited profiles and more complete skin/forward frontends remain intact.
     if source.get('validated_profile') or any(p.get('family') in ('skin_emissive','basic_skin','character_glass')
         for p in source.get('shader_preflight',[])):return False
@@ -144,7 +165,7 @@ def apply_translated_material(material,source):
     nodes=material.node_tree.nodes;links=material.node_tree.links
     for n in list(nodes):
         if n.type!='TEX_IMAGE':nodes.remove(n)
-    front=nodes.new('ShaderNodeGroup');front.node_tree=g;front.name='Native translated material'
+    front=nodes.new('ShaderNodeGroup');front.node_tree=g;front.name='Experimental material preview' if experimental else 'Native translated material'
     brdf=nodes.new('ShaderNodeGroup');brdf.node_tree=game_shader.build_group();brdf.name='RC PS4 game shader'
     for name,index in [('Albedo',0),('Emission multiplier',1),('F0',2),('Gloss',3),('Normal',4)]:
         links.new(front.outputs[name],brdf.inputs[index])
@@ -152,19 +173,19 @@ def apply_translated_material(material,source):
     out=nodes.new('ShaderNodeOutputMaterial');links.new(brdf.outputs['Shader'],out.inputs['Surface'])
     material['rc_shader_translation']=json.dumps(translation,sort_keys=True)
     material['rc_game_shader']=True;material['game_equivalence']=False
-    material['rc_shader']='RC PS4 Deferred BRDF with native translated frontend'
-    material['shader_preview_status']='native_translated_deferred_frontend'
+    material['rc_shader']='RC PS4 Deferred BRDF with experimental frontend' if experimental else 'RC PS4 Deferred BRDF with native translated frontend'
+    material['shader_preview_status']='experimental_material_preview' if experimental else 'native_translated_deferred_frontend'
     material['rc_translation_tree_sha256']=tree_signature(material.node_tree)
     return True
 
 
-def validate_translated_material(source,material):
-    expected=source['shader_translation']
+def validate_translated_material(source,material, *, experimental=False):
+    expected=source['shader_experimental_preview' if experimental else 'shader_translation']
     stored=json.loads(material.get('rc_shader_translation','{}'))
     assert stored==expected,'Persisted native translation receipt changed'
     signature=tree_signature(material.node_tree)
     assert signature==material.get('rc_translation_tree_sha256'),'Translated node operations, constants or links changed'
-    front=material.node_tree.nodes.get('Native translated material')
+    front=material.node_tree.nodes.get('Experimental material preview' if experimental else 'Native translated material')
     assert front and front.node_tree['translation_sha256']==expected['translation_sha256']
     actual=[n for n in front.node_tree.nodes if n.type=='TEX_IMAGE']
     for binding in expected['texture_bindings']:
@@ -177,6 +198,6 @@ def validate_translated_material(source,material):
             assert n.image.get('source_texture_sha256')==texture['dds_sha256']
             assert n.image.colorspace_settings.name==texture['colorspace']
             assert n.image.alpha_mode=='CHANNEL_PACKED'
-    return dict(status='passed_native_translation',code_sha256=expected['code_sha256'],
+    return dict(status='passed_experimental_preview' if experimental else 'passed_native_translation',code_sha256=expected['code_sha256'],
         translation_sha256=expected['translation_sha256'],node_count=len(front.node_tree.nodes),
         limitations=expected['limitations'],game_equivalence=False)

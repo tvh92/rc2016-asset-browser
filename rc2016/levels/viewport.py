@@ -714,7 +714,7 @@ class LevelViewport(ModelViewport):
         # Keep all draws of one native program together, then retain material/model ordering.
         def program_key(item):
             key = item[0]; entry = self._materials.get(key[0]) or {}
-            t = entry.get('native_translation') if self.native_translation and key[1] == 2 else None
+            t, _textures, _experimental = self._selected_surface(entry, key[1])
             return (t['translation_sha256'] if t else '', key, item[1]['path'])
         self._draw_list.sort(key=program_key)
 
@@ -795,7 +795,7 @@ class LevelViewport(ModelViewport):
         self._stats_base = None
 
     def scene_effects_active(self):
-        return bool(getattr(self,'_scene_effects',None)) and self._mode=='Shaded' and (self.scene_ao or self.scene_shadows or self.scene_authored)
+        return getattr(self,'lighting_enabled',True) and bool(getattr(self,'_scene_effects',None)) and self._mode=='Shaded' and (self.scene_ao or self.scene_shadows or self.scene_authored)
 
     def set_scene_effects(self,ao=None,shadows=None,authored=None):
         for name,value in (('scene_ao',ao),('scene_shadows',shadows),('scene_authored',authored)):
@@ -899,7 +899,7 @@ class LevelViewport(ModelViewport):
             self._setup_camera(width, height)
             if self._draw_list is None:
                 self._build_draw_list()
-            if self._mode=='Shaded' and (self.scene_ao or self.scene_shadows or self.scene_authored) and not self.scene_error:
+            if getattr(self,'lighting_enabled',True) and self._mode=='Shaded' and (self.scene_ao or self.scene_shadows or self.scene_authored) and not self.scene_error:
                 try:
                     if self._scene_effects is None:
                         from rc2016.levels.scene_effects import SceneEffects

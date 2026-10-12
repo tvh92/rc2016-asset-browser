@@ -70,17 +70,13 @@ def rule_text(material):
 
 
 def lighting_controls(ttk, parent, viewport, lighting_var, tonemap_var):
-    """Lighting and tonemap comboboxes for a viewport (the model and level viewers share them).
-    Choosing the shared HDRI also selects its view transform, Khronos PBR Neutral."""
+    """Lighting source selector. Tonemap lives in the separate Display group."""
     def lighting_changed(_event=None):
         if lighting_var.get() == 'Shared HDRI':
             tonemap_var.set('Khronos PBR Neutral')
         viewport.set_lighting(lighting_var.get(), tonemap_var.get())
-    ttk.Label(parent, text='Lighting').pack(side='left')
     box = ttk.Combobox(parent, textvariable=lighting_var, values=viewport.LIGHTINGS, state='readonly', width=12)
-    box.pack(side='left', padx=4); box.bind('<<ComboboxSelected>>', lighting_changed)
-    box = ttk.Combobox(parent, textvariable=tonemap_var, values=viewport.TONEMAPS, state='readonly', width=19)
-    box.pack(side='left', padx=4); box.bind('<<ComboboxSelected>>', lambda _e: viewport.set_lighting(tonemap=tonemap_var.get()))
+    box.pack(side='left', padx=(4, 0)); box.bind('<<ComboboxSelected>>', lighting_changed)
     note = ttk.Label(parent, text='', foreground='#6b7280')
     note.pack(side='left', padx=4)
     viewport.on_lighting_changed = lambda: note.configure(text=viewport.lighting_note or '')
@@ -234,13 +230,42 @@ class AssetBrowser:
         mode_box=ttk.Combobox(native,textvariable=self.view_mode,values=self.viewport.MODES,state='readonly',width=17)
         mode_box.pack(side='left',padx=4)
         mode_box.bind('<<ComboboxSelected>>',lambda _e:self.viewport.set_mode(self.view_mode.get()))
+        self.lighting_var=self.tk.StringVar(value=self.viewport.LIGHTINGS[0])
+        self.lighting_enabled_var=self.tk.BooleanVar(value=True)
+        lighting_group=ttk.LabelFrame(view,text='Lighting',padding=(4,2))
+        lighting_group.grid(row=2,column=0,sticky='ew',pady=(0,4))
+        self.lighting_enabled_check=ttk.Checkbutton(
+            lighting_group,text='On',variable=self.lighting_enabled_var,
+            command=lambda:self.viewport.set_lighting_enabled(self.lighting_enabled_var.get()))
+        self.lighting_enabled_check.pack(side='left')
+        self.lighting_controls=ttk.Frame(lighting_group)
+        self.lighting_controls.pack(side='left')
+        self.tonemap_var=self.tk.StringVar(value=self.viewport.TONEMAPS[0])
+        lighting_controls(ttk,self.lighting_controls,self.viewport,self.lighting_var,self.tonemap_var)
+        display=ttk.LabelFrame(view,text='Display',padding=(4,2))
+        display.grid(row=3,column=0,sticky='ew',pady=(0,4))
+        ttk.Label(display,text='Tonemap').pack(side='left')
+        tonemap_box=ttk.Combobox(display,textvariable=self.tonemap_var,values=self.viewport.TONEMAPS,state='readonly',width=19)
+        tonemap_box.pack(side='left',padx=4)
+        tonemap_box.bind('<<ComboboxSelected>>',lambda _e:self.viewport.set_lighting(tonemap=self.tonemap_var.get()))
+        materials=ttk.LabelFrame(view,text='Materials',padding=(4,2))
+        materials.grid(row=4,column=0,sticky='ew',pady=(0,4))
         self.native_translation_var=self.tk.BooleanVar(value=True)
-        ttk.Checkbutton(native,text='Native translation',variable=self.native_translation_var,
-                        command=self._native_translation_changed).pack(side='left',padx=4)
-        self.lighting_var=self.tk.StringVar(value=self.viewport.LIGHTINGS[0]);self.tonemap_var=self.tk.StringVar(value=self.viewport.TONEMAPS[0])
-        light_row=ttk.Frame(view);light_row.grid(row=2,column=0,sticky='ew',pady=(0,6))
-        lighting_controls(ttk,light_row,self.viewport,self.lighting_var,self.tonemap_var)
-        anim=ttk.Frame(view);anim.grid(row=3,column=0,sticky='ew',pady=(0,6))
+        ttk.Checkbutton(materials,text='Native translation',variable=self.native_translation_var,
+                        command=self._native_translation_changed).pack(side='left')
+        self.material_previews_var=self.tk.BooleanVar(value=True)
+        self.experimental_materials_var=self.tk.BooleanVar(value=False)
+        experimental=ttk.LabelFrame(view,text='Experimental',padding=(4,2))
+        experimental.grid(row=5,column=0,sticky='ew',pady=(0,4))
+        ttk.Checkbutton(experimental,text='Enable',variable=self.experimental_materials_var,
+                        command=self._experimental_materials_changed).pack(side='left')
+        ttk.Checkbutton(experimental,text='Material previews',variable=self.material_previews_var,
+                        command=self._experimental_materials_changed).pack(side='left',padx=(8,0))
+        ttk.Label(experimental,text='Mountain albedo: matte; detail/variant unverified.',foreground='#6b7280').pack(side='left',padx=8)
+        self.viewport.set_lighting_enabled(self.lighting_enabled_var.get())
+        self.viewport.set_experimental_materials(
+            self.experimental_materials_var.get() and self.material_previews_var.get())
+        anim=ttk.Frame(view);anim.grid(row=6,column=0,sticky='ew',pady=(0,6))
         anim.columnconfigure(3,weight=1)
         ttk.Label(anim,text='Animation').grid(row=0,column=0,padx=(0,4))
         self.clip_choice=tk.StringVar(value=REST_POSE)
@@ -264,8 +289,8 @@ class AssetBrowser:
         self.anim_work=LatestWork()
         self.animation=None;self.anim_frame=0;self.playing=False;self.play_job=None
         self.model_info=self.tk.StringVar(value='Select one source model. It loads directly; no Blender is needed.')
-        ttk.Label(view,textvariable=self.model_info,wraplength=410).grid(row=4,column=0,sticky='ew')
-        ttk.Label(view,text='Drag: orbit · Right drag: pan · Wheel: zoom\nShaded = game BRDF (_c, _g gloss, _n normals, self-lit) under the viewer rig or the shared review HDRI (predicts the Blender review render), not game lighting',foreground='#6b7280',wraplength=520).grid(row=5,column=0,sticky='w',pady=5)
+        ttk.Label(view,textvariable=self.model_info,wraplength=410).grid(row=7,column=0,sticky='ew')
+        ttk.Label(view,text='Drag: orbit · Right drag: pan · Wheel: zoom\nShaded = game BRDF (_c, _g gloss, _n normals, self-lit) under the viewer rig or the shared review HDRI (predicts the Blender review render), not game lighting',foreground='#6b7280',wraplength=520).grid(row=8,column=0,sticky='w',pady=5)
         result.columnconfigure(0,weight=1);result.rowconfigure(0,weight=1)
         self.description=app.ScrolledText(result,height=8,wrap='word',state='disabled',font='TkDefaultFont')
         self.description.grid(row=0,column=0,sticky='nsew')
@@ -1024,6 +1049,10 @@ class AssetBrowser:
             self.source_text = source_details(self.source_payload, getattr(self.selected_record,'used_by','') or '',
                                               self.viewport.native_translation)
             self._render_details()
+
+    def _experimental_materials_changed(self):
+        self.viewport.set_experimental_materials(
+            self.experimental_materials_var.get() and self.material_previews_var.get())
 
     def _render_details(self):
         # Source facts from the game files first; a saved build in the output root, when present, below.

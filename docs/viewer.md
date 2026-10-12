@@ -123,7 +123,7 @@ The lighting is selected under the 3D view ([Lighting and tonemap](#lighting-and
 
 ### Native translation
 
-**Native translation** is a per-viewer checkbox, on by default, in both the model and level viewers. It affects Shaded mode only and preserves the camera when switched. The level CLI accepts `--no-native-translation` for comparable captures.
+**Native translation** is under **Materials**, on by default, in both the model and level viewers. It affects Shaded mode only and preserves the camera when switched. The level CLI accepts `--no-native-translation` for comparable captures. Validated automatic-decoder extensions use this ordinary path; the separate Experimental switch is not required.
 
 `rc2016/viewer/native_glsl.py` emits the ready, material-bound scalar DAG from `shaders.bindings.prepare_translation`: albedo, F0, gloss, emission multiplier and the optional tangent-space normal. Fully ported exact viewer rules retain precedence through `materials._viewer_rule_wins_translation`, preserving their tint, pick, foliage and other terms. An eligible translation replaces a generic reading or family fallback; unsupported translations keep those readings. Forward rules retain their separate programs. No graph-name, shader-ID or code-hash recipe dispatch is added to the translator.
 
@@ -139,7 +139,17 @@ A ready translation describes a bounded deferred surface, with `game_equivalence
 
 ### Lighting and tonemap
 
-Two selectors under the 3D view (and in the level panel's side column) choose the lighting and the tonemap:
+Controls below the model view and in the level sidebar are grouped by purpose:
+
+| Group | Controls and master behaviour |
+|---|---|
+| Lighting | Master **On** switches rig/HDRI diffuse, specular and ambient lighting together. In levels it also gates AO, shadows and authored points. Off provides unlit opaque surface inspection; self-lit/forward emission remains. Child choices are remembered. |
+| Display | Tonemap stays available independently of the Lighting master. |
+| Materials | Ordinary Native translation, enabled by default. |
+| Scene (levels) | Instance overrides, sky, source actors and collision/helpers. |
+| Experimental | Master **Enable**, off by default, gates Material previews and the level enemy-spawn preview. Their individual selections are retained across master toggles. |
+
+The Lighting source and Display tonemap selectors offer:
 
 | Selector | Choices | Default |
 |---|---|---|
@@ -147,6 +157,14 @@ Two selectors under the 3D view (and in the level panel's side column) choose th
 | Tonemap | `ACES fit`, `Khronos PBR Neutral` | `ACES fit` |
 
 Choosing Shared HDRI also selects Khronos PBR Neutral; the tonemap can be changed back.
+
+### Experimental material previews
+
+**Experimental → Enable → Material previews** enables a hash-bound Novalis mountain **albedo-only matte preview**. Its effective material is `rp_nov_gnd_dirt_rock_blend_01.material`, referencing `rp_nov_grass_blend_detail_01.materialgraph`. It uses the simpler source writer's parameter-bound rock/grass colour expression and original texture bindings. The viewer supplies world position and geometry normal as explicit preview adapters, and chooses the simpler pass deliberately. Detailed normal/fade terms, frame reconstruction and runtime variant selection remain unverified. The source's `rk_no_spec_c` resources have no built archive asset; F0 and gloss are zero matte presentation settings, not decoded substitutes. The UI labels these limitations. Switching Experimental off returns to ordinary material selection without moving the camera.
+
+Preview receipts have `status: experimental`, `automatic_ready: false` and `game_equivalence: false`, and are separate from native translations, corpus readiness and exact rules. A source/hash/resource mismatch leaves the original fallback. The source texture colourspace is applied before filtering and both UV0 and the per-sample projected coordinates retain their own expressions. No source assets are altered.
+
+The shared Blender frontend supports the same preview only through an explicit `apply_translated_material(material, source, experimental=True)` call using `source['shader_experimental_preview']`. Ordinary pipeline/export builds do not opt in. `validate_translated_material(..., experimental=True)` checks the stored receipt, node tree, active frontend and image bindings after reopening.
 
 - **Viewer rig** is the fixed key, fill and sky/ground ambient rig at 0 EV. In the model viewer the rig turns with the camera. In the level viewer it is fixed to the world (rig right = +X, up = +Z, towards the viewer = -Y in Blender's Z-up world, as seen by a camera looking along +Y), so lighting does not shift while orbiting or flying. Viewer rig with ACES fit is the rendering the gallery thumbnails use.
 - **Shared HDRI** takes the HDRI, world strength and exposure from `assets/lighting/shared_lighting.json`: the same file as the Blender review renders (`golden_gate_hills_1k.exr`, strength 2, exposure -1 EV). The viewer cannot path-trace, so `rc2016/viewer/environment.py` splits the map:

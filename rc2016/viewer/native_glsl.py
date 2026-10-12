@@ -11,7 +11,7 @@ import math
 from rc2016.shaders.bindings import PORTABLE_OPS
 from rc2016.shaders.ir import DAG, compute
 
-EMITTER_VERSION = 2
+EMITTER_VERSION = 3
 # Reserve vertex bone matrices (3) and shared environment lighting (6).
 TEXTURE_UNITS = (0, 1, 2, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15)
 
@@ -23,7 +23,7 @@ def _literal(value):
     return text if '.' in text or 'e' in text else text + '.0'
 
 
-def emit_surface(translation, srgb=None):
+def emit_surface(translation, srgb=None, *, experimental=False):
     """Return declarations, body and sampler descriptors; reject unsupported inputs.
 
     srgb is keyed by native API and records the hardware image interpretation.
@@ -31,7 +31,12 @@ def emit_surface(translation, srgb=None):
     function. The uploader must decode sRGB before filtering. Sample identity includes
     sample id, API and coordinates, exactly as shaders.nodes._frontend.
     """
-    if translation.get('status') != 'ready':
+    preview = experimental and translation.get('status') == 'experimental'
+    if preview:
+        from rc2016.viewer.experimental_materials import CONTRACT, CODE_SHA, GRAPH_SHA, MATERIAL_SHA
+        if (translation.get('preview_contract'), translation.get('code_sha256'), translation.get('graph_sha256'), translation.get('material_sha256')) != (CONTRACT, CODE_SHA, GRAPH_SHA, MATERIAL_SHA):
+            raise ValueError('Unknown experimental surface contract')
+    if translation.get('status') != 'ready' and not preview:
         raise ValueError('Native surface requires a ready translation')
     # Viewports upload V-unflipped UV0 and top-down image rows. Relative to
     # nodes.py, both the input and each sample have already changed basis.
@@ -59,9 +64,14 @@ def emit_surface(translation, srgb=None):
         if op == 'const':
             expr = _literal(n['value'])
         elif op == 'input':
-            if n.get('kind') != 'attribute' or n.get('attribute') != 0 or n.get('channel') not in (0, 1):
+            if preview and n.get('kind') in ('preview_position','preview_normal') and n.get('channel') in (0,1,2):
+                expr = ('vTintWorldPos' if n['kind'] == 'preview_position' else 'vTintWorldNrm') + '.' + 'xyz'[n['channel']]
+            elif preview and n.get('kind') == 'preview_front_face':
+                expr = '(gl_FrontFacing ? 1.0 : 0.0)'
+            elif n.get('kind') != 'attribute' or n.get('attribute') != 0 or n.get('channel') not in (0, 1):
                 raise ValueError('Only UV0.xy native inputs are supported')
-            expr = 'vUV.x' if n['channel'] == 0 else 'vUV.y'
+            else:
+                expr = 'vUV.x' if n['channel'] == 0 else 'vUV.y'
         elif op == 'texture':
             if n['api'] not in bindings or len(a) != 2 or n['channel'] not in range(4):
                 raise ValueError('Unbound or non-2D native texture sample')
@@ -142,9 +152,9 @@ vec3 nativeTangentNormal(vec3 N, vec3 tangentNormal) {
 """
 
 
-def fragment_source(translation, srgb=None):
+def fragment_source(translation, srgb=None, *, experimental=False):
     from rc2016.viewer.shading import FRAGMENT
-    surface = emit_surface(translation, srgb)
+    surface = emit_surface(translation, srgb, experimental=experimental)
     # Reuse all shared lighting, tonemap and BRDF helpers. Unused hand-rule code
     # is eliminated by the GLSL compiler; only the material-value source changes.
     prefix = FRAGMENT.split('void main() {', 1)[0]
@@ -159,7 +169,7 @@ def fragment_source(translation, srgb=None):
     return surface
 
 
-def evaluate_surface(translation, uv, sample):
+def evaluate_surface(translation, uv, sample, *, preview_inputs=None):
     """CPU oracle for the emitted frontend; sample(api, viewer_uv) returns linear RGBA.
 
     Normal is the normalized tangent-space slice, or None for geometry normal.
@@ -171,7 +181,13 @@ def evaluate_surface(translation, uv, sample):
         if i in values: return values[i]
         n = translation['nodes'][i]; op = n['op']; a = [visit(j) for j in n['args']]
         if op == 'const': value = n['value']
-        elif op == 'input': value = uv[n['channel']]
+        elif op == 'input':
+            if n.get('kind') == 'attribute' and n.get('attribute') == 0:
+                value = uv[n['channel']]
+            elif preview_inputs is not None and translation.get('status') == 'experimental':
+                value = preview_inputs[n['name']]
+            else:
+                raise ValueError('Unbound frontend input '+n['name'])
         elif op == 'texture':
             key = (n['sample'], n['api'], tuple(n['args']))
             if key not in samples: samples[key] = sample(n['api'], (a[0], a[1]))

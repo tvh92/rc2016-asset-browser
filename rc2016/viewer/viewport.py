@@ -382,6 +382,8 @@ class ModelViewport(_TkFrame):
         self._redraw_pending = False
         self._mode = "Shaded"
         self.native_translation = True
+        self.lighting_enabled = True
+        self.experimental_materials = False
         self.native_program_switches = 0
         self._gl_textures = None   # material slot -> {role: (GL id, sRGB)} + 'k', built lazily
         self._compressed_upload = None
@@ -519,6 +521,14 @@ class ModelViewport(_TkFrame):
 
     on_lighting_changed = None   # called after the lighting or its HDRI maps change
 
+    def set_lighting_enabled(self, enabled):
+        """Gate lighting and scene effects without discarding their chosen settings."""
+        self.lighting_enabled = bool(enabled)
+        self._frame_lighting = None
+        if hasattr(self, '_material_ops'): self._material_ops.clear()
+        self.__dict__.pop('_program_memo', None)
+        self._schedule_draw()
+
     def _upload_environment(self):
         """GL texture of the prefiltered bands (RGB16F, world strength applied), or None."""
         if self._environment_texture is None and self._environment:
@@ -574,6 +584,7 @@ class ModelViewport(_TkFrame):
                 sh.glUniform1i(u.get(name,-1),0)
             sh.glUniform1i(u.get('uSceneAO',-1),16);sh.glUniform1i(u.get('uSceneShadow',-1),17)
         state = self._lighting_state()
+        sh.glUniform1i(u['uLightingEnabled'], int(getattr(self,'lighting_enabled',True)))
         sh.glUniform1i(u["uLighting"], 1 if state["hdri"] else 0)
         sh.glUniform1i(u["uTonemap"], state["tonemap"])
         sh.glUniform1f(u["uExposure"], state["exposure"])
@@ -595,6 +606,21 @@ class ModelViewport(_TkFrame):
         self.__dict__.pop('_program_memo', None)
         self._schedule_draw()
 
+    def set_experimental_materials(self, enabled):
+        self.experimental_materials = bool(enabled)
+        if hasattr(self, '_draw_list'): self._draw_list = None
+        if hasattr(self, '_material_ops'): self._material_ops.clear()
+        self.__dict__.pop('_program_memo', None)
+        self._schedule_draw()
+
+    def _selected_surface(self, entry, level):
+        if level == 2:
+            if getattr(self,'experimental_materials',False) and entry.get('experimental_preview'):
+                return entry['experimental_preview'], entry['experimental_textures'], True
+            if self.native_translation and entry.get('native_translation'):
+                return entry['native_translation'], entry['native_textures'], False
+        return None, {}, False
+
     def _surface_program(self, entry, level, instanced=False):
         """(program, uniform locations) of a material entry, memoised per entry, level and variant;
         the memo belongs to the current Shading object and keeps the entry it was computed for."""
@@ -602,7 +628,7 @@ class ModelViewport(_TkFrame):
         if memo is None or memo[0] is not self._shading:
             memo = self._program_memo = (self._shading, {})
         scene = instanced and bool(getattr(self, 'scene_effects_active', lambda: False)())
-        key = (id(entry), level, instanced, scene, self.native_translation, 0 if instanced else self._bone_count)
+        key = (id(entry), level, instanced, scene, self.native_translation, getattr(self,'experimental_materials',False), 0 if instanced else self._bone_count)
         found = memo[1].get(key)
         if found is not None and found[0] is entry:
             return found[1]
@@ -612,9 +638,11 @@ class ModelViewport(_TkFrame):
 
     def _resolve_surface_program(self, entry, level, instanced=False):
         scene = instanced and bool(getattr(self, 'scene_effects_active', lambda: False)())
-        translation = entry.get('native_translation') if self.native_translation and level == 2 else None
+        translation, textures, experimental = self._selected_surface(entry, level)
         if translation:
-            srgb = {api: texture[1] for api, texture in entry['native_textures'].items()}
+            srgb = {api: texture[1] for api, texture in textures.items()}
+            if experimental:
+                return self._shading.native_program(translation, srgb, instanced, scene=scene, experimental=True)
             if scene:
                 return self._shading.native_program(translation, srgb, instanced, scene=True)
             return self._shading.native_program(translation, srgb, instanced)
@@ -690,10 +718,11 @@ class ModelViewport(_TkFrame):
                 by_path[key] = (name, bool(texture.get("srgb"))) if name else None
             if by_path[key]:
                 uploaded[role] = by_path[key]
-        if entry.get('native_translation'):
+        for receipt_key, texture_key in (('native_translation','native_textures'), ('experimental_preview','experimental_textures')):
+            if not entry.get(receipt_key): continue
             native = {}
-            normal_api = (entry['native_translation'].get('normal') or {}).get('api')
-            for api, texture in entry['native_textures'].items():
+            normal_api = (entry[receipt_key].get('normal') or {}).get('api')
+            for api, texture in entry[texture_key].items():
                 path = texture['path']
                 linear_rgb = bool(texture.get('srgb')) and api != normal_api
                 cache_key = (path, 'native_srgb' if linear_rgb else 'native_linear')
@@ -705,8 +734,8 @@ class ModelViewport(_TkFrame):
                     break
                 native[api] = by_path[cache_key]
             else:
-                uploaded['native_translation'] = entry['native_translation']
-                uploaded['native_textures'] = native
+                uploaded[receipt_key] = entry[receipt_key]
+                uploaded[texture_key] = native
         return uploaded
 
     def _upload_rock_volume(self, texture):
@@ -1180,13 +1209,14 @@ class ModelViewport(_TkFrame):
         """Bind one material's textures and set its uniforms on the current opaque program."""
         from rc2016.viewer.shading import TINT_DETAIL_TEXTURE_UNIT, PICK_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, ARCH_SEQUENCE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT, GLOW_PARALLAX_TEXTURE_UNIT, PARALLAX_HEIGHT_TEXTURE_UNIT, LEAF_CMA_TEXTURE_UNIT
         gl, sh = self._gl, self._shading
-        if self.native_translation and level == 2 and entry.get('native_translation'):
+        translation, textures, _experimental = self._selected_surface(entry, level)
+        if translation:
             from rc2016.viewer.native_glsl import TEXTURE_UNITS
             # Same sorted API allocation as emit_surface; no DAG emission during a draw.
-            for index, api in enumerate(sorted(entry['native_textures'])):
+            for index, api in enumerate(sorted(textures)):
                 unit = TEXTURE_UNITS[index]
                 sh.glActiveTexture(self.GL_TEXTURE0 + unit)
-                gl.glBindTexture(self.GL_TEXTURE_2D, entry['native_textures'][api][0])
+                gl.glBindTexture(self.GL_TEXTURE_2D, textures[api][0])
                 sh.glUniform1i(u[f'uNativeTex{api}'], unit)
             return
         for unit, role, has, srgb in ((PARALLAX_HEIGHT_TEXTURE_UNIT, "_parallax_height", "uHasParallaxHeight", None), (GLOW_PARALLAX_TEXTURE_UNIT, "_glow_parallax", "uHasGlowParallax", "uSrgbGlowParallax"), (TINT_DETAIL_TEXTURE_UNIT, "_tint_detail", "uHasTintDetail", "uSrgbTintDetail"), (0, "_c", "uHasC", "uSrgbC"), (1, "_g", "uHasG", "uSrgbG"), (2, "_n", "uHasN", None),
