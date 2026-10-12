@@ -12,6 +12,7 @@ param(
     [switch]$ReuseCache,
     [switch]$ExportTextures,
     [switch]$KeepIntermediates,
+    [switch]$BlendOnly,
     [ValidateSet('All','Highest','Lowest')][string]$ImportLOD = 'Highest',
     [ValidateSet('Veldin','Novalis','HDRI')][string]$LightingSource = 'HDRI',
     [switch]$NovalisAtmosphereSun,
@@ -41,6 +42,7 @@ if ($Force) { $ps4Arguments += '--force' }
 if ($ReuseCache) { $ps4Arguments += '--reuse-cache' }
 if ($ExportTextures) { $ps4Arguments += '--export-textures' }
 if ($KeepIntermediates) { $ps4Arguments += '--keep-intermediates' }
+if ($BlendOnly) { $ps4Arguments += '--blend-only' }
 $ps4Arguments += @('--import-lod', $ImportLOD)
 $ps4Arguments += @('--lighting-source', $LightingSource.ToLowerInvariant())
 if ($NovalisAtmosphereSun) { $ps4Arguments += '--novalis-atmosphere-sun' }

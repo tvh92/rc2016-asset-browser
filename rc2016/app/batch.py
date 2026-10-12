@@ -441,7 +441,7 @@ class PipelineBatchRunner:
     def __init__(self, selectors: Sequence[str], extracted_root: Path, output_root: Path,
                  python_executable: Path, blender_executable: Path,
                  skip_verified: bool = True, event: Callable[..., None] | None = None,
-                 clip_only: tuple[str, str] | None = None):
+                 blend_only: bool = False, clip_only: tuple[str, str] | None = None):
         self.selectors = tuple(dict.fromkeys(s.strip() for s in selectors if s.strip()))
         # (archive path, clip name): that model is built in its own run with only this clip.
         self.clip_only = clip_only if clip_only and clip_only[0] in self.selectors else None
@@ -450,6 +450,7 @@ class PipelineBatchRunner:
         self.python_executable = python_executable.expanduser().resolve()
         self.blender_executable = blender_executable.expanduser().resolve()
         self.skip_verified = skip_verified
+        self.blend_only = blend_only
         self.event = event or (lambda *_args, **_kwargs: None)
         self.cancel_requested = threading.Event()
         self.process: subprocess.Popen[str] | None = None
@@ -482,10 +483,13 @@ class PipelineBatchRunner:
             command.extend(("--model", selector))
         for clip in clips:
             command.extend(("--clip", clip))
-        if self.skip_verified:
+        # Blend-only output keeps no receipts, so every run rebuilds.
+        if self.skip_verified and not self.blend_only:
             command.append("--reuse-cache")
         else:
             command.append("--force")
+        if self.blend_only:
+            command.append("--blend-only")
         return command
 
     def run(self) -> int:

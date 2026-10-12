@@ -627,7 +627,7 @@ def _proof_render(request, master_hash):
                       "lighting": {**provenance, "source": "current assets/lighting/shared_lighting.json",
                                    "in_memory_packed_hdri_release": released_pack,
                                    "settings": {key: shared_lighting.get(key) for key in
-                                                ("hdri_path", "world_strength", "view_transform", "look",
+                                                ("hdri_path", "hdri_rotation_z_degrees", "world_strength", "view_transform", "look",
                                                  "exposure", "gamma", "use_compositing", "config_sha256")},
                                    "hdri_sha256": sha256_file(shared_lighting["hdri_path"]),
                                    "presentation_only": True, "game_lighting_equivalence_claim": False}}}

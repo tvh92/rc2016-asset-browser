@@ -383,7 +383,7 @@ One folder per model in the output root:
 
 ## Research Blender build and viewer rules
 
-Options -> Advanced selects the full research Blender scene (`PipelineBatchRunner`; backend "Full archive pipeline"), which runs the pipeline in [pipeline](pipeline.md) and needs Blender. With **Extract only this clip** ticked, the shown model gets its own CLI run with `--clip name:<clip>` and the other selected models run without it.
+Options -> Advanced selects the full research Blender scene (`PipelineBatchRunner`; backend "Full archive pipeline"), which runs the pipeline in [pipeline](pipeline.md) and needs Blender. With **Keep only the .blend files** ticked, a fully successful run deletes everything else in the output folder (reports, meshes, textures, caches); every run then rebuilds, since nothing is left to reuse. With **Extract only this clip** ticked, the shown model gets its own CLI run with `--clip name:<clip>` and the other selected models run without it.
 
 The research build consumes the viewer's material reading:
 
@@ -395,7 +395,7 @@ The research build consumes the viewer's material reading:
 - `rc2016/pipeline/run.py` hashes `rc2016/viewer/textures.py` into the implementation fingerprint, so a rule change invalidates reused builds.
 - The bulb graph's facing glow is a `VR facing glow emission` through an Add Shader in Blender.
 
-Output-folder hygiene (`run.py`): only `work/` and `reports/logs/` are created up front; other folders only for a real build. A model-list scan prunes the unpacked actor files it indexed, and every run deletes its lock file and empty folders. `prune_intermediates` uses Windows extended-length paths, because unpacked asset names can exceed 260 characters. A scan leaves only `reports/` (the archive index, needed to find animation sets).
+Output-folder hygiene (`run.py`): only `work/` and `reports/logs/` are created up front; other folders only for a real build. A model-list scan prunes the unpacked actor files it indexed, and every run deletes its lock file and empty folders. `--blend-only` (keep only the delivered `.blend` files) runs after the log and lock are closed, and only after a fully successful run. `prune_intermediates` uses Windows extended-length paths, because unpacked asset names can exceed 260 characters. A scan leaves only `reports/` (the archive index, needed to find animation sets).
 
 ### Optional Blender scene review
 

@@ -58,6 +58,10 @@ HELP = {
         "Instead of the portable export, run the research pipeline: a validated Blender scene with "
         "the RC PS4 game shader, shared lighting, every animation as an action, and many reports. "
         "Slow and needs Blender; most users want the normal export."),
+    "blend_only": (
+        "Keep only the finished .blend files and the index the viewer uses to find animations. After a fully "
+        "successful run, the other reports, meshes, textures, caches and validation files are deleted. A later run "
+        "rebuilds everything, because nothing is left to reuse."),
     "cancel": "Stop the running extraction. Finished models are kept.",
     "filter": (
         "Search by file name, folder, asset ID, or the actor/animset that uses the model "
@@ -177,6 +181,7 @@ class AssetBrowserApp:
         self.export_animations_var = tk.StringVar(value=saved.get("export_animations", "all") if saved.get("export_animations") in ("all", "none") else "all")
         self.export_lod_var = tk.StringVar(value=saved.get("export_lod", "Highest") if saved.get("export_lod") in ("Highest", "Lowest", "All") else "Highest")
         self.full_pipeline_var = tk.BooleanVar(value=False)
+        self.blend_only_var = tk.BooleanVar(value=False)
         self.export_summary_var = tk.StringVar()
         self.exported_names: set[str] = set()
         self.selection_var = tk.StringVar(value="0 models selected")
@@ -373,18 +378,22 @@ class AssetBrowserApp:
                                variable=self.full_pipeline_var)
         full.grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
         self._tip(HELP["full_pipeline"], full)
+        self.blend_only_check = ttk.Checkbutton(advanced, text="Keep only the .blend files (delete the other output)",
+                                                variable=self.blend_only_var)
+        self.blend_only_check.grid(row=1, column=0, columnspan=3, sticky="w", padx=(22, 0), pady=2)
+        self._tip(HELP["blend_only"], self.blend_only_check)
         backend_label = ttk.Label(advanced, text="Backend  ⓘ")
-        backend_label.grid(row=1, column=0, sticky="w", pady=4)
+        backend_label.grid(row=2, column=0, sticky="w", pady=4)
         backend = ttk.Combobox(advanced, textvariable=self.backend_var, state="readonly",
                                 values=("Transform only", "Full archive pipeline"), width=28)
-        backend.grid(row=1, column=1, sticky="w", padx=6, pady=4)
+        backend.grid(row=2, column=1, sticky="w", padx=6, pady=4)
         backend.bind("<<ComboboxSelected>>", lambda _event: self._backend_changed())
         self._tip(HELP["backend"], backend_label, backend)
         self.prefix_label = ttk.Label(advanced, text="Clip prefixes")
-        self.prefix_label.grid(row=2, column=0, sticky="w", pady=4)
+        self.prefix_label.grid(row=3, column=0, sticky="w", pady=4)
         self.prefix_entry = ttk.Entry(advanced, textvariable=self.prefix_var)
-        self.prefix_entry.grid(row=2, column=1, sticky="ew", padx=6, pady=4)
-        ttk.Label(advanced, text="transform only; comma-separated", foreground=muted).grid(row=2, column=2, sticky="w")
+        self.prefix_entry.grid(row=3, column=1, sticky="ew", padx=6, pady=4)
+        ttk.Label(advanced, text="transform only; comma-separated", foreground=muted).grid(row=3, column=2, sticky="w")
         self._tip(HELP["prefixes"], self.prefix_label, self.prefix_entry)
 
         display = ttk.Frame(window, padding=(12, 6))
@@ -398,7 +407,8 @@ class AssetBrowserApp:
         ttk.Button(display, text="Close", command=self._close_options).pack(side="right")
 
         for variable in (*self.export_format_vars.values(), self.export_textures_var, self.export_dds_var,
-                         self.export_animations_var, self.export_lod_var, self.full_pipeline_var, self.backend_var):
+                         self.export_animations_var, self.export_lod_var, self.full_pipeline_var, self.blend_only_var,
+                         self.backend_var):
             variable.trace_add("write", lambda *_args: self._options_changed())
         self._options_changed()
 
@@ -420,10 +430,12 @@ class AssetBrowserApp:
         return tuple(key for key, variable in self.export_format_vars.items() if variable.get())
 
     def _options_changed(self) -> None:
+        full_research = self.backend_var.get() == "Full archive pipeline" and self.full_pipeline_var.get()
+        self.blend_only_check.configure(state="normal" if full_research else "disabled")
         if self.backend_var.get() != "Full archive pipeline":
             text = "Transform only: animation data from loose files"
         elif self.full_pipeline_var.get():
-            text = "Full research Blender scene (needs Blender)"
+            text = "Full research Blender scene (needs Blender)" + (", .blend files only" if self.blend_only_var.get() else "")
         else:
             from rc2016.export.models import FORMATS
             formats = [FORMATS[key][1] for key in self._export_formats()] or ["no format chosen"]
@@ -860,7 +872,7 @@ class AssetBrowserApp:
                 research_clip = (path, clip_only[1])
             self.runner = PipelineBatchRunner(
                 selectors, Path(self.source_var.get()), output, interpreter, blender,
-                skip_verified=self.skip_verified_var.get(),
+                skip_verified=self.skip_verified_var.get(), blend_only=self.blend_only_var.get(),
                 event=lambda kind, **values: self.events.put((kind, values)), clip_only=research_clip)
         else:
             self.runner = BatchRunner(

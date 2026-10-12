@@ -27,7 +27,7 @@ from rc2016.formats.texture_transport import validate_reopened_texture_bindings
 from rc2016.shaders.validation import validate_polygon_used_material_preflights
 from rc2016.pipeline.material_presentation_collector import collect_material_presentation_status
 from rc2016.pipeline.scene_defaults import (apply_new_scene_defaults,audit_scene,_configure_optix_gpu,check_shared_lighting,load_shared_lighting,
-    pack_scene_images_except_shared_hdri)
+    fit_render_region,frame_camera_zoom,visible_mesh_points,pack_scene_images_except_shared_hdri)
 
 
 # The game stores assets in Y-up coordinates.  Keep source mesh/bone/action data in
@@ -496,14 +496,13 @@ def build(job):
         center=Vector(((lo+hi)/2).tolist());radius=max(float(np.linalg.norm(hi-lo))/2,.05)
         camera_data=bpy.data.cameras.new('Source motion review camera');camera_data.type='PERSP';camera_data.lens=50
         camera=bpy.data.objects.new('Source motion review camera',camera_data);scene.collection.objects.link(camera)
-        # Limiting half field of view: the shorter render axis of the 36 mm sensor.
-        aspect=scene.render.resolution_x/max(scene.render.resolution_y,1)
-        short_sensor=camera_data.sensor_width/max(aspect,1/aspect)
-        half_fov=math.atan(short_sensor/2/camera_data.lens)
-        camera.location=center+Vector((1,-1.6,.85)).normalized()*(radius/math.sin(half_fov))*1.1
-        camera.rotation_euler=(center-camera.location).to_track_quat('-Z','Y').to_euler()
         camera_data.clip_start=max(.0001,radius/10000);camera_data.clip_end=radius*100
         scene.camera=camera
+        # Every build keeps the reference angle; the camera is dollied along it so the model fills the frame.
+        model_points=visible_mesh_points(scene)
+        embed('Camera zoom.json',frame_camera_zoom(scene,model_points if len(model_points) else np.asarray(bounds)))
+    # Render Region around the model in the zoomed camera, with padding (applied after the zoom).
+    embed('Render region.json',fit_render_region(scene))
     if job.get('veldin_look') and scene.get('lighting_source')!='veldin_capture':
         toolkit=str(Path(job['veldin_look']['view_dir']).parent)
         if toolkit not in sys.path:sys.path.insert(0,toolkit)
