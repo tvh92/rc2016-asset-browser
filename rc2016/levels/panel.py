@@ -83,8 +83,9 @@ def drop_uploaded_pixels(cache, entries, uploaded):
     """
     uploaded.update(texture["path"] for entry in entries.values() for role in GL_TEXTURE_ROLES
                     if (texture := entry.get(role)))
-    uploaded.update(texture['path'] for entry in entries.values()
-                    for texture in entry.get('native_textures', {}).values())
+    # Native uploads have separate sRGB/linear GL cache keys. Posting one
+    # does not prove the raw path-keyed object exists for a later hand material.
+    # Keep that raw source until a GL_TEXTURE_ROLES entry has also been posted.
     for key, texture in cache.items():
         if texture and texture.get("path") in uploaded and len(texture.get("pixels") or b"") > 65536:
             cache[key] = {k: v for k, v in texture.items() if k not in ("pixels", "slices")}

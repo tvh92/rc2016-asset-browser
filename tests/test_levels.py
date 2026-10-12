@@ -80,6 +80,20 @@ class LevelSceneTests(unittest.TestCase):
 
 
 class LevelTextureCacheTests(unittest.TestCase):
+    def test_native_upload_keeps_pixels_for_a_later_raw_gl_object(self):
+        pixels=bytes(65537)
+        texture=dict(path='shared.texture',pixels=pixels,slices=[pixels],srgb=True)
+        cache={'shared.texture':texture};uploaded=set()
+        drop_uploaded_pixels(cache,{'native.material':dict(native_textures={5:texture})},uploaded)
+        self.assertEqual(uploaded,set())
+        self.assertIs(cache['shared.texture']['pixels'],pixels)
+        # The later raw entry must still carry pixels for its distinct upload.
+        raw=cache['shared.texture']
+        drop_uploaded_pixels(cache,{'hand.material':dict(_c=raw)},uploaded)
+        self.assertIs(raw['pixels'],pixels)
+        self.assertNotIn('pixels',cache['shared.texture'])
+        self.assertEqual(uploaded,{'shared.texture'})
+
     def test_only_uploaded_large_textures_lose_their_pixels(self):
         def texture(path, size):
             pixels = bytes(size)
