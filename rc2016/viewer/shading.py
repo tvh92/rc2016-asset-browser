@@ -18,6 +18,7 @@ tonemap (LIGHTING below): viewing aids, not the game's lighting.
 from __future__ import annotations
 
 import ctypes
+from rc2016.levels.scene_effects import HELPERS as SCENE_HELPERS, SCENE_UNIFORMS
 
 ENVIRONMENT_TEXTURE_UNIT = 6   # shared review HDRI: prefiltered radiance bands (environment.py)
 # Viewer lighting shared by FRAGMENT and GLASS_FRAGMENT. uLighting 0 is the fixed viewer rig: key and
@@ -89,7 +90,8 @@ vec3 display(vec3 color) {
     return pow(clamp(color, 0.0, 1.0), vec3(1.0 / 2.2));
 }
 """
-LIGHTING_UNIFORMS = ("uLighting", "uLightFrame", "uViewToWorld", "uSH", "uEnvTex", "uSunDir", "uSunColour", "uTonemap", "uExposure")
+LIGHTING += "\n#ifdef RC_SCENE_EFFECTS\n" + SCENE_HELPERS + "\n#else\nfloat sceneAO(){return 1.0;}\nfloat sceneShadow(vec3 p){return 1.0;}\nfloat sceneSpecularOcclusion(vec3 N,vec3 V,float a){return 1.0;}\n#endif\n"
+LIGHTING_UNIFORMS = (*SCENE_UNIFORMS, "uLighting", "uLightFrame", "uViewToWorld", "uSH", "uEnvTex", "uSunDir", "uSunColour", "uTonemap", "uExposure")
 
 # Attribute locations for the two 4-wide skin influence sets. NVIDIA aliases the
 # built-ins to fixed slots (0 vertex, 2 normal, 3 colour, 4 secondary colour,
@@ -253,15 +255,43 @@ vec3 ggx(vec3 N, vec3 V, vec3 L, vec3 F0, vec3 F90, float a) {
 }
 // Shared surface lighting: hand rules and native DAGs use identical closures.
 vec3 deferredDiffuse(vec3 N, vec3 albedo) {
+#ifndef RC_SCENE_EFFECTS
     return albedo * (max(dot(N, rigKey()), 0.0) * keyColour()
         + max(dot(N, rigFill()), 0.0) * fillColour() + ambientLight(N)) / PI * diffuseScale();
+#else
+    sceneCaptureNormal=N;float A=sceneAO();
+    vec3 D=(max(dot(N,rigKey()),0.0)*keyColour()*sceneShadow(vPos)
+        +max(dot(N,rigFill()),0.0)*fillColour()*(0.5+0.5*A)+ambientLight(N)*A)/PI*diffuseScale();
+#ifdef RC_SCENE_EFFECTS
+    if(uSceneEnabled)for(int i=0;i<32;i++)if(i<uSceneLightCount){
+        vec3 delta=uSceneLightPos[i].xyz-vPos;float d=length(delta);
+        vec3 L=delta/max(d,0.0001);float w=pow(clamp(1.0-d*uSceneLightPos[i].w,0.0,1.0),4.0);
+        float nl=max(dot(N,L),0.0);D+=uSceneLightColour[i]*w*nl*nl*(0.5+0.5*A);
+    }
+#endif
+    return albedo*D;
+#endif
 }
 vec3 deferredSpecular(vec3 N, vec3 V, vec3 F0, float gloss) {
     vec3 F90 = clamp(60.0 * F0, 0.0, 1.0);
     float a = pow(2.0, -5.5 * gloss);
+#ifndef RC_SCENE_EFFECTS
     return ggx(N,V,rigKey(),F0,F90,a)*keyColour()
         + ggx(N,V,rigFill(),F0,F90,a)*fillColour()
         + envSpecular(N,V,F0,F90,a,ambientLight(N));
+#else
+    vec3 S=ggx(N,V,rigKey(),F0,F90,a)*keyColour()*sceneShadow(vPos)
+        + ggx(N,V,rigFill(),F0,F90,a)*fillColour()
+        + envSpecular(N,V,F0,F90,a,ambientLight(N))*sceneSpecularOcclusion(N,V,a);
+#ifdef RC_SCENE_EFFECTS
+    if(uSceneEnabled)for(int i=0;i<32;i++)if(i<uSceneLightCount){
+        vec3 delta=uSceneLightPos[i].xyz-vPos;float d=length(delta);
+        float w=pow(clamp(1.0-d*uSceneLightPos[i].w,0.0,1.0),4.0);
+        S+=ggx(N,V,delta/max(d,0.0001),F0,F90,a)*uSceneLightColour[i]*w;
+    }
+#endif
+    return S;
+#endif
 }
 // DB75867B material and terminal terms; frozen runtime leaves are stored in metadata.
 vec3 puddleShade(vec3 G, vec3 V, vec3 c, vec2 g) {
@@ -304,10 +334,15 @@ vec3 puddleShade(vec3 G, vec3 V, vec3 c, vec2 g) {
     vec3 L1=rigKey(),L2=rigFill();
     vec3 C1=keyColour(),C2=fillColour();
     vec3 E=ambientLight(N);
+#ifdef RC_SCENE_EFFECTS
+    vec3 Dl=deferredDiffuse(N,vec3(1.0));
+    vec3 S=deferredSpecular(N,V,F0,gloss);
+#else
     vec3 Dl=(max(dot(N,L1),0.0)*C1+max(dot(N,L2),0.0)*C2+E)/PI*diffuseScale();
     vec3 F90=clamp(60.0*F0,0.0,1.0);float aa=exp2(-5.5*gloss);
     vec3 S=ggx(N,V,L1,F0,F90,aa)*C1+ggx(N,V,L2,F0,F90,aa)*C2;
     S+=envSpecular(N,V,F0,F90,aa,E);
+#endif
     S=clamp(mix(S,F0*E,uPuddle3.x),0.0,1.0); // probe opacity=0, instance fade=0
     return S+D*Dl; // SSR off; fog=1; opacity=1; debug=0; no self-lit input
 }
@@ -694,7 +729,27 @@ void main() {
     gl_FragColor = vec4(display(color), alpha);
 }
 """
-FRAGMENT = FRAGMENT.replace("// @lighting\n", LIGHTING)
+# Scene geometry uses the same material evaluation/discard path as the displayed surface.
+# The macro is emitted only for the level scene programs; model programs retain one output.
+import re as _re
+_SCENE_OUTPUT = """
+vec3 sceneCaptureNormal;
+#ifdef RC_SCENE_EFFECTS
+uniform bool uSceneGeometry;
+#endif
+void sceneOutput(vec4 color){
+#ifdef RC_SCENE_EFFECTS
+ if(uSceneGeometry){gl_FragData[0]=vec4(normalize(sceneCaptureNormal)*0.5+0.5,1.0);gl_FragData[1]=vec4(max(-vPos.z,0.0));return;}
+ gl_FragData[0]=color;
+#else
+ gl_FragColor=color;
+#endif
+}
+"""
+FRAGMENT=_re.sub(r'gl_FragColor\s*=\s*([^;]+);',r'sceneOutput(\1);',FRAGMENT)
+FRAGMENT=FRAGMENT.replace('vec3 N = normalize(vNrm);','vec3 N = normalize(vNrm); sceneCaptureNormal=N;',1)
+FRAGMENT=FRAGMENT.replace('return S+D*Dl;', 'sceneCaptureNormal=N;return S+D*Dl;',1)
+FRAGMENT = FRAGMENT.replace("// @lighting\n", LIGHTING+_SCENE_OUTPUT)
 GLASS_FRAGMENT = GLASS_FRAGMENT.replace("// @lighting\n", LIGHTING)
 GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4}
 
@@ -730,7 +785,7 @@ OPAQUE_UNIFORMS = (
     "uTexP", "uHasP", "uSrgbP", "uPick", "uSpecTint", "uTint", "uTintA", "uTintB", "uTintP", "uTintM",
     "uTintVariant", "uTintPalette", "uTintPaletteBlend", "uTintDetailP", "uTintWorldOrigin",
     "uTexTintDetail", "uHasTintDetail", "uSrgbTintDetail", "uTexH", "uHasH", "uArchSequence", "uTexSequence", "uHasSequence", "uArchColour", "uArchP", "uArchPhase",
-    "uFacingGlow", "uFacingGlowP", "uFacingGlowQ", *LIGHTING_UNIFORMS)
+    "uFacingGlow", "uFacingGlowP", "uFacingGlowQ", "uSceneGeometry", *LIGHTING_UNIFORMS)
 GLASS_UNIFORMS = ("uSkin", "uBoneTex", "uBoneWidth", "uKind", "uA", "uB", "uC", "uD",
                   "uTexN", "uHasN", "uTexP", "uHasP", "uSrgbP",
                   "uScreenNoiseA", "uScreenNoiseB", "uScreenSrgbN", "uScreenSrgbA", "uScreenSrgbB", *LIGHTING_UNIFORMS)
@@ -910,17 +965,18 @@ class Shading:
             self.programs[size] = (*self._link(VERTEX, FRAGMENT, dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE), OPAQUE_UNIFORMS), size)
         return self.programs[size]
 
-    def native_program(self, translation, srgb, instanced=False):
+    def native_program(self, translation, srgb, instanced=False, scene=False):
         from rc2016.viewer.native_glsl import fragment_source
         from rc2016.viewer.native_glsl import EMITTER_VERSION
         vertex = INSTANCED_VERTEX if instanced else VERTEX
-        key = ('native', EMITTER_VERSION, instanced, translation['translation_sha256'],
+        key = ('native', EMITTER_VERSION, instanced, scene, translation['translation_sha256'],
                tuple(sorted(srgb.items())), FRAGMENT, vertex)
         if key not in self.programs:
             surface = fragment_source(translation, srgb)
             names = (*OPAQUE_UNIFORMS, *(s['uniform'] for s in surface['samplers']))
             attributes = INSTANCE_ATTRIBUTES if instanced else dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE)
-            self.programs[key] = self._link(vertex, surface['source'], attributes, names)
+            source=surface['source'].replace('#version 120', '#version 120\n#define RC_SCENE_EFFECTS 1',1) if scene else surface['source']
+            self.programs[key] = self._link(vertex, source, attributes, names)
         return self.programs[key]
 
     def glass_program(self):
@@ -929,11 +985,13 @@ class Shading:
             self.programs["glass"] = self._link(VERTEX, GLASS_FRAGMENT, ATTRIBUTES, GLASS_UNIFORMS)
         return self.programs["glass"]
 
-    def instanced_program(self, glass=False):
+    def instanced_program(self, glass=False, scene=False):
         """Level viewer: INSTANCED_VERTEX with the opaque or the glass fragment shader."""
-        key = "instanced_glass" if glass else "instanced"
+        key = "instanced_glass" if glass else ("instanced_scene" if scene else "instanced")
         if key not in self.programs:
-            self.programs[key] = self._link(INSTANCED_VERTEX, GLASS_FRAGMENT if glass else FRAGMENT,
+            fragment=GLASS_FRAGMENT if glass else FRAGMENT
+            if scene and not glass:fragment=fragment.replace("#version 120","#version 120\n#define RC_SCENE_EFFECTS 1",1)
+            self.programs[key] = self._link(INSTANCED_VERTEX, fragment,
                                             INSTANCE_ATTRIBUTES, GLASS_UNIFORMS if glass else OPAQUE_UNIFORMS)
         return self.programs[key]
 

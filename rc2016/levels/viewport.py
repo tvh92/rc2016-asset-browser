@@ -172,6 +172,9 @@ class LevelViewport(ModelViewport):
 
     def __init__(self, parent, **kwargs):
         super().__init__(parent, **kwargs)
+        self.scene_ao=True;self.scene_shadows=True;self.scene_authored=True
+        self._scene_effects=None;self._scene_geometry=False;self._scene_revision=0
+        self._scene_lighting={'lights':[],'notes':[]};self.scene_error=None
         self._error = "Loading level…"
         self._show_error(self._error)
         self._ext = None
@@ -271,6 +274,7 @@ class LevelViewport(ModelViewport):
 
     def add_materials(self, entries):
         """{material path: texture_preview entry}; uploads textures once per texture path."""
+        self._scene_revision=getattr(self,'_scene_revision',0)+1
         if not self._make_current():
             self._pending_materials.update(entries)
             return
@@ -326,7 +330,10 @@ class LevelViewport(ModelViewport):
                     materials=len(self._materials), textures=sum(1 for v in self._texture_names.values() if v),
                     draws=len(self._draw_list or ()), draw_ms=self.last_draw_ms, speed=self._speed,
                     eye=self._eye, yaw=self._yaw, pitch=self._pitch,
-                    native_translation=self.native_translation, program_switches=self.native_program_switches)
+                    native_translation=self.native_translation, program_switches=self.native_program_switches,
+                    scene_preview=dict(active=self.scene_effects_active(),ao=self.scene_ao,shadows=self.scene_shadows,
+                        authored_lights=len(self._scene_lighting.get('lights',[])) if self.scene_authored else 0,
+                        light_limit=32,error=self.scene_error,game_equivalence=False))
 
     def clear(self, message="Loading level…"):
         if self._make_current():
@@ -338,6 +345,8 @@ class LevelViewport(ModelViewport):
             if textures:
                 self._gl.glDeleteTextures(len(textures), (ctypes.c_uint * len(textures))(*textures))
         self._release_sky()
+        if self._scene_effects and self._make_current():self._scene_effects.close()
+        self._scene_effects=None;self.scene_error=None;self._scene_lighting={'lights':[],'notes':[]}
         self._sky = None
         self._models, self._materials, self._texture_names, self._draw_list = {}, {}, {}, None
         self._material_ops = {}
@@ -384,6 +393,10 @@ class LevelViewport(ModelViewport):
                       tbo=self._buffer(self.GL_ARRAY_BUFFER, geometry["uvs"]),
                       ibo=self._buffer(self.GL_ELEMENT_ARRAY_BUFFER, geometry["indices"]),
                       zones=[], actor_zones=[], actors=[], spawn_zones=[], spawns=[], groups=[], groups_for=None)
+        import numpy as np
+        p=np.asarray(geometry['positions']).reshape(-1,3)
+        record['local_bounds']=(tuple(p.min(axis=0)),tuple(p.max(axis=0)))
+        self._scene_revision=getattr(self,'_scene_revision',0)+1
         record["buffers"] = [record[k] for k in ("vbo", "nbo", "tbo", "ibo")]
         self._ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0); self._ext["glBindBuffer"](self.GL_ELEMENT_ARRAY_BUFFER, 0)
         self._models[path] = record
@@ -392,6 +405,7 @@ class LevelViewport(ModelViewport):
         """Keep one zone's instance rows, {(mirrored, material changes): rows}; the GPU buffers merge
         every visible zone (_merge_groups)."""
         record = self._models[path]
+        self._scene_revision=getattr(self,'_scene_revision',0)+1
         for key, rows in sorted(groups.items()):
             record["zones"].append((zone, key, rows))
         record["groups_for"] = None
@@ -487,6 +501,7 @@ class LevelViewport(ModelViewport):
 
     def _build_draw_list(self):
         """Draw items sorted by material so uniforms change once per material (draw_items)."""
+        self._scene_revision=getattr(self,'_scene_revision',0)+1
         self._merge_groups()
         self._draw_list = draw_items(self._models.values(), self._level(), self._visible_groups,
                                      self.material_overrides)
@@ -509,6 +524,56 @@ class LevelViewport(ModelViewport):
         gl.glMultMatrixf((ctypes.c_float * 16)(*BASIS))
         self._near = near
 
+    def scene_effects_active(self):
+        return bool(self._scene_effects) and self._mode=='Shaded' and (self.scene_ao or self.scene_shadows or self.scene_authored)
+
+    def set_scene_effects(self,ao=None,shadows=None,authored=None):
+        for name,value in (('scene_ao',ao),('scene_shadows',shadows),('scene_authored',authored)):
+            if value is not None:setattr(self,name,bool(value))
+        self.scene_error=None;self._scene_revision=getattr(self,'_scene_revision',0)+1;self._schedule_draw()
+
+    def set_scene_lighting(self,data):
+        self._scene_lighting=data;self._scene_revision=getattr(self,'_scene_revision',0)+1;self._schedule_draw()
+
+    def scene_bounds(self):
+        import numpy as np
+        if getattr(self,'_scene_bounds_revision',None)==self._scene_revision:return self._scene_bounds_cache
+        lows=[];highs=[]
+        for m in self._models.values():
+            if not self._visible_groups(m):continue
+            low,high=m['local_bounds'];corners=np.array([[x,y,z,1.] for x in (low[0],high[0]) for y in (low[1],high[1]) for z in (low[2],high[2])])
+            layers=m['zones']+(m['actor_zones'] if self.show_actors else [])+(m['spawn_zones'] if self.show_spawn_preview else [])
+            for zone,_key,rows in layers:
+                if zone in self._hidden_zones:continue
+                matrices=np.asarray(rows,dtype=float).reshape(-1,4,4);p=np.einsum('ci,nij->ncj',corners,matrices)[:,:,:3]
+                if len(p):lows.append(p.min(axis=(0,1)));highs.append(p.max(axis=(0,1)))
+        self._scene_bounds_cache=(tuple(float(x) for x in np.min(lows,axis=0)),tuple(float(x) for x in np.max(highs,axis=0))) if lows else self._bounds_native
+        self._scene_bounds_revision=self._scene_revision;return self._scene_bounds_cache
+
+    def _apply_lighting(self,u):
+        super()._apply_lighting(u)
+        effects=self._scene_effects
+        if not effects:return
+        effects.apply(self,u)
+        if self._scene_geometry or not self.scene_authored:return
+        import numpy as np
+        mv=(ctypes.c_float*16)();self._gl.glGetFloatv(self.GL_MODELVIEW_MATRIX,mv);matrix=np.array(mv).reshape(4,4).T
+        lights=sorted(self._scene_lighting.get('lights',[]),key=lambda l:float(np.linalg.norm((matrix@np.r_[l['position'],1.])[:3])))[:32]
+        positions=[];colours=[]
+        for light in lights:
+            inverse=np.float32(light['inverse_radius'])
+            positions.extend([*(matrix@np.r_[light['position'],1.])[:3],float(inverse)])
+            colours.extend((np.array(light['colour'],dtype=np.float32)*np.float32(inverse*inverse)).tolist())
+        self._shading.glUniform1i(u['uSceneLightCount'],len(lights))
+        if lights:
+            effects.uniform4(u['uSceneLightPos'],len(lights),(ctypes.c_float*len(positions))(*positions))
+            self._shading.glUniform3fv(u['uSceneLightColour'],len(lights),(ctypes.c_float*len(colours))(*colours))
+
+    def _draw_geometry(self,shadow=False):
+        self._scene_geometry=True
+        try:self._draw_level(geometry=True,shadow=shadow)
+        finally:self._scene_geometry=False
+
     def _draw(self):
         if not self._make_current():
             return
@@ -524,6 +589,17 @@ class LevelViewport(ModelViewport):
             self._setup_camera(width, height)
             if self._draw_list is None:
                 self._build_draw_list()
+            if self._mode=='Shaded' and (self.scene_ao or self.scene_shadows or self.scene_authored) and not self.scene_error:
+                try:
+                    if self._scene_effects is None:
+                        from rc2016.levels.scene_effects import SceneEffects
+                        self._scene_effects=SceneEffects(gl,self._shading)
+                    self._scene_effects.prepare(self,self._draw_geometry)
+                except Exception as exc:
+                    self.scene_error=f'Scene preview unavailable: {exc}'
+                    print(self.scene_error,file=sys.stderr)
+                    if self._scene_effects:self._scene_effects.close()
+                    self._scene_effects=None
             if self._sky and self.show_sky and self._mode in ("Shaded", "Textured"):
                 try:
                     self._draw_sky()
@@ -586,12 +662,12 @@ class LevelViewport(ModelViewport):
             gl.glBindTexture(target, texture)
         self._texture_state.update(changed)
 
-    def _draw_level(self):
+    def _draw_level(self,geometry=False,shadow=False):
         from rc2016.viewer.shading import (ARCH_SEQUENCE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, PICK_TEXTURE_UNIT,
                                  TINT_DETAIL_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT,
                                  GLOW_PARALLAX_TEXTURE_UNIT)
         gl, sh = self._gl, self._shading
-        program, u = sh.instanced_program()
+        program, u = sh.instanced_program(scene=self.scene_effects_active())
         sh.glUseProgram(program)
         base_program, base_u = program, u
         self._active_surface_program = program
@@ -609,7 +685,7 @@ class LevelViewport(ModelViewport):
         glass = []
         if mode != "Wireframe":
             gl.glPolygonMode(self.GL_FRONT_AND_BACK, self.GL_FILL)
-            gl.glEnable(self.GL_POLYGON_OFFSET_FILL); gl.glPolygonOffset(1.0, 1.0)
+            gl.glEnable(self.GL_POLYGON_OFFSET_FILL); gl.glPolygonOffset(0.0 if shadow else 1.0, 1.0)
             sh.glUniform3f(u["uColor"], 0.72, 0.74, 0.78)
             current = None
             for item in self._draw_list:
@@ -643,10 +719,12 @@ class LevelViewport(ModelViewport):
             gl.glDisable(self.GL_POLYGON_OFFSET_FILL)
             program, u = base_program, base_u
             sh.glUseProgram(program)
-            if glass:
+            if glass and not geometry:
                 self._draw_level_glass(glass)
                 sh.glUseProgram(program)
                 self._texture_state, self._active_unit = {}, None
+        if geometry:
+            self._end_attributes();self._unbind_material_units();sh.glUseProgram(0);return
         wire = mode in ("Wireframe", "Solid + wireframe")
         if wire or self.selected in self._models:
             sh.glUniform1i(u["uMode"], 3)

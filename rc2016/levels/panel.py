@@ -107,6 +107,11 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None):
     if zone_filter:
         zones = [z for z in zones if level_scene.zone_label(z) in zone_filter or z in zone_filter]
     out.put(("zones", zones))
+    try:
+        from rc2016.levels.scene_lighting import load_scene_lighting
+        out.put(('scene_lighting',load_scene_lighting(archive,all_zones)))
+    except Exception as exc:
+        out.put(('scene_lighting',{'lights':[],'probes':[],'notes':[f'Authored lighting unavailable: {exc}']}))
     from rc2016.levels.actors import ActorCatalog, actor_groups
     catalog = ActorCatalog(archive)
     actor_decode_seconds = 0.0
@@ -282,6 +287,12 @@ class LevelPanel:
         tonemap_box.bind("<<ComboboxSelected>>", lambda _e: self.view.set_lighting(tonemap=self.tonemap_var.get()))
         self.lighting_note = ttk.Label(light, text="", foreground="gray", wraplength=240)
         self.lighting_note.grid(row=2, column=0, columnspan=2, sticky="w")
+        self.scene_ao_var=tk.BooleanVar(value=True);self.scene_shadows_var=tk.BooleanVar(value=True);self.scene_authored_var=tk.BooleanVar(value=True)
+        scene_options=ttk.Frame(light);scene_options.grid(row=3,column=0,columnspan=2,sticky='w',pady=(5,0))
+        for text,var,name in (('Scene AO',self.scene_ao_var,'ao'),('Scene shadows',self.scene_shadows_var,'shadows'),('Authored point lights',self.scene_authored_var,'authored')):
+            ttk.Checkbutton(scene_options,text=text,variable=var,command=lambda v=var,n=name:self.view.set_scene_effects(**{n:v.get()})).pack(anchor='w')
+        self.scene_note=ttk.Label(scene_options,text='Scene preview; game caster/probe allocation is unverified.',foreground='gray',wraplength=240)
+        self.scene_note.pack(anchor='w')
         self.hidden_var = tk.BooleanVar(value=False)
         toggles = ttk.Frame(side); toggles.grid(row=5, column=0, sticky="w", pady=4)
         ttk.Checkbutton(toggles, text="Show collision/template models", variable=self.hidden_var,
@@ -532,6 +543,8 @@ class LevelPanel:
                 print(f"level viewer: {count} actors unresolved: {reason}", file=sys.stderr)
             if item[1]['duplicates']:
                 print(f"level viewer: {len(item[1]['duplicates'])} actor/static near pairs (see actor summary)", file=sys.stderr)
+        elif kind == 'scene_lighting':
+            self.view.set_scene_lighting(item[1]);p['scene_lighting']=dict(points=len(item[1].get('lights',[])),notes=item[1].get('notes',[]))
         elif kind == "sky":
             self.view.set_sky(item[1])
             p["sky"] = sky_summary(item[1])
@@ -560,6 +573,10 @@ class LevelPanel:
         self._show_stats(self.view.stats())
 
     def _show_stats(self, stats):
+        scene=stats.get('scene_preview',{})
+        source_note=self.progress.get('scene_lighting',{})
+        unavailable=next((note for note in source_note.get('notes',[]) if isinstance(note,str) and note.startswith('Authored lighting unavailable:')),None)
+        self.scene_note.configure(text=scene.get('error') or unavailable or f"Scene preview: {scene.get('authored_lights',0)} authored points (nearest 32). Game caster/probe allocation is unverified.")
         p = self.progress
         if not p:
             return

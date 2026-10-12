@@ -535,6 +535,9 @@ class ModelViewport(_TkFrame):
         """Lighting and tonemap uniforms for the program in use (every opaque and glass program)."""
         from rc2016.viewer.shading import ENVIRONMENT_TEXTURE_UNIT
         gl, sh = self._gl, self._shading
+        for name in ('uSceneEnabled','uSceneAOEnabled','uSceneShadowEnabled','uSceneGeometry','uSceneLightCount'):
+            sh.glUniform1i(u.get(name,-1),0)
+        sh.glUniform1i(u.get('uSceneAO',-1),16);sh.glUniform1i(u.get('uSceneShadow',-1),17)
         hdri = self.lighting == "Shared HDRI" and bool(self._environment) and bool(self._upload_environment())
         sh.glUniform1i(u["uLighting"], 1 if hdri else 0)
         sh.glUniform1i(u["uTonemap"], self.TONEMAPS.index(self.tonemap))
@@ -563,11 +566,12 @@ class ModelViewport(_TkFrame):
         self._schedule_draw()
 
     def _surface_program(self, entry, level, instanced=False):
+        scene = instanced and bool(getattr(self, 'scene_effects_active', lambda: False)())
         translation = entry.get('native_translation') if self.native_translation and level == 2 else None
         if translation:
             srgb = {api: texture[1] for api, texture in entry['native_textures'].items()}
-            return self._shading.native_program(translation, srgb, instanced)
-        return self._shading.instanced_program() if instanced else self._shading.program(self._bone_count or 1)[:2]
+            return self._shading.native_program(translation, srgb, instanced, scene=scene)
+        return self._shading.instanced_program(scene=scene) if instanced else self._shading.program(self._bone_count or 1)[:2]
 
     def set_mode(self, mode):
         """Solid shading, wireframe (mesh only), or both."""
