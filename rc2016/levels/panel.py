@@ -171,11 +171,9 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None, workers=N
     if zone_filter:
         zones = [z for z in zones if level_scene.zone_label(z) in zone_filter or z in zone_filter]
     out.put(("zones", zones))
-    try:
-        from rc2016.levels.scene_lighting import load_scene_lighting
-        out.put(('scene_lighting',load_scene_lighting(archive,all_zones)))
-    except Exception as exc:
-        out.put(('scene_lighting',{'lights':[],'probes':[],'notes':[f'Authored lighting unavailable: {exc}']}))
+    # Authored lighting reads every zone again; decode it beside the geometry rather than before it.
+    threading.Thread(target=_post_scene_lighting, args=(archive, all_zones, out, cancel), daemon=True,
+                     name="level-lighting").start()
     from rc2016.levels.actors import ActorCatalog, actor_groups
     catalog = ActorCatalog(archive)
     actor_decode_seconds = 0.0
@@ -215,6 +213,16 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None, workers=N
                      actor_decode_seconds)
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
+
+
+def _post_scene_lighting(archive, zones, out, cancel):
+    try:
+        from rc2016.levels.scene_lighting import load_scene_lighting
+        lighting = load_scene_lighting(archive, zones)
+    except Exception as exc:
+        lighting = {'lights': [], 'probes': [], 'notes': [f'Authored lighting unavailable: {exc}']}
+    if not cancel.is_set():
+        out.put(('scene_lighting', lighting))
 
 
 def _load_models(archive, pool, workers, models, catalog, actor_groups, points, out, cancel, started, actor_decode_seconds):
