@@ -77,6 +77,17 @@ class FloatOpcodeTests(unittest.TestCase):
         self.assertEqual(run(vop1('V_RSQ_CLAMP_F32', 9, V + 1), {1: 4.}), .5)
         self.assertEqual(run(vop1('V_LOG_CLAMP_F32', 9, V + 1), {1: 8.}), 3.)
 
+    def test_normalised_packs(self):
+        for name, low, high in [('V_CVT_PKNORM_U16_F32', 1., 0.), ('V_CVT_PKNORM_I16_F32', 1., -1.)]:
+            with self.subTest(name=name):
+                code = vop2(name, 9, V + 1, 2)
+                compiler = Compiler(code, [])
+                compiler.v[1] = compiler.ir.const(1.5); compiler.v[2] = compiler.ir.const(-2.)
+                compiler.instruction(decoder().decode_stream(code, 0)[0])
+                node = compiler.ir.nodes[compiler.v[9]]
+                self.assertEqual(node['op'], 'pack')
+                self.assertEqual([compiler.ir.value(a) for a in node['args']], [low, high])
+
     def test_unmodelled_legacy_stays_unsupported(self):
         # RCP_LEGACY's special cases are not modelled; it must stay a diagnostic.
         compiler = Compiler(vop1('V_RCP_LEGACY_F32', 9, V + 1), [])

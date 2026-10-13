@@ -8,7 +8,9 @@ class CensusTests(unittest.TestCase):
     def test_normalise_groups_offsets_and_registers(self):
         self.assertEqual(census.normalise('Control flow unsupported at 1234: S_CBRANCH_EXECZ'),
                          'Control flow unsupported at N: S_CBRANCH_EXECZ')
-        self.assertEqual(census.normalise('Uninitialized VGPR 17'), 'Uninitialized VGPR N')
+        self.assertEqual(census.normalise('Uninitialized VGPR 17'), 'Uninitialized VGPR 17')
+        self.assertEqual(census.normalise('Unresolved packed export from Uninitialized VGPR 3'),
+                         'Unresolved packed export from Uninitialized VGPR N')
 
     def test_malformed_graph_is_classified_not_raised(self):
         row = census.classify_graph(b'not a graph')

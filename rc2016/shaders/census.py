@@ -21,9 +21,24 @@ _REGISTERS = re.compile(r'\b(VGPR|SGPR) \d+')
 
 
 def normalise(reason):
-    """Group reasons that differ only by code offset or register number."""
+    """Group reasons that differ only by code offset or register number.
+
+    Uninitialized registers keep their number: initial pixel-shader VGPRs are
+    hardware inputs (barycentrics, position, front face), so the number says which.
+    """
     reason = _OFFSETS.sub(r'\1 N', str(reason))
-    return _REGISTERS.sub(r'\1 N', reason)
+    return reason if reason.startswith('Uninitialized') else _REGISTERS.sub(r'\1 N', reason)
+
+
+def _blocked_outputs(result):
+    """{unresolved node: sorted output labels whose expressions reach it}."""
+    from rc2016.shaders.ir import DAG
+    ir = DAG(result['nodes']); outputs = result['outputs']
+    roots = dict(albedo=outputs['albedo'], F0=outputs['F0'], gloss=[outputs['gloss']], emission=[outputs['emission']])
+    if result['normal']:
+        roots['normal'] = result['normal']['xyz']
+    reach = {label: ir.reachable(r) for label, r in roots.items()}
+    return {n['node']: sorted(label for label, nodes in reach.items() if n['node'] in nodes) for n in result['unresolved']}
 
 
 def classify_graph(data):
@@ -45,7 +60,9 @@ def classify_graph(data):
             blockers.append('lower: ' + normalise(exc))
             continue
         if result['unresolved']:
-            blockers.extend(sorted({'unresolved: ' + normalise(n.get('reason', n['op'])) for n in result['unresolved']}))
+            where = _blocked_outputs(result)
+            blockers.extend(sorted({'unresolved: ' + normalise(n.get('reason', n['op'])) +
+                                    ' -> ' + ','.join(where[n['node']]) for n in result['unresolved']}))
         else:
             lowered += 1
     status = 'lowered' if lowered else 'blocked'
