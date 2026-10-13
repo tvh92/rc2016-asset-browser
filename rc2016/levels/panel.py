@@ -419,10 +419,18 @@ class LevelPanel:
         self.lighting_note = ttk.Label(light, text="", foreground="gray", wraplength=240)
         self.lighting_note.grid(row=3, column=0, columnspan=2, sticky="w")
         display = ttk.LabelFrame(side, text="Display", padding=(4, 2)); display.grid(row=5, column=0, sticky="ew", pady=(3, 0))
-        ttk.Label(display, text="Tonemap").pack(side="left")
+        ttk.Label(display, text="Tonemap").grid(row=0, column=0, sticky="w")
         tonemap_box = ttk.Combobox(display, textvariable=self.tonemap_var, values=LevelViewport.TONEMAPS, state="readonly", width=19)
-        tonemap_box.pack(side="left", padx=4)
+        tonemap_box.grid(row=0, column=1, sticky="w", padx=4)
         tonemap_box.bind("<<ComboboxSelected>>", lambda _e: self.view.set_lighting(tonemap=self.tonemap_var.get()))
+        # Small-object culling: instances whose bounding sphere is smaller than this on screen.
+        self.cull_size_var = tk.StringVar(value="1 px")
+        ttk.Label(display, text="Hide below").grid(row=1, column=0, sticky="w", pady=(2, 0))
+        cull_box = ttk.Combobox(display, textvariable=self.cull_size_var, state="readonly", width=7,
+                                values=("Off", "1 px", "2 px", "4 px", "8 px", "16 px"))
+        cull_box.grid(row=1, column=1, sticky="w", padx=4, pady=(2, 0))
+        cull_box.bind("<<ComboboxSelected>>", lambda _e: self.view.set_min_screen_pixels(
+            0 if self.cull_size_var.get() == "Off" else float(self.cull_size_var.get().split()[0])))
         materials = ttk.LabelFrame(side, text="Materials", padding=(4, 2)); materials.grid(row=6, column=0, sticky="ew", pady=(3, 0))
         self.native_translation_var = tk.BooleanVar(value=native_translation)
         ttk.Checkbutton(materials, text="Native translation", variable=self.native_translation_var,
@@ -807,7 +815,7 @@ class LevelPanel:
         self.status_var.set(
             f"{p['state']}{actors} · {p['zones_with_models']}/{p['zones']} zones with placements · {p['models']} models{errors} · "
             f"{stats['materials']} materials · {stats['textures']} textures{overrides}{sky} · "
-            f"showing {stats['instances']:,} of {stats.get('placed', stats['instances']):,} instances (frustum culled), "
+            f"showing {stats['instances']:,} of {stats.get('placed', stats['instances']):,} instances (culled), "
             f"{stats['triangles']:,} triangles in {stats['draws']} draws · {stats['draw_ms']:.1f} ms/frame{phases} · "
             f"speed {stats['speed']:.1f}/s")
 

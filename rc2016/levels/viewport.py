@@ -170,6 +170,18 @@ def sphere_visibility(centres, radii, planes, margin=1e-3):
     return np.all(distances >= -reach[:, None], axis=1)
 
 
+def screen_size_visibility(centres, radii, near_plane, near, height, min_pixels):
+    """True where a sphere's projected diameter is at least ``min_pixels`` on a ``height``-pixel
+    viewport. Depth is measured along the view axis from ``near_plane`` (the normalised near clip
+    plane), which never exceeds the true distance, so the estimate errs toward keeping a sphere."""
+    import numpy as np
+    if not len(centres) or not min_pixels:
+        return np.ones(len(centres), bool)
+    depth = np.maximum(centres @ near_plane[:3] + near_plane[3] + near, near)
+    focal = height * 0.5 / math.tan(math.radians(FOV_DEGREES) * 0.5)
+    return 2.0 * radii * focal / depth >= min_pixels
+
+
 _VERSIONS = itertools.count(1)
 
 
@@ -263,6 +275,7 @@ class LevelViewport(ModelViewport):
     MIPMAP_IDLE_SECONDS = 0.5         # and only once the camera has rested this long
     STATS_INTERVAL = 0.25             # status-line refresh while drawing (4 Hz)
     culling = True
+    min_screen_pixels = 1.0   # also cull instances smaller than this on screen (0: frustum only)
     _cull = None
     _frame_lighting = None
 
@@ -814,7 +827,7 @@ class LevelViewport(ModelViewport):
         import numpy as np
         if not (self.culling and self._ext and self._ext.get("glBufferSubData")):
             return
-        camera = (self._eye, self._yaw, self._pitch, self._near, self._far, width, height)
+        camera = (self._eye, self._yaw, self._pitch, self._near, self._far, width, height, self.min_screen_pixels)
         if self._cull is None:
             self._prepare_culling()
         elif camera == self._cull_camera:
@@ -826,6 +839,9 @@ class LevelViewport(ModelViewport):
         modelview = _mat4_mul(view_matrix(self._eye, self._yaw, self._pitch), BASIS)
         planes = frustum_planes(projection_matrix(width, height, self._near, self._far), modelview)
         visible = sphere_visibility(cull["centres"], cull["radii"], planes)
+        if self.min_screen_pixels:
+            visible &= screen_size_visibility(cull["centres"], cull["radii"], planes[4], self._near, height,
+                                              self.min_screen_pixels)
         previous = np.ones(len(visible), bool)
         for index, name in enumerate(cull["buffers"]):
             mask = self._cull_masks.get(name)
@@ -848,6 +864,12 @@ class LevelViewport(ModelViewport):
             self._cull_counts[name] = count
         ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0)
         self._stats_base = None
+
+    def set_min_screen_pixels(self, pixels):
+        """Cull instances whose bounding sphere spans fewer than ``pixels`` on screen (0: off)."""
+        self.min_screen_pixels = max(0.0, float(pixels))
+        self._cull_camera = None
+        self._schedule_draw()
 
     def scene_effects_active(self):
         return getattr(self,'lighting_enabled',True) and bool(getattr(self,'_scene_effects',None)) and self._mode=='Shaded' and (self.scene_ao or self.scene_shadows or self.scene_authored)
