@@ -202,6 +202,15 @@ class ControlFlowTests(unittest.TestCase):
                 self.assertEqual(DAG(compiler.ir.nodes).evaluate(compiler.v[3], {'v1': a, 'v2': b}), max(a, b))
                 self.assertEqual(compiler.ir.value(compiler.exec), 1.)
 
+    def test_first_lane_uniformity_check_takes_the_scalar_path(self):
+        # s14 = readfirstlane(v3); vcc = (s14 != v3); if all equal goto fast; slow: v5 = v1; fast: v5 = v2
+        first = struct.pack('<I', (0x3f << 25) | (14 << 17) | (op('GcnOpcodeVOP1', 'V_READFIRSTLANE_B32') << 9) | (V + 3))
+        code = program(first, vopc('V_CMP_NE_U32', 14, 3), ('branch', 'S_CBRANCH_VCCZ', 'fast'),
+                       vmov(5, V + 1), ('branch', 'S_BRANCH', 'end'), ('label', 'fast'), vmov(5, V + 2), ('label', 'end'))
+        value, compiler = run(code, {1: 1., 2: 2., 3: 3.}, register=5)
+        self.assertEqual(value, 2.)
+        self.assertEqual(compiler.s[14], compiler.v[3])
+
     def test_lane_varying_vcc_branch_stays_unsupported(self):
         # Vector work before the mask: lanes without VCC would be affected.
         code = program(vopc('V_CMP_GT_F32', V + 1, 2), ('branch', 'S_CBRANCH_VCCZ', 'skip'), vmov(3, V + 1),

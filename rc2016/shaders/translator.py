@@ -20,7 +20,7 @@ import sys
 
 from rc2016.shaders.ir import DAG, bits, from_bits
 
-VERSION=11
+VERSION=12
 ROOT=Path(__file__).resolve().parents[2]
 SHADER_SECTION=0x873D1E6C
 # VALU instructions that also write a scalar carry/flag register pair.
@@ -145,7 +145,7 @@ class Compiler:
         self.samples=[];self.diagnostics=[];self.current=0;self.scalar_bits={}
         self.exec=self.ir.const(1.);self.bp=self.ir.const(1.);self.masks={};self.scc=None;self.scc_source='program start'
         self.pending={};self.premerged=set();self.exec_masked_export=False
-        self.pred_tables={};self.pred_memo={};self.back=None;self.fetch_call=False
+        self.pred_tables={};self.pred_memo={};self.back=None;self.fetch_call=False;self.lane_checks={}
         if ps_input_addr is not None:
             for reg,(name,j,loaded) in ps_input_registers(ps_input_addr,ps_input_ena or 0,vgpr_count).items():
                 label='ps.'+name+('' if j is None else f'.{j}')
@@ -383,7 +383,14 @@ class Compiler:
         elif name in ('S_CBRANCH_VCCZ','S_CBRANCH_VCCNZ'):
             # VCCZ is wave-wide; it is a uniform branch only when VCC is the same in every lane.
             vcc=self.mask(106)
-            if vcc is not None and self.wave_uniform(vcc):
+            if name=='S_CBRANCH_VCCZ' and vcc in self.lane_checks:
+                # Uniformity check: VCCZ takes the scalar path when every lane equals the
+                # first. The other path loops over distinct values to compute the same
+                # per-lane result, so one lane follows the scalar path with first = its own value.
+                first,lane=self.lane_checks[vcc];condition=one
+                for reg,value in list(self.s.items()):
+                    if value==first:self.s[reg]=lane
+            elif vcc is not None and self.wave_uniform(vcc):
                 condition=vcc if name=='S_CBRANCH_VCCNZ' else self.p_not(vcc)
             elif vcc is not None and name=='S_CBRANCH_VCCZ' and self.guarded_by_vcc(target):
                 # A skip over a region masked to the VCC lanes: lanes with VCC set
@@ -573,7 +580,10 @@ class Compiler:
                 if m['neg']:args[j]=self.ir.op('neg',args[j])
         d=f['dst'][0]
         if name in ('V_READFIRSTLANE_B32','V_READLANE_B32'):
-            self.clobber_s(d,1,name);return
+            self.clobber_s(d,1,name)
+            # Kept as an unresolved scalar of the lane value, for the uniformity check below.
+            if name=='V_READFIRSTLANE_B32':self.s[d]=self.unknown(name,args[0])
+            return
         if name in CARRY_OUT:
             # VOP2 forms write VCC; VOP3b forms name their SGPR pair in bits 14:8.
             self.clobber_s(106 if k==6 else (q>>8)&127,2,name)
@@ -642,7 +652,14 @@ class Compiler:
         lt,le=('u_lt','u_le') if kind=='U' else ('i_lt','i_le')
         table={'EQ':('u_eq',a,b),'LT':(lt,a,b),'LE':(le,a,b),'GT':(lt,b,a),'GE':(le,b,a)}
         # The VOP3 opcode table names integer not-equal LG, the VOPC table NE.
-        if relation in ('NE','LG'):return self.p_not(self.ir.op('u_eq',a,b))
+        if relation in ('NE','LG'):
+            for first,lane in ((a,b),(b,a)):
+                n=self.ir.nodes[first]
+                if n['op']=='unsupported' and n.get('reason')=='V_READFIRSTLANE_B32' and n['args']==[lane]:
+                    # Lanes whose value differs from the first lane: a wave uniformity check.
+                    check=self.unknown('Lane differs from first lane',first);self.lane_checks[check]=(first,lane)
+                    return check
+            return self.p_not(self.ir.op('u_eq',a,b))
         if relation not in table:return self.unknown(name,*args)
         op,x,y=table[relation];return self.ir.op(op,x,y)
 

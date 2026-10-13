@@ -140,6 +140,26 @@ def engine_terms(data, limit=6):
     return found
 
 
+def world_position(data):
+    """Best reconstruction analysis over the graph's lowered pixel programs (fewest residual engine inputs)."""
+    from rc2016.shaders.bindings import compiled, _lowered
+    from rc2016.shaders.engine_inputs import analyse
+    best = None
+    for program in compiled(bytes(data))['programs']:
+        if program['status'] != 'compiled':
+            continue
+        try:
+            lowered = _lowered(program)
+        except (ValueError, IndexError, KeyError):
+            continue
+        o = lowered['outputs']
+        roots = [*o['albedo'], *o['F0'], o['gloss'], o['emission']] + (lowered['normal']['xyz'] if lowered['normal'] else [])
+        result = analyse(lowered['nodes'], roots)
+        if best is None or len(result['residual']) < len(best['residual']):
+            best = result
+    return best
+
+
 def material_detail(archive, path, result, reasons):
     """Blockers of one material plus where each blocking interpolant comes from."""
     from rc2016.formats.archive import asset_data, asset_references
@@ -152,7 +172,9 @@ def material_detail(archive, path, result, reasons):
         attributes = {int(m.group(1)) for r in reasons for m in _ATTRIBUTE.finditer(r)}
         if any('CB0[' in r or 'ps.POS' in r for r in reasons) and graphs:
             gid = [i for i in archive.resolve(graphs[0]) if archive.entries[i]['type'] == 'materialgraph'][0]
-            detail['engine_terms'] = engine_terms(asset_data(archive, gid))
+            data = asset_data(archive, gid)
+            detail['engine_terms'] = engine_terms(data)
+            detail['world_position'] = world_position(data)
         for graph in graphs[:1] if attributes else []:
             gid = [i for i in archive.resolve(graph) if archive.entries[i]['type'] == 'materialgraph'][0]
             detail['interpolants'] = interpolant_sources(asset_data(archive, gid), attributes)
@@ -303,6 +325,12 @@ def _print_shown(details):
     """Shown materials grouped by identical blockers; interpolant sources listed once per group."""
     ready = sum(d['status'] == 'ready' for d in details)
     print(f'shown materials: {len(details)} ({ready} ready)')
+    shapes = Counter((json.dumps(d['world_position']['matches'], sort_keys=True), ' '.join(d['world_position']['residual']))
+                     for d in details if d['status'] != 'ready' and d.get('world_position'))
+    if shapes:
+        print('world-position reconstruction test (materials: matched shapes | engine inputs left):')
+        for (matched, residual), count in shapes.most_common(12):
+            print(f'  {count:4d}  {matched[:300]} | {residual[:300] or "none"}')
     terms = Counter(t for d in details if d['status'] != 'ready' for t in d.get('engine_terms', []))
     if terms:
         print('expressions consuming engine CB0 words or pixel position (materials):')
