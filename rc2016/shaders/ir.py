@@ -74,7 +74,11 @@ class DAG:
         self._cache={}
 
     def node(self,op,args=(),**meta):
-        key=(op,tuple(args),repr(sorted(meta.items())))
+        # The key's metadata part is repr(sorted(meta.items())); the common no-metadata and
+        # one-field (constant) cases build the same string without sorting.
+        if not meta:key=(op,tuple(args),'[]')
+        elif len(meta)==1:key=(op,tuple(args),'['+repr(next(iter(meta.items())))+']')
+        else:key=(op,tuple(args),repr(sorted(meta.items())))
         if key not in self._cache:
             self._cache[key]=len(self.nodes)
             self.nodes.append(dict(op=op,args=list(args),**meta))
