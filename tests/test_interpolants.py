@@ -66,26 +66,80 @@ class InterpolantTests(unittest.TestCase):
         self.assertIn('layout unverified', interpolant_sources(data, {0})['attribute0']['sources'][0])
 
 
-class NormalisedAttributeTests(unittest.TestCase):
-    def check(self, unit):
+class RotatedStreamAttributeTests(unittest.TestCase):
+    """Only a per-draw matrix applied to one vertex stream is read as a transformed stream."""
+
+    def setUp(self):
+        from rc2016.shaders.ir import DAG
+        self.ir = DAG()
+
+    def stream(self, s):
+        return [self.ir.node('input', name=f'vertex.semantic{s}.{c}', kind='vertex_input', semantic=s, channel=j)
+                for j, c in enumerate('xyz')]
+
+    def word(self, w):
+        return self.ir.node('unsupported', [], reason='Unresolved scalar memory load', offset=40, word=w, base=0,
+                            load_offset=None)
+
+    def rotate(self, vector, base=0):
+        ir = self.ir
+        decoded = [ir.op('sub', ir.op('mul', ir.const(2.), v), ir.const(1.)) for v in vector]
+        return [ir.op('add', ir.op('add', ir.op('mul', self.word(base + r), decoded[0]),
+                                   ir.op('mul', self.word(base + 4 + r), decoded[1])),
+                      ir.op('mul', self.word(base + 8 + r), decoded[2])) for r in range(3)]
+
+    def normalise(self, v):
+        ir = self.ir
+        scale = ir.op('rsqrt', ir.op('add', ir.op('add', ir.op('mul', v[0], v[0]), ir.op('mul', v[1], v[1])),
+                                     ir.op('mul', v[2], v[2])))
+        return [ir.op('mul', scale, x) for x in v]
+
+    def check(self, channels):
         from unittest import mock
         from rc2016.shaders import interpolants
-        from rc2016.shaders.ir import DAG
-        ir = DAG()
-        v = [ir.node('input', name=f'n{j}', kind='test') for j in range(3)]
-        scale = ir.op('rsqrt', ir.op('add', ir.op('mul', v[0], v[0]), ir.op('mul', v[1], v[1])))
-        channels = [ir.op('mul', scale, x) if unit else x for x in v] + [None]
         headers = [dict(type=interpolants.PIXEL, inputs=[dict(semantic=15), dict(semantic=17)]),
                    dict(type=1, header_offset=0, layout='verified', exports=[dict(semantic=17, slot=2)])]
         with mock.patch.object(interpolants, 'shader_headers', return_value=headers), \
-                mock.patch.object(interpolants, 'vertex_exports', return_value=(({2: channels}, ir), None)):
-            return interpolants.normalised_attributes(b'')
+                mock.patch.object(interpolants, 'vertex_exports',
+                                  return_value=(({2: list(channels) + [None]}, self.ir), None)):
+            return interpolants.rotated_stream_attributes(b'')
 
-    def test_rsqrt_normalised_export_is_reported(self):
-        self.assertEqual(self.check(True), {1})
+    def flag(self, offset):
+        return self.ir.node('input', name=f'runtime_flag@{offset}', kind='runtime_flag')
 
-    def test_plain_export_is_not(self):
-        self.assertEqual(self.check(False), set())
+    def test_rotated_stream_is_found(self):
+        self.assertEqual(self.check(self.rotate(self.stream(1))), {1: 1})
+
+    def test_normalised_rotated_stream_is_found(self):
+        self.assertEqual(self.check(self.normalise(self.rotate(self.stream(1)))), {1: 1})
+
+    def test_flag_paths_of_the_same_stream_are_found(self):
+        flag = self.flag(8)
+        paths = zip(self.rotate(self.stream(1)), self.normalise(self.rotate(self.stream(1), 32)))
+        self.assertEqual(self.check([self.ir.op('select', flag, a, b) for a, b in paths]), {1: 1})
+
+    def test_camera_minus_position_is_not(self):
+        ir = self.ir
+        camera = [self.word(100 + j) for j in range(3)]
+        position = self.rotate(self.stream(0))
+        self.assertEqual(self.check(self.normalise([ir.op('sub', c, p) for c, p in zip(camera, position)])), {})
+
+    def test_a_flag_path_from_another_source_rejects(self):
+        ir = self.ir
+        fetched = ir.node('unsupported', [], reason='BUFFER_LOAD_FORMAT_XYZ', offset=60)
+        other = [ir.op('mul', self.word(200 + j), fetched) for j in range(3)]
+        flag = self.flag(8)
+        self.assertEqual(self.check([ir.op('select', flag, a, b) for a, b in zip(other, self.rotate(self.stream(1)))]), {})
+
+    def test_mixed_streams_reject(self):
+        ir = self.ir
+        mixed = [ir.op('add', a, b) for a, b in zip(self.rotate(self.stream(1)), self.rotate(self.stream(2), 64))]
+        self.assertEqual(self.check(mixed), {})
+
+    def test_bending_by_another_term_rejects(self):
+        ir = self.ir
+        bend = ir.op('sat', self.word(300))
+        self.assertEqual(self.check([ir.op('mul', bend, v) for v in self.rotate(self.stream(1))]), {})
 
 
 class SquaredStreamTests(unittest.TestCase):

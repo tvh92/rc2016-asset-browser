@@ -207,7 +207,7 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
             normals.update(colours)
         if normals:
             replaced=ir.replace(replaced,normals)
-            lowered['limitations'].append('Experimental: interpolants '+', '.join(f'attribute{a}.xyz' for a in sorted(normal_attributes))+' are normalised (rsqrt) vectors in every traced vertex program and are read as the geometry normal; that they are the normal is inferred, and the packed vertex frame is not reconstructed.')
+            lowered['limitations'].append('Experimental: interpolants '+', '.join(f'attribute{a}.xyz' for a in sorted(normal_attributes))+' are, in every traced vertex program and flag path, per-draw words times one vertex stream (a transformed stream, optionally normalised) and are read as the geometry normal; that the stream is the normal and the matrix object-to-world is inferred, and the packed vertex frame is not reconstructed.')
         lowered['limitations'].append(f'Experimental: {adapted} expressions of the form CB0[28..30] + (CB0[92..95] + CB0[100..103]*POS_Y + POS_X*(CB0[96..99] + CB0[104..107]*POS_Y)) * POS_W are read as world position and replaced by viewer world position. This engine meaning is inferred from the expression shape, not decoded from the game.')
     replaced,zero_guards=guard_source_zero_powers(ir,replaced)
     replaced,front_face=bind_front_face(ir,replaced)
@@ -312,9 +312,9 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False)
     data=bytes(graph_datas[0]);graph=compiled(data)
     normal_attributes=set();stream_channels={}
     if world_position:
-        from rc2016.shaders.interpolants import normalised_attributes
+        from rc2016.shaders.interpolants import rotated_stream_attributes
         from rc2016.shaders.interpolants import squared_stream_channels
-        try:normal_attributes=normalised_attributes(data)
+        try:normal_attributes=set(rotated_stream_attributes(data))
         except (ValueError,KeyError,IndexError,struct.error):normal_attributes=set()
         try:stream_channels=squared_stream_channels(data)
         except (ValueError,KeyError,IndexError,struct.error):stream_channels={}

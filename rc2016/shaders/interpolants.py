@@ -172,44 +172,6 @@ def interpolant_sources(data, attributes, depth=6):
     return result
 
 
-def normalised_attributes(data):
-    """PS attribute indices whose xyz is a normalised vector in every vertex program exporting it.
-
-    Evidence for the experimental adapter: each of the three channels must reach an
-    rsqrt in every traced vertex export of the attribute's single semantic. This
-    says the interpolant is unit length, not which vector it is.
-    """
-    headers = shader_headers(data)
-    pixel = [h for h in headers if h['type'] == PIXEL]
-    vertex = [h for h in headers if h['type'] != PIXEL]
-    compiled, found = {}, set()
-    count = max((len(p['inputs']) for p in pixel), default=0)
-    for index in range(count):
-        semantics = {p['inputs'][index]['semantic'] for p in pixel if index < len(p['inputs'])}
-        if len(semantics) != 1:
-            continue
-        rows = [r for r in vertex if any(e['semantic'] in semantics for e in r.get('exports', []))]
-        if not rows or any(r.get('layout') != 'verified' for r in rows):
-            continue
-        ok = True
-        for row in rows:
-            key = row['header_offset']
-            if key not in compiled:
-                compiled[key] = vertex_exports(row)
-            exports, _ = compiled[key]
-            if exports is None:
-                ok = False; break
-            params, ir = exports
-            for slot in [e['slot'] for e in row['exports'] if e['semantic'] in semantics]:
-                channels = params.get(slot)
-                if not channels or len(channels) < 3 or any(c is None or not any(
-                        ir.nodes[j]['op'] == 'rsqrt' for j in ir.reachable([c])) for c in channels[:3]):
-                    ok = False
-        if ok:
-            found.add(index)
-    return found
-
-
 MAX_FLAGS = 6
 
 
@@ -515,3 +477,83 @@ def _identity_lines(ir, channels, label):
     if zero:
         lines.append(f'{label}: zero on {len(zero)} flag settings')
     return lines
+
+
+_VERTEX = re.compile(r'vertex\.semantic(\d+)\.[xyz]$')
+
+
+def _stream_terms(ir, form, powers):
+    """Semantic K when every term is per-draw words (CB or unresolved loads) and runtime
+    flags times at most `powers` components of one vertex stream K (rsqrt atoms allowed
+    when their argument passes with powers=2); False for no vertex term; None otherwise."""
+    if form is None:
+        return None
+    streams, offsets, scaled = set(), set(), set()
+    for key in form:
+        count = 0
+        words = {f for f in key if f.startswith(('CB', 'mem('))}
+        for factor in key:
+            match = _VERTEX.match(factor)
+            if match:
+                streams.add(int(match.group(1)))
+                count += 1
+            elif factor.startswith('rsqrt#') and powers == 1:
+                inner = _stream_terms(ir, linear_form(ir, ir.nodes[int(factor[6:])]['args'][0], SYMBOLIC_TERMS), 2)
+                if inner is None or inner is False:
+                    return None
+                streams.add(inner)
+            elif not factor.startswith((FLAG, 'CB', 'mem(')):
+                return None
+        if count > powers:
+            return None
+        (scaled if count else offsets).update(words)
+    # A direction transform has no translation: words in stream-free terms (the decode
+    # offset, as in M * (2s - 1)) must also scale the stream. camera - M * p does not.
+    if len(streams) > 1 or (powers == 1 and not offsets <= scaled):
+        return None
+    return streams.pop() if streams else False
+
+
+def rotated_stream_attributes(data):
+    """{PS attribute index: vertex semantic K} for interpolants whose xyz is, in every
+    vertex program exporting them and on every per-draw flag path, per-draw words times
+    the components of one vertex stream K (a matrix applied to a decoded stream such as
+    M * (2s - 1)), optionally normalised by an rsqrt of the same kind. Per-draw words in
+    terms without the stream must also multiply the stream, so a translation such as a
+    camera or object position offset rejects the attribute.
+
+    Evidence for the experimental adapter: the vector is a transformed vertex stream,
+    not a camera-relative or deformed vector. That stream K is the normal and that the
+    matrix is object-to-world are not decoded. Runtime flags are expanded exactly as 0/1
+    values; any term with another input or opaque operation rejects the attribute.
+    """
+    headers = shader_headers(data)
+    pixel = [h for h in headers if h['type'] == PIXEL]
+    vertex = [h for h in headers if h['type'] != PIXEL]
+    compiled, found = {}, {}
+    count = max((len(p['inputs']) for p in pixel), default=0)
+    for index in range(count):
+        semantics = {p['inputs'][index]['semantic'] for p in pixel if index < len(p['inputs'])}
+        if len(semantics) != 1:
+            continue
+        rows = [r for r in vertex if any(e['semantic'] in semantics for e in r.get('exports', []))]
+        if not rows or any(r.get('layout') != 'verified' for r in rows):
+            continue
+        streams = set()
+        for row in rows:
+            key = row['header_offset']
+            if key not in compiled:
+                compiled[key] = vertex_exports(row)
+            exports, _ = compiled[key]
+            if exports is None:
+                streams.add(None); break
+            params, ir = exports
+            for slot in [e['slot'] for e in row['exports'] if e['semantic'] in semantics]:
+                channels = params.get(slot)
+                if not channels or len(channels) < 3 or any(c is None for c in channels[:3]):
+                    streams.add(None); continue
+                for c in channels[:3]:
+                    streams.add(_stream_terms(ir, linear_form(ir, c, SYMBOLIC_TERMS), 1))
+        if len(streams) == 1 and isinstance(next(iter(streams)), int) and next(iter(streams)) is not False:
+            found[index] = streams.pop()
+    return found
