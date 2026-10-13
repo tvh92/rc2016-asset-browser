@@ -159,6 +159,8 @@ class SourcePreviewLoader:
             self.archive.verify_repeats=False   # preview only: read the first of an asset's repeated copies
             from rc2016.viewer.textures import TextureDiskCache
             self.archive.texture_disk_cache=TextureDiskCache(Path(__file__).resolve().parents[2]/'.cache'/'texture_preview')
+            from rc2016.viewer.native_glsl import TranslationDiskCache
+            self.archive.translation_disk_cache=TranslationDiskCache(Path(__file__).resolve().parents[2]/'.cache'/'native_translation')
             self.source_root=source_root
             self.identity=None;self.current=None;self.texture_cache={}
             self._recent.clear();self._recent_identity=None

@@ -10,6 +10,7 @@ import math
 
 from rc2016.shaders.bindings import PORTABLE_OPS
 from rc2016.shaders.ir import DAG, compute
+from rc2016.viewer.textures import TextureDiskCache
 
 EMITTER_VERSION = 3
 # Reserve vertex bone matrices (3) and shared environment lighting (6).
@@ -211,8 +212,116 @@ def evaluate_surface(translation, uv, sample, *, preview_inputs=None):
     return result
 
 
+TRANSLATION_DISK_CACHE_VERSION = 1
+TRANSLATION_DISK_CACHE_BYTES = 256 * 1024 ** 2
+
+
+def _translation_code_sha256():
+    """The translator's own sources: any change to them invalidates every cached translation."""
+    from pathlib import Path
+    package = Path(__file__).resolve().parents[1]
+    files = sorted((package / 'shaders').glob('*.py')) + [
+        package / 'formats' / 'materials.py', package / 'formats' / 'container.py', package / 'common.py',
+        package / 'viewer' / 'native_glsl.py', package.parent / 'third_party' / 'opengnm' / 'gcn_types.h']
+    try:
+        return hashlib.sha256(b''.join(f.name.encode() + f.read_bytes() for f in files)).hexdigest()
+    except OSError:   # frozen executable without sources: no disk cache
+        return None
+
+
+_TRANSLATION_CODE_SHA256 = _translation_code_sha256()
+
+
+def _to_json(value):
+    """Exact JSON form: tuples and dicts with non-string (or tag-like) keys are tagged."""
+    if isinstance(value, tuple):
+        return {'__tuple__': [_to_json(v) for v in value]}
+    if isinstance(value, list):
+        return [_to_json(v) for v in value]
+    if isinstance(value, dict):
+        if all(isinstance(k, str) for k in value) and not (len(value) == 1 and next(iter(value)) in ('__tuple__', '__items__')):
+            return {k: _to_json(v) for k, v in value.items()}
+        return {'__items__': [[_to_json(k), _to_json(v)] for k, v in value.items()]}
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    raise TypeError(f'{type(value).__name__} is not stored in the translation cache')
+
+
+def _from_json(value):
+    if isinstance(value, list):
+        return [_from_json(v) for v in value]
+    if isinstance(value, dict):
+        if len(value) == 1 and '__tuple__' in value:
+            return tuple(_from_json(v) for v in value['__tuple__'])
+        if len(value) == 1 and '__items__' in value:
+            return {_from_json(k): _from_json(v) for k, v in value['__items__']}
+        return {k: _from_json(v) for k, v in value.items()}
+    return value
+
+
+class TranslationDiskCache(TextureDiskCache):
+    """prepare_translation results under ``folder``, one JSON file each, across sessions.
+
+    Keyed by the material bytes, its graph bytes and the translator source hash, so a changed
+    asset or translator never reuses an old result. Results that do not survive a JSON round trip
+    unchanged are not stored. Files are written to a temporary name and renamed into place; a
+    file that fails a check is ignored and rewritten. Eviction is least recently used, as for
+    TextureDiskCache. Tuples and non-string dict keys are tagged so results load back exactly.
+    """
+    SUFFIX = '.json'
+
+    def __init__(self, folder, limit=TRANSLATION_DISK_CACHE_BYTES):
+        super().__init__(folder, limit)
+
+    def key(self, material_data, graph_datas):
+        if _TRANSLATION_CODE_SHA256 is None:
+            return None
+        return hashlib.sha256(repr((TRANSLATION_DISK_CACHE_VERSION, _TRANSLATION_CODE_SHA256,
+                                    hashlib.sha256(material_data).hexdigest(),
+                                    [hashlib.sha256(g).hexdigest() for g in graph_datas])).encode()).hexdigest()
+
+    def get(self, key):
+        import json, os
+        path = self._file(key)
+        try:
+            with open(path, 'rb') as f:
+                stored = json.loads(f.read().decode('utf-8'))
+            if stored.get('key') != key:
+                return None
+            result = _from_json(stored['result'])
+            if not isinstance(result, dict):
+                return None
+            os.utime(path)   # recency for eviction
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return None
+        return result
+
+    def put(self, key, result):
+        import json, os, uuid
+        try:
+            text = json.dumps(dict(key=key, result=_to_json(result)), allow_nan=False)
+            if _from_json(json.loads(text)['result']) != result:
+                return
+        except (TypeError, ValueError):
+            return
+        blob = text.encode('utf-8')
+        path = self._file(key)
+        temp = path.with_name(f'{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp')
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(temp, 'wb') as f:
+                f.write(blob)
+            os.replace(temp, path)
+        except OSError:
+            try: temp.unlink()
+            except OSError: pass
+            return
+        self._grow(len(blob))
+
+
 def prepare_material_translation(archive, path):
-    """Material-bound receipt, cached on the archive; malformed shaders fail closed."""
+    """Material-bound receipt, cached on the archive and, with a TranslationDiskCache on
+    ``archive.translation_disk_cache``, on disk across sessions; malformed shaders fail closed."""
     from rc2016.formats.archive import asset_data, asset_references
     from rc2016.formats.materials import extract_material_parameters
     from rc2016.shaders.bindings import prepare_translation
@@ -224,12 +333,18 @@ def prepare_material_translation(archive, path):
             ids = [i for i in archive.resolve(p) if archive.entries[i]['type'] == kind]
             if len(ids) != 1: raise ValueError('Ambiguous source ' + p)
             return ids[0]
+        disk, key = getattr(archive, 'translation_disk_cache', None), None
         try:
             material_id = entry(path, 'material')
             material = asset_data(archive, material_id)
             graphs = list(dict.fromkeys(r['path'] for r in asset_references(archive, material_id) if r['path'].endswith('.materialgraph')))
-            result = prepare_translation([asset_data(archive, entry(g, 'materialgraph')) for g in graphs], material,
-                                         extract_material_parameters(material))
+            graph_datas = [bytes(asset_data(archive, entry(g, 'materialgraph'))) for g in graphs]
+            key = disk.key(bytes(material), graph_datas) if disk is not None else None
+            result = disk.get(key) if key else None
+            if result is None:
+                result = prepare_translation(graph_datas, material, extract_material_parameters(material))
+                if key:
+                    disk.put(key, result)
         except (ValueError, KeyError, IndexError, OSError) as exc:
             result = dict(status='unsupported', diagnostics=[f'{type(exc).__name__}: {exc}'], game_equivalence=False)
         found = _remember(cache, path, result)
