@@ -168,6 +168,30 @@ def prepare_preview(archive, path):
     return cache[path]
 
 
+def preview_with_fallback(receipt, fallback):
+    """Keep a richer normal-mapped fallback when inferred normals drive albedo.
+
+    The raw experimental receipt stays available to the census. Normalisation
+    alone does not identify a vertex vector as the geometry normal, and replacing
+    distinct vectors can select a different colour layer. This selection guard
+    applies only to the generic adapter, not independently pinned previews.
+    """
+    if (receipt.get('status') != 'experimental'
+            or receipt.get('preview_contract') != bindings.WORLD_POSITION_CONTRACT
+            or receipt.get('normal') or not fallback.get('_n')):
+        return receipt
+    ir = DAG(receipt['nodes'])
+    if not any(ir.nodes[i].get('kind') == 'preview_normal'
+               for i in ir.reachable(receipt['outputs']['albedo'])):
+        return receipt
+    reason = ('Viewer override suppressed: inferred geometry-normal inputs drive albedo, '
+              'but no tangent-normal slice is recovered and the fallback has a source normal map. '
+              'Normalised vertex vectors need not be the same geometry normal; their identity, '
+              'space and per-draw selection remain unverified. The richer fallback is retained.')
+    return dict(receipt, viewer_override=False, viewer_override_limitation=reason,
+                limitations=[reason, *receipt.get('limitations', [])])
+
+
 def valid_contract(receipt):
     """Only independently pinned preview contracts reach experimental emitters."""
     from rc2016.shaders import terrain_preview

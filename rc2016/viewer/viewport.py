@@ -615,7 +615,8 @@ class ModelViewport(_TkFrame):
 
     def _selected_surface(self, entry, level):
         if level == 2:
-            if getattr(self,'experimental_materials',False) and entry.get('experimental_preview'):
+            if (getattr(self,'experimental_materials',False) and entry.get('experimental_preview')
+                    and entry['experimental_preview'].get('viewer_override', True)):
                 return entry['experimental_preview'], entry['experimental_textures'], True
             if self.native_translation and entry.get('native_translation'):
                 return entry['native_translation'], entry['native_textures'], False

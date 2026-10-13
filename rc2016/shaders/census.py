@@ -388,10 +388,12 @@ def _print_shown(details):
 def print_receipt(archive, path):
     """One material's native and experimental world-position receipts, summarised."""
     from rc2016.shaders.ir import DAG
-    from rc2016.viewer.experimental_materials import world_position_translation
+    from rc2016.viewer.experimental_materials import world_position_translation, preview_with_fallback
+    from rc2016.viewer.textures import material_texture_paths
     from rc2016.viewer.native_glsl import prepare_material_translation
     for label, result in (('native', prepare_material_translation(archive, path)),
-                          ('world-position preview', world_position_translation(archive, path))):
+                          ('world-position preview', preview_with_fallback(
+                              world_position_translation(archive, path), material_texture_paths(archive, path)))):
         print(f"== {label}: {result.get('status')}")
         if result.get('status') not in ('ready', 'experimental'):
             for d in result.get('diagnostics', [])[:8]:
