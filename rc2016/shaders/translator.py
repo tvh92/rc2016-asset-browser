@@ -68,6 +68,45 @@ def project_table(table,n,used):
     return table
 
 
+class Registers(dict):
+    """A register file that can log writes: while ``log`` is a dict, the first write to each
+    register records its previous value (None if it had none). ``order`` holds each register's
+    position in iteration order (its first insertion; deletions rebuild it)."""
+    __slots__=('log','order')
+
+    def __init__(self,*args,**kwargs):
+        super().__init__();self.log=None;self.order={}
+        self.update(*args,**kwargs)
+
+    def __setitem__(self,key,value):
+        log=self.log
+        if log is not None and key not in log:log[key]=dict.get(self,key)
+        if key not in self.order:self.order[key]=len(self.order)
+        dict.__setitem__(self,key,value)
+
+    def update(self,*args,**kwargs):
+        for key,value in dict(*args,**kwargs).items():self[key]=value
+
+    def setdefault(self,key,default=None):
+        if key not in self:self[key]=default
+        return self[key]
+
+    def _reorder(self):
+        self.order={key:j for j,key in enumerate(self)}
+
+    def __delitem__(self,key):
+        dict.__delitem__(self,key);self._reorder()
+
+    def pop(self,*args):
+        value=dict.pop(self,*args);self._reorder();return value
+
+    def popitem(self):
+        item=dict.popitem(self);self._reorder();return item
+
+    def clear(self):
+        dict.clear(self);self.order={}
+
+
 PREDICATE_OPS={'mul','max','sub','select'}
 MASK_OP=re.compile(r'S_(AND|OR|XOR|ANDN2|ORN2|NAND|NOR|XNOR|MOV|NOT)(_SAVEEXEC)?_B64')
 UNIFORM_INT_OPS={'u_and','u_or','u_xor','u_andn2','u_shl','u_shr','u_eq','u_lt','u_le','i_lt','i_le','u_bit',
@@ -161,7 +200,7 @@ def ps_input_registers(addr,ena,vgpr_count=None):
 
 class Compiler:
     def __init__(self,code,usage_slots,ps_input_addr=None,ps_input_ena=None,vgpr_count=None):
-        self.code=code;self.ir=DAG();self.v={};self.s={};self.descriptors={};self.exports={}
+        self.code=code;self.ir=DAG();self.v=Registers();self.s=Registers();self.descriptors={};self.exports={}
         self.samples=[];self.diagnostics=[];self.current=0;self.scalar_bits={}
         self.exec=self.ir.const(1.);self.bp=self.ir.const(1.);self.masks={};self.scc=None;self.scc_source='program start'
         self.pending={};self.premerged=set();self.exec_masked_export=False
@@ -738,18 +777,33 @@ class Compiler:
         bp,live_exec=self.bp,self.exec
         if self.ir.value(bp)==1 and self.ir.value(live_exec)==1:
             self.instruction(i);return
-        v0,s0=dict(self.v),dict(self.s);e0={t:list(x) for t,x in self.exports.items()};self.premerged=set()
-        self.instruction(i)
+        # Logging register files record what the instruction overwrote; a plain dict (a caller
+        # may replace one) is compared against a copy instead. Both give the same writes in order.
+        files=[]
+        for registers in (self.v,self.s):
+            if isinstance(registers,Registers):registers.log={};files.append(None)
+            else:files.append(dict(registers))
+        e0={t:list(x) for t,x in self.exports.items()};self.premerged=set()
+        try:
+            self.instruction(i)
+        finally:
+            writes=[]
+            for registers,copy in zip((self.v,self.s),files):
+                if copy is None:
+                    log,registers.log=registers.log,None
+                    writes.append((log,[(reg,registers[reg]) for reg in sorted(log,key=registers.order.__getitem__)]))
+                else:writes.append((copy,self.changed(registers,copy)))
+        (v0,v_writes),(s0,s_writes)=writes
         # Initial register contents (unwritten, or hardware PS inputs) are dead once a
         # program reuses the register, so lanes that skip the write do not read them.
         dont_care=lambda n:((self.ir.nodes[n]['op']=='unsupported' and self.ir.nodes[n].get('reason','').startswith('Uninitialized'))
                             or self.ir.nodes[n].get('kind')=='ps_input')
         live=self.p_and(bp,live_exec)
-        for reg,value in self.changed(self.v,v0):
+        for reg,value in v_writes:
             old=v0.get(reg)
             if old is not None and old!=value and not dont_care(old):self.v[reg]=self.ir.op('select',live,value,old)
         if self.ir.value(bp)!=1:
-            for reg,value in self.changed(self.s,s0):
+            for reg,value in s_writes:
                 old=s0.get(reg)
                 if reg in self.premerged or old is None or old==value or dont_care(old):continue
                 self.s[reg]=self.ir.op('select',bp,value,old)
@@ -761,10 +815,8 @@ class Compiler:
                                       for n,o in zip(channels,old)]
 
     def changed(self,registers,before):
-        """(register, value) pairs that differ from ``before``, in ``registers``' own order.
-
-        Equivalent to filtering every item, which dominated predicated compilation: the
-        difference runs in C and only the few written registers are ordered. Registers are
+        """(register, value) pairs that differ from ``before``, in ``registers``' own order, for
+        a plain-dict register file (a Registers file logs its writes instead). Registers are
         only ever added or reassigned, so a register's order is its first insertion."""
         try:
             keys={reg for reg,_value in registers.items()-before.items()}

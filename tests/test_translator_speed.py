@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from rc2016.shaders import bindings
-from rc2016.shaders.translator import Compiler, project_table
+from rc2016.shaders.translator import Compiler, Registers, project_table
 
 
 def reference_projection(table, n, used):
@@ -44,6 +44,41 @@ class ChangedRegisterTests(unittest.TestCase):
         compiler = Compiler(b'', [])
         registers = {1: [1], 2: [2]}
         self.assertEqual(compiler.changed(registers, {}), [(1, [1]), (2, [2])])
+
+
+class RegisterLogTests(unittest.TestCase):
+    def test_log_records_first_previous_value_and_order(self):
+        registers = Registers({3: 30, 1: 10})
+        registers.log = {}
+        registers[1] = 11; registers[1] = 12; registers[5] = 50
+        self.assertEqual(registers.log, {1: 10, 5: None})
+        self.assertEqual(sorted(registers.log, key=registers.order.__getitem__), [1, 5])
+        registers.log = None
+        registers[3] = 31
+        self.assertIsNone(registers.log)
+        self.assertEqual(list(registers.order), list(registers))
+
+    def test_order_follows_dict_order_through_every_mutation(self):
+        registers = Registers()
+        registers.update({4: 1, 2: 2}); registers.setdefault(9, 3); registers.setdefault(4, 0)
+        registers.pop(2); registers[2] = 5; del registers[4]; registers[4] = 6
+        self.assertEqual(registers, {9: 3, 2: 5, 4: 6})
+        self.assertEqual(registers.order, {9: 0, 2: 1, 4: 2})
+
+    def test_predicated_step_merges_writes_like_the_full_comparison(self):
+        def compiler(plain):
+            c = Compiler(b'', [])
+            for r in range(6): c.v[r] = c.ir.node('input', name=f'v{r}', kind='test')
+            for r in range(4): c.s[r] = c.ir.node('input', name=f's{r}', kind='test')
+            if plain: c.v, c.s = dict(c.v), dict(c.s)
+            c.bp = c.ir.node('input', name='flag', kind='runtime_flag')
+            def instruction(_i):
+                c.v[4] = c.ir.const(2.); c.v[1] = c.ir.const(3.); c.v[1] = c.ir.const(4.)
+                c.v[9] = c.ir.const(5.); c.s[2] = c.ir.const(6.); c.v[0] = c.v[0]
+            c.instruction = instruction
+            c.step(None)
+            return c.ir.nodes, dict(c.v), dict(c.s)
+        self.assertEqual(compiler(False), compiler(True))
 
 
 class CompiledGraphTests(unittest.TestCase):
