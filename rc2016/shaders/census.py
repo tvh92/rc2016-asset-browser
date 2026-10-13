@@ -107,15 +107,22 @@ def diagnostic_reasons(diagnostic):
     return {normalise(_NODE_IDS.sub('nodeN', str(reason)))}
 
 
+_SUMMARY = 'No portable deferred writer with a bounded source pass contract'
+
+
 def _material_counts(archive, paths):
     from rc2016.viewer.native_glsl import prepare_material_translation
-    statuses, diagnostics = Counter(), Counter()
+    statuses, diagnostics, combinations = Counter(), Counter(), Counter()
     for path in paths:
         result = prepare_material_translation(archive, path)
         statuses[result.get('status')] += 1
-        for reason in sorted({r for d in result.get('diagnostics', []) for r in diagnostic_reasons(d)}):
+        reasons = sorted({r for d in result.get('diagnostics', []) for r in diagnostic_reasons(d)})
+        for reason in reasons:
             diagnostics[reason] += 1
-    return statuses, diagnostics
+        if result.get('status') != 'ready':
+            # The full set of blockers: binding one input unlocks a material only if it is the whole set.
+            combinations[' + '.join(r for r in reasons if r != _SUMMARY) or _SUMMARY] += 1
+    return statuses, diagnostics, combinations
 
 
 def _graph_rows(archive, entries):
@@ -174,10 +181,10 @@ def material_translation_status(archive, by_material=None, pool=None, chunks=1, 
     """
     paths = sorted((e['path'] for e in archive.entries.values() if e.get('type') == 'material'),
                    key=lambda p: ((by_material or {}).get(p, []), p))
-    statuses, diagnostics = Counter(), Counter()
-    for s, d in _run(pool, _material_counts, _worker_materials, archive, paths, chunks, progress, 'materials'):
-        statuses.update(s); diagnostics.update(d)
-    return statuses, diagnostics
+    statuses, diagnostics, combinations = Counter(), Counter(), Counter()
+    for s, d, c in _run(pool, _material_counts, _worker_materials, archive, paths, chunks, progress, 'materials'):
+        statuses.update(s); diagnostics.update(d); combinations.update(c)
+    return statuses, diagnostics, combinations
 
 
 def census(archive, materials=False, progress=None, jobs=1, source=None):
@@ -223,7 +230,8 @@ def _census(archive, materials, progress, pool, chunks, started, by_material, us
         if progress:
             progress('binding every material')
         started = time.time()
-        statuses, diagnostics = material_translation_status(archive, by_material, pool, chunks, progress)
+        statuses, diagnostics, combinations = material_translation_status(archive, by_material, pool, chunks, progress)
+        report['material_blocker_sets'] = [dict(reasons=r, materials=c) for r, c in combinations.most_common()]
         report['seconds']['materials'] = round(time.time() - started, 1)
         report['material_status'] = dict(statuses)
         report['material_diagnostics'] = [dict(reason=r, materials=c) for r, c in diagnostics.most_common()]
@@ -256,6 +264,9 @@ def main(argv=None):
         print('top material diagnostics (materials, reason):')
         for row in report['material_diagnostics'][:args.top]:
             print(f"{row['materials']:6d}  {row['reason'][:200]}")
+        print('top complete blocker sets per unsupported material (materials, reasons):')
+        for row in report['material_blocker_sets'][:15]:
+            print(f"{row['materials']:6d}  {row['reasons'][:300]}")
     print('PS input address/enable words (graphs):', dict(list(report['ps_input_addr_ena'].items())[:8]))
     print('top blockers (materials, graphs, reason):')
     for row in report['blockers'][:args.top]:

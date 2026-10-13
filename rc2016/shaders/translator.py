@@ -20,7 +20,7 @@ import sys
 
 from rc2016.shaders.ir import DAG, bits, from_bits
 
-VERSION=8
+VERSION=9
 ROOT=Path(__file__).resolve().parents[2]
 SHADER_SECTION=0x873D1E6C
 # VALU instructions that also write a scalar carry/flag register pair.
@@ -610,7 +610,8 @@ class Compiler:
             op,x,y=table[relation];return self.ir.op(op,x,y)
         lt,le=('u_lt','u_le') if kind=='U' else ('i_lt','i_le')
         table={'EQ':('u_eq',a,b),'LT':(lt,a,b),'LE':(le,a,b),'GT':(lt,b,a),'GE':(le,b,a)}
-        if relation=='NE':return self.p_not(self.ir.op('u_eq',a,b))
+        # The VOP3 opcode table names integer not-equal LG, the VOPC table NE.
+        if relation in ('NE','LG'):return self.p_not(self.ir.op('u_eq',a,b))
         if relation not in table:return self.unknown(name,*args)
         op,x,y=table[relation];return self.ir.op(op,x,y)
 

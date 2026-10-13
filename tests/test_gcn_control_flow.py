@@ -85,6 +85,35 @@ class ControlFlowTests(unittest.TestCase):
         # A layout larger than the program's VGPR allocation is not trusted.
         self.assertEqual(ps_input_registers(addr, ena, 4), {})
 
+    def test_front_face_zero_test_binds_to_facing(self):
+        from rc2016.shaders.bindings import bind_front_face
+        from rc2016.viewer.native_glsl import emit_surface, evaluate_surface
+        addr = (1 << 1) | (1 << 12)  # PERSP_CENTER, FRONT_FACE in VGPR 2
+        # v3 = front ? v1 : v2 through an integer not-equal test (VOP3 names it LG).
+        cmp = struct.pack('<Q', (0x34 << 26) | (op('GcnOpcodeVOP3', 'V_CMP_LG_U32_E64') << 17) | 106 |
+                          (128 << 32) | ((V + 2) << 41))
+        cnd = struct.pack('<I', (op('GcnOpcodeVOP2', 'V_CNDMASK_B32') << 25) | (3 << 17) | (11 << 9) | (V + 10))
+        compiler = Compiler(cmp + cnd, [], addr, addr, 16)
+        compiler.v[10] = compiler.ir.node('input', name='attribute0.1', kind='attribute', attribute=0, channel=1)
+        compiler.v[11] = compiler.ir.node('input', name='attribute0.0', kind='attribute', attribute=0, channel=0)
+        compiler.run(decoder().decode_stream(cmp + cnd, 0))
+        ir = DAG(compiler.ir.nodes)
+        roots, bound = bind_front_face(ir, [compiler.v[3]])
+        self.assertTrue(bound)
+        translation = dict(nodes=ir.nodes, texture_bindings=[], status='ready', translation_sha256='t',
+                           outputs=dict(albedo=roots * 3, F0=roots * 3, gloss=roots[0], emission=roots[0]))
+        self.assertIn('gl_FrontFacing', emit_surface(translation)['body'])
+        front = evaluate_surface(translation, (.25, .75), None)
+        back = evaluate_surface(translation, (.25, .75), None, preview_inputs={'front_facing': 0.})
+        self.assertEqual((front['gloss'], back['gloss']), (.25, .75))
+
+    def test_front_face_other_uses_stay_unbound(self):
+        from rc2016.shaders.bindings import bind_front_face
+        ir = DAG()
+        face = ir.node('input', name='ps.FRONT_FACE', kind='ps_input', input='FRONT_FACE')
+        roots = [ir.op('mul', face, ir.const(2.))]
+        self.assertEqual(bind_front_face(ir, roots), (roots, False))
+
     def test_divergent_if(self):
         # if (v1 > v2) v3 = v1;  with v3 initially v2 -> max(v1, v2)
         code = program(vopc('V_CMP_GT_F32', V + 1, 2), sop1('S_AND_SAVEEXEC_B64', 0, 106),

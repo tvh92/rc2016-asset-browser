@@ -9,7 +9,7 @@ import math
 import struct
 from functools import lru_cache
 
-from rc2016.shaders.ir import DAG
+from rc2016.shaders.ir import DAG, bits
 from rc2016.shaders.translator import compile_graph, lower_deferred, sections
 from rc2016.shaders.families import graph_parameter_tables
 
@@ -132,6 +132,30 @@ def guard_source_zero_powers(ir,roots):
     return [visit(i) for i in roots],guards
 
 
+def bind_front_face(ir,roots):
+    """Bind the FRONT_FACE pixel input where the program only tests it against zero.
+
+    The test becomes 1 - front_facing (0/1), which both frontends supply. This
+    relies on the GCN convention that the input is nonzero for front faces (as
+    used by Mesa's radeonsi driver); it is not captured from the game. Any other
+    use leaves the input unbound.
+    """
+    reachable=ir.reachable(roots)
+    face={i for i in reachable if ir.nodes[i]['op']=='input' and ir.nodes[i].get('kind')=='ps_input'
+          and ir.nodes[i].get('input')=='FRONT_FACE'}
+    if not face:return roots,False
+    facing=ir.node('input',name='front_facing',kind='front_facing');substitutions={}
+    for i in reachable:
+        n=ir.nodes[i]
+        if n['op']!='u_eq' or not face&set(n['args']):continue
+        other=[a for a in n['args'] if a not in face]
+        if len(other)==1 and ir.value(other[0]) is not None and bits(ir.value(other[0]))==0:
+            substitutions[i]=ir.op('sub',ir.const(1.),facing)
+    bound=ir.replace(roots,substitutions)
+    if face&ir.reachable(bound):return roots,False
+    return bound,True
+
+
 def _lowered(program):
     """Material-independent lowering, cached on the compiled program (callers get a fresh limitations list)."""
     cached=program.get('_lowered')
@@ -165,6 +189,9 @@ def _bind(program,contract,material_data,instance):
         if n['op']=='input' and n.get('kind')=='cb' and n['api']==2 and n['dword'] in values}
     replaced=ir.replace(roots,substitutions)
     replaced,zero_guards=guard_source_zero_powers(ir,replaced)
+    replaced,front_face=bind_front_face(ir,replaced)
+    if front_face:
+        lowered['limitations'].append('FRONT_FACE is bound as front-facing (gl_FrontFacing / 1 - Backfacing) through its zero test, assuming the GCN convention nonzero = front face; not captured from the game.')
     if zero_guards:
         lowered['limitations'].append('Source LOG/MUL/EXP with a proven nonnegative base and positive bound exponent preserves zero; positive-input arithmetic is unchanged. Other singular math retains portable frontend semantics.')
     outputs=dict(albedo=replaced[:3],F0=replaced[3:6],gloss=replaced[6],emission=replaced[7])
@@ -173,7 +200,7 @@ def _bind(program,contract,material_data,instance):
     for i in sorted(used):
         n=ir.nodes[i]
         if n['op'] not in PORTABLE_OPS:errors.append(dict(node=i,reason=n.get('reason',n['op'])))
-        elif n['op']=='input' and not (n.get('kind')=='attribute' and n.get('attribute')==0 and n.get('channel') in (0,1)):
+        elif n['op']=='input' and not (n.get('kind')=='attribute' and n.get('attribute')==0 and n.get('channel') in (0,1)) and n.get('kind')!='front_facing':
             errors.append(dict(node=i,reason='Unbound engine/interpolant input '+n['name']))
         elif n['op']=='texture' and not bound.get(n['api'],{}).get('path'):
             errors.append(dict(node=i,reason='Sampled material texture is unset or unbound',api=n['api']))

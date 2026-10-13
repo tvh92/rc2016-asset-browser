@@ -11,7 +11,7 @@ import math
 from rc2016.shaders.bindings import PORTABLE_OPS
 from rc2016.shaders.ir import DAG, compute
 
-EMITTER_VERSION = 4
+EMITTER_VERSION = 5
 # Reserve vertex bone matrices (3) and shared environment lighting (6).
 TEXTURE_UNITS = (0, 1, 2, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15)
 
@@ -66,7 +66,7 @@ def emit_surface(translation, srgb=None, *, experimental=False):
         elif op == 'input':
             if preview and n.get('kind') in ('preview_position','preview_normal') and n.get('channel') in (0,1,2):
                 expr = ('vTintWorldPos' if n['kind'] == 'preview_position' else 'vTintWorldNrm') + '.' + 'xyz'[n['channel']]
-            elif preview and n.get('kind') == 'preview_front_face':
+            elif n.get('kind') == 'front_facing' or (preview and n.get('kind') == 'preview_front_face'):
                 expr = '(gl_FrontFacing ? 1.0 : 0.0)'
             elif n.get('kind') != 'attribute' or n.get('attribute') != 0 or n.get('channel') not in (0, 1):
                 raise ValueError('Only UV0.xy native inputs are supported')
@@ -184,6 +184,8 @@ def evaluate_surface(translation, uv, sample, *, preview_inputs=None):
         elif op == 'input':
             if n.get('kind') == 'attribute' and n.get('attribute') == 0:
                 value = uv[n['channel']]
+            elif n.get('kind') == 'front_facing':
+                value = (preview_inputs or {}).get('front_facing', 1.)
             elif preview_inputs is not None and translation.get('status') == 'experimental':
                 value = preview_inputs[n['name']]
             else:
