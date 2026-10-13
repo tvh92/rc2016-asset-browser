@@ -145,7 +145,7 @@ class Compiler:
         self.samples=[];self.diagnostics=[];self.current=0;self.scalar_bits={}
         self.exec=self.ir.const(1.);self.bp=self.ir.const(1.);self.masks={};self.scc=None;self.scc_source='program start'
         self.pending={};self.premerged=set();self.exec_masked_export=False
-        self.pred_tables={};self.pred_memo={};self.back=None;self.fetch_call=False;self.lane_checks={};self.runtime_conditions=False
+        self.pred_tables={};self.pred_memo={};self.back=None;self.fetch_call=False;self.lane_checks={};self.runtime_conditions=False;self.lane_values=set()
         if ps_input_addr is not None:
             for reg,(name,j,loaded) in ps_input_registers(ps_input_addr,ps_input_ena or 0,vgpr_count).items():
                 label='ps.'+name+('' if j is None else f'.{j}')
@@ -368,10 +368,19 @@ class Compiler:
         return False
 
     def wave_uniform(self,value):
-        """True when a value depends only on constants and constant-buffer words."""
-        for j in self.ir.reachable([value]):
-            n=self.ir.nodes[j]
-            if n['op'] in ('texture','unsupported') or (n['op']=='input' and n.get('kind')!='cb'):return False
+        """True when a value depends only on constants, constant-buffer words and values
+        held in scalar registers (one value per wave, even when unresolved)."""
+        scalar={v for r,v in self.s.items() if r<106}
+        if self.lane_values:
+            # The scalar path of a first-lane check holds the lane's own value in SGPRs.
+            scalar={v for v in scalar if not self.ir.reachable([v])&self.lane_values}
+        stack,seen=[value],set()
+        while stack:
+            j=stack.pop()
+            if j in seen or j in scalar:continue
+            seen.add(j);n=self.ir.nodes[j]
+            if n['op'] in ('texture','unsupported') or (n['op']=='input' and n.get('kind') not in ('cb','runtime_flag')):return False
+            stack.extend(n.get('args',[]))
         return True
 
     def branch(self,i,name,f):
@@ -401,7 +410,7 @@ class Compiler:
                 # per-lane result, so one lane follows the scalar path with first = its own value.
                 first,lane=self.lane_checks[vcc];condition=one
                 for reg,value in list(self.s.items()):
-                    if value==first:self.s[reg]=lane
+                    if value==first:self.s[reg]=lane;self.lane_values.add(lane)
             elif vcc is not None and self.wave_uniform(vcc):
                 condition=vcc if name=='S_CBRANCH_VCCNZ' else self.p_not(vcc)
             elif vcc is not None and name=='S_CBRANCH_VCCZ' and self.guarded_by_vcc(target):

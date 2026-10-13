@@ -250,6 +250,19 @@ class ControlFlowTests(unittest.TestCase):
         self.assertEqual(dag.evaluate(compiler.v[3], {'v1': 1., 'v2': 2., flag: 1.}), 2.)
         self.assertEqual(dag.evaluate(compiler.v[3], {'v1': 1., 'v2': 2., flag: 0.}), 1.)
 
+    def test_vcc_from_an_unresolved_scalar_is_wave_uniform(self):
+        # V_CMP_NEQ_F32 vcc = s4 != 0 on an unbound scalar word: one outcome per wave.
+        code = program(vmov(3, V + 1), vopc('V_CMP_NEQ_F32', 4, 5),
+                       ('branch', 'S_CBRANCH_VCCZ', 'end'), vmov(3, V + 2), ('label', 'end'))
+        compiler = Compiler(code, [])
+        for reg in (1, 2):
+            compiler.v[reg] = compiler.ir.node('input', name=f'v{reg}', kind='test')
+        compiler.v[5] = compiler.ir.const(0.)
+        compiler.s[4] = compiler.unknown('S_BUFFER_LOAD_DWORD from an unbound descriptor')
+        compiler.run(decoder().decode_stream(code, 0))
+        node = compiler.ir.nodes[compiler.v[3]]
+        self.assertEqual(node['op'], 'select')
+
     def test_xor_restores_exact_predicates(self):
         compiler = Compiler(b'', [])
         a = compiler.ir.node('input', name='a', kind='test'); b = compiler.ir.node('input', name='b', kind='test')
