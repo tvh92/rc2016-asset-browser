@@ -110,6 +110,12 @@ def build_preview(material, graph):
     return result
 
 
+def has_preview(path):
+    """Whether ``path`` is one of the pinned preview materials (a path check, no source analysis)."""
+    from rc2016.shaders import terrain_preview
+    return path.replace('\\','/').lower() in (MATERIAL, terrain_preview.MATERIAL)
+
+
 def prepare_preview(archive, path):
     from rc2016.shaders import terrain_preview
     if path.replace('\\','/').lower() == terrain_preview.MATERIAL:

@@ -356,11 +356,13 @@ def decode_geometry(model_path, data, lod='Highest', look=0):
                 skinned=skinned, bind_usable=usable, bounds=bounds)
 
 
-def material_entries(archive, materials, done, texture_cache):
-    """{material path: texture_preview entry} for materials whose path is not in ``done``."""
+def material_entries(archive, materials, done, texture_cache, previews=False):
+    """{material path: texture_preview entry} for materials whose path is not in ``done``. Experimental
+    previews are prepared only with ``previews`` (the level panel does that on demand)."""
     from rc2016.viewer.textures import material_textures
     todo = [m for m in materials if m.get('path') and m['path'] not in done]
     if not todo:
         return {}
-    by_index = material_textures(archive, [dict(index=i, path=m['path']) for i, m in enumerate(todo)], texture_cache)
+    by_index = material_textures(archive, [dict(index=i, path=m['path']) for i, m in enumerate(todo)], texture_cache,
+                                 previews=previews)
     return {m['path']: by_index[i] for i, m in enumerate(todo)}
