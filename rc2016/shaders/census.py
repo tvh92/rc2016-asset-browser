@@ -212,7 +212,7 @@ def _material_counts(archive, paths, show=None):
             # The full set of blockers: binding one input unlocks a material only if it is the whole set.
             combinations[' + '.join(r for r in reasons if r != _SUMMARY) or _SUMMARY] += 1
             if any('CB0[' in r or 'ps.POS' in r for r in reasons):
-                adapted[world_position_outcome(archive, path)] += 1
+                adapted[(world_position_outcome(archive, path), path)] += 1
         if show and show.search(path):
             detail = material_detail(archive, path, result, [r for r in reasons if r != _SUMMARY])
             if result.get('status') != 'ready' and any('CB0[' in r or 'ps.POS' in r for r in reasons):
@@ -332,7 +332,13 @@ def _census(archive, materials, progress, pool, chunks, started, by_material, us
             progress('binding every material')
         started = time.time()
         statuses, diagnostics, combinations, details, adapted = material_translation_status(archive, by_material, pool, chunks, progress, show)
-        report['world_position_preview'] = dict(adapted.most_common())
+        outcomes = Counter()
+        named = {}
+        for outcome, path in adapted:
+            outcomes[outcome] += 1
+            named.setdefault(outcome, []).append(path)
+        report['world_position_preview'] = dict(outcomes.most_common())
+        report['world_position_preview_materials'] = {k: sorted(v) for k, v in named.items()}
         if show:
             report['shown_materials'] = details
         report['material_blocker_sets'] = [dict(reasons=r, materials=c) for r, c in combinations.most_common()]
@@ -518,6 +524,8 @@ def main(argv=None):
         print('experimental world-position preview on unsupported materials with engine inputs (materials, outcome):')
         for outcome, count in list(report['world_position_preview'].items())[:10]:
             print(f"{count:6d}  {outcome[:300]}")
+            for path in report['world_position_preview_materials'][outcome][:10]:
+                print(f'          {path}')
     print('PS input address/enable words (graphs):', dict(list(report['ps_input_addr_ena'].items())[:8]))
     print('vertex header layouts (programs):', report['vertex_header_layouts'])
     if 'shown_materials' in report:
