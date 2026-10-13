@@ -165,3 +165,41 @@ def interpolant_sources(data, attributes, depth=6):
         entry['sources'] = sorted(set(entry['sources']))
         result[f'attribute{index}'] = entry
     return result
+
+
+def normalised_attributes(data):
+    """PS attribute indices whose xyz is a normalised vector in every vertex program exporting it.
+
+    Evidence for the experimental adapter: each of the three channels must reach an
+    rsqrt in every traced vertex export of the attribute's single semantic. This
+    says the interpolant is unit length, not which vector it is.
+    """
+    headers = shader_headers(data)
+    pixel = [h for h in headers if h['type'] == PIXEL]
+    vertex = [h for h in headers if h['type'] != PIXEL]
+    compiled, found = {}, set()
+    count = max((len(p['inputs']) for p in pixel), default=0)
+    for index in range(count):
+        semantics = {p['inputs'][index]['semantic'] for p in pixel if index < len(p['inputs'])}
+        if len(semantics) != 1:
+            continue
+        rows = [r for r in vertex if any(e['semantic'] in semantics for e in r.get('exports', []))]
+        if not rows or any(r.get('layout') != 'verified' for r in rows):
+            continue
+        ok = True
+        for row in rows:
+            key = row['header_offset']
+            if key not in compiled:
+                compiled[key] = vertex_exports(row)
+            exports, _ = compiled[key]
+            if exports is None:
+                ok = False; break
+            params, ir = exports
+            for slot in [e['slot'] for e in row['exports'] if e['semantic'] in semantics]:
+                channels = params.get(slot)
+                if not channels or len(channels) < 3 or any(c is None or not any(
+                        ir.nodes[j]['op'] == 'rsqrt' for j in ir.reachable([c])) for c in channels[:3]):
+                    ok = False
+        if ok:
+            found.add(index)
+    return found

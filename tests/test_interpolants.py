@@ -66,5 +66,27 @@ class InterpolantTests(unittest.TestCase):
         self.assertIn('layout unverified', interpolant_sources(data, {0})['attribute0']['sources'][0])
 
 
+class NormalisedAttributeTests(unittest.TestCase):
+    def check(self, unit):
+        from unittest import mock
+        from rc2016.shaders import interpolants
+        from rc2016.shaders.ir import DAG
+        ir = DAG()
+        v = [ir.node('input', name=f'n{j}', kind='test') for j in range(3)]
+        scale = ir.op('rsqrt', ir.op('add', ir.op('mul', v[0], v[0]), ir.op('mul', v[1], v[1])))
+        channels = [ir.op('mul', scale, x) if unit else x for x in v] + [None]
+        headers = [dict(type=interpolants.PIXEL, inputs=[dict(semantic=15), dict(semantic=17)]),
+                   dict(type=1, header_offset=0, layout='verified', exports=[dict(semantic=17, slot=2)])]
+        with mock.patch.object(interpolants, 'shader_headers', return_value=headers), \
+                mock.patch.object(interpolants, 'vertex_exports', return_value=(({2: channels}, ir), None)):
+            return interpolants.normalised_attributes(b'')
+
+    def test_rsqrt_normalised_export_is_reported(self):
+        self.assertEqual(self.check(True), {1})
+
+    def test_plain_export_is_not(self):
+        self.assertEqual(self.check(False), set())
+
+
 if __name__ == '__main__':
     unittest.main()
