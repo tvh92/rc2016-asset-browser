@@ -212,7 +212,7 @@ def _material_counts(archive, paths, show=None):
             # The full set of blockers: binding one input unlocks a material only if it is the whole set.
             combinations[' + '.join(r for r in reasons if r != _SUMMARY) or _SUMMARY] += 1
             if any('CB0[' in r or 'ps.POS' in r for r in reasons):
-                adapted[world_position_outcome(archive, path)] += 1
+                adapted[(world_position_outcome(archive, path), path)] += 1
         if show and show.search(path):
             detail = material_detail(archive, path, result, [r for r in reasons if r != _SUMMARY])
             if result.get('status') != 'ready' and any('CB0[' in r or 'ps.POS' in r for r in reasons):
@@ -332,7 +332,13 @@ def _census(archive, materials, progress, pool, chunks, started, by_material, us
             progress('binding every material')
         started = time.time()
         statuses, diagnostics, combinations, details, adapted = material_translation_status(archive, by_material, pool, chunks, progress, show)
-        report['world_position_preview'] = dict(adapted.most_common())
+        outcomes = Counter()
+        named = {}
+        for outcome, path in adapted:
+            outcomes[outcome] += 1
+            named.setdefault(outcome, []).append(path)
+        report['world_position_preview'] = dict(outcomes.most_common())
+        report['world_position_preview_materials'] = {k: sorted(v) for k, v in named.items()}
         if show:
             report['shown_materials'] = details
         report['material_blocker_sets'] = [dict(reasons=r, materials=c) for r, c in combinations.most_common()]
@@ -470,6 +476,40 @@ def print_interpolants(archive, path, attributes=None):
             print(line)
 
 
+def print_vertex_colours(archive, needle, limit=5, material=None):
+    """Per mesh of the model paths containing needle: material and colour-stream statistics.
+    With material, only models referencing a material path containing it (up to 4 x limit) and
+    only their meshes using such a material."""
+    import numpy as np
+    from rc2016.formats.archive import asset_references
+    from rc2016.formats.native_model import decode_model
+    from rc2016.levels.scene import asset_bytes
+    keys = {e['path']: k for k, e in archive.entries.items()
+            if e['type'] == 'model' and needle.lower() in e['path'].lower()}
+    paths = sorted(keys)
+    if material:
+        material = material.lower()
+        paths = [p for p in paths if any(material in r['path'].lower() for r in asset_references(archive, keys[p]))]
+        limit *= 4
+    print(f'{len(paths)} model paths contain {needle!r}' + (f' and reference a material containing {material!r}' if material else ''), flush=True)
+    for path in paths[:limit]:
+        decoded = decode_model(path, data=asset_bytes(archive, path))
+        print('== model', path, '| undecoded sections:', ', '.join(decoded['unsupported_sections']) or 'none')
+        for mesh in decoded['meshes']:
+            colours = mesh.get('colors')
+            used = mesh.get('material')
+            used = used.get('path') if isinstance(used, dict) else used
+            if material and material not in str(used).lower():
+                continue
+            line = f"  mesh {mesh['index']} {len(mesh['positions'])} vertices, material {used}"
+            if not colours:
+                print(line + ': no colour stream')
+                continue
+            c = np.asarray(colours, dtype=np.float64).reshape(-1, 4)
+            stats = ' '.join(f"{'RGBA'[j]} {c[:, j].min():.2f}/{c[:, j].mean():.2f}/{c[:, j].max():.2f}" for j in range(4))
+            print(line + f': colour min/mean/max {stats}; distinct RGBA {len(np.unique(c, axis=0))}', flush=True)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--source', required=True, help='game root holding the archive')
@@ -478,19 +518,23 @@ def main(argv=None):
     parser.add_argument('--top', type=int, default=25, help='blockers to print')
     parser.add_argument('--receipt', help='print one material path\'s native and world-position preview receipts and stop')
     parser.add_argument('--interpolants', help='print one material path\'s interpolant vector forms and pixel uses and stop')
+    parser.add_argument('--vertex-colours', help='print colour-stream statistics per mesh of model paths containing this text and stop')
+    parser.add_argument('--colour-material', help='with --vertex-colours: only models and meshes using a material path containing this text')
     parser.add_argument('--attribute', type=int, action='append',
                         help='with --interpolants: only this PS attribute index (repeatable)')
     parser.add_argument('--show', help='regular expression of material paths to report in detail (implies --materials)')
     parser.add_argument('--jobs', type=int, default=min(16, os.cpu_count() or 1),
                         help='worker processes (default: CPU count, at most 16; 1 runs in this process)')
     args = parser.parse_args(argv)
-    if not args.receipt and not args.interpolants and not args.output:
+    if not args.receipt and not args.interpolants and not args.vertex_colours and not args.output:
         parser.error('--output is required')
     from rc2016.levels.scene import open_archive
     started = time.time()
     archive = open_archive(args.source)
-    if args.receipt or args.interpolants:
+    if args.receipt or args.interpolants or args.vertex_colours:
         try:
+            if args.vertex_colours:
+                print_vertex_colours(archive, args.vertex_colours, material=args.colour_material)
             if args.receipt:
                 print_receipt(archive, args.receipt)
             if args.interpolants:
@@ -518,6 +562,8 @@ def main(argv=None):
         print('experimental world-position preview on unsupported materials with engine inputs (materials, outcome):')
         for outcome, count in list(report['world_position_preview'].items())[:10]:
             print(f"{count:6d}  {outcome[:300]}")
+            for path in report['world_position_preview_materials'][outcome][:10]:
+                print(f'          {path}')
     print('PS input address/enable words (graphs):', dict(list(report['ps_input_addr_ena'].items())[:8]))
     print('vertex header layouts (programs):', report['vertex_header_layouts'])
     if 'shown_materials' in report:
