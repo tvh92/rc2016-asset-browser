@@ -88,6 +88,12 @@ class FloatOpcodeTests(unittest.TestCase):
                 self.assertEqual(node['op'], 'pack')
                 self.assertEqual([compiler.ir.value(a) for a in node['args']], [low, high])
 
+    def test_constant_packed_export(self):
+        # V_MOV_B32 v4, 0x3C003800 then a compressed export: halves (0.5, 1.0).
+        compiler = Compiler(b'', [])
+        compiler.v[4] = compiler.ir.const(struct.unpack('<f', struct.pack('<I', 0x3C003800))[0])
+        self.assertEqual([compiler.ir.value(x) for x in compiler.unpack(compiler.v[4])], [.5, 1.])
+
     def test_unmodelled_legacy_stays_unsupported(self):
         # RCP_LEGACY's special cases are not modelled; it must stay a diagnostic.
         compiler = Compiler(vop1('V_RCP_LEGACY_F32', 9, V + 1), [])

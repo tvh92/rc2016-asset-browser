@@ -100,6 +100,7 @@ def material_translation_status(archive):
 
 
 def census(archive, materials=False, progress=None):
+    started = time.time()
     usage = material_graph_usage(archive)
     graphs = {}
     entries = [e for e in archive.entries.values() if e.get('type') == 'materialgraph']
@@ -133,8 +134,13 @@ def census(archive, materials=False, progress=None):
         notes=['A graph counts as lowered when at least one pixel program lowers without unresolved values; '
                'binding to a material can still fail (see material_status with --materials).',
                'Blocked graphs list every distinct blocker of every program, so one graph can appear under several reasons.'])
+    report['seconds'] = dict(graphs=round(time.time() - started, 1))
     if materials:
+        if progress:
+            progress('binding every material')
+        started = time.time()
         statuses, diagnostics = material_translation_status(archive)
+        report['seconds']['materials'] = round(time.time() - started, 1)
         report['material_status'] = dict(statuses)
         report['material_diagnostics'] = [dict(reason=r, materials=c) for r, c in diagnostics.most_common()]
     return report
@@ -156,7 +162,7 @@ def main(argv=None):
         archive.close()
     with open(args.output, 'w', encoding='utf-8') as handle:
         json.dump(report, handle, indent=1, sort_keys=True)
-    print(f"{report['graphs']} graphs in {time.time() - started:.0f} s: {report['graph_status']}")
+    print(f"{report['graphs']} graphs in {time.time() - started:.0f} s {report['seconds']}: {report['graph_status']}")
     print(f"material-weighted: {report['material_weighted_graph_status']}")
     if 'material_status' in report:
         print(f"materials: {report['material_status']}")

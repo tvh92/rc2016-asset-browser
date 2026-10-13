@@ -115,6 +115,38 @@ class ControlFlowTests(unittest.TestCase):
         self.assertEqual(run(code, {1: 10., 2: 20., 'CB2[0]': 0.}, slots)[0], 20.)
         self.assertEqual(run(code, {1: 10., 2: 20., 'CB2[0]': one_bits}, slots)[0], 10.)
 
+    def test_uniform_flag_bit_test(self):
+        # if (CB2[0] & 0x10) v3 = v1; else v3 = v2;   (S_AND_B32 with a literal, then SCC0)
+        slots = [dict(kind=2, api=2, reg=0, flags=0)]
+        code = program(smrd_buffer_load(4, 0, 0), sop2('S_AND_B32', 5, 4, 255), struct.pack('<I', 0x10),
+                       ('branch', 'S_CBRANCH_SCC0', 'clear'), vmov(3, V + 1),
+                       ('branch', 'S_BRANCH', 'end'), ('label', 'clear'), vmov(3, V + 2), ('label', 'end'))
+        word = lambda b: struct.unpack('<f', struct.pack('<I', b))[0]
+        self.assertEqual(run(code, {1: 10., 2: 20., 'CB2[0]': word(0x13)}, slots)[0], 10.)
+        self.assertEqual(run(code, {1: 10., 2: 20., 'CB2[0]': word(0x03)}, slots)[0], 20.)
+
+    def test_uniform_ordered_compare(self):
+        # if (CB2[0] < 3u) v3 = v1; else v3 = v2;
+        slots = [dict(kind=2, api=2, reg=0, flags=0)]
+        code = program(smrd_buffer_load(4, 0, 0), sopc('S_CMP_LT_U32', 4, 128 + 3),
+                       ('branch', 'S_CBRANCH_SCC0', 'big'), vmov(3, V + 1),
+                       ('branch', 'S_BRANCH', 'end'), ('label', 'big'), vmov(3, V + 2), ('label', 'end'))
+        word = lambda b: struct.unpack('<f', struct.pack('<I', b))[0]
+        self.assertEqual(run(code, {1: 10., 2: 20., 'CB2[0]': word(2)}, slots)[0], 10.)
+        self.assertEqual(run(code, {1: 10., 2: 20., 'CB2[0]': word(3)}, slots)[0], 20.)
+        self.assertEqual(run(code, {1: 10., 2: 20., 'CB2[0]': 1.0}, slots)[0], 20.)  # 0x3F800000 as an integer
+
+    def test_unresolved_scc_names_its_source(self):
+        code = program(sop2('S_ADD_U32', 4, 5, 6), ('branch', 'S_CBRANCH_SCC1', 'end'), ('label', 'end'))
+        with self.assertRaisesRegex(ValueError, 'unresolved SCC from S_ADD_U32'):
+            run(code, {})
+
+    def test_xor_restores_exact_predicates(self):
+        compiler = Compiler(b'', [])
+        a = compiler.ir.node('input', name='a', kind='test'); b = compiler.ir.node('input', name='b', kind='test')
+        self.assertEqual(compiler.p_xor(compiler.p_xor(a, b), b), a)
+        self.assertEqual(compiler.ir.value(compiler.p_or(compiler.p_xor(a, b), compiler.p_not(compiler.p_xor(a, b)))), 1.)
+
     def test_discard_marks_exports_and_keeps_live_values(self):
         code = program(vopc('V_CMPX_GT_F32', V + 1, 2), ('branch', 'S_CBRANCH_EXECZ', 'dead'),
                        vmov(3, V + 1), ('label', 'dead'))

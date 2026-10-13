@@ -4,12 +4,30 @@ Node IDs are references; constants always have their own nodes. Unknown values
 remain explicit and only reachable unknowns prevent emitting a material.
 """
 import math
+import struct
 
 
 OPS = {'add', 'sub', 'mul', 'div', 'neg', 'abs', 'min', 'max', 'sqrt',
        'rsqrt', 'rcp', 'log2', 'exp2', 'pow', 'sat', 'sin', 'cos',
        'lt', 'le', 'gt', 'ge', 'eq', 'ne', 'select', 'pack', 'bit_and', 'bit_or',
-       'floor', 'fract'}
+       'floor', 'fract'} | {'u_and', 'u_or', 'u_xor', 'u_andn2', 'u_shl', 'u_shr',
+       'u_eq', 'u_lt', 'u_le', 'i_lt', 'i_le', 'u_bit'}
+# Uniform 32-bit integer operations. Operands and bitwise results are F32
+# values whose bit pattern is the integer (as scalar constant-buffer words are
+# read); comparisons return 0/1. They fold once material constants are bound
+# and are not portable: neither frontend emits them.
+
+
+def bits(x):
+    return struct.unpack('<I', struct.pack('<f', x))[0]
+
+
+def from_bits(b):
+    return struct.unpack('<f', struct.pack('<I', b & 0xffffffff))[0]
+
+
+def signed(b):
+    return b - (1 << 32) if b & 0x80000000 else b
 
 
 def compute(op, a):
@@ -29,6 +47,12 @@ def compute(op, a):
         'pack':lambda: list(a), 'bit_and':lambda: int(a[0])&int(a[1]),
         'bit_or':lambda: int(a[0])|int(a[1]),
         'floor':lambda: float(math.floor(a[0])), 'fract':lambda: a[0]-math.floor(a[0]),
+        'u_and':lambda: from_bits(bits(a[0])&bits(a[1])), 'u_or':lambda: from_bits(bits(a[0])|bits(a[1])),
+        'u_xor':lambda: from_bits(bits(a[0])^bits(a[1])), 'u_andn2':lambda: from_bits(bits(a[0])&~bits(a[1])),
+        'u_shl':lambda: from_bits(bits(a[0])<<(bits(a[1])&31)), 'u_shr':lambda: from_bits(bits(a[0])>>(bits(a[1])&31)),
+        'u_eq':lambda: float(bits(a[0])==bits(a[1])), 'u_lt':lambda: float(bits(a[0])<bits(a[1])),
+        'u_le':lambda: float(bits(a[0])<=bits(a[1])), 'i_lt':lambda: float(signed(bits(a[0]))<signed(bits(a[1]))),
+        'i_le':lambda: float(signed(bits(a[0]))<=signed(bits(a[1]))), 'u_bit':lambda: float((bits(a[0])>>(bits(a[1])&31))&1),
     }[op]()
 
 

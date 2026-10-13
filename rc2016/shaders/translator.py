@@ -18,9 +18,9 @@ import re
 import struct
 import sys
 
-from rc2016.shaders.ir import DAG, compute
+from rc2016.shaders.ir import DAG, bits, from_bits
 
-VERSION=5
+VERSION=6
 ROOT=Path(__file__).resolve().parents[2]
 SHADER_SECTION=0x873D1E6C
 # VALU instructions that also write a scalar carry/flag register pair.
@@ -30,9 +30,12 @@ CARRY_OUT={'V_ADD_I32','V_SUB_I32','V_SUBREV_I32','V_ADDC_U32','V_SUBB_U32','V_S
 # Variants that differ from the base opcode only for zero times infinity/NaN
 # (DX9 legacy multiply), NaN operands, or by clamping an infinite result to
 # the largest finite float. The IR has finite values only, where they agree.
-MAX_PREDICATE_ATOMS=10
-PREDICATE_OPS={'mul','max','sub','add','select'}
+MAX_PREDICATE_ATOMS=12
+PREDICATE_OPS={'mul','max','sub','select'}
 MASK_OP=re.compile(r'S_(AND|OR|XOR|ANDN2|ORN2|NAND|NOR|XNOR|MOV|NOT)(_SAVEEXEC)?_B64')
+UNIFORM_INT_OPS={'u_and','u_or','u_xor','u_andn2','u_shl','u_shr','u_eq','u_lt','u_le','i_lt','i_le','u_bit'}
+UNIFORM_SOP2={'S_AND_B32':'u_and','S_OR_B32':'u_or','S_XOR_B32':'u_xor','S_ANDN2_B32':'u_andn2',
+              'S_LSHL_B32':'u_shl','S_LSHR_B32':'u_shr'}
 FINITE_ALIASES={'V_MUL_LEGACY_F32':'V_MUL_F32','V_MAC_LEGACY_F32':'V_MAC_F32',
                 'V_MAD_LEGACY_F32':'V_MAD_F32','V_MIN_LEGACY_F32':'V_MIN_F32',
                 'V_MAX_LEGACY_F32':'V_MAX_F32','V_RCP_CLAMP_F32':'V_RCP_F32',
@@ -95,7 +98,7 @@ class Compiler:
     def __init__(self,code,usage_slots):
         self.code=code;self.ir=DAG();self.v={};self.s={};self.descriptors={};self.exports={}
         self.samples=[];self.diagnostics=[];self.current=0;self.scalar_bits={}
-        self.exec=self.ir.const(1.);self.bp=self.ir.const(1.);self.masks={};self.scc=None
+        self.exec=self.ir.const(1.);self.bp=self.ir.const(1.);self.masks={};self.scc=None;self.scc_source='program start'
         self.pending={};self.premerged=set();self.exec_masked_export=False
         self.pred_tables={}
         self.slots=usage_slots
@@ -116,33 +119,47 @@ class Compiler:
         return self.s[i]
 
     # Lane and block predicates are 0/1 values built from atoms (comparisons,
-    # uniform conditions). Each result is folded by its truth table, so a
-    # restored exec mask is the constant 1 again and equal predicates share a node.
+    # uniform conditions) with and (mul), or (max), not (1 - x) and select.
+    # Each result is folded by its truth table, held as a bitmask over atom
+    # assignments, so a restored exec mask is the constant 1 again and equal
+    # predicates share a node.
     def predicate(self,value):
         if self.ir.value(value) is not None or self.ir.nodes[value]['op'] not in PREDICATE_OPS:return value
-        atoms=[];pending=[value];seen=set()
+        atoms=set();pending=[value];seen=set()
         while pending:
             i=pending.pop()
-            if i in seen:continue
+            if i in seen or self.ir.value(i) is not None:continue
             seen.add(i)
-            if self.ir.value(i) is not None:continue
-            # Predicates combine only 0/1 values, so arithmetic nodes are structure
-            # and every other node (comparison, uniform condition, unknown) is an atom.
             if self.ir.nodes[i]['op'] in PREDICATE_OPS:pending.extend(self.ir.nodes[i]['args'])
-            else:atoms.append(i)
+            else:atoms.add(i)
         if len(atoms)>MAX_PREDICATE_ATOMS:return value
-        atoms=sorted(atoms);table=[]
-        for bits in range(1<<len(atoms)):
-            known={a:float((bits>>j)&1) for j,a in enumerate(atoms)}
-            def visit(i):
-                if i in known:return known[i]
-                if self.ir.value(i) is not None:return self.ir.value(i)
-                n=self.ir.nodes[i];r=compute(n['op'],[visit(j) for j in n['args']]);known[i]=r;return r
-            table.append(visit(value))
-        if all(t==table[0] for t in table):return self.ir.const(table[0])
-        key=(tuple(atoms),tuple(table))
-        if key in self.pred_tables:return self.pred_tables[key]
-        self.pred_tables[key]=value;return value
+        atoms=sorted(atoms);size=1<<len(atoms);full=(1<<size)-1
+        tables={a:sum(1<<k for k in range(size) if (k>>j)&1) for j,a in enumerate(atoms)}
+        def table(i):
+            if i in tables:return tables[i]
+            constant=self.ir.value(i)
+            if constant is not None:
+                if constant not in (0,1):raise ValueError('non-boolean')
+                return full if constant else 0
+            n=self.ir.nodes[i];a=n['args']
+            if n['op']=='mul':r=table(a[0])&table(a[1])
+            elif n['op']=='max':r=table(a[0])|table(a[1])
+            elif n['op']=='sub' and self.ir.value(a[0])==1:r=full^table(a[1])
+            elif n['op']=='select':p=table(a[0]);r=(p&table(a[1]))|((full^p)&table(a[2]))
+            else:raise ValueError('non-boolean')
+            tables[i]=r;return r
+        try:result=table(value)
+        except ValueError:return value
+        if result in (0,full):return self.ir.const(float(result==full))
+        # Canonical key over the atoms the function depends on.
+        used=[j for j in range(len(atoms)) if ((result>>(1<<j))&full&~tables[atoms[j]])!=(result&full&~tables[atoms[j]])]
+        reduced=0
+        for k in range(1<<len(used)):
+            source=sum(1<<used[q] for q in range(len(used)) if (k>>q)&1)
+            reduced|=((result>>source)&1)<<k
+        key=(tuple(atoms[j] for j in used),reduced)
+        if len(used)==1 and reduced==0b10:return atoms[used[0]]
+        return self.pred_tables.setdefault(key,value)
 
     def p_and(self,a,b):return self.predicate(self.ir.op('mul',a,b))
 
@@ -151,7 +168,8 @@ class Compiler:
     def p_or(self,a,b):return self.predicate(self.ir.op('max',a,b))
 
     def p_xor(self,a,b):
-        return self.predicate(self.ir.op('sub',self.ir.op('add',a,b),self.ir.op('mul',self.ir.const(2.),self.ir.op('mul',a,b))))
+        return self.predicate(self.ir.op('max',self.ir.op('mul',a,self.ir.op('sub',self.ir.const(1.),b)),
+                                         self.ir.op('mul',b,self.ir.op('sub',self.ir.const(1.),a))))
 
     def p_select(self,p,a,b):return self.predicate(self.ir.op('select',p,a,b))
 
@@ -201,7 +219,8 @@ class Compiler:
         else:return False
         if dst==126:self.set_exec(value)
         else:self.set_mask(dst,value)
-        if op!='MOV':self.scc=('exec',) if dst==126 else None
+        if op!='MOV':
+            self.scc=('exec',) if dst==126 else None;self.scc_source=name+' (lane mask)'
         return True
 
     def scalar_operand_bits(self,raw,literal_bits):
@@ -209,29 +228,55 @@ class Compiler:
         if raw==255:return literal_bits
         return self.inline_bits(raw)
 
-    def uniform_compare(self,name,operands):
-        """SCC of an integer equality on uniform values; bit-exact against constants."""
-        if '_EQ_' not in name and '_LG_' not in name:return None
-        equal='_EQ_' in name;sides=[]
-        for raw,bits in operands:
-            if bits is not None:sides.append(('bits',bits));continue
-            node=self.s.get(raw) if raw<=127 else None
-            if node is None or self.ir.nodes[node]['op']!='input' or self.ir.nodes[node].get('kind')!='cb':return None
-            sides.append(('cb',node))
-        if all(kind=='bits' for kind,_ in sides):
-            return self.ir.const(float((sides[0][1]==sides[1][1])==equal))
-        values=[]
-        for kind,x in sides:
-            if kind=='cb':values.append(x);continue
-            value=struct.unpack('<f',struct.pack('<I',x&0xffffffff))[0]
-            # Integer and F32 equality agree except for NaN and signed zero.
-            if not math.isfinite(value) or x&0xffffffff==0x80000000:return None
-            values.append(self.ir.const(value))
-        return self.ir.op('eq' if equal else 'ne',*values)
+    def uniform(self,raw,literal_bits):
+        """Uniform 32-bit scalar as an F32-bit-pattern node: known bits, a constant-buffer word or a uniform op."""
+        known=self.scalar_operand_bits(raw,literal_bits)
+        if known is not None:
+            value=from_bits(known)
+            return self.ir.const(value) if math.isfinite(value) else None
+        node=self.s.get(raw) if raw<=127 else None
+        if node is None:return None
+        n=self.ir.nodes[node]
+        return node if (n['op']=='input' and n.get('kind')=='cb') or n['op'] in UNIFORM_INT_OPS else None
+
+    def uniform_condition(self,name,a,b):
+        """SCC of S_CMP(K)/S_BITCMP on uniform operands, or None."""
+        if a is None or b is None:return None
+        if name.startswith('S_BITCMP'):
+            bit=self.ir.op('u_bit',a,b)
+            return bit if name.startswith('S_BITCMP1') else self.p_not(bit)
+        m=re.match(r'S_CMPK?_(EQ|LG|LT|LE|GT|GE)_([UI])32$',name)
+        if not m:return None
+        relation,kind=m.groups();lt,le=('u_lt','u_le') if kind=='U' else ('i_lt','i_le')
+        if relation in ('EQ','LG'):
+            c=self.ir.op('u_eq',a,b);return c if relation=='EQ' else self.p_not(c)
+        return {'LT':lambda:self.ir.op(lt,a,b),'LE':lambda:self.ir.op(le,a,b),
+                'GT':lambda:self.ir.op(lt,b,a),'GE':lambda:self.ir.op(le,b,a)}[relation]()
+
+    def uniform_sop(self,k,name,f,i):
+        """Exact SOP2 integer logic on uniform values; SCC = result != 0. False if not applicable."""
+        if k!=1 or name not in UNIFORM_SOP2:return False
+        literal_bits=struct.unpack_from('<I',self.code,i['relative']+4)[0] if i['length']>4 else None
+        a,b=(self.uniform(r,literal_bits) for r in f['src'][:2])
+        if a is None or b is None:return False
+        dst=f['dst'][0];value=self.ir.op(UNIFORM_SOP2[name],a,b);constant=self.ir.value(value)
+        self.descriptors.pop(dst,None)
+        if constant is not None:
+            # Keep known words in the integer form scalar moves use, for addressing.
+            word=bits(constant);self.s[dst]=self.ir.const(word);self.scalar_bits[dst]=word
+            self.scc=('uniform',self.ir.const(float(word!=0)))
+        else:
+            self.s[dst]=value;self.scalar_bits.pop(dst,None)
+            self.scc=('uniform',self.p_not(self.ir.op('u_eq',value,self.ir.const(0.))))
+        return True
 
     def unpack(self,value):
         n=self.ir.nodes[value]
         if n['op']=='pack':return list(n['args'])
+        if n['op']=='const' and isinstance(n['value'],float):
+            # A packed register written as one 32-bit word: two F16 halves, low first.
+            word=bits(n['value']);halves=struct.unpack('<2e',struct.pack('<I',word))
+            return [self.ir.const(h) for h in halves] if all(map(math.isfinite,halves)) else None
         if n['op']=='select':
             a,b=self.unpack(n['args'][1]),self.unpack(n['args'][2])
             if a and b:return [self.ir.op('select',n['args'][0],x,y) for x,y in zip(a,b)]
@@ -248,7 +293,7 @@ class Compiler:
         elif name in ('S_CBRANCH_SCC0','S_CBRANCH_SCC1'):
             if self.scc==('exec',):condition=one
             elif self.scc and self.scc[0]=='uniform':condition=self.scc[1]
-            else:raise ValueError(f'Control flow unsupported at {i["relative"]}: {name} on unresolved SCC')
+            else:raise ValueError(f'Control flow unsupported at {i["relative"]}: {name} on unresolved SCC from {self.scc_source}')
             if name=='S_CBRANCH_SCC0':condition=self.p_not(condition)
         else:raise ValueError(f'Control flow unsupported at {i["relative"]}: {name}')
         self.pending[target]=self.p_or(self.pending.get(target,zero),self.p_and(self.bp,condition))
@@ -317,18 +362,29 @@ class Compiler:
         if k==2:
             # SOPC: S0 bits 7:0, S1 bits 15:8; only SCC is written.
             literal_bits=struct.unpack_from('<I',self.code,i['relative']+4)[0] if i['length']>4 else None
-            raws=[w&255,(w>>8)&255]
-            self.scc=(('uniform',c) if name.startswith('S_CMP_') and
-                (c:=self.uniform_compare(name,[(r,self.scalar_operand_bits(r,literal_bits)) for r in raws])) is not None else None)
+            c=self.uniform_condition(name,*(self.uniform(r,literal_bits) for r in (w&255,(w>>8)&255)))
+            self.scc=('uniform',c) if c is not None else None
+            if c is None:self.scc_source=name
             return
         if k==3 and name.startswith('S_CMPK_'):
             simm=w&0xffff
             if name.endswith('_I32'):simm=struct.unpack('<h',struct.pack('<H',simm))[0]&0xffffffff
-            reg=(w>>16)&127
-            c=self.uniform_compare(name,[(reg,self.scalar_bits.get(reg)),(255,simm)])
+            c=self.uniform_condition(name,self.uniform((w>>16)&127,None),self.uniform(255,simm))
             self.scc=('uniform',c) if c is not None else None
+            if c is None:self.scc_source=name
             return
-        if k in (0,1,3) and not name.startswith(('S_MOV','S_CMOV','S_GETPC')):self.scc=None
+        if self.uniform_sop(k,name,f,i):return
+        if k==1 and name=='S_CSELECT_B32' and self.scc and self.scc[0]=='uniform':
+            literal_bits=struct.unpack_from('<I',self.code,i['relative']+4)[0] if i['length']>4 else None
+            a,b=(self.uniform(r,literal_bits) for r in f['src'][:2]);dst=f['dst'][0]
+            if a is not None and b is not None:
+                value=self.ir.op('select',self.scc[1],a,b);constant=self.ir.value(value)
+                self.descriptors.pop(dst,None)
+                if constant is not None:
+                    word=bits(constant);self.s[dst]=self.ir.const(word);self.scalar_bits[dst]=word
+                else:self.s[dst]=value;self.scalar_bits.pop(dst,None)
+                return
+        if k in (0,1,3) and not name.startswith(('S_MOV','S_CMOV','S_GETPC')):self.scc=None;self.scc_source=name
         literal=struct.unpack_from('<f',self.code,i['relative']+i['length']-4)[0] if i['length']>4 else 0.
         if k==10:self.load(i);return
         if k==9:
