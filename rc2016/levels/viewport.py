@@ -903,18 +903,42 @@ class LevelViewport(ModelViewport):
         if not effects:return
         effects.apply(self,u)
         if self._scene_geometry or not self.scene_authored:return
+        mv=(ctypes.c_float*16)();self._gl.glGetFloatv(self.GL_MODELVIEW_MATRIX,mv)
+        count,positions,colours=self._authored_light_uniforms(bytes(mv),self._scene_lighting.get('lights',[]))
+        self._shading.glUniform1i(u['uSceneLightCount'],count)
+        if count:
+            effects.uniform4(u['uSceneLightPos'],count,positions)
+            self._shading.glUniform3fv(u['uSceneLightColour'],count,colours)
+
+    def _authored_light_uniforms(self,modelview,all_lights):
+        """(count, positions, colours) of the 32 nearest authored lights in view space, as ctypes
+        arrays. Every program drawn in a frame shares one modelview and light list, so the sort
+        over all lights runs once per (modelview, list), not once per shader switch."""
+        cached=self.__dict__.get('_authored_light_cache')
+        if cached is not None and cached[0]==modelview and cached[1] is all_lights:
+            return cached[2]
         import numpy as np
-        mv=(ctypes.c_float*16)();self._gl.glGetFloatv(self.GL_MODELVIEW_MATRIX,mv);matrix=np.array(mv).reshape(4,4).T
-        lights=sorted(self._scene_lighting.get('lights',[]),key=lambda l:float(np.linalg.norm((matrix@np.r_[l['position'],1.])[:3])))[:32]
+        matrix=np.array((ctypes.c_float*16).from_buffer_copy(modelview)).reshape(4,4).T
+        candidates=all_lights
+        if len(all_lights)>32:
+            # Exact prefilter: one vectorised distance pass keeps the lights within a relative 1e-9
+            # of the 32nd nearest (rounding differs by ~1e-13), in their original order, so the
+            # stable sort below selects and orders exactly as it would over every light.
+            known=self.__dict__.get('_authored_light_positions')
+            if known is None or known[0] is not all_lights:
+                known=self._authored_light_positions=(all_lights,np.array([l['position'] for l in all_lights],dtype=float))
+            distances=np.linalg.norm(known[1]@matrix[:3,:3].T+matrix[:3,3],axis=1)
+            limit=np.partition(distances,31)[31]
+            candidates=[all_lights[i] for i in np.flatnonzero(distances<=limit*(1+1e-9)+1e-9)]
+        lights=sorted(candidates,key=lambda l:float(np.linalg.norm((matrix@np.r_[l['position'],1.])[:3])))[:32]
         positions=[];colours=[]
         for light in lights:
             inverse=np.float32(light['inverse_radius'])
             positions.extend([*(matrix@np.r_[light['position'],1.])[:3],float(inverse)])
             colours.extend((np.array(light['colour'],dtype=np.float32)*np.float32(inverse*inverse)).tolist())
-        self._shading.glUniform1i(u['uSceneLightCount'],len(lights))
-        if lights:
-            effects.uniform4(u['uSceneLightPos'],len(lights),(ctypes.c_float*len(positions))(*positions))
-            self._shading.glUniform3fv(u['uSceneLightColour'],len(lights),(ctypes.c_float*len(colours))(*colours))
+        result=(len(lights),(ctypes.c_float*len(positions))(*positions),(ctypes.c_float*len(colours))(*colours))
+        self._authored_light_cache=(modelview,all_lights,result)
+        return result
 
     def _restore_unculled_instances(self):
         """Restore full visible-zone rows before shadow rendering.
