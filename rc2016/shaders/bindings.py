@@ -291,7 +291,7 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
             if n['op']=='input' and n.get('kind')=='attribute' and (stream_channels or {}).get((n.get('attribute'),n.get('channel')))==(COLOUR_SEMANTIC,3):
                 colours[i]=ir.node('input',name='preview_vertex_alpha_squared',kind='preview_vertex_alpha_squared')
         if colours:
-            lowered['limitations'].append(f'Experimental: interpolant channels that every traced vertex program can pass as vertex semantic {COLOUR_SEMANTIC}.w squared are read as the model colour stream alpha squared. The per-draw flags choosing that path, and semantic {COLOUR_SEMANTIC} being the colour stream, are inferred; level instances use alpha 1.')
+            lowered['limitations'].append(f'Experimental: interpolant channels that every traced vertex program can pass as vertex semantic {COLOUR_SEMANTIC}.w squared are read as the model colour stream alpha squared. The per-draw flags choosing that path, and semantic {COLOUR_SEMANTIC} being the colour stream, are inferred; level instances use zone-keyed alpha where available, otherwise alpha 1.')
             normals.update(colours)
         if normals:
             replaced=ir.replace(replaced,normals)

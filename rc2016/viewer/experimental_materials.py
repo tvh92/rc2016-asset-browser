@@ -34,7 +34,9 @@ def build_preview(material, graph):
         raise ValueError('Experimental pixel envelope changed')
     compiler = translator.Compiler(program['code'], program['usage_slots'])
     for reg, name in enumerate(('barycentric0','barycentric1','fragment_x','fragment_y','view_depth','front_face_word')):
-        compiler.v[reg] = compiler.ir.node('input', name=name, kind='preview_builtin')
+        compiler.v[reg] = compiler.ir.node('input', name=name,
+            **(dict(kind='ps_input', input='FRONT_FACE') if name == 'front_face_word'
+               else dict(kind='preview_builtin')))
     raw = compiler.compile()
     program = dict(program, ir=raw)
     contracts = bindings.program_contracts(graph, program, bindings.pass_contracts(graph))
@@ -64,14 +66,17 @@ def build_preview(material, graph):
         elif n.get('kind') == 'attribute' and n['attribute'] == 2 and n['channel'] < 3:
             ch = n['channel']
             substitutions[i] = ir.node('input', name=f'preview_normal.{ch}', kind='preview_normal', channel=ch)
-        elif n['name'] == 'front_face_word':
-            substitutions[i] = ir.node('input', name='preview_front_face', kind='preview_front_face')
     o = lowered['outputs']
     # The two no-specular resources have no built asset in the validated archive.
     # Preview the source albedo only. Matte F0/zero gloss are presentation values,
     # never decoded substitutes for the missing resource or native output.
     matte = ir.const(0.)
     roots = ir.replace([*o['albedo'],matte,matte,matte,matte,o['emission']], substitutions)
+    # FRONT_FACE is a raw integer word, not a portable float comparison.
+    # Reuse the native zero-test binder, which rejects any other word use.
+    roots, face_bound = bindings.bind_front_face(ir, roots)
+    roots = ir.replace(roots, {i: ir.node('input', name='preview_front_face', kind='preview_front_face')
+        for i, n in enumerate(list(ir.nodes)) if n.get('kind') == 'front_facing'})
     roots, guards = bindings.guard_source_zero_powers(ir, roots)
     used = ir.reachable(roots)
     for i in used:
@@ -109,6 +114,8 @@ def build_preview(material, graph):
         normal=None, texture_bindings=textures, parameters=parameters, pass_contract_index=1,
         limitations=[NOTE,'Albedo only: F0=0/gloss=0 are explicit matte presentation settings; rk_no_spec_c has no built source asset.',
                      'Original packed tangent transport and detailed sampled-normal composition are omitted.',
+                     *(['Front-face zero test assumes a nonzero GCN word for front faces; runtime convention unverified.']
+                       if face_bound else []),
                      *lowered['limitations']], source_zero_power_guards=guards, game_equivalence=False,
         automatic_ready=False)
     result['translation_sha256'] = hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest()
