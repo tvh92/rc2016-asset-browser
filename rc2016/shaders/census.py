@@ -494,7 +494,10 @@ def print_vertex_colours(archive, needle, limit=5, material=None):
     print(f'{len(paths)} model paths contain {needle!r}' + (f' and reference a material containing {material!r}' if material else ''), flush=True)
     for path in paths[:limit]:
         decoded = decode_model(path, data=asset_bytes(archive, path))
-        print('== model', path, '| undecoded sections:', ', '.join(decoded['unsupported_sections']) or 'none')
+        vertices = decoded['vertex_count']
+        sizes = decoded['section_sizes']
+        print('== model', path, f'| {vertices} vertices in all LODs | undecoded sections (bytes, per vertex):',
+              ', '.join(f"{t} {sizes[t]} {sizes[t] / max(vertices, 1):.2f}" for t in decoded['unsupported_sections']) or 'none')
         for mesh in decoded['meshes']:
             colours = mesh.get('colors')
             used = mesh.get('material')
