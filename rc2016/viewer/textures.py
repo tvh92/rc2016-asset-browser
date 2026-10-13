@@ -768,6 +768,8 @@ class TextureDiskCache:
     the folder exceeds ``limit`` bytes.
     """
 
+    SUFFIX = '.rctx'
+
     def __init__(self, folder, limit=TEXTURE_DISK_CACHE_BYTES):
         self.folder, self.limit = Path(folder), limit
         self._lock = threading.Lock()
@@ -788,7 +790,7 @@ class TextureDiskCache:
                                     texture_path, rows)).encode()).hexdigest()
 
     def _file(self, key):
-        return self.folder / key[:2] / f'{key}.rctx'
+        return self.folder / key[:2] / f'{key}{self.SUFFIX}'
 
     def get(self, key):
         import hashlib, json, os
@@ -857,7 +859,7 @@ class TextureDiskCache:
         try:
             for sub in self.folder.iterdir():
                 if sub.is_dir():
-                    for path in sub.glob('*.rctx'):
+                    for path in sub.glob('*' + self.SUFFIX):
                         try:
                             st = path.stat(); rows.append((path, st.st_size, st.st_mtime_ns))
                         except OSError:
