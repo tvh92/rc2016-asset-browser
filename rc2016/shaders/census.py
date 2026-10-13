@@ -385,19 +385,53 @@ def _print_shown(details):
                 print('    ' + source[:900])
 
 
+def print_receipt(archive, path):
+    """One material's native and experimental world-position receipts, summarised."""
+    from rc2016.shaders.ir import DAG
+    from rc2016.viewer.experimental_materials import world_position_translation
+    from rc2016.viewer.native_glsl import prepare_material_translation
+    for label, result in (('native', prepare_material_translation(archive, path)),
+                          ('world-position preview', world_position_translation(archive, path))):
+        print(f"== {label}: {result.get('status')}")
+        if result.get('status') not in ('ready', 'experimental'):
+            for d in result.get('diagnostics', [])[:8]:
+                print('  diagnostic:', str(d.get('reason', d) if isinstance(d, dict) else d)[:300])
+            continue
+        print('  shader:', result.get('shader_id'), 'pass contract:', result.get('pass_contract_index'),
+              'candidates:', len(result.get('candidate_sources', [])))
+        for b in result['texture_bindings']:
+            print(f"  texture API{b['api']}: {b['path']} ({b['source']})")
+        print('  parameters:', json.dumps(result.get('parameters'), sort_keys=True)[:600])
+        ir = DAG(result['nodes'])
+        for key, value in result['outputs'].items():
+            for j, node in enumerate(value if isinstance(value, list) else [value]):
+                print(f'  {key}[{j}] = {ir.describe(node, 6)[:500]}')
+        for limitation in result.get('limitations', [])[:12]:
+            print('  limitation:', limitation[:300])
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--source', required=True, help='game root holding the archive')
-    parser.add_argument('--output', required=True, help='JSON report path (outside the repository)')
+    parser.add_argument('--output', help='JSON report path (outside the repository); required unless --receipt')
     parser.add_argument('--materials', action='store_true', help='also bind every material (slower)')
     parser.add_argument('--top', type=int, default=25, help='blockers to print')
+    parser.add_argument('--receipt', help='print one material path\'s native and world-position preview receipts and stop')
     parser.add_argument('--show', help='regular expression of material paths to report in detail (implies --materials)')
     parser.add_argument('--jobs', type=int, default=min(16, os.cpu_count() or 1),
                         help='worker processes (default: CPU count, at most 16; 1 runs in this process)')
     args = parser.parse_args(argv)
+    if not args.receipt and not args.output:
+        parser.error('--output is required')
     from rc2016.levels.scene import open_archive
     started = time.time()
     archive = open_archive(args.source)
+    if args.receipt:
+        try:
+            print_receipt(archive, args.receipt)
+        finally:
+            archive.close()
+        return 0
     try:
         report = census(archive, args.materials, progress=lambda m: print(m, file=sys.stderr, flush=True),
                         jobs=args.jobs, source=args.source, show=args.show)
