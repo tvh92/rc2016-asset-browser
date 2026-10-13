@@ -360,3 +360,45 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False)
         result['limitations'].insert(0,'Experimental world-position preview: an inferred engine meaning of CB0 and pixel position replaces runtime data; not a ready translation.')
     result['translation_sha256']=hashlib.sha256(candidate['signature'].encode()).hexdigest()
     return result
+
+
+def bound_attribute_uses(graph_data,material_data,instance,limit=4):
+    """Diagnostic: with material constants bound and world position adapted, the
+    outputs each PS attribute reaches and the smallest clamped (sat/min/max) and other
+    expressions using it, per portable program and pass. Interpolants stay unbound."""
+    from rc2016.shaders.engine_inputs import reconstruct_world_position
+    data=bytes(graph_data);graph=compiled(data);lines=[];seen=set()
+    contracts=pass_contracts(data)
+    for program in graph['programs']:
+        if program['status']!='compiled':continue
+        try:matched=program_contracts(data,program,contracts)
+        except ValueError:continue
+        for contract in matched:
+            values,_=_parameter_values(contract,instance)
+            lowered=_lowered(program);ir=DAG(lowered['nodes']);outputs=lowered['outputs']
+            named=[('albedo',r) for r in outputs['albedo']]+[('F0',r) for r in outputs['F0']]+[('gloss',outputs['gloss']),('emission',outputs['emission'])]
+            if lowered['normal']:named+=[('normal',r) for r in lowered['normal']['xyz']]
+            substitutions={i:ir.const(values[n['dword']]) for i,n in enumerate(list(ir.nodes))
+                if n['op']=='input' and n.get('kind')=='cb' and n['api']==2 and n['dword'] in values}
+            roots=ir.replace([r for _,r in named],substitutions)
+            roots,_=reconstruct_world_position(ir,roots)
+            reach={i:ir.reachable([r]) for i,r in enumerate(roots)}
+            sizes={}
+            def size(i):
+                if i not in sizes:sizes[i]=len(ir.reachable([i]))
+                return sizes[i]
+            attributes={}
+            for i in ir.reachable(roots):
+                n=ir.nodes[i]
+                if n['op']=='input' and n.get('kind')=='attribute':attributes.setdefault(n['attribute'],set()).add(i)
+            block=[f"pixel {program['shader_id']} pass {contract['index']}:"]
+            for a in sorted(attributes):
+                outs=sorted({named[k][0] for k,r in reach.items() if r&attributes[a]})
+                users=[i for i in ir.reachable(roots) if attributes[a]&ir.reachable([i]) and size(i)<=60]
+                clamps=sorted((i for i in users if ir.nodes[i]['op'] in ('sat','min','max')),key=size,reverse=True)
+                block.append(f"  attribute{a}: reaches {', '.join(outs)}")
+                block+=[f'    clamp: {ir.describe(i,10)[:500]}' for i in clamps[:limit]]
+            key='\n'.join(block[1:])
+            if key in seen:lines.append(block[0]+' same as an earlier pass');continue
+            seen.add(key);lines+=block
+    return lines

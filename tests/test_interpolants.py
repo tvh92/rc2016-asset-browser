@@ -178,3 +178,23 @@ class VectorIdentityTests(unittest.TestCase):
                          base=8, load_offset=64) for j in range(2)]
         self.assertEqual(format_form(linear_form(ir, ir.op('sub', words[0], words[1]))),
                          'mem(s8+64)@40 - mem(s8+68)@40')
+
+    def test_many_flags_expand_symbolically_to_the_same_paths(self):
+        from rc2016.shaders.interpolants import vector_identity
+        ir = self.ir
+        flag = ir.node('input', name='runtime_flag@40', kind='runtime_flag')
+        world = self.transform(self.stream(1), 16)
+        view = self.transform(self.stream(1), 32)
+        chosen = [ir.op('select', flag, a, b) for a, b in zip(world, view)]
+        enumerated = {g[0][0]: g[1] for g in vector_identity(ir, chosen)}
+        symbolic = {g[0][0]: g[1] for g in vector_identity(ir, chosen, max_flags=0)}
+        self.assertEqual(enumerated, symbolic)
+
+    def test_flag_logic_is_exact_on_zero_one_values(self):
+        from rc2016.shaders.interpolants import linear_form, format_form
+        ir = self.ir
+        f, g = (ir.node('input', name=f'runtime_flag@{k}', kind='runtime_flag') for k in (1, 2))
+        either = ir.op('max', f, g)
+        self.assertEqual(format_form(linear_form(ir, ir.op('mul', f, f))), 'runtime_flag@1')
+        self.assertEqual(format_form(linear_form(ir, either)),
+                         'runtime_flag@1 + runtime_flag@2 - runtime_flag@1*runtime_flag@2')

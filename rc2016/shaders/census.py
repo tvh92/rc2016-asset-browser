@@ -462,6 +462,12 @@ def print_interpolants(archive, path, attributes=None):
         print('== graph', graph)
         for line in attribute_report(data, attributes) + attribute_uses(data, attributes=attributes):
             print(line)
+        from rc2016.formats.materials import extract_material_parameters
+        from rc2016.shaders.bindings import bound_attribute_uses
+        material = asset_data(archive, ids[0])
+        print('-- bound to this material (world position adapted, interpolants unbound)')
+        for line in bound_attribute_uses(data, material, extract_material_parameters(material)):
+            print(line)
 
 
 def main(argv=None):

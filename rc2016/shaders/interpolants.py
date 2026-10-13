@@ -268,11 +268,31 @@ def squared_stream_channels(data):
 MAX_FORM_TERMS = 256
 
 
+FLAG = 'runtime_flag@'
+
+
+def _flag_mul(p, q):
+    """Polynomial product where runtime flags are 0/1 (f*f = f)."""
+    result = {}
+    for a, x in p.items():
+        for b, y in q.items():
+            flags = sorted({f for f in a + b if f.startswith(FLAG)})
+            key = tuple(sorted(flags + [f for f in a + b if not f.startswith(FLAG)]))
+            result[key] = result.get(key, 0.) + x * y
+    return {k: v for k, v in result.items() if v}
+
+
+def _flag_only(p):
+    return p is not None and all(f.startswith(FLAG) for key in p for f in key)
+
+
 def linear_form(ir, root, limit=MAX_FORM_TERMS):
     """Polynomial of a vertex expression over vertex inputs, constant-buffer words and
     runtime flags; any other operation (rsqrt, texture fetch, bit logic) is an opaque
-    atom named op#node. {(factor names...): coefficient}, or None past limit terms."""
-    from rc2016.shaders.engine_inputs import _add, _mul
+    atom named op#node. A select or max on runtime flags alone is expanded exactly
+    (c*a + (1-c)*b, a + b - a*b), since flags are 0 or 1. {(factor names...):
+    coefficient}, or None past limit terms."""
+    from rc2016.shaders.engine_inputs import _add
     memo = {}
 
     def visit(i):
@@ -280,6 +300,7 @@ def linear_form(ir, root, limit=MAX_FORM_TERMS):
             return memo[i]
         n = ir.nodes[i]
         op, args = n['op'], n.get('args', [])
+        p = False
         if op == 'const':
             p = {(): float(n['value'])} if n['value'] else {}
         elif op == 'input':
@@ -291,18 +312,25 @@ def linear_form(ir, root, limit=MAX_FORM_TERMS):
             elif op == 'neg':
                 p = {k: -v for k, v in parts[0].items()}
             elif op == 'mul':
-                p = _mul(parts[0], parts[1])
+                p = _flag_mul(parts[0], parts[1])
             else:
                 p = _add(parts[0], parts[1], -1. if op == 'sub' else 1.)
-            if p is not None and len(p) > limit:
-                p = None
+        elif op == 'select' and _flag_only(visit(args[0])):
+            c, a, b = (visit(x) for x in args)
+            if a is not None and b is not None:
+                p = _add(_flag_mul(c, a), _flag_mul(_add({(): 1.}, c, -1.), b))
+        elif op == 'max' and _flag_only(visit(args[0])) and _flag_only(visit(args[1])):
+            a, b = visit(args[0]), visit(args[1])
+            p = _add(_add(a, b), _flag_mul(a, b), -1.)
         elif op == 'unsupported' and n.get('reason') == 'Unresolved scalar memory load':
             # Named by instruction and dword, so rows of one matrix load stay apart.
-            at = n.get('load_offset')
-            byte = '?' if at is None else at + 4 * n.get('word', 0)
+            at, word = n.get('load_offset'), n.get('word', 0)
+            byte = f'?+{4 * word}' if at is None else at + 4 * word
             p = {(f"mem(s{n.get('base')}+{byte})@{n.get('offset')}",): 1.}
-        else:
+        if p is False:
             p = {(f'{op}#{i}',): 1.}
+        if p is not None and len(p) > limit:
+            p = None
         memo[i] = p
         return p
 
@@ -353,7 +381,7 @@ def vector_identity(ir, channels, max_flags=MAX_FLAGS):
     flags = sorted(j for j in ir.reachable([c for c in channels if c is not None])
                    if ir.nodes[j].get('kind') == 'runtime_flag')
     if len(flags) > max_flags:
-        return None
+        return _symbolic_identity(ir, channels)
     groups = {}
     for bits in range(1 << len(flags)):
         setting = ' '.join(f"{ir.nodes[f]['name'].split('@')[1]}={bits >> k & 1}" for k, f in enumerate(flags))
@@ -381,6 +409,45 @@ def vector_identity(ir, channels, max_flags=MAX_FLAGS):
 
 
 REPORT_FLAGS = 10
+
+
+SYMBOLIC_TERMS = 4096
+SYMBOLIC_FLAGS = 12
+
+
+def _symbolic_identity(ir, channels, max_flags=SYMBOLIC_FLAGS):
+    """vector_identity for many flags: expand flags symbolically, then specialise per
+    setting of the flags that remain in the polynomial (others sit inside atoms).
+    None when that is still more than max_flags flags or too many terms."""
+    forms = [linear_form(ir, c, SYMBOLIC_TERMS) if c is not None else {} for c in channels]
+    if any(f is None for f in forms):
+        return None
+    names = sorted({f for form in forms for key in form for f in key if f.startswith(FLAG)},
+                   key=lambda f: int(f.split('@')[1]))
+    if len(names) > max_flags:
+        return None
+    groups = {}
+    for bits in range(1 << len(names)):
+        ones = {f for k, f in enumerate(names) if bits >> k & 1}
+        parts = []
+        for form in forms:
+            special = {}
+            for key, v in form.items():
+                flags = {f for f in key if f.startswith(FLAG)}
+                if flags <= ones:
+                    rest = tuple(f for f in key if not f.startswith(FLAG))
+                    special[rest] = special.get(rest, 0.) + v
+            parts.append((format_form({k: v for k, v in special.items() if v}), False))
+        setting = ' '.join(f"{f.split('@')[1]}={bits >> k & 1}" for k, f in enumerate(names)) or 'no flags'
+        groups.setdefault(tuple(parts), []).append(setting)
+    atoms = {}
+    for form in forms:
+        for key in form:
+            for factor in key:
+                if '#' in factor:
+                    atoms.setdefault(factor, ir.describe(int(factor.split('#')[1]), 3))
+    note = 'flags inside atoms are not enumerated'
+    return [(settings, list(parts), dict(atoms, **{'(symbolic)': note})) for parts, settings in groups.items()]
 
 
 def attribute_report(data, attributes=None):
@@ -431,7 +498,7 @@ def attribute_report(data, attributes=None):
 def _identity_lines(ir, channels, label):
     groups = vector_identity(ir, channels, REPORT_FLAGS)
     if groups is None:
-        return [f'{label}: more than {REPORT_FLAGS} runtime flags']
+        return [f'{label}: more than {REPORT_FLAGS} runtime flags, and more than {SYMBOLIC_FLAGS} or {SYMBOLIC_TERMS} terms when expanded']
     lines, zero = [], []
     for settings, parts, atoms in groups:
         if all(form == '0' for form, _ in parts):
