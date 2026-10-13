@@ -15,7 +15,7 @@ from rc2016.shaders.families import graph_parameter_tables
 
 PORTABLE_OPS={'const','texture','input','add','sub','mul','div','neg','abs','min',
               'max','sqrt','rsqrt','rcp','log2','exp2','pow','sat','sin','cos',
-              'lt','le','gt','ge','eq','ne','select'}
+              'lt','le','gt','ge','eq','ne','select','floor','fract'}
 
 
 @lru_cache(maxsize=64)

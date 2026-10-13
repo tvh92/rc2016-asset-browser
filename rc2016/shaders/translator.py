@@ -13,12 +13,20 @@ import sys
 
 from rc2016.shaders.ir import DAG
 
-VERSION=3
+VERSION=4
 ROOT=Path(__file__).resolve().parents[2]
 SHADER_SECTION=0x873D1E6C
 # VALU instructions that also write a scalar carry/flag register pair.
 CARRY_OUT={'V_ADD_I32','V_SUB_I32','V_SUBREV_I32','V_ADDC_U32','V_SUBB_U32','V_SUBBREV_U32',
            'V_DIV_SCALE_F32','V_DIV_SCALE_F64'}
+
+# Variants that differ from the base opcode only for zero times infinity/NaN
+# (DX9 legacy multiply), NaN operands, or by clamping an infinite result to
+# the largest finite float. The IR has finite values only, where they agree.
+FINITE_ALIASES={'V_MUL_LEGACY_F32':'V_MUL_F32','V_MAC_LEGACY_F32':'V_MAC_F32',
+                'V_MAD_LEGACY_F32':'V_MAD_F32','V_MIN_LEGACY_F32':'V_MIN_F32',
+                'V_MAX_LEGACY_F32':'V_MAX_F32','V_RCP_CLAMP_F32':'V_RCP_F32',
+                'V_RSQ_CLAMP_F32':'V_RSQ_F32','V_LOG_CLAMP_F32':'V_LOG_F32'}
 
 
 def decoder():
@@ -262,8 +270,10 @@ class Compiler:
             self.clobber_s(d,2,name)
             cmp=next((op for token,op in [('NE','ne'),('LE','le'),('GE','ge'),('LT','lt'),('GT','gt'),('EQ','eq')] if '_'+token+'_'in name),None)
             self.s[d]=self.ir.op(cmp,*args[:2]) if cmp else self.unknown(name,*args[:2]);return
+        name=FINITE_ALIASES.get(name,name)
         unary={'V_MOV_B32':None,'V_RSQ_F32':'rsqrt','V_RCP_F32':'rcp','V_SQRT_F32':'sqrt',
-               'V_LOG_F32':'log2','V_EXP_F32':'exp2','V_COS_F32':'cos','V_SIN_F32':'sin'}
+               'V_LOG_F32':'log2','V_EXP_F32':'exp2','V_COS_F32':'cos','V_SIN_F32':'sin',
+               'V_FLOOR_F32':'floor','V_FRACT_F32':'fract'}
         binary={'V_MUL_F32':'mul','V_ADD_F32':'add','V_SUB_F32':'sub','V_MIN_F32':'min','V_MAX_F32':'max'}
         if name in ('V_COS_F32','V_SIN_F32'):
             # GCN trigonometric operands are cycles, Blender/IR operands radians.
@@ -274,6 +284,16 @@ class Compiler:
         elif name=='V_MAC_F32':value=self.ir.op('add',self.getv(d),self.ir.op('mul',*args[:2]))
         elif name in ('V_MAD_F32','V_FMA_F32','V_MADMK_F32','V_MADAK_F32'):
             value=self.ir.op('add',self.ir.op('mul',*args[:2]),args[2])
+        elif name=='V_CEIL_F32':value=self.ir.op('neg',self.ir.op('floor',self.ir.op('neg',args[0])))
+        elif name=='V_TRUNC_F32':
+            value=self.ir.op('select',self.ir.op('ge',args[0],self.ir.const(0.)),self.ir.op('floor',args[0]),
+                             self.ir.op('neg',self.ir.op('floor',self.ir.op('neg',args[0]))))
+        elif name in ('V_MIN3_F32','V_MAX3_F32'):
+            op='min' if name=='V_MIN3_F32' else 'max'
+            value=self.ir.op(op,self.ir.op(op,args[0],args[1]),args[2])
+        elif name=='V_MED3_F32':
+            value=self.ir.op('max',self.ir.op('min',args[0],args[1]),
+                             self.ir.op('min',self.ir.op('max',args[0],args[1]),args[2]))
         elif name=='V_CVT_PKRTZ_F16_F32':value=self.ir.op('pack',*args[:2])
         elif name=='V_CNDMASK_B32':
             predicate=args[2] if k==7 else self.gets(106)

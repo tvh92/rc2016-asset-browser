@@ -63,7 +63,8 @@ def _frontend(translation,images):
     cache={};samples={};bindings={r['api']:r for r in translation['texture_bindings']}
     simple={'add':'ADD','sub':'SUBTRACT','mul':'MULTIPLY','div':'DIVIDE','abs':'ABSOLUTE',
         'min':'MINIMUM','max':'MAXIMUM','sqrt':'SQRT','sin':'SINE','cos':'COSINE',
-        'pow':'POWER','lt':'LESS_THAN','gt':'GREATER_THAN'}
+        'pow':'POWER','lt':'LESS_THAN','gt':'GREATER_THAN',
+        'floor':'FLOOR','fract':'FRACT'}
     def math_node(operation,args,extra=()):
         n=nodes.new('ShaderNodeMath');n.operation=operation
         for j,s in enumerate(args):links.new(s,n.inputs[j])

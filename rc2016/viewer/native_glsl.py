@@ -11,7 +11,7 @@ import math
 from rc2016.shaders.bindings import PORTABLE_OPS
 from rc2016.shaders.ir import DAG, compute
 
-EMITTER_VERSION = 3
+EMITTER_VERSION = 4
 # Reserve vertex bone matrices (3) and shared environment lighting (6).
 TEXTURE_UNITS = (0, 1, 2, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15)
 

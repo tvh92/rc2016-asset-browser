@@ -8,7 +8,8 @@ import math
 
 OPS = {'add', 'sub', 'mul', 'div', 'neg', 'abs', 'min', 'max', 'sqrt',
        'rsqrt', 'rcp', 'log2', 'exp2', 'pow', 'sat', 'sin', 'cos',
-       'lt', 'le', 'gt', 'ge', 'eq', 'ne', 'select', 'pack', 'bit_and', 'bit_or'}
+       'lt', 'le', 'gt', 'ge', 'eq', 'ne', 'select', 'pack', 'bit_and', 'bit_or',
+       'floor', 'fract'}
 
 
 def compute(op, a):
@@ -27,6 +28,7 @@ def compute(op, a):
         'ne':lambda: float(a[0]!=a[1]), 'select':lambda: a[1] if a[0] else a[2],
         'pack':lambda: list(a), 'bit_and':lambda: int(a[0])&int(a[1]),
         'bit_or':lambda: int(a[0])|int(a[1]),
+        'floor':lambda: float(math.floor(a[0])), 'fract':lambda: a[0]-math.floor(a[0]),
     }[op]()
 
 
