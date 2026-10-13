@@ -12,6 +12,7 @@ structured compiler output. Backward branches (loops) remain unsupported.
 """
 from collections import Counter
 import hashlib
+import itertools
 import math
 from pathlib import Path
 import re
@@ -48,6 +49,25 @@ def atom_pattern(n,j):
         repunit=((1<<size)-1)//((1<<(2*block))-1)
         _PATTERNS[key]=(((1<<block)-1)<<block)*repunit
     return _PATTERNS[key]
+def drop_atom(table,n,j):
+    """Truth table over n atoms without atom j, for a function that does not depend on it:
+    the half where atom j is 0, compacted bit-parallel (a pext of the zero blocks)."""
+    full=(1<<(1<<n))-1
+    x=table&(full^atom_pattern(n,j))
+    # Kept blocks of 2^t bits sit every 2^(t+1) bits; pair them up until they are contiguous.
+    for t in range(j+1,n):x=(x|(x>>(1<<(t-1))))&(full^atom_pattern(n,t))
+    return x
+
+
+def project_table(table,n,used):
+    """Truth table restricted to the ``used`` atoms (ascending indices), unused atoms at 0:
+    bit k is the table at the assignment taking bit q of k for atom used[q]."""
+    unused=sorted(set(range(n))-set(used),reverse=True)
+    for j in unused:   # highest first, so lower atom indices stay valid
+        table=drop_atom(table,n,j);n-=1
+    return table
+
+
 PREDICATE_OPS={'mul','max','sub','select'}
 MASK_OP=re.compile(r'S_(AND|OR|XOR|ANDN2|ORN2|NAND|NOR|XNOR|MOV|NOT)(_SAVEEXEC)?_B64')
 UNIFORM_INT_OPS={'u_and','u_or','u_xor','u_andn2','u_shl','u_shr','u_eq','u_lt','u_le','i_lt','i_le','u_bit',
@@ -207,10 +227,7 @@ class Compiler:
         if result in (0,full):return self.ir.const(float(result==full))
         # Canonical key over the atoms the function depends on.
         used=[j for j in range(len(atoms)) if ((result>>(1<<j))&full&~tables[atoms[j]])!=(result&full&~tables[atoms[j]])]
-        reduced=0
-        for k in range(1<<len(used)):
-            source=sum(1<<used[q] for q in range(len(used)) if (k>>q)&1)
-            reduced|=((result>>source)&1)<<k
+        reduced=project_table(result,len(atoms),used)
         key=(tuple(atoms[j] for j in used),reduced)
         if len(used)==1 and reduced==0b10:return atoms[used[0]]
         return self.pred_tables.setdefault(key,value)
@@ -728,11 +745,11 @@ class Compiler:
         dont_care=lambda n:((self.ir.nodes[n]['op']=='unsupported' and self.ir.nodes[n].get('reason','').startswith('Uninitialized'))
                             or self.ir.nodes[n].get('kind')=='ps_input')
         live=self.p_and(bp,live_exec)
-        for reg,value in list(self.v.items()):
+        for reg,value in self.changed(self.v,v0):
             old=v0.get(reg)
             if old is not None and old!=value and not dont_care(old):self.v[reg]=self.ir.op('select',live,value,old)
         if self.ir.value(bp)!=1:
-            for reg,value in list(self.s.items()):
+            for reg,value in self.changed(self.s,s0):
                 old=s0.get(reg)
                 if reg in self.premerged or old is None or old==value or dont_care(old):continue
                 self.s[reg]=self.ir.op('select',bp,value,old)
@@ -742,6 +759,26 @@ class Compiler:
                 if old is None or old==channels:continue
                 self.exports[target]=[n if o is None else o if n is None else self.ir.op('select',bp,n,o)
                                       for n,o in zip(channels,old)]
+
+    def changed(self,registers,before):
+        """(register, value) pairs that differ from ``before``, in ``registers``' own order.
+
+        Equivalent to filtering every item, which dominated predicated compilation: the
+        difference runs in C and only the few written registers are ordered. Registers are
+        only ever added or reassigned, so a register's order is its first insertion."""
+        try:
+            keys={reg for reg,_value in registers.items()-before.items()}
+        except TypeError:   # unhashable values: compare every item
+            return list(registers.items())
+        if not keys:return []
+        memo=self.__dict__.setdefault('_register_order',{})
+        order=memo.get(id(registers))
+        if order is None or order[0] is not registers or len(order[1])>len(registers):
+            order=memo[id(registers)]=(registers,{})
+        positions=order[1]
+        if len(positions)<len(registers):
+            for reg in itertools.islice(registers,len(positions),None):positions[reg]=len(positions)
+        return [(reg,registers[reg]) for reg in sorted(keys,key=positions.__getitem__)]
 
     def run(self,instructions):
         """Execute in address order; a taken backward branch re-runs its body under the

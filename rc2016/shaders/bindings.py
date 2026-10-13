@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import struct
+import threading
 from functools import lru_cache
 
 from rc2016.shaders.ir import DAG, bits
@@ -19,8 +20,23 @@ PORTABLE_OPS={'const','texture','input','add','sub','mul','div','neg','abs','min
 
 
 @lru_cache(maxsize=64)
-def compiled(data):
+def _compiled(data):
     return compile_graph(data)
+
+
+_GRAPH_LOCKS={}
+_GRAPH_LOCKS_LOCK=threading.Lock()
+
+
+def compiled(data):
+    """compile_graph, once per graph: level loads translate many materials over a few dozen
+    graphs on several threads, and concurrent callers for one graph would otherwise each compile
+    it. They wait for the first compile instead."""
+    data=bytes(data)
+    with _GRAPH_LOCKS_LOCK:
+        lock=_GRAPH_LOCKS.setdefault(hashlib.sha256(data).digest(),threading.Lock())
+    with lock:
+        return _compiled(data)
 
 
 def pass_contracts(data):
