@@ -1,4 +1,5 @@
 """Shader census grouping and ranking, without game files."""
+import json
 import unittest
 
 from rc2016.shaders import census
@@ -11,6 +12,14 @@ class CensusTests(unittest.TestCase):
         self.assertEqual(census.normalise('Uninitialized VGPR 17'), 'Uninitialized VGPR 17')
         self.assertEqual(census.normalise('Unresolved packed export from Uninitialized VGPR 3'),
                          'Unresolved packed export from Uninitialized VGPR N')
+
+    def test_binding_errors_split_into_reasons(self):
+        reason = json.dumps([dict(node=4, reason='Unbound engine/interpolant input CB1[3]'),
+                             dict(node=9, reason='Unbound engine/interpolant input CB1[3]'), dict(node=2, reason='u_eq')])
+        self.assertEqual(census.diagnostic_reasons(dict(shader_id='0x1', contract=0, reason=reason)),
+                         {'bind: Unbound engine/interpolant input CB1[3]', 'bind: u_eq'})
+        self.assertEqual(census.diagnostic_reasons('Pass contract does not partition resources'),
+                         {'Pass contract does not partition resources'})
 
     def test_malformed_graph_is_classified_not_raised(self):
         row = census.classify_graph(b'not a graph')

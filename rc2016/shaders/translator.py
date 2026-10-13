@@ -20,7 +20,7 @@ import sys
 
 from rc2016.shaders.ir import DAG, bits, from_bits
 
-VERSION=6
+VERSION=7
 ROOT=Path(__file__).resolve().parents[2]
 SHADER_SECTION=0x873D1E6C
 # VALU instructions that also write a scalar carry/flag register pair.
@@ -220,7 +220,8 @@ class Compiler:
         if dst==126:self.set_exec(value)
         else:self.set_mask(dst,value)
         if op!='MOV':
-            self.scc=('exec',) if dst==126 else None;self.scc_source=name+' (lane mask)'
+            # SCC = (mask != 0) wave-wide: fixed (1) for any lane inside the mask.
+            self.scc=('exec',) if dst==126 else ('mask',value);self.scc_source=name+' (lane mask)'
         return True
 
     def scalar_operand_bits(self,raw,literal_bits):
@@ -291,7 +292,10 @@ class Compiler:
         elif name=='S_CBRANCH_EXECZ':condition=zero
         elif name=='S_CBRANCH_EXECNZ':condition=one
         elif name in ('S_CBRANCH_SCC0','S_CBRANCH_SCC1'):
-            if self.scc==('exec',):condition=one
+            # A lane inside the tested mask sees SCC = 1. Lanes outside a non-exec
+            # mask (killed lanes, or lanes the region below masks off) are assumed
+            # not to depend on the branch, as for exec-skipped regions.
+            if self.scc==('exec',) or (self.scc and self.scc[0]=='mask'):condition=one
             elif self.scc and self.scc[0]=='uniform':condition=self.scc[1]
             else:raise ValueError(f'Control flow unsupported at {i["relative"]}: {name} on unresolved SCC from {self.scc_source}')
             if name=='S_CBRANCH_SCC0':condition=self.p_not(condition)

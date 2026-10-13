@@ -85,6 +85,21 @@ def material_graph_usage(archive):
     return usage
 
 
+_NODE_IDS = re.compile(r'\bnode\d+\b')
+
+
+def diagnostic_reasons(diagnostic):
+    """Grouping keys of one translation diagnostic; binding errors are JSON lists of node errors."""
+    reason = diagnostic['reason'] if isinstance(diagnostic, dict) else diagnostic
+    try:
+        rows = json.loads(reason)
+    except (TypeError, ValueError):
+        rows = None
+    if isinstance(rows, list) and all(isinstance(r, dict) for r in rows):
+        return {'bind: ' + normalise(_NODE_IDS.sub('nodeN', str(r.get('reason')))) for r in rows}
+    return {normalise(_NODE_IDS.sub('nodeN', str(reason)))}
+
+
 def material_translation_status(archive):
     """Bound per-material translation status and diagnostics (slower: binds every material)."""
     from rc2016.viewer.native_glsl import prepare_material_translation
@@ -94,8 +109,8 @@ def material_translation_status(archive):
             continue
         result = prepare_material_translation(archive, entry['path'])
         statuses[result.get('status')] += 1
-        for d in result.get('diagnostics', []):
-            diagnostics[normalise(d['reason'] if isinstance(d, dict) else d)] += 1
+        for reason in sorted({r for d in result.get('diagnostics', []) for r in diagnostic_reasons(d)}):
+            diagnostics[reason] += 1
     return statuses, diagnostics
 
 
@@ -166,6 +181,9 @@ def main(argv=None):
     print(f"material-weighted: {report['material_weighted_graph_status']}")
     if 'material_status' in report:
         print(f"materials: {report['material_status']}")
+        print('top material diagnostics (materials, reason):')
+        for row in report['material_diagnostics'][:args.top]:
+            print(f"{row['materials']:6d}  {row['reason'][:200]}")
     print('top blockers (materials, graphs, reason):')
     for row in report['blockers'][:args.top]:
         print(f"{row['materials']:6d} {row['graphs']:5d}  {row['reason']}")

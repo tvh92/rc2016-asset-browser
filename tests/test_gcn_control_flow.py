@@ -136,6 +136,15 @@ class ControlFlowTests(unittest.TestCase):
         self.assertEqual(run(code, {1: 10., 2: 20., 'CB2[0]': word(3)}, slots)[0], 20.)
         self.assertEqual(run(code, {1: 10., 2: 20., 'CB2[0]': 1.0}, slots)[0], 20.)  # 0x3F800000 as an integer
 
+    def test_kill_mask_branch(self):
+        # live = exec & ~vcc; if (!any(live)) goto dead; exec &= live; v3 = v1
+        code = program(vopc('V_CMP_LT_F32', V + 1, 2), sop2('S_ANDN2_B64', 10, 126, 106),
+                       ('branch', 'S_CBRANCH_SCC0', 'dead'), sop2('S_AND_B64', 126, 126, 10), vmov(3, V + 1),
+                       ('label', 'dead'))
+        value, compiler = run(code, {1: 5., 2: 1.})
+        self.assertEqual(value, 5.)
+        self.assertNotEqual(compiler.ir.value(compiler.exec), 1.)
+
     def test_unresolved_scc_names_its_source(self):
         code = program(sop2('S_ADD_U32', 4, 5, 6), ('branch', 'S_CBRANCH_SCC1', 'end'), ('label', 'end'))
         with self.assertRaisesRegex(ValueError, 'unresolved SCC from S_ADD_U32'):
