@@ -123,7 +123,8 @@ def restore_native_pixels(archive, entries, posted):
 
 # Worker threads for model geometry and materials. Archive reads keep per-thread handles; NumPy, zlib
 # and file reads release the GIL, so a few workers overlap decoding with I/O.
-LOAD_WORKERS = max(2, min(6, (os.cpu_count() or 2) - 1))
+LOAD_WORKERS = max(2, min(6, (os.cpu_count() or 2) - 1))
+PREVIEW_CHUNK = 8   # materials per experimental-preview batch posted to the view
 
 
 def ordered_results(pool, items, function, window, cancel=None):
@@ -624,15 +625,23 @@ class LevelPanel:
         self.preview_paths.update(todo)
         relay, cancel, root = self.relay, self.cancel, str(self.source_root() or "")
 
-        def work():
+        def chunk(paths):
+            if cancel.is_set():
+                return
             try:
-                entries = level_scene.material_entries(self._archive(root), [dict(path=p) for p in todo],
+                entries = level_scene.material_entries(self._archive(root), [dict(path=p) for p in paths],
                                                        frozenset(), {}, previews=True)
             except Exception as exc:
                 relay.put(("error", "material previews", f"{type(exc).__name__}: {exc}"))
                 return
             if not cancel.is_set():
                 relay.put(("preview_materials", entries))
+
+        def work():
+            # Several threads, so the compile processes analyse different graphs at once; each chunk
+            # is swapped in when ready instead of after the whole batch.
+            with ThreadPoolExecutor(max_workers=LOAD_WORKERS, thread_name_prefix="material-previews") as pool:
+                list(pool.map(chunk, [todo[i:i + PREVIEW_CHUNK] for i in range(0, len(todo), PREVIEW_CHUNK)]))
         threading.Thread(target=work, daemon=True, name="material-previews").start()
 
     def _ground_controls_changed(self, event=None):

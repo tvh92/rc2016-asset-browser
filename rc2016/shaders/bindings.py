@@ -49,34 +49,66 @@ def _pool():
         return _POOL
 
 
-@lru_cache(maxsize=64)
-def _compiled(data):
+def _pooled(function,data):
+    """function(data) in a worker process when the pool is on, else here."""
     pool=_pool()
     if pool is not None:
         try:
-            return pool.submit(compile_graph,data).result()
+            return pool.submit(function,data).result()
         except Exception as exc:
             from concurrent.futures.process import BrokenProcessPool
             import pickle
             if not isinstance(exc,(BrokenProcessPool,OSError,pickle.PicklingError)):
                 raise
             use_compile_processes(0)   # compile here from now on
-    return compile_graph(data)
+    return function(data)
+
+
+@lru_cache(maxsize=64)
+def _compiled(data):
+    return _pooled(compile_graph,data)
 
 
 _GRAPH_LOCKS={}
 _GRAPH_LOCKS_LOCK=threading.Lock()
 
 
-def compiled(data):
-    """compile_graph, once per graph: level loads translate many materials over a few dozen
-    graphs on several threads, and concurrent callers for one graph would otherwise each compile
-    it. They wait for the first compile instead."""
-    data=bytes(data)
+def _once(kind,data,function):
+    """function(data) once per graph: level loads translate many materials over a few dozen
+    graphs on several threads, and concurrent callers for one graph would otherwise each
+    compute it. They wait for the first instead."""
     with _GRAPH_LOCKS_LOCK:
-        lock=_GRAPH_LOCKS.setdefault(hashlib.sha256(data).digest(),threading.Lock())
+        lock=_GRAPH_LOCKS.setdefault((kind,hashlib.sha256(data).digest()),threading.Lock())
     with lock:
-        return _compiled(data)
+        return function(data)
+
+
+def compiled(data):
+    """compile_graph, once per graph (see _once)."""
+    return _once('compiled',bytes(data),_compiled)
+
+
+def stream_evidence(data):
+    """(rotated-stream PS attributes, squared-stream channels) of a graph's vertex programs, the
+    world-position adapter's interpolant evidence; empty where the analysis fails."""
+    from rc2016.shaders.interpolants import rotated_stream_attributes, squared_stream_channels
+    try:normal_attributes=set(rotated_stream_attributes(data))
+    except (ValueError,KeyError,IndexError,struct.error):normal_attributes=set()
+    try:stream_channels=squared_stream_channels(data)
+    except (ValueError,KeyError,IndexError,struct.error):stream_channels={}
+    return normal_attributes,stream_channels
+
+
+@lru_cache(maxsize=64)
+def _stream_evidence(data):
+    return _pooled(stream_evidence,data)
+
+
+def graph_stream_evidence(data):
+    """stream_evidence once per graph, in a worker process when the pool is on: it depends on
+    the graph alone, while every material using the graph asks for it."""
+    normal_attributes,stream_channels=_once('stream_evidence',bytes(data),_stream_evidence)
+    return set(normal_attributes),dict(stream_channels)
 
 
 def pass_contracts(data):
@@ -368,12 +400,7 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False)
     data=bytes(graph_datas[0]);graph=compiled(data)
     normal_attributes=set();stream_channels={}
     if world_position:
-        from rc2016.shaders.interpolants import rotated_stream_attributes
-        from rc2016.shaders.interpolants import squared_stream_channels
-        try:normal_attributes=set(rotated_stream_attributes(data))
-        except (ValueError,KeyError,IndexError,struct.error):normal_attributes=set()
-        try:stream_channels=squared_stream_channels(data)
-        except (ValueError,KeyError,IndexError,struct.error):stream_channels={}
+        normal_attributes,stream_channels=graph_stream_evidence(data)
     try:contracts=pass_contracts(data)
     except ValueError as exc:result['diagnostics'].append(str(exc));return result
     candidates=[]

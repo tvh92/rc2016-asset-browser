@@ -95,6 +95,11 @@ class OnDemandPreviewTests(unittest.TestCase):
         class Thread:
             def __init__(self,target,**_kw):self.target=target
             def start(self):self.target()
+        class Pool:   # runs the preview chunks in order on this thread
+            def __init__(self,**_kw):pass
+            def __enter__(self):return self
+            def __exit__(self,*_exc):return False
+            def map(self,function,items):return [function(item) for item in items]
         posted=[];calls=[]
         panel=object.__new__(LevelPanel)
         panel.experimental_var=Var(False);panel.material_previews_var=Var(True)
@@ -106,7 +111,8 @@ class OnDemandPreviewTests(unittest.TestCase):
         # A pinned preview, a ready native material (no preview) and one without a native
         # translation (the generic world-position adapter may apply).
         paths={'other.material':True,terrain_preview.MATERIAL:True,'generic.material':False}
-        with patch.object(scene,'material_entries',side_effect=entries), patch('threading.Thread',Thread):
+        with patch.object(scene,'material_entries',side_effect=entries), patch('threading.Thread',Thread), \
+             patch('rc2016.levels.panel.ThreadPoolExecutor',Pool):
             panel._prepare_previews(paths)
             self.assertEqual(calls,[])   # disabled: no analysis
             panel.experimental_var.value=True

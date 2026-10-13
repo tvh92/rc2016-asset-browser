@@ -238,11 +238,21 @@ def _flag_mul(p, q, limit=None):
     if limit is not None and len(p) * len(q) > 64 * limit:
         return None
     result = {}
+    # A key holds each flag once, so only flags shared by both factors repeat; otherwise the
+    # product's key is just both factor lists sorted together.
+    def split(key):
+        flags = frozenset(f for f in key if f.startswith(FLAG))
+        return flags, (tuple(f for f in key if not f.startswith(FLAG)) if flags else key)
+    rows = [(b, y, *split(b)) for b, y in q.items()]
+    get = result.get
     for a, x in p.items():
-        for b, y in q.items():
-            flags = sorted({f for f in a + b if f.startswith(FLAG)})
-            key = tuple(sorted(flags + [f for f in a + b if not f.startswith(FLAG)]))
-            result[key] = result.get(key, 0.) + x * y
+        flags_a, rest_a = split(a)
+        for b, y, flags_b, rest_b in rows:
+            if flags_a and flags_b and not flags_a.isdisjoint(flags_b):
+                key = tuple(sorted((*(flags_a | flags_b), *rest_a, *rest_b)))
+            else:
+                key = tuple(sorted(a + b))
+            result[key] = get(key, 0.) + x * y
     return {k: v for k, v in result.items() if v}
 
 
@@ -257,7 +267,10 @@ def linear_form(ir, root, limit=MAX_FORM_TERMS):
     (c*a + (1-c)*b, a + b - a*b), since flags are 0 or 1. {(factor names...):
     coefficient}, or None past limit terms."""
     from rc2016.shaders.engine_inputs import _add
-    memo = {}
+    # A node's form depends only on the node, and DAG nodes never change, so forms are kept on
+    # the DAG per limit: the channels of one export, their rsqrt arguments and every flag
+    # setting's fold share their subexpressions instead of expanding them again.
+    memo = ir.__dict__.setdefault('_linear_forms', {}).setdefault(limit, {})
 
     def visit(i):
         if i in memo:
@@ -498,7 +511,10 @@ def _stream_terms(ir, form, powers):
                 streams.add(int(match.group(1)))
                 count += 1
             elif factor.startswith('rsqrt#') and powers == 1:
-                inner = _stream_terms(ir, linear_form(ir, ir.nodes[int(factor[6:])]['args'][0], SYMBOLIC_TERMS), 2)
+                known = ir.__dict__.setdefault('_rsqrt_stream_terms', {})
+                if factor not in known:   # the same rsqrt factor recurs in many terms
+                    known[factor] = _stream_terms(ir, linear_form(ir, ir.nodes[int(factor[6:])]['args'][0], SYMBOLIC_TERMS), 2)
+                inner = known[factor]
                 if inner is None or inner is False:
                     return None
                 streams.add(inner)
