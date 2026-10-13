@@ -68,7 +68,7 @@ def emit_surface(translation, srgb=None, *, experimental=False):
             if preview and n.get('kind') in ('preview_position','preview_normal') and n.get('channel') in (0,1,2):
                 expr = ('vTintWorldPos' if n['kind'] == 'preview_position' else 'vTintWorldNrm') + '.' + 'xyz'[n['channel']]
             elif preview and n.get('kind') == 'preview_vertex_alpha_squared':
-                expr = 'vRockAlpha'  # model colour alpha squared in the vertex stage; 1 on level instances
+                expr = 'vRockAlpha'  # colour alpha squared in the vertex stage; level instances: zone-keyed alpha or 1
             elif n.get('kind') == 'front_facing' or (preview and n.get('kind') == 'preview_front_face'):
                 expr = '(gl_FrontFacing ? 1.0 : 0.0)'
             elif n.get('kind') != 'attribute' or n.get('attribute') != 0 or n.get('channel') not in (0, 1):

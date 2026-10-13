@@ -212,7 +212,7 @@ def _material_counts(archive, paths, show=None):
             # The full set of blockers: binding one input unlocks a material only if it is the whole set.
             combinations[' + '.join(r for r in reasons if r != _SUMMARY) or _SUMMARY] += 1
             if any('CB0[' in r or 'ps.POS' in r for r in reasons):
-                adapted[world_position_outcome(archive, path)] += 1
+                adapted[(world_position_outcome(archive, path), path)] += 1
         if show and show.search(path):
             detail = material_detail(archive, path, result, [r for r in reasons if r != _SUMMARY])
             if result.get('status') != 'ready' and any('CB0[' in r or 'ps.POS' in r for r in reasons):
@@ -332,7 +332,13 @@ def _census(archive, materials, progress, pool, chunks, started, by_material, us
             progress('binding every material')
         started = time.time()
         statuses, diagnostics, combinations, details, adapted = material_translation_status(archive, by_material, pool, chunks, progress, show)
-        report['world_position_preview'] = dict(adapted.most_common())
+        outcomes = Counter()
+        named = {}
+        for outcome, path in adapted:
+            outcomes[outcome] += 1
+            named.setdefault(outcome, []).append(path)
+        report['world_position_preview'] = dict(outcomes.most_common())
+        report['world_position_preview_materials'] = {k: sorted(v) for k, v in named.items()}
         if show:
             report['shown_materials'] = details
         report['material_blocker_sets'] = [dict(reasons=r, materials=c) for r, c in combinations.most_common()]
@@ -470,6 +476,102 @@ def print_interpolants(archive, path, attributes=None):
             print(line)
 
 
+def print_vertex_colours(archive, needle, limit=5, material=None, dump=0):
+    """Per mesh of the model paths containing needle: material and colour-stream statistics.
+    With material, only models referencing a material path containing it (up to 4 x limit) and
+    only their meshes using such a material. With dump, also the first dump bytes of each
+    undecoded section as hex and little-endian u32 words."""
+    import numpy as np
+    from rc2016.formats.archive import asset_references
+    from rc2016.formats.native_model import decode_model
+    from rc2016.levels.scene import asset_bytes
+    keys = {e['path']: k for k, e in archive.entries.items()
+            if e['type'] == 'model' and needle.lower() in e['path'].lower()}
+    paths = sorted(keys)
+    if material:
+        material = material.lower()
+        paths = [p for p in paths if any(material in r['path'].lower() for r in asset_references(archive, keys[p]))]
+        limit *= 4
+    print(f'{len(paths)} model paths contain {needle!r}' + (f' and reference a material containing {material!r}' if material else ''), flush=True)
+    for path in paths[:limit]:
+        decoded = decode_model(path, data=asset_bytes(archive, path))
+        vertices = decoded['vertex_count']
+        sizes = decoded['section_sizes']
+        print('== model', path, f'| {vertices} vertices in all LODs | undecoded sections (bytes, per vertex):',
+              ', '.join(f"{t} {sizes[t]} {sizes[t] / max(vertices, 1):.2f}" for t in decoded['unsupported_sections']) or 'none')
+        if dump:
+            from rc2016.formats.native_model import _chunk, _sections
+            raw = asset_bytes(archive, path)
+            sections = _sections(raw)
+            for tag in decoded['unsupported_sections']:
+                chunk = _chunk(raw, sections, int(tag, 16))[:dump]
+                print(f'  section {tag}:')
+                for row in range(0, len(chunk), 32):
+                    part = chunk[row:row + 32]
+                    words = ' '.join(f'{w:08x}' for w in np.frombuffer(part[:len(part) // 4 * 4], '<u4'))
+                    print(f'    +{row:04x} {part.hex(" ")} | {words}')
+        for mesh in decoded['meshes']:
+            colours = mesh.get('colors')
+            used = mesh.get('material')
+            used = used.get('path') if isinstance(used, dict) else used
+            if material and material not in str(used).lower():
+                continue
+            line = f"  mesh {mesh['index']} {len(mesh['positions'])} vertices, material {used}"
+            if not colours:
+                print(line + ': no colour stream')
+                continue
+            c = np.asarray(colours, dtype=np.float64).reshape(-1, 4)
+            stats = ' '.join(f"{'RGBA'[j]} {c[:, j].min():.2f}/{c[:, j].mean():.2f}/{c[:, j].max():.2f}" for j in range(4))
+            print(line + f': colour min/mean/max {stats}; distinct RGBA {len(np.unique(c, axis=0))}', flush=True)
+
+
+def print_instances(archive, needle, limit=8, save=None):
+    """Zone instances of models whose path contains needle: zone section sizes, the record's
+    undecoded header words (+0x5C..+0xB0) and the start of its tail, to look for per-instance
+    data such as vertex colours. With save (a folder outside the repository), also writes each
+    matching record and its decompressed model as .bin files there for offline analysis."""
+    import struct
+    from rc2016.levels.scene import asset_bytes
+    from rc2016.levels.zone_format import DATA_HEAP, INSTANCE_OFFSETS, RECORD_HEADER_SIZE, decode_zone, sections
+    zones = sorted({e['path'] for e in archive.entries.values() if e['type'] == 'zone'})
+    shown = 0
+    for zone in zones:
+        data = asset_bytes(archive, zone)
+        try:
+            decoded = decode_zone(data)
+        except ValueError:
+            continue
+        hits = [i for i in decoded['instances'] if needle.lower() in decoded['models'][i['model_index']].lower()]
+        if not hits:
+            continue
+        table = sections(data)
+        heap = table[DATA_HEAP][0]
+        offsets = struct.unpack_from(f'<{table[INSTANCE_OFFSETS][1] // 4}I', data, table[INSTANCE_OFFSETS][0])
+        print('== zone', zone, f'| {len(decoded["instances"])} instances | sections (tag bytes):',
+              ', '.join(f'0x{t:08X} {size}' for t, (_, size) in sorted(table.items())), flush=True)
+        for inst in hits:
+            r = heap + offsets[inst['index']]
+            header = data[r + 0x5C:r + RECORD_HEADER_SIZE]
+            words = ' '.join(f'{w:08x}' for w in struct.unpack(f'<{len(header) // 4}I', header))
+            tail = bytes.fromhex(inst['tail'])
+            print(f"  instance {inst['index']} {decoded['models'][inst['model_index']]} flags {inst['flags']} "
+                  f"heap offset {offsets[inst['index']]:#x} tail {len(tail)} bytes")
+            print(f'    +0x5c words {words}')
+            print(f'    tail {tail[:64].hex(" ")}')
+            if save:
+                from pathlib import Path
+                folder = Path(save)
+                folder.mkdir(parents=True, exist_ok=True)
+                model = decoded['models'][inst['model_index']]
+                size = struct.unpack_from('<I', data, r + 0x44)[0]
+                (folder / f"{Path(zone).stem}_{inst['index']}.record.bin").write_bytes(data[r:r + size])
+                (folder / f'{Path(model).stem}.model.bin').write_bytes(asset_bytes(archive, model))
+        shown += 1
+        if shown >= limit:
+            break
+    print(f'{shown} zones shown', flush=True)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--source', required=True, help='game root holding the archive')
@@ -478,19 +580,29 @@ def main(argv=None):
     parser.add_argument('--top', type=int, default=25, help='blockers to print')
     parser.add_argument('--receipt', help='print one material path\'s native and world-position preview receipts and stop')
     parser.add_argument('--interpolants', help='print one material path\'s interpolant vector forms and pixel uses and stop')
+    parser.add_argument('--vertex-colours', help='print colour-stream statistics per mesh of model paths containing this text and stop')
+    parser.add_argument('--instances', help='print zone instance records of models whose path contains this text and stop')
+    parser.add_argument('--save', help='with --instances: folder (outside the repository) for each matching record and its model as .bin')
+    parser.add_argument('--dump-sections', type=int, default=0, metavar='BYTES',
+                        help='with --vertex-colours: hex-dump the first BYTES of each undecoded model section')
+    parser.add_argument('--colour-material', help='with --vertex-colours: only models and meshes using a material path containing this text')
     parser.add_argument('--attribute', type=int, action='append',
                         help='with --interpolants: only this PS attribute index (repeatable)')
     parser.add_argument('--show', help='regular expression of material paths to report in detail (implies --materials)')
     parser.add_argument('--jobs', type=int, default=min(16, os.cpu_count() or 1),
                         help='worker processes (default: CPU count, at most 16; 1 runs in this process)')
     args = parser.parse_args(argv)
-    if not args.receipt and not args.interpolants and not args.output:
+    if not args.receipt and not args.interpolants and not args.vertex_colours and not args.instances and not args.output:
         parser.error('--output is required')
     from rc2016.levels.scene import open_archive
     started = time.time()
     archive = open_archive(args.source)
-    if args.receipt or args.interpolants:
+    if args.receipt or args.interpolants or args.vertex_colours or args.instances:
         try:
+            if args.instances:
+                print_instances(archive, args.instances, save=args.save)
+            if args.vertex_colours:
+                print_vertex_colours(archive, args.vertex_colours, material=args.colour_material, dump=args.dump_sections)
             if args.receipt:
                 print_receipt(archive, args.receipt)
             if args.interpolants:
@@ -518,6 +630,8 @@ def main(argv=None):
         print('experimental world-position preview on unsupported materials with engine inputs (materials, outcome):')
         for outcome, count in list(report['world_position_preview'].items())[:10]:
             print(f"{count:6d}  {outcome[:300]}")
+            for path in report['world_position_preview_materials'][outcome][:10]:
+                print(f'          {path}')
     print('PS input address/enable words (graphs):', dict(list(report['ps_input_addr_ena'].items())[:8]))
     print('vertex header layouts (programs):', report['vertex_header_layouts'])
     if 'shown_materials' in report:

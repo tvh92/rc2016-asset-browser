@@ -799,15 +799,16 @@ GLASS_UNIFORMS = ("uSkin", "uBoneTex", "uBoneWidth", "uKind", "uA", "uB", "uC", 
 # instance matrix arrives as four per-instance attributes (rows; docs/levels.md), in texcoord
 # 2-5's aliased slots, which no shader reads. Geometry and matrices stay in native Y-up space;
 # the camera matrix carries the presentation basis.
-INSTANCE_ATTRIBUTES = {"aInst0": 10, "aInst1": 11, "aInst2": 12, "aInst3": 13}
+INSTANCE_ATTRIBUTES = {"aInst0": 10, "aInst1": 11, "aInst2": 12, "aInst3": 13, "aRockAlpha": ROCK_ALPHA_ATTRIBUTE}
 INSTANCED_VERTEX = """
 #version 120
 attribute vec4 aInst0; attribute vec4 aInst1; attribute vec4 aInst2; attribute vec4 aInst3;
+attribute float aRockAlpha;
 varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
 varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm;
 varying float vRockAlpha;
 void main() {
-    vRockAlpha = 1.0; // level colour transport is outside the isolated model proof
+    vRockAlpha = aRockAlpha * aRockAlpha; // zone position-keyed colour alpha (inferred), else 1
     vec3 a = aInst0.xyz, b = aInst1.xyz, c = aInst2.xyz;
     vec3 p = gl_Vertex.x * a + gl_Vertex.y * b + gl_Vertex.z * c + aInst3.xyz;
     // Columns b x c, c x a, a x b = det * inverse-transpose: exact for the zones' sheared and

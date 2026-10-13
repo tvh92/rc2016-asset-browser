@@ -70,7 +70,8 @@ def zone_label(zone_path):
 
 def zone_scene(archive, zone_path):
     """{'zone', 'models': [{'path', 'hidden', 'count', 'groups'}], 'instances', 'points'}: translations
-    of the instances shown by default, native Y-up world space.
+    of the instances shown by default, native Y-up world space. A model whose instances carry
+    position-keyed vertex colours also has 'vertex_colours': [zone_format.vertex_colour_block].
 
     ``groups`` is {(mirrored, overrides): array('f') of 16-float rows}, where ``overrides`` is the
     instance's raw material-override entries as ((slot hash, material path or None, material hash), ...);
@@ -109,10 +110,58 @@ def zone_scene(archive, zone_path):
         models[index]['groups'][(flip, overrides)] = rows
     for index, count in enumerate(np.bincount(model_index, minlength=len(models)).tolist()):
         models[index]['count'] = count
+    for i, block in sorted(zone.get('vertex_colours', {}).items()):
+        models[int(model_index[i])].setdefault('vertex_colours', []).append(block)
     shown = ~np.array([m['hidden'] for m in models], bool)[model_index]
     points = [tuple(p) for p in matrices[shown, 12:15].tolist()]
     return dict(zone=zone_path, models=[m for m in models if m['count']], instances=zone['instances'],
                 points=points)
+
+
+VERTEX_COLOUR_TOLERANCE = 0.6   # key units (0.1 model units) per axis; observed residuals -0.5..0.5625
+
+
+def keyed_vertex_colours(positions, block):
+    """(colours uint8 (n, 4), matched bool (n,)) for model-space ``positions`` (n, 3) from one
+    zone_format.vertex_colour_block: a vertex takes the colour of the key nearest to its position
+    x 10 (Chebyshev distance at most VERTEX_COLOUR_TOLERANCE); unmatched vertices are 255."""
+    import numpy as np
+    from rc2016.levels.zone_format import VERTEX_COLOUR_KEY_BITS as bits
+    keys, colours = block
+    bias = 1 << (bits - 1)
+    code = lambda k: (k[..., 0] + bias) | ((k[..., 1] + bias) << bits) | ((k[..., 2] + bias) << (2 * bits))
+    codes = code(np.asarray(keys, np.int64))
+    order = np.argsort(codes, kind='stable'); codes = codes[order]
+    scaled = np.asarray(positions, np.float64).reshape(-1, 3) * 10.0
+    base = np.floor(scaled).astype(np.int64)
+    best = np.full(len(scaled), np.inf); index = np.zeros(len(scaled), np.int64)
+    for corner in np.array(np.meshgrid([0, 1], [0, 1], [0, 1], indexing='ij')).reshape(3, -1).T:
+        candidate = base + corner
+        distance = np.abs(candidate - scaled).max(axis=1)
+        at = np.minimum(np.searchsorted(codes, code(candidate)), len(codes) - 1)
+        hit = (codes[at] == code(candidate)) & (distance <= VERTEX_COLOUR_TOLERANCE) & (distance < best)
+        best[hit] = distance[hit]; index[hit] = order[at[hit]]
+    matched = np.isfinite(best)
+    result = np.full((len(scaled), 4), 255, np.uint8)
+    result[matched] = np.asarray(colours, np.uint8)[index[matched]]
+    return result, matched
+
+
+def instance_vertex_alpha(geometry, blocks, instances):
+    """(array 'f' of per-vertex alpha or None, note) for a model placed ``instances`` times whose
+    instances carry ``blocks`` (vertex_colour_block results). The level viewer keeps one vertex
+    buffer per model, so colours are used only when every instance carries the same block; the
+    alpha is byte 3 / 255 and 1 where no key matches. Inferred, see zone_format."""
+    import numpy as np
+    if not blocks:
+        return None, None
+    first = blocks[0]
+    if len(blocks) != instances or any(not (np.array_equal(b[0], first[0]) and np.array_equal(b[1], first[1]))
+                                       for b in blocks[1:]):
+        return None, f'{len(blocks)} of {instances} instances carry vertex colours that differ; not shown'
+    colours, matched = keyed_vertex_colours(np.frombuffer(geometry['positions'], np.float32).reshape(-1, 3), first)
+    alpha = array('f'); alpha.frombytes((colours[:, 3] / 255.0).astype(np.float32).tobytes())
+    return alpha, f'{int(matched.sum())} of {len(matched)} vertices take one of {len(first[0])} keyed colours'
 
 
 def mirrored_array(matrices):
