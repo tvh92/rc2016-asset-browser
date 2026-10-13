@@ -203,3 +203,58 @@ def normalised_attributes(data):
         if ok:
             found.add(index)
     return found
+
+
+MAX_FLAGS = 6
+
+
+def _squared_stream(ir, channel):
+    """(semantic, component) when some setting of the runtime flags folds the channel to
+    v * v for one vertex input v; None otherwise."""
+    flags = sorted(j for j in ir.reachable([channel]) if ir.nodes[j].get('kind') == 'runtime_flag')
+    if len(flags) > MAX_FLAGS:
+        return None
+    for bits in range(1 << len(flags)):
+        folded = ir.replace([channel], {f: ir.const(float(bits >> k & 1)) for k, f in enumerate(flags)})[0]
+        n = ir.nodes[folded]
+        if n['op'] == 'mul' and n['args'][0] == n['args'][1]:
+            v = ir.nodes[n['args'][0]]
+            if v['op'] == 'input' and v.get('kind') == 'vertex_input':
+                return v['semantic'], v['channel']
+    return None
+
+
+def squared_stream_channels(data):
+    """{(PS attribute index, channel): (vertex semantic, component)} for interpolant channels
+    that every vertex program exporting them can pass as a squared vertex stream value.
+
+    Evidence for the experimental adapter only: the runtime flags that select that path
+    are per-draw data, so the path is a choice, not a decoded draw state.
+    """
+    headers = shader_headers(data)
+    pixel = [h for h in headers if h['type'] == PIXEL]
+    vertex = [h for h in headers if h['type'] != PIXEL]
+    compiled, found = {}, {}
+    count = max((len(p['inputs']) for p in pixel), default=0)
+    for index in range(count):
+        semantics = {p['inputs'][index]['semantic'] for p in pixel if index < len(p['inputs'])}
+        rows = [r for r in vertex if any(e['semantic'] in semantics for e in r.get('exports', []))]
+        if len(semantics) != 1 or not rows:
+            continue
+        for channel in range(4):
+            sources = set()
+            for row in rows:
+                key = row['header_offset']
+                if key not in compiled:
+                    compiled[key] = vertex_exports(row)
+                exports, _ = compiled[key]
+                if exports is None:
+                    sources.add(None); break
+                params, ir = exports
+                for slot in [e['slot'] for e in row['exports'] if e['semantic'] in semantics]:
+                    values = params.get(slot)
+                    value = values[channel] if values and channel < len(values) else None
+                    sources.add(None if value is None else _squared_stream(ir, value))
+            if len(sources) == 1 and None not in sources:
+                found[(index, channel)] = sources.pop()
+    return found

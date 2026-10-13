@@ -88,5 +88,23 @@ class NormalisedAttributeTests(unittest.TestCase):
         self.assertEqual(self.check(False), set())
 
 
+class SquaredStreamTests(unittest.TestCase):
+    def test_flag_path_to_a_squared_vertex_stream_is_found(self):
+        from unittest import mock
+        from rc2016.shaders import interpolants
+        from rc2016.shaders.ir import DAG
+        ir = DAG()
+        w = ir.node('input', name='vertex.semantic5.w', kind='vertex_input', semantic=5, channel=3)
+        flag = ir.node('input', name='runtime_flag@8', kind='runtime_flag')
+        other = ir.node('unsupported', reason='TBUFFER_LOAD_FORMAT_X')
+        picked = ir.op('select', flag, other, w)
+        channels = [other, other, other, ir.op('mul', picked, picked)]
+        headers = [dict(type=interpolants.PIXEL, inputs=[dict(semantic=15), dict(semantic=18)]),
+                   dict(type=1, header_offset=0, layout='verified', exports=[dict(semantic=18, slot=3)])]
+        with mock.patch.object(interpolants, 'shader_headers', return_value=headers), \
+                mock.patch.object(interpolants, 'vertex_exports', return_value=(({3: channels}, ir), None)):
+            self.assertEqual(interpolants.squared_stream_channels(b''), {(1, 3): (5, 3)})
+
+
 if __name__ == '__main__':
     unittest.main()

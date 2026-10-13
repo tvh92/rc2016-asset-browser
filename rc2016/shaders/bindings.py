@@ -163,7 +163,7 @@ def _lowered(program):
     return dict(cached,limitations=list(cached['limitations']))
 
 
-def _bind(program,contract,material_data,instance,world_position=False,normal_attributes=()):
+def _bind(program,contract,material_data,instance,world_position=False,normal_attributes=(),stream_channels=None):
     from rc2016.formats.materials import texture_slot_records, MATERIAL_TEXTURE_SLOTS
     overrides={}
     for row in texture_slot_records(material_data,MATERIAL_TEXTURE_SLOTS):
@@ -197,6 +197,14 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
             n=ir.nodes[i]
             if n['op']=='input' and n.get('kind')=='attribute' and n.get('attribute') in normal_attributes and n.get('channel') in (0,1,2):
                 normals[i]=ir.node('input',name=f"preview_normal.{n['channel']}",kind='preview_normal',channel=n['channel'])
+        colours={}
+        for i in ir.reachable(replaced):
+            n=ir.nodes[i]
+            if n['op']=='input' and n.get('kind')=='attribute' and (stream_channels or {}).get((n.get('attribute'),n.get('channel')))==(COLOUR_SEMANTIC,3):
+                colours[i]=ir.node('input',name='preview_vertex_alpha_squared',kind='preview_vertex_alpha_squared')
+        if colours:
+            lowered['limitations'].append(f'Experimental: interpolant channels that every traced vertex program can pass as vertex semantic {COLOUR_SEMANTIC}.w squared are read as the model colour stream alpha squared. The per-draw flags choosing that path, and semantic {COLOUR_SEMANTIC} being the colour stream, are inferred; level instances use alpha 1.')
+            normals.update(colours)
         if normals:
             replaced=ir.replace(replaced,normals)
             lowered['limitations'].append('Experimental: interpolants '+', '.join(f'attribute{a}.xyz' for a in sorted(normal_attributes))+' are normalised (rsqrt) vectors in every traced vertex program and are read as the geometry normal; that they are the normal is inferred, and the packed vertex frame is not reconstructed.')
@@ -214,7 +222,7 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
         n=ir.nodes[i]
         if n['op'] not in PORTABLE_OPS:errors.append(dict(node=i,reason=n.get('reason',n['op'])))
         elif n['op']=='input' and not (n.get('kind')=='attribute' and n.get('attribute')==0 and n.get('channel') in (0,1)) and n.get('kind')!='front_facing' \
-                and not (adapted and n.get('kind') in ('preview_position','preview_normal')):
+                and not (adapted and n.get('kind') in ('preview_position','preview_normal','preview_vertex_alpha_squared')):
             errors.append(dict(node=i,reason='Unbound engine/interpolant input '+n['name']))
         elif n['op']=='texture' and not bound.get(n['api'],{}).get('path'):
             errors.append(dict(node=i,reason='Sampled material texture is unset or unbound',api=n['api']))
@@ -290,6 +298,9 @@ def surface_signature(bound):
 
 
 WORLD_POSITION_CONTRACT='world-position-reconstruction-v1'
+# Vertex input semantic read as the model RGBA8 colour stream by the experimental adapter
+# (traced exports carry semantic 3 as UV0); an inference, not a decoded binding.
+COLOUR_SEMANTIC=5
 
 
 def prepare_translation(graph_datas,material_data,instance,world_position=False):
@@ -299,11 +310,14 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False)
     if len(graph_datas)!=1:
         result['diagnostics'].append('Translation requires one unambiguous source graph');return result
     data=bytes(graph_datas[0]);graph=compiled(data)
-    normal_attributes=set()
+    normal_attributes=set();stream_channels={}
     if world_position:
         from rc2016.shaders.interpolants import normalised_attributes
+        from rc2016.shaders.interpolants import squared_stream_channels
         try:normal_attributes=normalised_attributes(data)
         except (ValueError,KeyError,IndexError,struct.error):normal_attributes=set()
+        try:stream_channels=squared_stream_channels(data)
+        except (ValueError,KeyError,IndexError,struct.error):stream_channels={}
     try:contracts=pass_contracts(data)
     except ValueError as exc:result['diagnostics'].append(str(exc));return result
     candidates=[]
@@ -314,7 +328,7 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False)
         except ValueError as exc:
             result['diagnostics'].append(str(exc));continue
         for contract in matched:
-            try:bound=_bind(program,contract,material_data,instance,world_position,normal_attributes)
+            try:bound=_bind(program,contract,material_data,instance,world_position,normal_attributes,stream_channels)
             except ValueError as exc:
                 result['diagnostics'].append(dict(shader_id=program['shader_id'],contract=contract['index'],reason=str(exc)));continue
             signature=json.dumps({k:bound[k] for k in ('nodes','outputs','normal','texture_bindings')},sort_keys=True)

@@ -58,12 +58,15 @@ class ReconstructionTests(unittest.TestCase):
         from rc2016.viewer.native_glsl import emit_surface
         ir = DAG()
         p = ir.node('input', name='preview_position.0', kind='preview_position', channel=0)
-        f = ir.op('fract', p)
+        a = ir.node('input', name='preview_vertex_alpha_squared', kind='preview_vertex_alpha_squared')
+        f = ir.op('mul', ir.op('fract', p), a)
         receipt = dict(status='experimental', preview_contract=bindings.WORLD_POSITION_CONTRACT, automatic_ready=False,
                        game_equivalence=False, code_sha256='c', graph_sha256='g', material_sha256='m',
                        nodes=ir.nodes, texture_bindings=[], translation_sha256='t',
                        outputs=dict(albedo=[f] * 3, F0=[f] * 3, gloss=f, emission=f))
-        self.assertIn('vTintWorldPos.x', emit_surface(receipt, experimental=True)['body'])
+        body = emit_surface(receipt, experimental=True)['body']
+        self.assertIn('vTintWorldPos.x', body)
+        self.assertIn('vRockAlpha', body)
         with self.assertRaises(ValueError):
             emit_surface(receipt)
         with self.assertRaises(ValueError):
