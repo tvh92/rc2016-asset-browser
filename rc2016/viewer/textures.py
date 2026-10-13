@@ -1268,10 +1268,11 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
                     native_textures = {}
                     for binding in translated['texture_bindings']:
                         path = binding['path']
-                        _cached_texture(archive, cache, path, tolerate=False)
-                        # Native uploads use a separate sRGB/linear GL object. A hand
-                        # upload of this path may already have released its CPU pixels.
-                        texture = _with_pixels(archive, cache, path)
+                        # Native uploads use a separate sRGB/linear GL object. A caller that
+                        # dropped this texture's pixels restores them for a variant it has not
+                        # uploaded yet (the level loader's restore_native_pixels); reloading here
+                        # would decode a shared texture again for every material binding it.
+                        texture = _cached_texture(archive, cache, path, tolerate=False)
                         if not texture or texture.get('array_size', 1) != 1:
                             raise ValueError('Native source texture unavailable or not 2D: ' + path)
                         native_textures[binding['api']] = texture
@@ -1285,8 +1286,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
                 if preview:
                     preview_textures = {}
                     for binding in preview['texture_bindings']:
-                        _cached_texture(archive, cache, binding['path'], tolerate=False)
-                        texture = _with_pixels(archive, cache, binding['path'])
+                        texture = _cached_texture(archive, cache, binding['path'], tolerate=False)
                         if not texture or texture.get('array_size',1) != 1:
                             raise ValueError('Experimental source texture unavailable: '+binding['path'])
                         preview_textures[binding['api']] = texture

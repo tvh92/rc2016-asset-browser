@@ -3,7 +3,7 @@ import math
 import unittest
 import zlib
 
-from rc2016.levels.panel import drop_uploaded_pixels, zone_names
+from rc2016.levels.panel import drop_uploaded_pixels, restore_native_pixels, zone_names
 from rc2016.levels.scene import core_bounds, hidden_by_default, mirrored, zone_label
 from rc2016.levels.viewport import BASIS, look_vectors, overview_camera, png_bytes, view_matrix
 
@@ -93,6 +93,27 @@ class LevelTextureCacheTests(unittest.TestCase):
         self.assertIs(raw['pixels'],pixels)
         self.assertNotIn('pixels',cache['shared.texture'])
         self.assertEqual(uploaded,{'shared.texture'})
+
+    def test_released_native_textures_reload_once_per_gl_variant(self):
+        from unittest.mock import patch
+        released=dict(path='shared.texture',srgb=True,array_size=1)
+        def entry():
+            return dict(native_translation=dict(normal=dict(api=2)),native_textures={0:released,2:released})
+        loaded=[]
+        def load(archive,path):
+            loaded.append(path);return dict(path=path,srgb=True,array_size=1,pixels=b'x')
+        posted=set()
+        first,second={'a.material':entry()},{'b.material':entry(),'c.material':entry()}
+        with patch('rc2016.viewer.textures.load_texture',side_effect=load):
+            restore_native_pixels(None,first,posted)
+            restore_native_pixels(None,second,posted)
+        # sRGB colour (api 0) and linear normal (api 2) are two GL objects from one decode.
+        self.assertEqual(loaded,['shared.texture'])
+        self.assertEqual(first['a.material']['native_textures'][0]['pixels'],b'x')
+        self.assertEqual(first['a.material']['native_textures'][2]['pixels'],b'x')
+        # Later materials reuse the uploaded GL objects and need no pixels.
+        self.assertIs(second['b.material']['native_textures'][0],released)
+        self.assertEqual(posted,{('shared.texture',True),('shared.texture',False)})
 
     def test_only_uploaded_large_textures_lose_their_pixels(self):
         def texture(path, size):
