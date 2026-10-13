@@ -50,6 +50,7 @@ def classify_graph(data):
     if not graph['programs']:
         return dict(status='no_pixel_program', blockers=[], programs=0)
     blockers, lowered = [], 0
+    inputs = sorted({f"{p.get('ps_input_addr', 0):#06x}/{p.get('ps_input_ena', 0):#06x}" for p in graph['programs']})
     for program in graph['programs']:
         if program['status'] != 'compiled':
             blockers.append('compile: ' + normalise(program['reason']))
@@ -66,10 +67,11 @@ def classify_graph(data):
         else:
             lowered += 1
     status = 'lowered' if lowered else 'blocked'
-    return dict(status=status, blockers=sorted(set(blockers)), programs=len(graph['programs']), lowered_programs=lowered)
+    return dict(status=status, blockers=sorted(set(blockers)), programs=len(graph['programs']), lowered_programs=lowered,
+                ps_inputs=inputs)
 
 
-def material_graph_usage(archive):
+def material_graph_usage(archive, by_material=None):
     """{graph path: material count} from every material's asset references."""
     from rc2016.formats.archive import asset_references
     usage = Counter()
@@ -80,7 +82,10 @@ def material_graph_usage(archive):
             refs = asset_references(archive, key)
         except (ValueError, KeyError, IndexError, OSError, struct.error):
             continue
-        for path in {r['path'] for r in refs if r['path'].endswith('.materialgraph')}:
+        graphs = sorted({r['path'] for r in refs if r['path'].endswith('.materialgraph')})
+        if by_material is not None:
+            by_material[entry['path']] = graphs
+        for path in graphs:
             usage[path] += 1
     return usage
 
@@ -100,14 +105,17 @@ def diagnostic_reasons(diagnostic):
     return {normalise(_NODE_IDS.sub('nodeN', str(reason)))}
 
 
-def material_translation_status(archive):
-    """Bound per-material translation status and diagnostics (slower: binds every material)."""
+def material_translation_status(archive, by_material=None):
+    """Bound per-material translation status and diagnostics (slower: binds every material).
+
+    Materials are visited grouped by graph so the bounded compiled-graph cache is reused.
+    """
     from rc2016.viewer.native_glsl import prepare_material_translation
     statuses, diagnostics = Counter(), Counter()
-    for entry in archive.entries.values():
-        if entry.get('type') != 'material':
-            continue
-        result = prepare_material_translation(archive, entry['path'])
+    paths = sorted((e['path'] for e in archive.entries.values() if e.get('type') == 'material'),
+                   key=lambda p: ((by_material or {}).get(p, []), p))
+    for path in paths:
+        result = prepare_material_translation(archive, path)
         statuses[result.get('status')] += 1
         for reason in sorted({r for d in result.get('diagnostics', []) for r in diagnostic_reasons(d)}):
             diagnostics[reason] += 1
@@ -116,7 +124,8 @@ def material_translation_status(archive):
 
 def census(archive, materials=False, progress=None):
     started = time.time()
-    usage = material_graph_usage(archive)
+    by_material = {}
+    usage = material_graph_usage(archive, by_material)
     graphs = {}
     entries = [e for e in archive.entries.values() if e.get('type') == 'materialgraph']
     from rc2016.formats.archive import asset_data
@@ -140,8 +149,9 @@ def census(archive, materials=False, progress=None):
             for blocker in row['blockers']:
                 blocker_graphs[blocker].append(path)
     ranked = sorted(blocker_graphs.items(), key=lambda kv: (-sum(usage.get(p, 0) for p in kv[1]), -len(kv[1]), kv[0]))
+    ps_inputs = Counter(x for row in graphs.values() for x in row.get('ps_inputs', ()))
     report = dict(
-        schema='rcps4-shader-census-v1',
+        schema='rcps4-shader-census-v1', ps_input_addr_ena=dict(ps_inputs.most_common()),
         graphs=len(graphs), graph_status=dict(by_status), material_weighted_graph_status=dict(weighted_status),
         blockers=[dict(reason=reason, graphs=len(paths), materials=sum(usage.get(p, 0) for p in paths),
                        examples=sorted(paths, key=lambda p: -usage.get(p, 0))[:5]) for reason, paths in ranked],
@@ -154,7 +164,7 @@ def census(archive, materials=False, progress=None):
         if progress:
             progress('binding every material')
         started = time.time()
-        statuses, diagnostics = material_translation_status(archive)
+        statuses, diagnostics = material_translation_status(archive, by_material)
         report['seconds']['materials'] = round(time.time() - started, 1)
         report['material_status'] = dict(statuses)
         report['material_diagnostics'] = [dict(reason=r, materials=c) for r, c in diagnostics.most_common()]
@@ -184,6 +194,7 @@ def main(argv=None):
         print('top material diagnostics (materials, reason):')
         for row in report['material_diagnostics'][:args.top]:
             print(f"{row['materials']:6d}  {row['reason'][:200]}")
+    print('PS input address/enable words (graphs):', dict(list(report['ps_input_addr_ena'].items())[:8]))
     print('top blockers (materials, graphs, reason):')
     for row in report['blockers'][:args.top]:
         print(f"{row['materials']:6d} {row['graphs']:5d}  {row['reason']}")

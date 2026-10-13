@@ -29,6 +29,10 @@ def vop3(name, dst, *src):
     return struct.pack('<Q', word | (src[0] << 32) | (src[1] << 41) | (src[2] << 50))
 
 
+def vopc(name, src0, vsrc1):
+    return struct.pack('<I', (0x3e << 25) | (op('GcnOpcodeVOPC', name) << 17) | (vsrc1 << 9) | src0)
+
+
 def run(code, inputs):
     """Compile hand-encoded VALU words with VGPR inputs; return the result VGPR value at register 9."""
     compiler = Compiler(code, [])
@@ -93,6 +97,30 @@ class FloatOpcodeTests(unittest.TestCase):
         compiler = Compiler(b'', [])
         compiler.v[4] = compiler.ir.const(struct.unpack('<f', struct.pack('<I', 0x3C003800))[0])
         self.assertEqual([compiler.ir.value(x) for x in compiler.unpack(compiler.v[4])], [.5, 1.])
+
+    def test_integer_ops_are_exact_on_bit_patterns(self):
+        word = lambda b: struct.unpack('<f', struct.pack('<I', b))[0]
+        bits = lambda x: struct.unpack('<I', struct.pack('<f', x))[0]
+        self.assertEqual(bits(run(vop2('V_ADD_I32', 9, V + 1, 2), {1: word(5), 2: word(6)})), 11)
+        self.assertEqual(bits(run(vop2('V_AND_B32', 9, V + 1, 2), {1: word(0xf0f), 2: word(0x0ff)})), 0x00f)
+        self.assertEqual(bits(run(vop2('V_LSHLREV_B32', 9, V + 1, 2), {1: word(4), 2: word(3)})), 48)
+        self.assertEqual(run(vop1('V_CVT_F32_I32', 9, V + 1), {1: word(0x80000005)}), -2147483643.)
+        self.assertEqual(run(vop1('V_CVT_F32_UBYTE1', 9, V + 1), {1: word(0x00ab00)}), 171.)
+        self.assertEqual(bits(run(vop3('V_BFE_U32', 9, V + 1, V + 2, V + 3), {1: word(0xabcd), 2: word(4), 3: word(8)})), 0xbc)
+        self.assertEqual(bits(run(vop1('V_CVT_U32_F32', 9, V + 1), {1: 3.9})), 3)
+
+    def test_integer_compares_use_integer_order(self):
+        word = lambda b: struct.unpack('<f', struct.pack('<I', b))[0]
+        code = vopc('V_CMP_LT_I32', V + 1, 2)
+        compiler = Compiler(code, [])
+        for reg in (1, 2):
+            compiler.v[reg] = compiler.ir.node('input', name=f'v{reg}', kind='test')
+        compiler.instruction(decoder().decode_stream(code, 0)[0])
+        predicate = compiler.s[106]
+        dag = DAG(compiler.ir.nodes)
+        # 0x80000005 is negative as I32 (and a negative float), 0x7f is positive.
+        self.assertEqual(dag.evaluate(predicate, {'v1': word(0x80000005), 'v2': word(0x7f)}), 1.)
+        self.assertEqual(dag.evaluate(predicate, {'v1': word(0x7f), 'v2': word(0x10)}), 0.)
 
     def test_unmodelled_legacy_stays_unsupported(self):
         # RCP_LEGACY's special cases are not modelled; it must stay a diagnostic.

@@ -37,6 +37,10 @@ def vmov(dst, src0):
     return struct.pack('<I', (0x3f << 25) | (dst << 17) | (op('GcnOpcodeVOP1', 'V_MOV_B32') << 9) | src0)
 
 
+def vop2(name, dst, src0, vsrc1):
+    return struct.pack('<I', (op('GcnOpcodeVOP2', name) << 25) | (dst << 17) | (vsrc1 << 9) | src0)
+
+
 def smrd_buffer_load(dst, base, dword):
     return struct.pack('<I', (0x18 << 27) | (op('GcnOpcodeSMRD', 'S_BUFFER_LOAD_DWORD') << 22) |
                        (dst << 15) | ((base // 2) << 9) | (1 << 8) | dword)
@@ -62,18 +66,25 @@ def run(code, inputs, slots=(), register=3):
     for reg in inputs:
         if isinstance(reg, int):
             compiler.v[reg] = compiler.ir.node('input', name=f'v{reg}', kind='test')
-    instructions = decoder().decode_stream(code, 0)
-    for i in instructions:
-        if i['relative'] in compiler.pending:
-            compiler.bp = compiler.p_or(compiler.bp, compiler.pending.pop(i['relative']))
-        if compiler.ir.value(compiler.bp) == 0:
-            continue
-        compiler.step(i)
+    compiler.run(decoder().decode_stream(code, 0))
     names = {f'v{r}' if isinstance(r, int) else r: v for r, v in inputs.items()}
     return DAG(compiler.ir.nodes).evaluate(compiler.v[register], names), compiler
 
 
 class ControlFlowTests(unittest.TestCase):
+    def test_ps_input_registers_follow_input_address(self):
+        from rc2016.shaders.translator import ps_input_registers
+        # PERSP_CENTER (bit 1), POS_X..POS_W (bits 8-11), FRONT_FACE (bit 12); POS_W not loaded.
+        addr = (1 << 1) | (0xf << 8) | (1 << 12)
+        ena = addr & ~(1 << 11)
+        compiler = Compiler(b'', [], addr, ena, 8)
+        name = lambda reg: compiler.ir.nodes[compiler.v[reg]].get('name') or compiler.ir.nodes[compiler.v[reg]]['reason']
+        self.assertEqual([name(r) for r in (0, 1, 2, 3, 4, 6)],
+                         ['ps.PERSP_CENTER.0', 'ps.PERSP_CENTER.1', 'ps.POS_X', 'ps.POS_Y', 'ps.POS_Z', 'ps.FRONT_FACE'])
+        self.assertIn('not loaded', name(5))
+        # A layout larger than the program's VGPR allocation is not trusted.
+        self.assertEqual(ps_input_registers(addr, ena, 4), {})
+
     def test_divergent_if(self):
         # if (v1 > v2) v3 = v1;  with v3 initially v2 -> max(v1, v2)
         code = program(vopc('V_CMP_GT_F32', V + 1, 2), sop1('S_AND_SAVEEXEC_B64', 0, 106),
@@ -85,10 +96,7 @@ class ControlFlowTests(unittest.TestCase):
                 for reg in (1, 2):
                     compiler.v[reg] = compiler.ir.node('input', name=f'v{reg}', kind='test')
                 compiler.v[3] = compiler.v[2]
-                for i in decoder().decode_stream(code, 0):
-                    if i['relative'] in compiler.pending:
-                        compiler.bp = compiler.p_or(compiler.bp, compiler.pending.pop(i['relative']))
-                    compiler.step(i)
+                compiler.run(decoder().decode_stream(code, 0))
                 self.assertEqual(DAG(compiler.ir.nodes).evaluate(compiler.v[3], {'v1': a, 'v2': b}), max(a, b))
                 self.assertEqual(compiler.ir.value(compiler.exec), 1.)
 
@@ -172,9 +180,26 @@ class ControlFlowTests(unittest.TestCase):
         unresolved = program(sop2('S_ADD_U32', 4, 5, 6), ('branch', 'S_CBRANCH_SCC1', 'end'), ('label', 'end'))
         with self.assertRaisesRegex(ValueError, 'unresolved SCC'):
             run(unresolved, {})
-        backward = program(('label', 'top'), vmov(3, V + 1), sopp('S_CBRANCH_EXECNZ', -2))
-        with self.assertRaisesRegex(ValueError, 'Backward branch'):
-            run(backward, {1: 1.})
+        endless = program(('label', 'top'), vmov(3, V + 1), sopp('S_CBRANCH_EXECNZ', -2))
+        with self.assertRaisesRegex(ValueError, 'not shown to end'):
+            run(endless, {1: 1.})
+
+    def test_scalar_counter_loop_unrolls(self):
+        # s4 = 0; do { v3 += v1; s4 += 1; } while (s4 < 4u);
+        code = program(sop1('S_MOV_B32', 4, 128), ('label', 'top'), vop2('V_ADD_F32', 3, V + 3, 1),
+                       sop2('S_ADD_U32', 4, 4, 129), sopc('S_CMP_LT_U32', 4, 132), ('branch', 'S_CBRANCH_SCC1', 'top'))
+        value, compiler = run(code, {1: 2., 3: 1.})
+        self.assertEqual(value, 9.)
+        self.assertEqual(compiler.ir.value(compiler.bp), 1.)
+
+    def test_lane_counter_loop_ends_through_exec(self):
+        # saved = exec; v5 = 0; do { v3 += v1; v5 += 1; exec &= (4 > v5); } while (exec); exec = saved;
+        code = program(sop1('S_MOV_B64', 10, 126), vmov(5, 128), ('label', 'top'),
+                       vop2('V_ADD_F32', 3, V + 3, 1), vop2('V_ADD_I32', 5, 129, 5), vopc('V_CMP_GT_I32', 132, 5),
+                       sop2('S_AND_B64', 126, 126, 106), ('branch', 'S_CBRANCH_EXECNZ', 'top'), sop1('S_MOV_B64', 126, 10))
+        value, compiler = run(code, {1: 2., 3: 1.})
+        self.assertEqual(value, 9.)
+        self.assertEqual(compiler.ir.value(compiler.exec), 1.)
 
     def test_integer_b64_constant_keeps_scalar_bits(self):
         code = sop1('S_MOV_B64', 4, 128)
