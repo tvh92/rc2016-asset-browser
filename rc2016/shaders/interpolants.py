@@ -296,6 +296,11 @@ def linear_form(ir, root, limit=MAX_FORM_TERMS):
                 p = _add(parts[0], parts[1], -1. if op == 'sub' else 1.)
             if p is not None and len(p) > limit:
                 p = None
+        elif op == 'unsupported' and n.get('reason') == 'Unresolved scalar memory load':
+            # Named by instruction and dword, so rows of one matrix load stay apart.
+            at = n.get('load_offset')
+            byte = '?' if at is None else at + 4 * n.get('word', 0)
+            p = {(f"mem(s{n.get('base')}+{byte})@{n.get('offset')}",): 1.}
         else:
             p = {(f'{op}#{i}',): 1.}
         memo[i] = p
@@ -336,7 +341,7 @@ def _normalised_parts(ir, node):
     return node, None
 
 
-def vector_identity(ir, channels):
+def vector_identity(ir, channels, max_flags=MAX_FLAGS):
     """Per setting of the reachable runtime flags, the linear forms of a vector export.
 
     [(flag setting, [(component form, normalised)...], {atom: description})], with
@@ -347,7 +352,7 @@ def vector_identity(ir, channels):
     """
     flags = sorted(j for j in ir.reachable([c for c in channels if c is not None])
                    if ir.nodes[j].get('kind') == 'runtime_flag')
-    if len(flags) > MAX_FLAGS:
+    if len(flags) > max_flags:
         return None
     groups = {}
     for bits in range(1 << len(flags)):
@@ -375,9 +380,13 @@ def vector_identity(ir, channels):
     return [(settings, list(key), atoms) for key, (settings, atoms) in groups.items()]
 
 
-def attribute_report(data):
-    """Lines describing every vertex program's inputs and, per PS attribute, each
-    exporting program's vector forms, plus the clip position export for comparison."""
+REPORT_FLAGS = 10
+
+
+def attribute_report(data, attributes=None):
+    """Lines describing every vertex program's inputs and, per PS attribute (all, or
+    the indices given), each exporting program's vector forms, plus the clip
+    position export for comparison. Unresolved loads print as mem(s<base>+<byte>)@<instruction offset>."""
     headers = shader_headers(data)
     pixel = [h for h in headers if h['type'] == PIXEL]
     vertex = [h for h in headers if h['type'] != PIXEL]
@@ -400,6 +409,8 @@ def attribute_report(data):
             lines.extend(_identity_lines(ir, params['position'], '  clip position'))
     count = max((len(p['inputs']) for p in pixel), default=0)
     for index in range(count):
+        if attributes is not None and index not in attributes:
+            continue
         semantics = sorted({p['inputs'][index]['semantic'] for p in pixel if index < len(p['inputs'])})
         lines.append(f'attribute{index} (PS semantics {semantics})')
         for row in vertex:
@@ -418,14 +429,19 @@ def attribute_report(data):
 
 
 def _identity_lines(ir, channels, label):
-    groups = vector_identity(ir, channels)
+    groups = vector_identity(ir, channels, REPORT_FLAGS)
     if groups is None:
-        return [f'{label}: more than {MAX_FLAGS} runtime flags']
-    lines = []
+        return [f'{label}: more than {REPORT_FLAGS} runtime flags']
+    lines, zero = [], []
     for settings, parts, atoms in groups:
+        if all(form == '0' for form, _ in parts):
+            zero.extend(settings)
+            continue
         lines.append(f"{label} [{'; '.join(settings[:4])}{' ...' if len(settings) > 4 else ''}]:")
         for c, (form, normalised) in enumerate(parts):
             lines.append(f"    {'xyzw'[c]}{' (before rsqrt)' if normalised else ''} = {form[:600]}")
         for atom, text in sorted(atoms.items()):
             lines.append(f'    where {atom} = {text[:300]}')
+    if zero:
+        lines.append(f'{label}: zero on {len(zero)} flag settings')
     return lines

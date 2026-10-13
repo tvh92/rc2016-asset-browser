@@ -412,7 +412,7 @@ def print_receipt(archive, path):
             print('  limitation:', limitation[:300])
 
 
-def attribute_uses(data, limit=6):
+def attribute_uses(data, limit=6, attributes=None):
     """Per pixel program and PS attribute: the export channels reaching it and its smallest consumers."""
     from rc2016.shaders.bindings import compiled
     from rc2016.shaders.ir import DAG
@@ -436,6 +436,8 @@ def attribute_uses(data, limit=6):
                     if nodes & found:
                         reach.setdefault(attribute, []).append(f"{target}.{'xyzw'[c]}")
         for attribute in sorted(inputs):
+            if attributes is not None and attribute not in attributes:
+                continue
             uses = []
             for i, n in enumerate(ir.nodes):
                 if inputs[attribute] & set(n.get('args', [])):
@@ -447,7 +449,7 @@ def attribute_uses(data, limit=6):
     return lines
 
 
-def print_interpolants(archive, path):
+def print_interpolants(archive, path, attributes=None):
     """Vertex-side vector forms and pixel-side uses of every interpolant of a material's graphs."""
     from rc2016.formats.archive import asset_data, asset_references
     from rc2016.shaders.interpolants import attribute_report
@@ -458,7 +460,7 @@ def print_interpolants(archive, path):
         gid = [i for i in archive.resolve(graph) if archive.entries[i]['type'] == 'materialgraph'][0]
         data = asset_data(archive, gid)
         print('== graph', graph)
-        for line in attribute_report(data) + attribute_uses(data):
+        for line in attribute_report(data, attributes) + attribute_uses(data, attributes=attributes):
             print(line)
 
 
@@ -470,6 +472,8 @@ def main(argv=None):
     parser.add_argument('--top', type=int, default=25, help='blockers to print')
     parser.add_argument('--receipt', help='print one material path\'s native and world-position preview receipts and stop')
     parser.add_argument('--interpolants', help='print one material path\'s interpolant vector forms and pixel uses and stop')
+    parser.add_argument('--attribute', type=int, action='append',
+                        help='with --interpolants: only this PS attribute index (repeatable)')
     parser.add_argument('--show', help='regular expression of material paths to report in detail (implies --materials)')
     parser.add_argument('--jobs', type=int, default=min(16, os.cpu_count() or 1),
                         help='worker processes (default: CPU count, at most 16; 1 runs in this process)')
@@ -484,7 +488,7 @@ def main(argv=None):
             if args.receipt:
                 print_receipt(archive, args.receipt)
             if args.interpolants:
-                print_interpolants(archive, args.interpolants)
+                print_interpolants(archive, args.interpolants, set(args.attribute) if args.attribute else None)
         finally:
             archive.close()
         return 0

@@ -157,8 +157,8 @@ class Compiler:
                 width=8 if slot['kind']==0 else 4 if slot['kind'] in (1,2) else 2
                 for j in range(width):self.descriptors[slot['reg']+j]=dict(slot,word=j)
 
-    def unknown(self,reason,*args):
-        return self.ir.node('unsupported',args,reason=reason,offset=self.current)
+    def unknown(self,reason,*args,**meta):
+        return self.ir.node('unsupported',args,reason=reason,offset=self.current,**meta)
 
     def getv(self,i):
         if i not in self.v:self.v[i]=self.unknown(f'Uninitialized VGPR {i}')
@@ -466,12 +466,15 @@ class Compiler:
             elif origin.get('kind')==0x1b and offset is not None:
                 slot=next((s for s in self.slots if s['reg']==16+int(offset)//4),None)
                 if slot:self.descriptors[reg]=dict(slot,word=j)
-                self.s[reg]=self.unknown('Extended descriptor value')
+                self.s[reg]=self.unknown('Extended descriptor value',word=j)
             elif origin.get('kind') in (0x13,0x15) and offset is not None:
                 is_resource=origin['kind']==0x13
                 self.descriptors[reg]=dict(kind=0 if is_resource else 1,api=int(offset)//(32 if is_resource else 16),word=j)
-                self.s[reg]=self.unknown('Descriptor word')
-            else:self.s[reg]=self.unknown('Unresolved scalar memory load')
+                self.s[reg]=self.unknown('Descriptor word',word=j)
+            # Each loaded dword is a distinct unknown: one node per instruction would make
+            # different words of a multi-dword load compare and cancel as equal.
+            else:self.s[reg]=self.unknown('Unresolved scalar memory load',word=j,base=base,
+                                         load_offset=None if offset is None else int(offset))
 
     def instruction(self,i):
         self.current=i['relative'];k=i['kind'];w=i['word'];q=i['wide'];f=i['fields']

@@ -263,6 +263,18 @@ class ControlFlowTests(unittest.TestCase):
         node = compiler.ir.nodes[compiler.v[3]]
         self.assertEqual(node['op'], 'select')
 
+    def test_unresolved_multi_dword_load_keeps_words_distinct(self):
+        # A load from a descriptor that was not bound: its two words are both unknown,
+        # but they are different unknowns and must not cancel.
+        load = struct.pack('<I', (0x18 << 27) | (op('GcnOpcodeSMRD', 'S_BUFFER_LOAD_DWORDX2') << 22) |
+                           (20 << 15) | ((8 // 2) << 9) | (1 << 8) | 4)
+        code = program(load, vop2('V_SUBREV_F32', 3, 20, V + 2), vop2('V_SUB_F32', 3, 21, V + 3))
+        compiler = Compiler(code, [])
+        compiler.v[2] = compiler.ir.node('input', name='v2', kind='test')
+        compiler.run(decoder().decode_stream(code, 0))
+        self.assertNotEqual(compiler.s[20], compiler.s[21])
+        self.assertNotEqual(compiler.ir.nodes[compiler.v[3]]['op'], 'const')
+
     def test_xor_restores_exact_predicates(self):
         compiler = Compiler(b'', [])
         a = compiler.ir.node('input', name='a', kind='test'); b = compiler.ir.node('input', name='b', kind='test')

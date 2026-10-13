@@ -170,3 +170,11 @@ class VectorIdentityTests(unittest.TestCase):
         self.assertIn('vertex 0x1234abcd: inputs semantic5[4]; exports semantic9->param0, semantic10->param1', lines)
         self.assertIn('attribute1 (PS semantics [9])', lines)
         self.assertIn('    x = vertex.semantic5.x', lines)
+
+    def test_unresolved_loads_are_named_by_register_and_byte(self):
+        from rc2016.shaders.interpolants import linear_form, format_form
+        ir = self.ir
+        words = [ir.node('unsupported', [], reason='Unresolved scalar memory load', offset=40, word=j,
+                         base=8, load_offset=64) for j in range(2)]
+        self.assertEqual(format_form(linear_form(ir, ir.op('sub', words[0], words[1]))),
+                         'mem(s8+64)@40 - mem(s8+68)@40')
