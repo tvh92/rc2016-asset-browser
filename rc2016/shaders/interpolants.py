@@ -271,8 +271,10 @@ MAX_FORM_TERMS = 256
 FLAG = 'runtime_flag@'
 
 
-def _flag_mul(p, q):
-    """Polynomial product where runtime flags are 0/1 (f*f = f)."""
+def _flag_mul(p, q, limit=None):
+    """Polynomial product where runtime flags are 0/1 (f*f = f); None past limit terms."""
+    if limit is not None and len(p) * len(q) > 64 * limit:
+        return None
     result = {}
     for a, x in p.items():
         for b, y in q.items():
@@ -312,13 +314,14 @@ def linear_form(ir, root, limit=MAX_FORM_TERMS):
             elif op == 'neg':
                 p = {k: -v for k, v in parts[0].items()}
             elif op == 'mul':
-                p = _flag_mul(parts[0], parts[1])
+                p = _flag_mul(parts[0], parts[1], limit)
             else:
                 p = _add(parts[0], parts[1], -1. if op == 'sub' else 1.)
         elif op == 'select' and _flag_only(visit(args[0])):
             c, a, b = (visit(x) for x in args)
             if a is not None and b is not None:
-                p = _add(_flag_mul(c, a), _flag_mul(_add({(): 1.}, c, -1.), b))
+                left, right = _flag_mul(c, a, limit), _flag_mul(_add({(): 1.}, c, -1.), b, limit)
+                p = None if left is None or right is None else _add(left, right)
         elif op == 'max' and _flag_only(visit(args[0])) and _flag_only(visit(args[1])):
             a, b = visit(args[0]), visit(args[1])
             p = _add(_add(a, b), _flag_mul(a, b), -1.)
@@ -411,8 +414,8 @@ def vector_identity(ir, channels, max_flags=MAX_FLAGS):
 REPORT_FLAGS = 10
 
 
-SYMBOLIC_TERMS = 4096
-SYMBOLIC_FLAGS = 12
+SYMBOLIC_TERMS = 1024
+SYMBOLIC_FLAGS = 10
 
 
 def _symbolic_identity(ir, channels, max_flags=SYMBOLIC_FLAGS):

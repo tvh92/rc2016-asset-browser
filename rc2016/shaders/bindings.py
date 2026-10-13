@@ -382,20 +382,19 @@ def bound_attribute_uses(graph_data,material_data,instance,limit=4):
                 if n['op']=='input' and n.get('kind')=='cb' and n['api']==2 and n['dword'] in values}
             roots=ir.replace([r for _,r in named],substitutions)
             roots,_=reconstruct_world_position(ir,roots)
-            reach={i:ir.reachable([r]) for i,r in enumerate(roots)}
-            sizes={}
-            def size(i):
-                if i not in sizes:sizes[i]=len(ir.reachable([i]))
-                return sizes[i]
-            attributes={}
-            for i in ir.reachable(roots):
-                n=ir.nodes[i]
-                if n['op']=='input' and n.get('kind')=='attribute':attributes.setdefault(n['attribute'],set()).add(i)
+            live=ir.reachable(roots);order=sorted(live)
+            # One pass in index order (arguments precede users): attributes and size below each node.
+            below={};size={}
+            for i in order:
+                n=ir.nodes[i];args=n.get('args',[])
+                below[i]=frozenset({n['attribute']}) if n['op']=='input' and n.get('kind')=='attribute' else \
+                    frozenset().union(*(below[j] for j in args)) if args else frozenset()
+                size[i]=1+sum(size[j] for j in args) if args else 1
             block=[f"pixel {program['shader_id']} pass {contract['index']}:"]
-            for a in sorted(attributes):
-                outs=sorted({named[k][0] for k,r in reach.items() if r&attributes[a]})
-                users=[i for i in ir.reachable(roots) if attributes[a]&ir.reachable([i]) and size(i)<=60]
-                clamps=sorted((i for i in users if ir.nodes[i]['op'] in ('sat','min','max')),key=size,reverse=True)
+            for a in sorted(set().union(*(below[r] for r in roots))):
+                outs=sorted({named[k][0] for k,r in enumerate(roots) if a in below[r]})
+                clamps=sorted((i for i in order if a in below[i] and ir.nodes[i]['op'] in ('sat','min','max') and size[i]<=200),
+                              key=lambda i:size[i],reverse=True)
                 block.append(f"  attribute{a}: reaches {', '.join(outs)}")
                 block+=[f'    clamp: {ir.describe(i,10)[:500]}' for i in clamps[:limit]]
             key='\n'.join(block[1:])
