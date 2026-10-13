@@ -162,4 +162,20 @@ def analyse(nodes, roots):
     replaced = ir.replace(roots, substitutions)
     residual = sorted({ir.nodes[i]['name'] for i in ir.reachable(replaced)
                        if ir.nodes[i]['op'] == 'input' and ir.nodes[i]['name'].startswith(ENGINE)})
-    return dict(matches=dict(matches), residual=residual)
+    adapted, _ = reconstruct_world_position(ir, roots)
+    return dict(matches=dict(matches), residual=residual, adapter_residual_terms=engine_uses(ir, adapted))
+
+
+def engine_uses(ir, roots, limit=6, depth=3):
+    """Smallest expressions that still consume an engine input."""
+    found = []
+    for i in sorted(ir.reachable(roots)):
+        n = ir.nodes[i]
+        if n['op'] != 'input' and any(ir.nodes[a]['op'] == 'input' and ir.nodes[a]['name'].startswith(ENGINE)
+                                      for a in n.get('args', [])):
+            text = ir.describe(i, depth)
+            if text not in found:
+                found.append(text)
+            if len(found) >= limit:
+                break
+    return found

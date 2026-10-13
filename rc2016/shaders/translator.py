@@ -145,7 +145,7 @@ class Compiler:
         self.samples=[];self.diagnostics=[];self.current=0;self.scalar_bits={}
         self.exec=self.ir.const(1.);self.bp=self.ir.const(1.);self.masks={};self.scc=None;self.scc_source='program start'
         self.pending={};self.premerged=set();self.exec_masked_export=False
-        self.pred_tables={};self.pred_memo={};self.back=None;self.fetch_call=False;self.lane_checks={}
+        self.pred_tables={};self.pred_memo={};self.back=None;self.fetch_call=False;self.lane_checks={};self.runtime_conditions=False
         if ps_input_addr is not None:
             for reg,(name,j,loaded) in ps_input_registers(ps_input_addr,ps_input_ena or 0,vgpr_count).items():
                 label='ps.'+name+('' if j is None else f'.{j}')
@@ -282,6 +282,11 @@ class Compiler:
         if raw<=127:return self.scalar_bits.get(raw)
         if raw==255:return literal_bits
         return self.inline_bits(raw)
+
+    def runtime_condition(self,i):
+        """Diagnostic tracing only: an unresolved scalar compare becomes an opaque 0/1
+        atom, so both paths are traced and merged by select. Never bound."""
+        return self.ir.node('input',name=f'runtime_flag@{i["relative"]}',kind='runtime_flag')
 
     def describe_scalar(self,raw,literal_bits):
         """Short provenance of a scalar operand, for diagnostics."""
@@ -478,6 +483,7 @@ class Compiler:
             # SOPC: S0 bits 7:0, S1 bits 15:8; only SCC is written.
             literal_bits=struct.unpack_from('<I',self.code,i['relative']+4)[0] if i['length']>4 else None
             c=self.uniform_condition(name,*(self.uniform(r,literal_bits) for r in (w&255,(w>>8)&255)))
+            if c is None and self.runtime_conditions:c=self.runtime_condition(i)
             self.scc=('uniform',c) if c is not None else None
             if c is None:self.scc_source=name+' of '+', '.join(self.describe_scalar(r,literal_bits) for r in (w&255,(w>>8)&255))
             return
@@ -485,6 +491,7 @@ class Compiler:
             simm=w&0xffff
             if name.endswith('_I32'):simm=struct.unpack('<h',struct.pack('<H',simm))[0]&0xffffffff
             c=self.uniform_condition(name,self.uniform((w>>16)&127,None),self.uniform(255,simm))
+            if c is None and self.runtime_conditions:c=self.runtime_condition(i)
             self.scc=('uniform',c) if c is not None else None
             if c is None:self.scc_source=name
             return

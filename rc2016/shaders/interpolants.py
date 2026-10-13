@@ -121,6 +121,8 @@ def vertex_exports(row):
                 'input', name=f"vertex.semantic{entry['semantic']}.{'xyzw'[j]}", kind='vertex_input',
                 semantic=entry['semantic'], channel=j)
     compiler.fetch_call = True
+    # Per-draw flag branches (for example a buffer word & 3) are traced on both paths.
+    compiler.runtime_conditions = True
     instructions = decoder().decode_stream(row['code'], 0)
     try:
         compiler.run(instructions)

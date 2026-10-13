@@ -235,6 +235,21 @@ class ControlFlowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'unresolved SCC from S_ADD_U32'):
             run(code, {})
 
+    def test_runtime_conditions_trace_both_paths_for_diagnostics(self):
+        # s4 is an unbound per-draw word: S_CMP_LG_U32 s4, 0 skips v3 = v2 when the flag is clear.
+        code = program(vmov(3, V + 1), sopc('S_CMP_LG_U32', 4, 128), ('branch', 'S_CBRANCH_SCC0', 'end'),
+                       vmov(3, V + 2), ('label', 'end'))
+        with self.assertRaisesRegex(ValueError, 'S_CMP_LG_U32 of s4'):
+            run(code, {1: 1., 2: 2.})
+        compiler = Compiler(code, []); compiler.runtime_conditions = True
+        for reg in (1, 2):
+            compiler.v[reg] = compiler.ir.node('input', name=f'v{reg}', kind='test')
+        compiler.run(decoder().decode_stream(code, 0))
+        dag = DAG(compiler.ir.nodes)
+        flag = next(n['name'] for n in compiler.ir.nodes if n.get('kind') == 'runtime_flag')
+        self.assertEqual(dag.evaluate(compiler.v[3], {'v1': 1., 'v2': 2., flag: 1.}), 2.)
+        self.assertEqual(dag.evaluate(compiler.v[3], {'v1': 1., 'v2': 2., flag: 0.}), 1.)
+
     def test_xor_restores_exact_predicates(self):
         compiler = Compiler(b'', [])
         a = compiler.ir.node('input', name='a', kind='test'); b = compiler.ir.node('input', name='b', kind='test')

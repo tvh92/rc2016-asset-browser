@@ -352,6 +352,12 @@ def _print_shown(details):
         print('world-position reconstruction test (materials: matched shapes | engine inputs left):')
         for (matched, residual), count in shapes.most_common(12):
             print(f'  {count:4d}  {matched[:300]} | {residual[:300] or "none"}')
+    left = Counter(t for d in details if d['status'] != 'ready' and d.get('world_position_preview', 'experimental') != 'experimental'
+                   for t in (d.get('world_position') or {}).get('adapter_residual_terms', []))
+    if left:
+        print('engine expressions left after the world-position adapter (materials):')
+        for term, count in left.most_common(12):
+            print(f'  {count:4d}  {term[:400]}')
     terms = Counter(t for d in details if d['status'] != 'ready' for t in d.get('engine_terms', []))
     if terms:
         print('expressions consuming engine CB0 words or pixel position (materials):')
