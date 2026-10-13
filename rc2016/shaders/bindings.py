@@ -19,8 +19,48 @@ PORTABLE_OPS={'const','texture','input','add','sub','mul','div','neg','abs','min
               'lt','le','gt','ge','eq','ne','select','floor','fract'}
 
 
+_POOL=None
+_POOL_WORKERS=0
+_POOL_LOCK=threading.Lock()
+
+
+def use_compile_processes(workers=None):
+    """Compile graphs in up to ``workers`` worker processes (default: CPU count - 1, at most 6);
+    0 compiles in this process. The GIL serialises compilation on loader threads, so the
+    viewers opt in; a library import (Blender, the pipeline) never starts processes. The pool
+    starts with the first compile; a broken pool falls back to compiling here."""
+    global _POOL,_POOL_WORKERS
+    import os
+    if workers is None:workers=max(0,min(6,(os.cpu_count() or 1)-1))
+    with _POOL_LOCK:
+        if _POOL is not None:
+            _POOL.shutdown(wait=False,cancel_futures=True);_POOL=None
+        _POOL_WORKERS=workers if workers>1 else 0
+
+
+def _pool():
+    global _POOL
+    with _POOL_LOCK:
+        if _POOL is None and _POOL_WORKERS:
+            import multiprocessing
+            from concurrent.futures import ProcessPoolExecutor
+            # Spawn (the Windows default) everywhere: forking a process with Tk and loader threads is unsafe.
+            _POOL=ProcessPoolExecutor(_POOL_WORKERS,mp_context=multiprocessing.get_context('spawn'))
+        return _POOL
+
+
 @lru_cache(maxsize=64)
 def _compiled(data):
+    pool=_pool()
+    if pool is not None:
+        try:
+            return pool.submit(compile_graph,data).result()
+        except Exception as exc:
+            from concurrent.futures.process import BrokenProcessPool
+            import pickle
+            if not isinstance(exc,(BrokenProcessPool,OSError,pickle.PicklingError)):
+                raise
+            use_compile_processes(0)   # compile here from now on
     return compile_graph(data)
 
 

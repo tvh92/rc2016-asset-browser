@@ -98,5 +98,42 @@ class CompiledGraphTests(unittest.TestCase):
         self.assertEqual(results, [dict(graph=b'graph')] * 6)
 
 
+def empty_graph():
+    import struct
+    return struct.pack('<IIIH2x', 0x44415431, 0, 16, 0)
+
+
+class CompileProcessTests(unittest.TestCase):
+    def setUp(self):
+        bindings._compiled.cache_clear()
+        self.addCleanup(bindings._compiled.cache_clear)
+        self.addCleanup(bindings.use_compile_processes, 0)
+
+    def test_worker_processes_return_what_this_process_compiles(self):
+        from rc2016.shaders.translator import compile_graph
+        bindings.use_compile_processes(2)
+        self.assertEqual(bindings.compiled(empty_graph()), compile_graph(empty_graph()))
+        self.assertIsNotNone(bindings._POOL)
+        with self.assertRaises(ValueError):   # compile errors still reach the caller
+            bindings.compiled(b'not a graph')
+        self.assertIsNotNone(bindings._POOL)
+
+    def test_a_broken_pool_falls_back_to_compiling_here(self):
+        from concurrent.futures.process import BrokenProcessPool
+
+        class Broken:
+            def submit(self, *_args):
+                raise BrokenProcessPool('worker died')
+        bindings.use_compile_processes(2)
+        with patch.object(bindings, '_pool', return_value=Broken()):
+            result = bindings.compiled(empty_graph())
+        self.assertEqual(result['programs'], [])
+        self.assertEqual(bindings._POOL_WORKERS, 0)
+
+    def test_processes_are_opt_in(self):
+        bindings.use_compile_processes(0)
+        self.assertIsNone(bindings._pool())
+
+
 if __name__ == '__main__':
     unittest.main()

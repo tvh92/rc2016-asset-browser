@@ -76,6 +76,8 @@ def main(argv=None):
 
     import tkinter as tk
     from tkinter import filedialog, ttk
+    from rc2016.shaders.bindings import use_compile_processes
+    use_compile_processes()
     root = tk.Tk()
     root.title("R&C 2016 Level Viewer")
     root.geometry("1500x920")
@@ -121,4 +123,6 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
     main()

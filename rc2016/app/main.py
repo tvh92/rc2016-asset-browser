@@ -111,6 +111,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(scan_json(args.scan, args.output_root), indent=2))
         return 0
     try:
+        from rc2016.shaders.bindings import use_compile_processes
+        use_compile_processes()
         AssetBrowserApp().run()
     except RuntimeError as error:
         parser.error(str(error))
@@ -118,4 +120,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()   # shader compile workers in the frozen executable
     raise SystemExit(main())
