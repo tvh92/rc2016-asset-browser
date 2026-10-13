@@ -244,8 +244,8 @@ def main(argv=None):
     parser.add_argument('--output', required=True, help='JSON report path (outside the repository)')
     parser.add_argument('--materials', action='store_true', help='also bind every material (slower)')
     parser.add_argument('--top', type=int, default=25, help='blockers to print')
-    parser.add_argument('--jobs', type=int, default=min(8, os.cpu_count() or 1),
-                        help='worker processes (default: CPU count, at most 8; 1 runs in this process)')
+    parser.add_argument('--jobs', type=int, default=min(16, os.cpu_count() or 1),
+                        help='worker processes (default: CPU count, at most 16; 1 runs in this process)')
     args = parser.parse_args(argv)
     from rc2016.levels.scene import open_archive
     started = time.time()
