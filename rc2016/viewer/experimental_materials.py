@@ -76,7 +76,8 @@ def build_preview(material, graph):
     used = ir.reachable(roots)
     for i in used:
         n = ir.nodes[i]
-        if n['op'] not in bindings.PORTABLE_OPS: raise ValueError('Unresolved experimental operation')
+        if n['op'] not in bindings.PORTABLE_OPS:
+            raise ValueError(f"Unresolved experimental operation {n['op']}: {ir.describe(i, 6)[:300]}")
         if n['op'] == 'input' and not (
                 (n.get('kind') == 'attribute' and n.get('attribute') == 0 and n.get('channel') in (0,1)) or
                 (n.get('kind') in ('preview_position','preview_normal') and n.get('channel') in (0,1,2)) or

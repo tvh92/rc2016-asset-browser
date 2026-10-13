@@ -416,6 +416,14 @@ def print_receipt(archive, path):
                 print(f'  {key}[{j}] = {ir.describe(node, 6)[:500]}')
         for limitation in result.get('limitations', [])[:12]:
             print('  limitation:', limitation[:300])
+    from rc2016.viewer.experimental_materials import has_preview, prepare_preview
+    if has_preview(path, prepare_material_translation(archive, path).get('status') == 'ready'):
+        try:
+            pinned = prepare_preview(archive, path)
+            print(f"== viewer experimental preview: {pinned.get('status') if pinned else None}",
+                  pinned.get('preview_contract') if pinned else '')
+        except Exception as exc:
+            print(f'== viewer experimental preview: error {type(exc).__name__}: {str(exc)[:400]}')
 
 
 def attribute_uses(data, limit=6, attributes=None):
