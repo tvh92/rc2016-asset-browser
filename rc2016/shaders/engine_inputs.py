@@ -6,8 +6,10 @@ CB0[28..30] a camera position, so that camera + ray * POS_W is world position.
 Expressions are expanded into polynomials over named inputs (opaque
 subexpressions are atoms) and compared per channel with these shapes, up to a
 constant factor. The result reports which shapes occur and which engine inputs
-remain after substituting the matched expressions. Diagnostic only: nothing
-here claims what the engine stores in CB0 or binds a material.
+remain after substituting the matched expressions. Nothing here claims what the
+engine stores in CB0: ``reconstruct_world_position`` is the explicit,
+experimental adapter that replaces matched camera + ray * POS_W expressions
+with viewer world position, and its receipts are never ready translations.
 """
 from collections import Counter
 
@@ -33,16 +35,41 @@ def _add(p, q, sign=1.):
     return {k: v for k, v in result.items() if v}
 
 
+def _engine_nodes(ir, roots):
+    """Reachable nodes with an engine input (CB0 word or pixel position) below them."""
+    found, memo = set(), {}
+
+    def visit(i):
+        if i not in memo:
+            n = ir.nodes[i]
+            memo[i] = False
+            memo[i] = ((n['op'] == 'input' and n['name'].startswith(ENGINE)) |
+                       any([visit(a) for a in n.get('args', [])]))
+            if memo[i]:
+                found.add(i)
+        return memo[i]
+
+    for r in roots:
+        visit(r)
+    return found
+
+
 def polynomials(ir, roots):
-    """{node: polynomial} for reachable nodes; None where the expansion exceeds MAX_TERMS."""
+    """{node: polynomial} for reachable nodes; None where the expansion exceeds MAX_TERMS.
+
+    Subexpressions without an engine input are atoms: no target shape contains them.
+    """
     memo = {}
+    engine = _engine_nodes(ir, roots)
 
     def visit(i):
         if i in memo:
             return memo[i]
         n = ir.nodes[i]
         op, args = n['op'], n.get('args', [])
-        if op == 'const':
+        if i not in engine and op not in ('const', 'input'):
+            p = {(f'node{i}',): 1.}
+        elif op == 'const':
             p = {(): float(n['value'])} if n['value'] else {}
         elif op == 'input':
             p = {(n['name'],): 1.}
@@ -90,21 +117,48 @@ def _proportional(p, q):
     return scale if all(abs(p[k] - scale * q[k]) <= 1e-6 * max(1., abs(p[k])) for k in q) else None
 
 
-def analyse(nodes, roots):
-    """Matched shapes and the engine inputs left after substituting them."""
-    ir = DAG(nodes)
+def _matches(ir, roots, names=None):
+    """[(node, label, channel, scale)] for nodes whose polynomial is a target shape times a constant."""
     polys = polynomials(ir, roots)
-    shapes = [(f'{name}.{"xyzw"[c]}', shape) for c in range(4) for name, shape in target_shapes(c).items()]
-    matches, substitutions = Counter(), {}
+    shapes = [(name, c, shape) for c in range(4) for name, shape in target_shapes(c).items()
+              if names is None or name in names]
+    found = []
     for i, p in polys.items():
         if not p:
             continue
-        for label, shape in shapes:
+        for name, c, shape in shapes:
             scale = _proportional(p, shape)
             if scale is not None:
-                matches[label if abs(scale - 1) < 1e-6 else f'{label} x{scale:g}'] += 1
-                substitutions[i] = ir.node('input', name=f'reconstructed.{label}', kind='reconstructed')
+                found.append((i, f'{name}.{"xyzw"[c]}', c, scale))
                 break
+    return found
+
+
+def reconstruct_world_position(ir, roots):
+    """Experimental adapter: camera + ray * POS_W (times a constant) becomes viewer world position.
+
+    Returns the new roots and the number of substituted expressions. The
+    replacement is an inferred engine meaning, labelled preview_position, so
+    only experimental receipts may carry it.
+    """
+    substitutions = {}
+    for i, _, c, scale in _matches(ir, roots, ('camera+ray*w',)):
+        position = ir.node('input', name=f'preview_position.{c}', kind='preview_position', channel=c)
+        substitutions[i] = position if abs(scale - 1) < 1e-6 else ir.op('mul', ir.const(scale), position)
+    if not substitutions:
+        return list(roots), 0
+    replaced = ir.replace(roots, substitutions)
+    # A match inside a larger match is replaced with it; count what remains in use.
+    return replaced, len(set(substitutions.values()) & ir.reachable(replaced))
+
+
+def analyse(nodes, roots):
+    """Matched shapes and the engine inputs left after substituting them."""
+    ir = DAG(nodes)
+    matches, substitutions = Counter(), {}
+    for i, label, _, scale in _matches(ir, roots):
+        matches[label if abs(scale - 1) < 1e-6 else f'{label} x{scale:g}'] += 1
+        substitutions[i] = ir.node('input', name=f'reconstructed.{label}', kind='reconstructed')
     replaced = ir.replace(roots, substitutions)
     residual = sorted({ir.nodes[i]['name'] for i in ir.reachable(replaced)
                        if ir.nodes[i]['op'] == 'input' and ir.nodes[i]['name'].startswith(ENGINE)})

@@ -183,9 +183,24 @@ def material_detail(archive, path, result, reasons):
     return detail
 
 
+def world_position_outcome(archive, path):
+    """Experimental world-position adapter on a material that is not ready: 'experimental' or what still blocks it."""
+    from rc2016.viewer.experimental_materials import world_position_translation
+    try:
+        result = world_position_translation(archive, path)
+    except (ValueError, KeyError, IndexError, OSError, struct.error) as exc:
+        return normalise(f'{type(exc).__name__}: {exc}')
+    if result.get('status') == 'experimental':
+        return 'experimental'
+    # Programs that do not compile fail the same way with or without the adapter.
+    reasons = sorted({r for d in result.get('diagnostics', []) for r in diagnostic_reasons(d)
+                      if not r.startswith('compile: ')} - {_SUMMARY})
+    return ' + '.join(reasons) or _SUMMARY
+
+
 def _material_counts(archive, paths, show=None):
     from rc2016.viewer.native_glsl import prepare_material_translation
-    statuses, diagnostics, combinations, details = Counter(), Counter(), Counter(), []
+    statuses, diagnostics, combinations, details, adapted = Counter(), Counter(), Counter(), [], Counter()
     show = re.compile(show, re.I) if show else None
     for path in paths:
         result = prepare_material_translation(archive, path)
@@ -196,9 +211,14 @@ def _material_counts(archive, paths, show=None):
         if result.get('status') != 'ready':
             # The full set of blockers: binding one input unlocks a material only if it is the whole set.
             combinations[' + '.join(r for r in reasons if r != _SUMMARY) or _SUMMARY] += 1
+            if any('CB0[' in r or 'ps.POS' in r for r in reasons):
+                adapted[world_position_outcome(archive, path)] += 1
         if show and show.search(path):
-            details.append(material_detail(archive, path, result, [r for r in reasons if r != _SUMMARY]))
-    return statuses, diagnostics, combinations, details
+            detail = material_detail(archive, path, result, [r for r in reasons if r != _SUMMARY])
+            if result.get('status') != 'ready' and any('CB0[' in r or 'ps.POS' in r for r in reasons):
+                detail['world_position_preview'] = world_position_outcome(archive, path)
+            details.append(detail)
+    return statuses, diagnostics, combinations, details, adapted
 
 
 def _graph_rows(archive, entries):
@@ -259,11 +279,11 @@ def material_translation_status(archive, by_material=None, pool=None, chunks=1, 
     """
     paths = sorted((e['path'] for e in archive.entries.values() if e.get('type') == 'material'),
                    key=lambda p: ((by_material or {}).get(p, []), p))
-    statuses, diagnostics, combinations, details = Counter(), Counter(), Counter(), []
+    statuses, diagnostics, combinations, details, adapted = Counter(), Counter(), Counter(), [], Counter()
     function = lambda a, items: _material_counts(a, items, show)
-    for s, d, c, x in _run(pool, function, _worker_materials, archive, paths, chunks, progress, 'materials'):
-        statuses.update(s); diagnostics.update(d); combinations.update(c); details.extend(x)
-    return statuses, diagnostics, combinations, sorted(details, key=lambda x: x['material'])
+    for s, d, c, x, w in _run(pool, function, _worker_materials, archive, paths, chunks, progress, 'materials'):
+        statuses.update(s); diagnostics.update(d); combinations.update(c); details.extend(x); adapted.update(w)
+    return statuses, diagnostics, combinations, sorted(details, key=lambda x: x['material']), adapted
 
 
 def census(archive, materials=False, progress=None, jobs=1, source=None, show=None):
@@ -311,7 +331,8 @@ def _census(archive, materials, progress, pool, chunks, started, by_material, us
         if progress:
             progress('binding every material')
         started = time.time()
-        statuses, diagnostics, combinations, details = material_translation_status(archive, by_material, pool, chunks, progress, show)
+        statuses, diagnostics, combinations, details, adapted = material_translation_status(archive, by_material, pool, chunks, progress, show)
+        report['world_position_preview'] = dict(adapted.most_common())
         if show:
             report['shown_materials'] = details
         report['material_blocker_sets'] = [dict(reasons=r, materials=c) for r, c in combinations.most_common()]
@@ -339,12 +360,19 @@ def _print_shown(details):
     groups = defaultdict(list)
     for d in details:
         if d['status'] != 'ready':
-            key = (' + '.join(d['reasons']) or '(no reason)',
+            key = (' + '.join(d['reasons']) or '(no reason)', d.get('world_position_preview', ''),
                    json.dumps(d.get('interpolants', {}), sort_keys=True))
             groups[key].append(d['material'])
-    for (reasons, interpolants), paths in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+    previews = sorted(d['material'] for d in details if d.get('world_position_preview') == 'experimental')
+    if previews:
+        print(f'shown materials with an experimental world-position preview: {len(previews)}')
+        for path in previews[:40]:
+            print('  ' + path)
+    for (reasons, preview, interpolants), paths in sorted(groups.items(), key=lambda kv: -len(kv[1])):
         print(f'\n{len(paths)} materials, e.g. {paths[0]}')
         print('  blockers:', reasons[:400])
+        if preview:
+            print('  world-position preview:', preview[:400])
         for name, entry in json.loads(interpolants).items():
             print(f"  {name} (PS semantic {entry['semantics']}):")
             for source in entry['sources'][:2]:
@@ -381,6 +409,9 @@ def main(argv=None):
         print('top complete blocker sets per unsupported material (materials, reasons):')
         for row in report['material_blocker_sets'][:15]:
             print(f"{row['materials']:6d}  {row['reasons'][:300]}")
+        print('experimental world-position preview on unsupported materials with engine inputs (materials, outcome):')
+        for outcome, count in list(report['world_position_preview'].items())[:10]:
+            print(f"{count:6d}  {outcome[:300]}")
     print('PS input address/enable words (graphs):', dict(list(report['ps_input_addr_ena'].items())[:8]))
     print('vertex header layouts (programs):', report['vertex_header_layouts'])
     if 'shown_materials' in report:

@@ -163,7 +163,7 @@ def _lowered(program):
     return dict(cached,limitations=list(cached['limitations']))
 
 
-def _bind(program,contract,material_data,instance):
+def _bind(program,contract,material_data,instance,world_position=False):
     from rc2016.formats.materials import texture_slot_records, MATERIAL_TEXTURE_SLOTS
     overrides={}
     for row in texture_slot_records(material_data,MATERIAL_TEXTURE_SLOTS):
@@ -187,7 +187,12 @@ def _bind(program,contract,material_data,instance):
     if normal:roots+=normal['xyz']
     substitutions={i:ir.const(values[n['dword']]) for i,n in enumerate(list(ir.nodes))
         if n['op']=='input' and n.get('kind')=='cb' and n['api']==2 and n['dword'] in values}
-    replaced=ir.replace(roots,substitutions)
+    replaced=ir.replace(roots,substitutions);adapted=0
+    if world_position:
+        from rc2016.shaders.engine_inputs import reconstruct_world_position
+        replaced,adapted=reconstruct_world_position(ir,replaced)
+        if not adapted:raise ValueError('No camera + ray * POS_W world-position expression')
+        lowered['limitations'].append(f'Experimental: {adapted} expressions of the form CB0[28..30] + (CB0[92..95] + CB0[100..103]*POS_Y + POS_X*(CB0[96..99] + CB0[104..107]*POS_Y)) * POS_W are read as world position and replaced by viewer world position. This engine meaning is inferred from the expression shape, not decoded from the game.')
     replaced,zero_guards=guard_source_zero_powers(ir,replaced)
     replaced,front_face=bind_front_face(ir,replaced)
     if front_face:
@@ -200,7 +205,8 @@ def _bind(program,contract,material_data,instance):
     for i in sorted(used):
         n=ir.nodes[i]
         if n['op'] not in PORTABLE_OPS:errors.append(dict(node=i,reason=n.get('reason',n['op'])))
-        elif n['op']=='input' and not (n.get('kind')=='attribute' and n.get('attribute')==0 and n.get('channel') in (0,1)) and n.get('kind')!='front_facing':
+        elif n['op']=='input' and not (n.get('kind')=='attribute' and n.get('attribute')==0 and n.get('channel') in (0,1)) and n.get('kind')!='front_facing' \
+                and not (adapted and n.get('kind')=='preview_position'):
             errors.append(dict(node=i,reason='Unbound engine/interpolant input '+n['name']))
         elif n['op']=='texture' and not bound.get(n['api'],{}).get('path'):
             errors.append(dict(node=i,reason='Sampled material texture is unset or unbound',api=n['api']))
@@ -218,7 +224,8 @@ def _bind(program,contract,material_data,instance):
     active={n['api'] for n in compact.nodes if n['op']=='texture'}
     return dict(nodes=compact.nodes,outputs=outputs,normal=normal,
         texture_bindings=[bound[a] for a in sorted(active)],parameters=receipt,
-        pass_contract_index=contract['index'],limitations=lowered['limitations'],source_zero_power_guards=zero_guards)
+        pass_contract_index=contract['index'],limitations=lowered['limitations'],source_zero_power_guards=zero_guards,
+        **({'world_position_terms':adapted} if adapted else {}))
 
 
 def program_contracts(data,program,contracts):
@@ -261,7 +268,7 @@ def surface_signature(bound):
         if i not in memo:
             n=bound['nodes'][i];op=n['op'];args=[node(j) for j in n['args']]
             if op=='const':record=[op,n['value']]
-            elif op=='input':record=[op,n['kind'],n['attribute'],n['channel']]
+            elif op=='input':record=[op,n['kind'],n.get('attribute'),n.get('channel')]
             elif op=='texture':
                 b=bindings[n['api']]
                 record=[op,b['path'],b['type_hash'],n['api']==normal_api,n['channel'],args]
@@ -274,7 +281,12 @@ def surface_signature(bound):
     return hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest()
 
 
-def prepare_translation(graph_datas,material_data,instance):
+WORLD_POSITION_CONTRACT='world-position-reconstruction-v1'
+
+
+def prepare_translation(graph_datas,material_data,instance,world_position=False):
+    """Bound portable translation. world_position=True builds the experimental
+    receipt that substitutes inferred world-position expressions; it is never ready."""
     result=dict(schema='rcps4-bound-shader-translation-v1',status='unsupported',diagnostics=[],game_equivalence=False)
     if len(graph_datas)!=1:
         result['diagnostics'].append('Translation requires one unambiguous source graph');return result
@@ -289,7 +301,7 @@ def prepare_translation(graph_datas,material_data,instance):
         except ValueError as exc:
             result['diagnostics'].append(str(exc));continue
         for contract in matched:
-            try:bound=_bind(program,contract,material_data,instance)
+            try:bound=_bind(program,contract,material_data,instance,world_position)
             except ValueError as exc:
                 result['diagnostics'].append(dict(shader_id=program['shader_id'],contract=contract['index'],reason=str(exc)));continue
             signature=json.dumps({k:bound[k] for k in ('nodes','outputs','normal','texture_bindings')},sort_keys=True)
@@ -315,5 +327,9 @@ def prepare_translation(graph_datas,material_data,instance):
         'UV attribute 0.xy is source UV0 in game space (V unflipped for arithmetic, flipped back per sample). Runtime draw selection is not established.',
         'Texture sampling uses Blender linear filtering and repeat addressing; native sampler-state translation is not implemented.',
         'Shared deferred BRDF is the existing Blender approximation; this is not full game shader equivalence.']
+    if world_position:
+        result.update(status='experimental',preview_contract=WORLD_POSITION_CONTRACT,automatic_ready=False,
+            material_sha256=hashlib.sha256(bytes(material_data)).hexdigest())
+        result['limitations'].insert(0,'Experimental world-position preview: an inferred engine meaning of CB0 and pixel position replaces runtime data; not a ready translation.')
     result['translation_sha256']=hashlib.sha256(candidate['signature'].encode()).hexdigest()
     return result

@@ -94,9 +94,13 @@ def shader_headers(data):
     return rows
 
 
-def listing(instructions, upto, limit=14):
-    """Compact opcode listing of the first instructions, through the one at offset upto."""
+def listing(instructions, upto, limit=14, before=None):
+    """Compact opcode listing of the first instructions through offset upto, or of
+    the `before` instructions that end at upto."""
     rows = []
+    if before is not None:
+        end = next((n for n, i in enumerate(instructions) if i['relative'] >= upto), len(instructions) - 1)
+        instructions, limit = instructions[max(0, end - before):end + 1], before + 1
     for i in instructions[:limit]:
         f = i['fields']
         operands = ','.join(str(x) for x in (f.get('dst') or []) + (f.get('src') or []))
@@ -121,7 +125,7 @@ def vertex_exports(row):
     try:
         compiler.run(instructions)
     except (ValueError, IndexError, KeyError, struct.error) as exc:
-        return None, f'{type(exc).__name__}: {exc}; starts: ' + listing(instructions, compiler.current)
+        return None, f'{type(exc).__name__}: {exc}; before: ' + listing(instructions, compiler.current, before=10)
     params = {t - 32: v for t, v in compiler.exports.items() if 32 <= t < 64}
     return (params, compiler.ir), None
 

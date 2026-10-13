@@ -1,5 +1,9 @@
 """Explicit presentation previews; never automatic material readiness.
 
+Pinned previews adapt one source-hashed material each. The generic
+world-position preview applies to any material that is not ready and binds once
+inferred camera + ray * POS_W expressions become viewer world position.
+
 The mountain preview deliberately chooses the simpler source writer and adapts
 its unbound position/normal inputs to viewer geometry. Full runtime selection,
 frame reconstruction and detail fade remain unsupported by the native binder.
@@ -110,11 +114,48 @@ def build_preview(material, graph):
     return result
 
 
+def world_position_preview(archive, path):
+    """Generic experimental receipt for a material that is not ready natively and
+    whose only engine terms are reconstructed world position; None otherwise."""
+    from rc2016.viewer.native_glsl import prepare_material_translation
+    if archive is None: return None
+    native = prepare_material_translation(archive, path)
+    # Opportunistic: only materials whose native binding stops at engine CB0 or pixel-position inputs.
+    if native.get('status') == 'ready' or not any('CB0[' in str(d) or 'ps.POS' in str(d) for d in native.get('diagnostics', [])):
+        return None
+    try:
+        result = world_position_translation(archive, path)
+    except (ValueError, KeyError, IndexError, OSError, struct.error):
+        return None
+    return result if result.get('status') == 'experimental' else None
+
+
+def world_position_translation(archive, path):
+    """The world-position adapter's translation attempt (with diagnostics), cached on the archive."""
+    from rc2016.formats.archive import asset_data, asset_references
+    from rc2016.formats.materials import extract_material_parameters
+    from rc2016.viewer.textures import _archive_cache, _remember
+    cache = _archive_cache(archive, '_world_position_preview_cache')
+    if path not in cache:
+        ids = [i for i in archive.resolve(path) if archive.entries[i]['type'] == 'material']
+        if len(ids) != 1: raise ValueError('Ambiguous experimental source '+path)
+        material = asset_data(archive, ids[0])
+        graphs = list(dict.fromkeys(r['path'] for r in asset_references(archive, ids[0]) if r['path'].endswith('.materialgraph')))
+        datas = []
+        for g in graphs:
+            gids = [i for i in archive.resolve(g) if archive.entries[i]['type'] == 'materialgraph']
+            if len(gids) != 1: raise ValueError('Ambiguous experimental source '+g)
+            datas.append(asset_data(archive, gids[0]))
+        result = bindings.prepare_translation(datas, material, extract_material_parameters(material), world_position=True)
+        _remember(cache, path, result)
+    return cache[path]
+
+
 def prepare_preview(archive, path):
     from rc2016.shaders import terrain_preview
     if path.replace('\\','/').lower() == terrain_preview.MATERIAL:
         return terrain_preview.prepare_preview(archive, path)
-    if path.replace('\\','/').lower() != MATERIAL: return None
+    if path.replace('\\','/').lower() != MATERIAL: return world_position_preview(archive, path)
     from rc2016.formats.archive import asset_data
     from rc2016.viewer.textures import _archive_cache, _remember
     cache = _archive_cache(archive,'_experimental_material_cache')
@@ -131,5 +172,10 @@ def valid_contract(receipt):
     """Only independently pinned preview contracts reach experimental emitters."""
     from rc2016.shaders import terrain_preview
     identity = tuple(receipt.get(k) for k in ('preview_contract','code_sha256','graph_sha256','material_sha256'))
+    if receipt.get('preview_contract') == bindings.WORLD_POSITION_CONTRACT:
+        # Generic adapter: source-hashed per receipt; the emitters still admit only
+        # UV0, front facing and viewer world position as inputs.
+        return (receipt.get('status') == 'experimental' and receipt.get('automatic_ready') is False
+                and receipt.get('game_equivalence') is False and all(identity[1:]))
     return identity in ((CONTRACT,CODE_SHA,GRAPH_SHA,MATERIAL_SHA),
                        (terrain_preview.CONTRACT,terrain_preview.CODE_SHA,terrain_preview.GRAPH_SHA,terrain_preview.MATERIAL_SHA))

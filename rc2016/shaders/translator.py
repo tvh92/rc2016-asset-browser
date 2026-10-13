@@ -283,6 +283,13 @@ class Compiler:
         if raw==255:return literal_bits
         return self.inline_bits(raw)
 
+    def describe_scalar(self,raw,literal_bits):
+        """Short provenance of a scalar operand, for diagnostics."""
+        known=self.scalar_operand_bits(raw,literal_bits)
+        if known is not None:return f'0x{known:x}'
+        node=self.s.get(raw) if raw<=127 else None
+        return f's{raw}' if node is None else f's{raw}='+self.ir.describe(node,2)[:120]
+
     def uniform(self,raw,literal_bits):
         """Uniform 32-bit scalar as an F32-bit-pattern node: known bits, a constant-buffer word or a uniform op."""
         known=self.scalar_operand_bits(raw,literal_bits)
@@ -472,7 +479,7 @@ class Compiler:
             literal_bits=struct.unpack_from('<I',self.code,i['relative']+4)[0] if i['length']>4 else None
             c=self.uniform_condition(name,*(self.uniform(r,literal_bits) for r in (w&255,(w>>8)&255)))
             self.scc=('uniform',c) if c is not None else None
-            if c is None:self.scc_source=name
+            if c is None:self.scc_source=name+' of '+', '.join(self.describe_scalar(r,literal_bits) for r in (w&255,(w>>8)&255))
             return
         if k==3 and name.startswith('S_CMPK_'):
             simm=w&0xffff

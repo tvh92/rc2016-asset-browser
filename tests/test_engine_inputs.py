@@ -1,7 +1,8 @@
 """World-position reconstruction shapes are recognised up to arrangement and scale."""
 import unittest
 
-from rc2016.shaders.engine_inputs import analyse
+from rc2016.shaders import bindings
+from rc2016.shaders.engine_inputs import analyse, reconstruct_world_position
 from rc2016.shaders.ir import DAG
 
 
@@ -38,6 +39,42 @@ class ReconstructionTests(unittest.TestCase):
         x, w = inputs(ir, 'ps.POS_X', 'CB0[95]')
         result = analyse(ir.nodes, [ir.op('mul', x, w)])
         self.assertEqual(result['residual'], ['CB0[95]', 'ps.POS_X'])
+
+
+    def test_adapter_replaces_world_position_with_viewer_position(self):
+        ir, root = self.build(2, scale=.025)
+        roots, count = reconstruct_world_position(ir, [ir.op('fract', root)])
+        self.assertEqual(count, 1)
+        used = [ir.nodes[i] for i in ir.reachable(roots) if ir.nodes[i]['op'] == 'input']
+        self.assertEqual([(n['kind'], n['channel']) for n in used], [('preview_position', 2)])
+        # 0.5 * 0.025 * world.z at world.z = 8
+        self.assertAlmostEqual(ir.evaluate(roots[0], {'preview_position.2': 8.}), .1)
+
+    def test_adapter_leaves_camera_relative_rays(self):
+        ir, root = self.build(0, camera=False)
+        self.assertEqual(reconstruct_world_position(ir, [root]), ([root], 0))
+
+    def test_experimental_receipt_reaches_glsl_only_as_experimental(self):
+        from rc2016.viewer.native_glsl import emit_surface
+        ir = DAG()
+        p = ir.node('input', name='preview_position.0', kind='preview_position', channel=0)
+        f = ir.op('fract', p)
+        receipt = dict(status='experimental', preview_contract=bindings.WORLD_POSITION_CONTRACT, automatic_ready=False,
+                       game_equivalence=False, code_sha256='c', graph_sha256='g', material_sha256='m',
+                       nodes=ir.nodes, texture_bindings=[], translation_sha256='t',
+                       outputs=dict(albedo=[f] * 3, F0=[f] * 3, gloss=f, emission=f))
+        self.assertIn('vTintWorldPos.x', emit_surface(receipt, experimental=True)['body'])
+        with self.assertRaises(ValueError):
+            emit_surface(receipt)
+        with self.assertRaises(ValueError):
+            emit_surface(dict(receipt, automatic_ready=True), experimental=True)
+
+    def test_surface_signature_accepts_front_facing(self):
+        ir = DAG()
+        f = ir.node('input', name='front_facing', kind='front_facing')
+        bound = dict(nodes=ir.nodes, texture_bindings=[], normal=None,
+                     outputs=dict(albedo=[f] * 3, F0=[f] * 3, gloss=f, emission=f))
+        self.assertEqual(len(bindings.surface_signature(bound)), 64)
 
 
 if __name__ == '__main__':
