@@ -525,10 +525,11 @@ def print_vertex_colours(archive, needle, limit=5, material=None, dump=0):
             print(line + f': colour min/mean/max {stats}; distinct RGBA {len(np.unique(c, axis=0))}', flush=True)
 
 
-def print_instances(archive, needle, limit=8):
+def print_instances(archive, needle, limit=8, save=None):
     """Zone instances of models whose path contains needle: zone section sizes, the record's
     undecoded header words (+0x5C..+0xB0) and the start of its tail, to look for per-instance
-    data such as vertex colours."""
+    data such as vertex colours. With save (a folder outside the repository), also writes each
+    matching record and its decompressed model as .bin files there for offline analysis."""
     import struct
     from rc2016.levels.scene import asset_bytes
     from rc2016.levels.zone_format import DATA_HEAP, INSTANCE_OFFSETS, RECORD_HEADER_SIZE, decode_zone, sections
@@ -557,6 +558,14 @@ def print_instances(archive, needle, limit=8):
                   f"heap offset {offsets[inst['index']]:#x} tail {len(tail)} bytes")
             print(f'    +0x5c words {words}')
             print(f'    tail {tail[:64].hex(" ")}')
+            if save:
+                from pathlib import Path
+                folder = Path(save)
+                folder.mkdir(parents=True, exist_ok=True)
+                model = decoded['models'][inst['model_index']]
+                size = struct.unpack_from('<I', data, r + 0x44)[0]
+                (folder / f"{Path(zone).stem}_{inst['index']}.record.bin").write_bytes(data[r:r + size])
+                (folder / f'{Path(model).stem}.model.bin').write_bytes(asset_bytes(archive, model))
         shown += 1
         if shown >= limit:
             break
@@ -573,6 +582,7 @@ def main(argv=None):
     parser.add_argument('--interpolants', help='print one material path\'s interpolant vector forms and pixel uses and stop')
     parser.add_argument('--vertex-colours', help='print colour-stream statistics per mesh of model paths containing this text and stop')
     parser.add_argument('--instances', help='print zone instance records of models whose path contains this text and stop')
+    parser.add_argument('--save', help='with --instances: folder (outside the repository) for each matching record and its model as .bin')
     parser.add_argument('--dump-sections', type=int, default=0, metavar='BYTES',
                         help='with --vertex-colours: hex-dump the first BYTES of each undecoded model section')
     parser.add_argument('--colour-material', help='with --vertex-colours: only models and meshes using a material path containing this text')
@@ -590,7 +600,7 @@ def main(argv=None):
     if args.receipt or args.interpolants or args.vertex_colours or args.instances:
         try:
             if args.instances:
-                print_instances(archive, args.instances)
+                print_instances(archive, args.instances, save=args.save)
             if args.vertex_colours:
                 print_vertex_colours(archive, args.vertex_colours, material=args.colour_material, dump=args.dump_sections)
             if args.receipt:
