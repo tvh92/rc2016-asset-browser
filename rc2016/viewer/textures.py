@@ -1156,7 +1156,8 @@ def _with_pixels(archive, cache: dict, path):
     return texture
 
 
-def material_textures(archive, materials: list[dict], cache: dict, translations: dict | None = None) -> dict[int, dict]:
+def material_textures(archive, materials: list[dict], cache: dict, translations: dict | None = None,
+                      previews: bool = True) -> dict[int, dict]:
     """Material slot -> {'_c'/'_g'/'_n'/'_pick': texture or None, 'k', 'g_mode', 'self_lit', 'spec', 'gloss'[, 'pick']}.
 
     Missing or unloadable textures are None and that part is shaded without
@@ -1166,6 +1167,8 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
     palette, screen timeline, puddle and RockBlend layers) are then reloaded.
     ``translations``, when given, receives {material path: selected native translation or None}
     for materials whose texture paths resolved, so material_rules need not select it again.
+    ``previews`` prepares the opt-in experimental material previews; their source analysis is
+    expensive, so a caller that has not enabled them passes False and prepares them on demand.
     Thread-safe for concurrent calls sharing one ``cache``.
     """
 
@@ -1282,7 +1285,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
                 entry['native_error'] = str(exc)
             from rc2016.viewer.experimental_materials import prepare_preview, preview_with_fallback
             try:
-                preview = prepare_preview(archive, material['path'])
+                preview = prepare_preview(archive, material['path']) if previews else None
                 if preview:
                     preview_textures = {}
                     for binding in preview['texture_bindings']:

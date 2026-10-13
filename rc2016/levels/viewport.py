@@ -384,6 +384,16 @@ class LevelViewport(ModelViewport):
                 queue.setdefault(path, entry)
         self._pump_materials()
 
+    def replace_materials(self, entries):
+        """Swap in new entries for materials already posted (experimental previews prepared later).
+        Uploaded textures are reused by path; the material's programs and draw state are rebuilt."""
+        queue = self.__dict__.setdefault("_material_queue", {})
+        for path in entries:
+            self._materials.pop(path, None)
+            queue.pop(path, None)
+            self._pending_materials.pop(path, None)
+        self.add_materials(entries)
+
     def _pump_materials(self, budget=None):
         """Upload queued materials for up to ``budget`` seconds (MATERIAL_BUDGET_SECONDS; at least one
         material per call), then compile their native programs in the time left; what remains

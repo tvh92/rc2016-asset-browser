@@ -151,6 +151,15 @@ def world_position_translation(archive, path):
     return cache[path]
 
 
+def has_preview(path):
+    """Potential pinned or generic world-position preview; no source analysis here.
+
+    This checkout includes generic material previews, whose applicability is established
+    by prepare_preview only after the user enables experimental previews.
+    """
+    return path.replace('\\','/').lower().endswith('.material')
+
+
 def prepare_preview(archive, path):
     from rc2016.shaders import terrain_preview
     if path.replace('\\','/').lower() == terrain_preview.MATERIAL:
