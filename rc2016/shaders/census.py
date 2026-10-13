@@ -476,10 +476,11 @@ def print_interpolants(archive, path, attributes=None):
             print(line)
 
 
-def print_vertex_colours(archive, needle, limit=5, material=None):
+def print_vertex_colours(archive, needle, limit=5, material=None, dump=0):
     """Per mesh of the model paths containing needle: material and colour-stream statistics.
     With material, only models referencing a material path containing it (up to 4 x limit) and
-    only their meshes using such a material."""
+    only their meshes using such a material. With dump, also the first dump bytes of each
+    undecoded section as hex and little-endian u32 words."""
     import numpy as np
     from rc2016.formats.archive import asset_references
     from rc2016.formats.native_model import decode_model
@@ -498,6 +499,17 @@ def print_vertex_colours(archive, needle, limit=5, material=None):
         sizes = decoded['section_sizes']
         print('== model', path, f'| {vertices} vertices in all LODs | undecoded sections (bytes, per vertex):',
               ', '.join(f"{t} {sizes[t]} {sizes[t] / max(vertices, 1):.2f}" for t in decoded['unsupported_sections']) or 'none')
+        if dump:
+            from rc2016.formats.native_model import _chunk, _sections
+            raw = asset_bytes(archive, path)
+            sections = _sections(raw)
+            for tag in decoded['unsupported_sections']:
+                chunk = _chunk(raw, sections, int(tag, 16))[:dump]
+                print(f'  section {tag}:')
+                for row in range(0, len(chunk), 32):
+                    part = chunk[row:row + 32]
+                    words = ' '.join(f'{w:08x}' for w in np.frombuffer(part[:len(part) // 4 * 4], '<u4'))
+                    print(f'    +{row:04x} {part.hex(" ")} | {words}')
         for mesh in decoded['meshes']:
             colours = mesh.get('colors')
             used = mesh.get('material')
@@ -522,6 +534,8 @@ def main(argv=None):
     parser.add_argument('--receipt', help='print one material path\'s native and world-position preview receipts and stop')
     parser.add_argument('--interpolants', help='print one material path\'s interpolant vector forms and pixel uses and stop')
     parser.add_argument('--vertex-colours', help='print colour-stream statistics per mesh of model paths containing this text and stop')
+    parser.add_argument('--dump-sections', type=int, default=0, metavar='BYTES',
+                        help='with --vertex-colours: hex-dump the first BYTES of each undecoded model section')
     parser.add_argument('--colour-material', help='with --vertex-colours: only models and meshes using a material path containing this text')
     parser.add_argument('--attribute', type=int, action='append',
                         help='with --interpolants: only this PS attribute index (repeatable)')
@@ -537,7 +551,7 @@ def main(argv=None):
     if args.receipt or args.interpolants or args.vertex_colours:
         try:
             if args.vertex_colours:
-                print_vertex_colours(archive, args.vertex_colours, material=args.colour_material)
+                print_vertex_colours(archive, args.vertex_colours, material=args.colour_material, dump=args.dump_sections)
             if args.receipt:
                 print_receipt(archive, args.receipt)
             if args.interpolants:
