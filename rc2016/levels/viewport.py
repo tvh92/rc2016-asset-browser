@@ -6,6 +6,7 @@ presentation basis (x, y, z) -> (x, -z, y), so the fly camera works in Blender-l
 """
 from __future__ import annotations
 
+from collections import deque
 import ctypes
 import itertools
 import math
@@ -257,6 +258,8 @@ class LevelViewport(ModelViewport):
     # Optional: without it every instance is drawn (no frustum culling).
     OPTIONAL_EXT = {"glBufferSubData": (None, [ctypes.c_uint, ctypes.c_ssize_t, ctypes.c_ssize_t, ctypes.c_void_p])}
     MATERIAL_BUDGET_SECONDS = 0.008   # texture uploads and shader compiles per Tk tick while loading
+    DEFER_MIPMAPS = True              # mip chains are built after the load (build_deferred_mipmaps)
+    MIPMAP_BUDGET_SECONDS = 0.03      # mip generation per Tk tick once loaded
     STATS_INTERVAL = 0.25             # status-line refresh while drawing (4 Hz)
     culling = True
     _cull = None
@@ -428,6 +431,8 @@ class LevelViewport(ModelViewport):
             self._precompile(compile_queue.pop(0))
         if queue or compile_queue:
             self._material_pump = self.after(15, self._pump_materials)
+        elif self.__dict__.get("_loading_done") and not self.__dict__.get("_mipmap_pump"):
+            self.build_deferred_mipmaps()
 
     def _precompile(self, path):
         """Link a material's native surface program before its first draw (Shaded mode only); a
@@ -440,6 +445,38 @@ class LevelViewport(ModelViewport):
         except Exception:
             pass
 
+    def finish_load(self):
+        """The loader is done: build the deferred mip chains once queued materials are uploaded."""
+        self._loading_done = True
+        if not (self.__dict__.get("_material_queue") or self.__dict__.get("_compile_queue")):
+            self.build_deferred_mipmaps()
+
+    def build_deferred_mipmaps(self, budget=None):
+        """Generate queued mip chains for up to ``budget`` seconds (MIPMAP_BUDGET_SECONDS) per Tk
+        tick. Until then a texture samples its top mip (GL_LINEAR); the finished chain matches
+        what generation at upload would have produced."""
+        self.__dict__["_mipmap_pump"] = None
+        queue = self.__dict__.get("_mipmap_queue")
+        if not queue or not self._make_current():
+            return
+        deadline = time.perf_counter() + (self.MIPMAP_BUDGET_SECONDS if budget is None else budget)
+        while queue:
+            name, compressed = queue.popleft()
+            self._gl.glBindTexture(self.GL_TEXTURE_2D, name)
+            self._build_mipmaps(compressed)
+            if time.perf_counter() >= deadline:
+                break
+        self._gl.glBindTexture(self.GL_TEXTURE_2D, 0)
+        self._schedule_draw()
+        if queue:
+            self._mipmap_pump = self.after(15, self.build_deferred_mipmaps)
+
+    def _cancel_mipmaps(self):
+        pump = self.__dict__.get("_mipmap_pump")
+        if pump:
+            self.after_cancel(pump)
+            self._mipmap_pump = None
+
     def flush_materials(self):
         """Upload every queued material now (captures need the complete frame)."""
         pump = self.__dict__.get("_material_pump")
@@ -451,6 +488,8 @@ class LevelViewport(ModelViewport):
         if pump:
             self.after_cancel(pump)
             self._material_pump = None
+        self._cancel_mipmaps()
+        self.build_deferred_mipmaps(budget=float("inf"))
 
     def set_mode(self, mode):
         self._draw_list = None   # material keys carry the shading level
@@ -523,6 +562,8 @@ class LevelViewport(ModelViewport):
         self._emit_stats()
 
     def clear(self, message="Loading level…"):
+        self._cancel_mipmaps()
+        self._mipmap_queue, self._loading_done = deque(), False
         if self._make_current():
             buffers = [name for m in self._models.values() for name in m["buffers"] + [g[0] for g in m["groups"]]]
             if buffers:

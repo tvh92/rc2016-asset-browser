@@ -764,6 +764,9 @@ class LevelPanel:
             return
         elif kind == "done":
             p["state"] = f"loaded in {item[1]['total_seconds']:.1f} s"
+            finish = getattr(self.view, "finish_load", None)
+            if finish:
+                finish()   # deferred mip chains build from here
             p["done"] = item[1]
             if self.on_done:
                 self.frame.after(300, lambda: self.on_done(self))

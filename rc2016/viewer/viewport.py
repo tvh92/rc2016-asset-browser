@@ -807,6 +807,9 @@ class ModelViewport(_TkFrame):
         return self._mipmap_support
 
     _mipmap_next = True
+    # Queue mip generation (build_deferred_mipmaps) instead of running it at upload; the level
+    # viewer defers it past the load, since drivers can spend long on block-compressed chains.
+    DEFER_MIPMAPS = False
 
     def _upload_texture(self, texture, decode_srgb=False, mipmaps=None):
         """One GL texture from GPU-ready blocks; 0 if the driver rejects the format.
@@ -816,7 +819,8 @@ class ModelViewport(_TkFrame):
         extension exists. The chain is filtered in the texture's own colourspace (linear for sRGB
         formats, as GL specifies). A driver that refuses to generate mips for block-compressed
         formats leaves those on the top mip with GL_LINEAR (it is not asked again). ``mipmaps`` None
-        follows ``_mipmap_next`` (set per role by _gl_entry)."""
+        follows ``_mipmap_next`` (set per role by _gl_entry). With DEFER_MIPMAPS the texture is
+        queued in ``_mipmap_queue`` and samples its top mip until its chain is built."""
         gl = self._gl
         if mipmaps is None:
             mipmaps = self._mipmap_next
@@ -851,7 +855,11 @@ class ModelViewport(_TkFrame):
             gl.glDeleteTextures(1, ctypes.byref(name))
             name.value = 0
         elif mipmaps and self.MIPMAPS:
-            self._build_mipmaps(compressed)
+            if self.DEFER_MIPMAPS:
+                from collections import deque
+                self.__dict__.setdefault("_mipmap_queue", deque()).append((name.value, compressed))
+            else:
+                self._build_mipmaps(compressed)
         return name.value
 
     def _build_mipmaps(self, compressed):
