@@ -476,28 +476,38 @@ def print_interpolants(archive, path, attributes=None):
             print(line)
 
 
-def print_vertex_colours(archive, needle, limit=5):
-    """Per mesh of the model paths containing needle: material and colour-stream statistics."""
+def print_vertex_colours(archive, needle, limit=5, material=None):
+    """Per mesh of the model paths containing needle: material and colour-stream statistics.
+    With material, only models referencing a material path containing it (up to 4 x limit) and
+    only their meshes using such a material."""
     import numpy as np
+    from rc2016.formats.archive import asset_references
     from rc2016.formats.native_model import decode_model
     from rc2016.levels.scene import asset_bytes
-    paths = sorted({e['path'] for e in archive.entries.values()
-                    if e['type'] == 'model' and needle.lower() in e['path'].lower()})
-    print(f'{len(paths)} model paths contain {needle!r}')
+    keys = {e['path']: k for k, e in archive.entries.items()
+            if e['type'] == 'model' and needle.lower() in e['path'].lower()}
+    paths = sorted(keys)
+    if material:
+        material = material.lower()
+        paths = [p for p in paths if any(material in r['path'].lower() for r in asset_references(archive, keys[p]))]
+        limit *= 4
+    print(f'{len(paths)} model paths contain {needle!r}' + (f' and reference a material containing {material!r}' if material else ''), flush=True)
     for path in paths[:limit]:
         decoded = decode_model(path, data=asset_bytes(archive, path))
         print('== model', path, '| undecoded sections:', ', '.join(decoded['unsupported_sections']) or 'none')
         for mesh in decoded['meshes']:
             colours = mesh.get('colors')
-            material = mesh.get('material')
-            material = material.get('path') if isinstance(material, dict) else material
-            line = f"  mesh {mesh['index']} {len(mesh['positions'])} vertices, material {material}"
+            used = mesh.get('material')
+            used = used.get('path') if isinstance(used, dict) else used
+            if material and material not in str(used).lower():
+                continue
+            line = f"  mesh {mesh['index']} {len(mesh['positions'])} vertices, material {used}"
             if not colours:
                 print(line + ': no colour stream')
                 continue
             c = np.asarray(colours, dtype=np.float64).reshape(-1, 4)
             stats = ' '.join(f"{'RGBA'[j]} {c[:, j].min():.2f}/{c[:, j].mean():.2f}/{c[:, j].max():.2f}" for j in range(4))
-            print(line + f': colour min/mean/max {stats}; distinct RGBA {len(np.unique(c, axis=0))}')
+            print(line + f': colour min/mean/max {stats}; distinct RGBA {len(np.unique(c, axis=0))}', flush=True)
 
 
 def main(argv=None):
@@ -509,6 +519,7 @@ def main(argv=None):
     parser.add_argument('--receipt', help='print one material path\'s native and world-position preview receipts and stop')
     parser.add_argument('--interpolants', help='print one material path\'s interpolant vector forms and pixel uses and stop')
     parser.add_argument('--vertex-colours', help='print colour-stream statistics per mesh of model paths containing this text and stop')
+    parser.add_argument('--colour-material', help='with --vertex-colours: only models and meshes using a material path containing this text')
     parser.add_argument('--attribute', type=int, action='append',
                         help='with --interpolants: only this PS attribute index (repeatable)')
     parser.add_argument('--show', help='regular expression of material paths to report in detail (implies --materials)')
@@ -523,7 +534,7 @@ def main(argv=None):
     if args.receipt or args.interpolants or args.vertex_colours:
         try:
             if args.vertex_colours:
-                print_vertex_colours(archive, args.vertex_colours)
+                print_vertex_colours(archive, args.vertex_colours, material=args.colour_material)
             if args.receipt:
                 print_receipt(archive, args.receipt)
             if args.interpolants:
