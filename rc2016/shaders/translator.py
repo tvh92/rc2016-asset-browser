@@ -20,7 +20,7 @@ import sys
 
 from rc2016.shaders.ir import DAG, bits, from_bits
 
-VERSION=9
+VERSION=10
 ROOT=Path(__file__).resolve().parents[2]
 SHADER_SECTION=0x873D1E6C
 # VALU instructions that also write a scalar carry/flag register pair.
@@ -345,6 +345,13 @@ class Compiler:
             if a and b:return [self.ir.op('select',n['args'][0],x,y) for x,y in zip(a,b)]
         return None
 
+    def wave_uniform(self,value):
+        """True when a value depends only on constants and constant-buffer words."""
+        for j in self.ir.reachable([value]):
+            n=self.ir.nodes[j]
+            if n['op'] in ('texture','unsupported') or (n['op']=='input' and n.get('kind')!='cb'):return False
+        return True
+
     def branch(self,i,name,f):
         target=i['relative']+f['branch_target_relative']
         one=self.ir.const(1.);zero=self.ir.const(0.)
@@ -363,6 +370,12 @@ class Compiler:
             elif self.scc and self.scc[0]=='uniform':condition=self.scc[1]
             else:raise ValueError(f'Control flow unsupported at {i["relative"]}: {name} on unresolved SCC from {self.scc_source}')
             if name=='S_CBRANCH_SCC0':condition=self.p_not(condition)
+        elif name in ('S_CBRANCH_VCCZ','S_CBRANCH_VCCNZ'):
+            # VCCZ is wave-wide; it is a uniform branch only when VCC is the same in every lane.
+            vcc=self.mask(106)
+            if vcc is None or not self.wave_uniform(vcc):
+                raise ValueError(f'Control flow unsupported at {i["relative"]}: {name} on lane-varying VCC')
+            condition=vcc if name=='S_CBRANCH_VCCNZ' else self.p_not(vcc)
         else:raise ValueError(f'Control flow unsupported at {i["relative"]}: {name}')
         taken=self.p_and(self.bp,condition)
         if target<=i['relative']:self.back=(target,taken)  # unrolled by compile()

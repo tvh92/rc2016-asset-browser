@@ -283,7 +283,8 @@ def prepare_translation(graph_datas,material_data,instance):
     except ValueError as exc:result['diagnostics'].append(str(exc));return result
     candidates=[]
     for program in graph['programs']:
-        if program['status']!='compiled':continue
+        if program['status']!='compiled':
+            result['diagnostics'].append(dict(shader_id=program['shader_id'],reason='compile: '+program.get('reason','')));continue
         try:matched=program_contracts(data,program,contracts)
         except ValueError as exc:
             result['diagnostics'].append(str(exc));continue

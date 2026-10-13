@@ -173,6 +173,25 @@ class ControlFlowTests(unittest.TestCase):
         self.assertEqual(run(code, {1: 10., 2: 20., 'CB2[0]': word(3)}, slots)[0], 20.)
         self.assertEqual(run(code, {1: 10., 2: 20., 'CB2[0]': 1.0}, slots)[0], 20.)  # 0x3F800000 as an integer
 
+    def test_uniform_vcc_branch(self):
+        # v1 = 0; vcc = (CB2[0] == v1); if (vccz) v3 = v2;  -- VCC is the same in every lane.
+        slots = [dict(kind=2, api=2, reg=0, flags=0)]
+        code = program(smrd_buffer_load(4, 0, 0), vmov(1, 128), vopc('V_CMP_EQ_U32', 4, 1),
+                       ('branch', 'S_CBRANCH_VCCZ', 'skip'), vmov(3, V + 2), ('label', 'skip'))
+        compiler = Compiler(code, slots)
+        compiler.v[2] = compiler.ir.node('input', name='v2', kind='test')
+        compiler.v[3] = compiler.ir.node('input', name='v3', kind='test')
+        compiler.run(decoder().decode_stream(code, 0))
+        dag = DAG(compiler.ir.nodes)
+        word = lambda b: struct.unpack('<f', struct.pack('<I', b))[0]
+        self.assertEqual(dag.evaluate(compiler.v[3], {'v2': 2., 'v3': 3., 'CB2[0]': 0.}), 2.)
+        self.assertEqual(dag.evaluate(compiler.v[3], {'v2': 2., 'v3': 3., 'CB2[0]': word(1)}), 3.)
+
+    def test_lane_varying_vcc_branch_stays_unsupported(self):
+        code = program(vopc('V_CMP_GT_F32', V + 1, 2), ('branch', 'S_CBRANCH_VCCZ', 'skip'), ('label', 'skip'))
+        with self.assertRaisesRegex(ValueError, 'lane-varying VCC'):
+            run(code, {1: 1., 2: 2.})
+
     def test_kill_mask_branch(self):
         # live = exec & ~vcc; if (!any(live)) goto dead; exec &= live; v3 = v1
         code = program(vopc('V_CMP_LT_F32', V + 1, 2), sop2('S_ANDN2_B64', 10, 126, 106),
