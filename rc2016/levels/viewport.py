@@ -259,7 +259,8 @@ class LevelViewport(ModelViewport):
     OPTIONAL_EXT = {"glBufferSubData": (None, [ctypes.c_uint, ctypes.c_ssize_t, ctypes.c_ssize_t, ctypes.c_void_p])}
     MATERIAL_BUDGET_SECONDS = 0.008   # texture uploads and shader compiles per Tk tick while loading
     DEFER_MIPMAPS = True              # mip chains are built after the load (build_deferred_mipmaps)
-    MIPMAP_BUDGET_SECONDS = 0.03      # mip generation per Tk tick once loaded
+    MIPMAP_BUDGET_SECONDS = 0.008     # mip generation per Tk tick once loaded
+    MIPMAP_IDLE_SECONDS = 0.5         # and only once the camera has rested this long
     STATS_INTERVAL = 0.25             # status-line refresh while drawing (4 Hz)
     culling = True
     _cull = None
@@ -459,6 +460,9 @@ class LevelViewport(ModelViewport):
         queue = self.__dict__.get("_mipmap_queue")
         if not queue or not self._make_current():
             return
+        if budget is None and time.perf_counter() - self.__dict__.get("_camera_changed_at", float("-inf")) < self.MIPMAP_IDLE_SECONDS:
+            self._mipmap_pump = self.after(100, self.build_deferred_mipmaps)   # the camera is moving: wait
+            return
         deadline = time.perf_counter() + (self.MIPMAP_BUDGET_SECONDS if budget is None else budget)
         while queue:
             name, compressed = queue.popleft()
@@ -538,7 +542,7 @@ class LevelViewport(ModelViewport):
                 instances=sum(d for _t, _n, d in counts), triangles=sum(t * d for t, _n, d in counts),
                 materials=len(self._materials), textures=sum(1 for v in self._texture_names.values() if v),
                 draws=len(self._draw_list or ()))
-        return dict(base, draw_ms=self.last_draw_ms, speed=self._speed, eye=self._eye, yaw=self._yaw, pitch=self._pitch,
+        return dict(base, draw_ms=self.last_draw_ms, phase_ms=getattr(self, "last_phase_ms", {}), speed=self._speed, eye=self._eye, yaw=self._yaw, pitch=self._pitch,
                     native_translation=self.native_translation, program_switches=self.native_program_switches,
                     scene_preview=dict(active=self.scene_effects_active(),ao=getattr(self,'scene_ao',False),
                         shadows=getattr(self,'scene_shadows',False),
@@ -946,10 +950,15 @@ class LevelViewport(ModelViewport):
         gl.glClear(self.GL_COLOR_BUFFER_BIT | self.GL_DEPTH_BUFFER_BIT)
         if self._pending or self._pending_materials:
             self._flush_pending()
+        scene_ms = level_ms = 0.0
+        camera = (tuple(self._eye), self._yaw, self._pitch, width, height)
+        if camera != self.__dict__.get("_last_camera"):
+            self._last_camera, self._camera_changed_at = camera, started
         if self._models and self._shading is not None and self._ext:
             self._setup_camera(width, height)
             if self._draw_list is None:
                 self._build_draw_list()
+            phase = time.perf_counter()
             if getattr(self,'lighting_enabled',True) and self._mode=='Shaded' and (self.scene_ao or self.scene_shadows or self.scene_authored) and not self.scene_error:
                 try:
                     if self._scene_effects is None:
@@ -961,6 +970,7 @@ class LevelViewport(ModelViewport):
                     print(self.scene_error,file=sys.stderr)
                     if self._scene_effects:self._scene_effects.close()
                     self._scene_effects=None
+            scene_ms = (time.perf_counter() - phase) * 1000.0
             self._cull_frame(width, height)
             if self._sky and self.show_sky and self._mode in ("Shaded", "Textured"):
                 try:
@@ -969,14 +979,17 @@ class LevelViewport(ModelViewport):
                     print(f"level viewer: sky failed: {type(exc).__name__}: {exc}", file=sys.stderr)
                     self._release_sky()
                     self._sky = None
+            phase = time.perf_counter()
             try:
                 self._draw_level()
+                level_ms = (time.perf_counter() - phase) * 1000.0
             except Exception as exc:   # report instead of failing every Tk repaint
                 self.shading_error = f"Level view failed: {exc}"
                 self._error = self.shading_error
                 self._show_error(self._error)
                 self._models = {}
         self.last_draw_ms = (time.perf_counter() - started) * 1000.0
+        self.last_phase_ms = dict(scene=scene_ms, level=level_ms)   # CPU time issuing each phase
         self._gdi32.SwapBuffers(self._hdc)
         self._emit_stats()
 

@@ -5,6 +5,9 @@ AO_UNIT, SHADOW_UNIT = 16, 17
 # Scene content changes (models, instances, materials) arrive many times a second during a load; each
 # shadow refresh redraws the whole unculled level, so content-driven refreshes wait this long apart.
 SHADOW_REFRESH_SECONDS = 2.0
+# AO is screen space, so it is valid for one camera. It is rendered once the camera has rested
+# this long and reused until the camera or scene changes; frames in between draw without AO.
+AO_SETTLE_SECONDS = 0.15
 SCENE_UNIFORMS = ('uSceneEnabled','uSceneAOEnabled','uSceneShadowEnabled','uSceneAO','uSceneShadow',
                   'uSceneSize','uSceneShadowSize','uSceneShadowMatrix','uSceneLightCount','uSceneLightPos','uSceneLightColour')
 HELPERS = '''
@@ -50,6 +53,7 @@ class SceneEffects:
         self.gl,self.sh=gl,shading;self.size=None;self.fbos=[];self.textures=[];self.ao=None;self.ao_texture=0
         self.shadow_size=2048;self.shadow_key=None;self.shadow_matrix=None;self.view_shadow_matrix=None
         self.shadow_time=0.;self.shadow_retry=None
+        self.ao_key=None;self.ao_valid=False;self.ao_retry=None
         ui,si,vp=C.c_uint,C.c_int,C.c_void_p
         def fn(n,result,args):
             address=gl.wglGetProcAddress(n.encode())
@@ -104,15 +108,29 @@ class SceneEffects:
                     draw_geometry(shadow=True);self.shadow_key=key;self.shadow_time=time.perf_counter()
             gl.glMatrixMode(0x1701);gl.glLoadMatrixf(projection);gl.glMatrixMode(0x1700);gl.glLoadMatrixf(modelview)
             if view.scene_ao:
-                self.bind(0x8D40,self.geometry_fbo);self.draw_buffers(2,(C.c_uint*2)(0x8CE0,0x8CE1))
-                gl.glViewport(0,0,w,h);gl.glClearColor(0.,0.,0.,0.);gl.glClear(0x00004000|0x00000100);draw_geometry(shadow=False);self.bind(0x8D40,0)
-                if self.ao is None:
-                    from rc2016.levels.scene_ao import SceneAO
-                    self.ao=SceneAO(gl,self.sh)
-                self.ao_texture=self.ao.render(self.depth,self.normal,w,h,list(projection))
+                key=(tuple(projection),tuple(modelview),w,h,view._scene_revision)
+                if key!=self.ao_key:self.ao_valid=False
+                if key!=self.ao_key and self._ao_due(view,time.perf_counter()):
+                    self.bind(0x8D40,self.geometry_fbo);self.draw_buffers(2,(C.c_uint*2)(0x8CE0,0x8CE1))
+                    gl.glViewport(0,0,w,h);gl.glClearColor(0.,0.,0.,0.);gl.glClear(0x00004000|0x00000100);draw_geometry(shadow=False);self.bind(0x8D40,0)
+                    if self.ao is None:
+                        from rc2016.levels.scene_ao import SceneAO
+                        self.ao=SceneAO(gl,self.sh)
+                    self.ao_texture=self.ao.render(self.depth,self.normal,w,h,list(projection))
+                    self.ao_key=key;self.ao_valid=True
             self.view_shadow_matrix=None if self.shadow_matrix is None else self.shadow_matrix@np.linalg.inv(vm)
         finally:
             self.bind(0x8D40,0);gl.glPopAttrib();gl.glMatrixMode(0x1701);gl.glLoadMatrixf(projection);gl.glMatrixMode(0x1700);gl.glLoadMatrixf(modelview);self.sh.glActiveTexture(0x84C0)
+    def _ao_due(self,view,now):
+        """Render AO once the camera has rested AO_SETTLE_SECONDS; until then schedule one redraw."""
+        wait=getattr(view,'_camera_changed_at',float('-inf'))+AO_SETTLE_SECONDS-now
+        if wait<=0:return True
+        if self.ao_retry is None:
+            def retry():
+                self.ao_retry=None
+                view._schedule_draw()
+            self.ao_retry=(view,view.after(int(wait*1000)+1,retry))
+        return False
     def _shadow_due(self,view,key,now):
         """Refresh at once for a new light direction or the first map; rate-limit content changes and
         schedule one redraw so the final scene still gets its map."""
@@ -128,7 +146,7 @@ class SceneEffects:
     def apply(self,view,u):
         sh,gl=self.sh,self.gl;ready=not view._scene_geometry and view.scene_effects_active()
         sh.glUniform1i(u['uSceneEnabled'],int(ready));sh.glUniform1i(u.get('uSceneGeometry',-1),int(view._scene_geometry))
-        sh.glUniform1i(u['uSceneAOEnabled'],int(ready and view.scene_ao and bool(self.ao_texture)))
+        sh.glUniform1i(u['uSceneAOEnabled'],int(ready and view.scene_ao and self.ao_valid and bool(self.ao_texture)))
         sh.glUniform1i(u['uSceneShadowEnabled'],int(ready and view.scene_shadows and self.view_shadow_matrix is not None))
         sh.glUniform1i(u['uSceneAO'],AO_UNIT);sh.glUniform1i(u['uSceneShadow'],SHADOW_UNIT)
         self.uniform2(u['uSceneSize'],*self.size);self.uniform2(u['uSceneShadowSize'],self.shadow_size,self.shadow_size)
@@ -137,11 +155,14 @@ class SceneEffects:
         if self.view_shadow_matrix is not None:self.uniform_matrix(u['uSceneShadowMatrix'],1,0,(C.c_float*16)(*self.view_shadow_matrix.T.flat))
         sh.glActiveTexture(0x84C0)
     def close(self):
-        if self.shadow_retry:
-            view,after=self.shadow_retry;self.shadow_retry=None
-            try:view.after_cancel(after)
-            except Exception:pass
+        for name in ('shadow_retry','ao_retry'):
+            pending=getattr(self,name,None)
+            if pending:
+                setattr(self,name,None);view,after=pending
+                try:view.after_cancel(after)
+                except Exception:pass
         if self.ao:self.ao.close();self.ao=None
         if self.textures:self.gl.glDeleteTextures(len(self.textures),(C.c_uint*len(self.textures))(*self.textures));self.textures=[]
         if self.fbos:self.delete(len(self.fbos),(C.c_uint*len(self.fbos))(*self.fbos));self.fbos=[]
         self.size=None;self.shadow_key=None;self.ao_texture=0;self.shadow_matrix=None;self.view_shadow_matrix=None
+        self.ao_key=None;self.ao_valid=False

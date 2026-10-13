@@ -75,5 +75,16 @@ class DeferredMipmapTests(unittest.TestCase):
         self.assertEqual(len(view.built), 3)
 
 
+    def test_waits_while_the_camera_moves(self):
+        import time
+        view = level_view()
+        view._camera_changed_at = time.perf_counter()
+        view.build_deferred_mipmaps()
+        self.assertEqual(view.built, [])
+        self.assertEqual(view.scheduled, [view.build_deferred_mipmaps])
+        view._camera_changed_at = time.perf_counter() - 10
+        view.build_deferred_mipmaps(budget=float('inf'))
+        self.assertEqual(len(view.built), 3)
+
 if __name__ == '__main__':
     unittest.main()

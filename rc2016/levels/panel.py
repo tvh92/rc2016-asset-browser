@@ -802,11 +802,13 @@ class LevelPanel:
         if self.view.show_spawn_preview:
             actors += (f" · EXPERIMENTAL spawns {stats.get('spawns', 0):,} drawn (approximate), "
                        f"{p.get('spawns', {}).get('unresolved', 0):,} unresolved")
+        phase = stats.get("phase_ms") or {}
+        phases = f" (scene {phase['scene']:.0f}, draw {phase['level']:.0f})" if phase else ""
         self.status_var.set(
             f"{p['state']}{actors} · {p['zones_with_models']}/{p['zones']} zones with placements · {p['models']} models{errors} · "
             f"{stats['materials']} materials · {stats['textures']} textures{overrides}{sky} · "
             f"showing {stats['instances']:,} of {stats.get('placed', stats['instances']):,} instances (frustum culled), "
-            f"{stats['triangles']:,} triangles in {stats['draws']} draws · {stats['draw_ms']:.1f} ms/frame · "
+            f"{stats['triangles']:,} triangles in {stats['draws']} draws · {stats['draw_ms']:.1f} ms/frame{phases} · "
             f"speed {stats['speed']:.1f}/s")
 
     def close(self):

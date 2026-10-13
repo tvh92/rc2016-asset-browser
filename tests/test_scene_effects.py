@@ -58,5 +58,27 @@ class ShadowRefreshTests(unittest.TestCase):
         self.assertIsNone(e.shadow_retry)
 
 
+
+class AOSettleTests(unittest.TestCase):
+    def test_ao_waits_for_the_camera_to_rest_then_renders(self):
+        from rc2016.levels.scene_effects import AO_SETTLE_SECONDS
+        e, view = effects(), View()
+        e.ao_retry = None
+        view._camera_changed_at = 100.0
+        self.assertFalse(e._ao_due(view, 100.05))          # still moving
+        self.assertFalse(e._ao_due(view, 100.06))
+        self.assertEqual(len(view.after_calls), 1)          # one redraw scheduled for the rest point
+        view.after_calls[0][1]()
+        self.assertEqual(view.draws, 1)
+        self.assertTrue(e._ao_due(view, 100.0 + AO_SETTLE_SECONDS))
+
+    def test_close_cancels_both_retries(self):
+        e, view = effects(), View()
+        e.ao_retry = (view, 'after#a'); e.shadow_retry = (view, 'after#s')
+        e.ao, e.textures, e.fbos = None, [], []
+        e.close()
+        self.assertEqual(sorted(view.cancelled), ['after#a', 'after#s'])
+        self.assertFalse(e.ao_valid)
+
 if __name__ == '__main__':
     unittest.main()
