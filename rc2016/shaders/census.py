@@ -476,6 +476,30 @@ def print_interpolants(archive, path, attributes=None):
             print(line)
 
 
+def print_vertex_colours(archive, needle, limit=5):
+    """Per mesh of the model paths containing needle: material and colour-stream statistics."""
+    import numpy as np
+    from rc2016.formats.native_model import decode_model
+    from rc2016.levels.scene import asset_bytes
+    paths = sorted({e['path'] for e in archive.entries.values()
+                    if e['type'] == 'model' and needle.lower() in e['path'].lower()})
+    print(f'{len(paths)} model paths contain {needle!r}')
+    for path in paths[:limit]:
+        decoded = decode_model(path, data=asset_bytes(archive, path))
+        print('== model', path, '| undecoded sections:', ', '.join(decoded['unsupported_sections']) or 'none')
+        for mesh in decoded['meshes']:
+            colours = mesh.get('colors')
+            material = mesh.get('material')
+            material = material.get('path') if isinstance(material, dict) else material
+            line = f"  mesh {mesh['index']} {len(mesh['positions'])} vertices, material {material}"
+            if not colours:
+                print(line + ': no colour stream')
+                continue
+            c = np.asarray(colours, dtype=np.float64).reshape(-1, 4)
+            stats = ' '.join(f"{'RGBA'[j]} {c[:, j].min():.2f}/{c[:, j].mean():.2f}/{c[:, j].max():.2f}" for j in range(4))
+            print(line + f': colour min/mean/max {stats}; distinct RGBA {len(np.unique(c, axis=0))}')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--source', required=True, help='game root holding the archive')
@@ -484,19 +508,22 @@ def main(argv=None):
     parser.add_argument('--top', type=int, default=25, help='blockers to print')
     parser.add_argument('--receipt', help='print one material path\'s native and world-position preview receipts and stop')
     parser.add_argument('--interpolants', help='print one material path\'s interpolant vector forms and pixel uses and stop')
+    parser.add_argument('--vertex-colours', help='print colour-stream statistics per mesh of model paths containing this text and stop')
     parser.add_argument('--attribute', type=int, action='append',
                         help='with --interpolants: only this PS attribute index (repeatable)')
     parser.add_argument('--show', help='regular expression of material paths to report in detail (implies --materials)')
     parser.add_argument('--jobs', type=int, default=min(16, os.cpu_count() or 1),
                         help='worker processes (default: CPU count, at most 16; 1 runs in this process)')
     args = parser.parse_args(argv)
-    if not args.receipt and not args.interpolants and not args.output:
+    if not args.receipt and not args.interpolants and not args.vertex_colours and not args.output:
         parser.error('--output is required')
     from rc2016.levels.scene import open_archive
     started = time.time()
     archive = open_archive(args.source)
-    if args.receipt or args.interpolants:
+    if args.receipt or args.interpolants or args.vertex_colours:
         try:
+            if args.vertex_colours:
+                print_vertex_colours(archive, args.vertex_colours)
             if args.receipt:
                 print_receipt(archive, args.receipt)
             if args.interpolants:
