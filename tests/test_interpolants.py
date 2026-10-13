@@ -108,3 +108,65 @@ class SquaredStreamTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class VectorIdentityTests(unittest.TestCase):
+    """Linear forms say which stream and matrix make a normalised vector, per flag path."""
+
+    def setUp(self):
+        from rc2016.shaders.ir import DAG
+        self.ir = ir = DAG()
+        self.stream = lambda s: [ir.node('input', name=f'vertex.semantic{s}.{c}', kind='vertex_input',
+                                         semantic=s, channel=j) for j, c in enumerate('xyz')]
+        self.cb = lambda w: ir.node('input', name=f'CB1[{w}]', kind='cb', api=1, dword=w)
+
+    def transform(self, vector, base):
+        ir = self.ir
+        rows = []
+        for r in range(3):
+            terms = [ir.op('mul', self.cb(base + 4 * r + k), vector[k]) for k in range(3)]
+            rows.append(ir.op('add', ir.op('add', terms[0], terms[1]), terms[2]))
+        return rows
+
+    def normalise(self, vector):
+        ir = self.ir
+        dot = ir.op('add', ir.op('add', ir.op('mul', vector[0], vector[0]), ir.op('mul', vector[1], vector[1])),
+                    ir.op('mul', vector[2], vector[2]))
+        scale = ir.op('rsqrt', dot)
+        return [ir.op('mul', scale, v) for v in vector]
+
+    def test_matrix_and_stream_are_named_before_normalisation(self):
+        from rc2016.shaders.interpolants import vector_identity
+        groups = vector_identity(self.ir, self.normalise(self.transform(self.stream(1), 16)))
+        self.assertEqual(len(groups), 1)
+        settings, parts, atoms = groups[0]
+        self.assertEqual(settings, ['no flags'])
+        self.assertTrue(all(normalised for _, normalised in parts))
+        self.assertEqual(parts[0][0], 'CB1[16]*vertex.semantic1.x + CB1[17]*vertex.semantic1.y + CB1[18]*vertex.semantic1.z')
+        self.assertTrue(any(a.startswith('rsqrt#') for a in atoms))
+
+    def test_two_normalised_vectors_from_different_streams_differ(self):
+        from rc2016.shaders.interpolants import vector_identity
+        first = vector_identity(self.ir, self.normalise(self.transform(self.stream(1), 16)))[0][1]
+        second = vector_identity(self.ir, self.normalise(self.transform(self.stream(2), 16)))[0][1]
+        self.assertNotEqual(first, second)
+
+    def test_runtime_flag_paths_are_reported_separately(self):
+        from rc2016.shaders.interpolants import vector_identity
+        ir = self.ir
+        flag = ir.node('input', name='runtime_flag@40', kind='runtime_flag')
+        world = self.transform(self.stream(1), 16)
+        view = self.transform(self.stream(1), 32)
+        chosen = self.normalise([ir.op('select', flag, a, b) for a, b in zip(world, view)])
+        groups = vector_identity(ir, chosen)
+        self.assertEqual(sorted(g[0][0] for g in groups), ['40=0', '40=1'])
+        forms = {g[0][0]: g[1][0][0] for g in groups}
+        self.assertIn('CB1[16]', forms['40=1'])
+        self.assertIn('CB1[32]', forms['40=0'])
+
+    def test_report_lists_inputs_and_attribute_forms(self):
+        from rc2016.shaders.interpolants import attribute_report
+        lines = attribute_report(graph([(5, 4, 4)], [(9, 0), (10, 1)], [10, 9]))
+        self.assertIn('vertex 0x1234abcd: inputs semantic5[4]; exports semantic9->param0, semantic10->param1', lines)
+        self.assertIn('attribute1 (PS semantics [9])', lines)
+        self.assertIn('    x = vertex.semantic5.x', lines)

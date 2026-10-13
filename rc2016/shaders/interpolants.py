@@ -110,8 +110,11 @@ def listing(instructions, upto, limit=14, before=None):
     return ' '.join(rows)
 
 
-def vertex_exports(row):
-    """{parameter slot: [IR node per channel]} and the DAG, or (None, reason)."""
+def vertex_exports(row, position=False):
+    """{parameter slot: [IR node per channel]} and the DAG, or (None, reason).
+
+    With position=True the parameter map also holds the clip position export
+    (EXP target 12) under the key 'position'."""
     if 'code' not in row:
         return None, 'no verified vertex program'
     compiler = Compiler(row['code'], row['usage_slots'])
@@ -129,6 +132,8 @@ def vertex_exports(row):
     except (ValueError, IndexError, KeyError, struct.error) as exc:
         return None, f'{type(exc).__name__}: {exc}; before: ' + listing(instructions, compiler.current, before=10)
     params = {t - 32: v for t, v in compiler.exports.items() if 32 <= t < 64}
+    if position and 12 in compiler.exports:
+        params['position'] = compiler.exports[12]
     return (params, compiler.ir), None
 
 
@@ -258,3 +263,169 @@ def squared_stream_channels(data):
             if len(sources) == 1 and None not in sources:
                 found[(index, channel)] = sources.pop()
     return found
+
+
+MAX_FORM_TERMS = 256
+
+
+def linear_form(ir, root, limit=MAX_FORM_TERMS):
+    """Polynomial of a vertex expression over vertex inputs, constant-buffer words and
+    runtime flags; any other operation (rsqrt, texture fetch, bit logic) is an opaque
+    atom named op#node. {(factor names...): coefficient}, or None past limit terms."""
+    from rc2016.shaders.engine_inputs import _add, _mul
+    memo = {}
+
+    def visit(i):
+        if i in memo:
+            return memo[i]
+        n = ir.nodes[i]
+        op, args = n['op'], n.get('args', [])
+        if op == 'const':
+            p = {(): float(n['value'])} if n['value'] else {}
+        elif op == 'input':
+            p = {(n['name'],): 1.}
+        elif op in ('add', 'sub', 'mul', 'neg'):
+            parts = [visit(a) for a in args]
+            if any(x is None for x in parts):
+                p = None
+            elif op == 'neg':
+                p = {k: -v for k, v in parts[0].items()}
+            elif op == 'mul':
+                p = _mul(parts[0], parts[1])
+            else:
+                p = _add(parts[0], parts[1], -1. if op == 'sub' else 1.)
+            if p is not None and len(p) > limit:
+                p = None
+        else:
+            p = {(f'{op}#{i}',): 1.}
+        memo[i] = p
+        return p
+
+    return visit(root)
+
+
+def format_form(form):
+    if form is None:
+        return 'too many terms'
+    if not form:
+        return '0'
+    terms = []
+    for key in sorted(form, key=lambda k: (len(k), k)):
+        v = form[key]
+        factor = '*'.join(key)
+        if not factor:
+            terms.append(f'{v:g}')
+        elif v == 1:
+            terms.append(factor)
+        elif v == -1:
+            terms.append('-' + factor)
+        else:
+            terms.append(f'{v:g}*{factor}')
+    return ' + '.join(terms).replace('+ -', '- ')
+
+
+def _normalised_parts(ir, node):
+    """(vector component, rsqrt node) for mul(rsqrt(s), v) in either order; (node, None) otherwise."""
+    n = ir.nodes[node]
+    if n['op'] == 'mul':
+        a, b = n['args']
+        if ir.nodes[a]['op'] == 'rsqrt':
+            return b, a
+        if ir.nodes[b]['op'] == 'rsqrt':
+            return a, b
+    return node, None
+
+
+def vector_identity(ir, channels):
+    """Per setting of the reachable runtime flags, the linear forms of a vector export.
+
+    [(flag setting, [(component form, normalised)...], {atom: description})], with
+    settings that give identical forms merged. A component is reported as the vector
+    before its rsqrt normalisation when the export is mul(rsqrt(s), v). This is the
+    evidence for which vertex stream and which constant-buffer matrix make the
+    vector; nothing here names the vector.
+    """
+    flags = sorted(j for j in ir.reachable([c for c in channels if c is not None])
+                   if ir.nodes[j].get('kind') == 'runtime_flag')
+    if len(flags) > MAX_FLAGS:
+        return None
+    groups = {}
+    for bits in range(1 << len(flags)):
+        setting = ' '.join(f"{ir.nodes[f]['name'].split('@')[1]}={bits >> k & 1}" for k, f in enumerate(flags))
+        folded = ir.replace([c for c in channels if c is not None],
+                            {f: ir.const(float(bits >> k & 1)) for k, f in enumerate(flags)})
+        parts, atoms = [], {}
+        for node in folded:
+            vector, norm = _normalised_parts(ir, node)
+            form = linear_form(ir, vector)
+            parts.append((format_form(form), norm is not None))
+            for key in (form or {}):
+                for factor in key:
+                    if '#' in factor:
+                        atom = ir.nodes[int(factor.split('#')[1])]
+                        atoms.setdefault(factor, atom['reason'] if atom['op'] == 'unsupported' and atom.get('reason')
+                                         else ir.describe(int(factor.split('#')[1]), 3))
+            if norm is not None:
+                atoms.setdefault(f'rsqrt#{norm}', 'rsqrt(' + format_form(linear_form(ir, ir.nodes[norm]['args'][0])) + ')')
+        key = tuple(parts)
+        if key in groups:
+            groups[key][0].append(setting or 'no flags')
+        else:
+            groups[key] = ([setting or 'no flags'], atoms)
+    return [(settings, list(key), atoms) for key, (settings, atoms) in groups.items()]
+
+
+def attribute_report(data):
+    """Lines describing every vertex program's inputs and, per PS attribute, each
+    exporting program's vector forms, plus the clip position export for comparison."""
+    headers = shader_headers(data)
+    pixel = [h for h in headers if h['type'] == PIXEL]
+    vertex = [h for h in headers if h['type'] != PIXEL]
+    lines, compiled = [], {}
+    for row in vertex:
+        name = row.get('shader_id', row['header_offset'])
+        if row.get('layout') != 'verified':
+            lines.append(f'vertex {name}: layout unverified')
+            continue
+        inputs = ', '.join(f"semantic{e['semantic']}[{e['size']}]" for e in row['inputs'])
+        exports = ', '.join(f"semantic{e['semantic']}->param{e['slot']}" for e in row['exports'])
+        lines.append(f'vertex {name}: inputs {inputs}; exports {exports}')
+        compiled[row['header_offset']] = vertex_exports(row, position=True)
+        exported, reason = compiled[row['header_offset']]
+        if exported is None:
+            lines.append(f'  trace failed: {reason}')
+            continue
+        params, ir = exported
+        if params.get('position'):
+            lines.extend(_identity_lines(ir, params['position'], '  clip position'))
+    count = max((len(p['inputs']) for p in pixel), default=0)
+    for index in range(count):
+        semantics = sorted({p['inputs'][index]['semantic'] for p in pixel if index < len(p['inputs'])})
+        lines.append(f'attribute{index} (PS semantics {semantics})')
+        for row in vertex:
+            exported, _ = compiled.get(row['header_offset'], (None, None))
+            if exported is None:
+                continue
+            params, ir = exported
+            for slot in [e['slot'] for e in row['exports'] if e['semantic'] in semantics]:
+                channels = params.get(slot)
+                label = f"  {row.get('shader_id', row['header_offset'])} param{slot}"
+                if not channels:
+                    lines.append(label + ': not exported')
+                else:
+                    lines.extend(_identity_lines(ir, channels, label))
+    return lines
+
+
+def _identity_lines(ir, channels, label):
+    groups = vector_identity(ir, channels)
+    if groups is None:
+        return [f'{label}: more than {MAX_FLAGS} runtime flags']
+    lines = []
+    for settings, parts, atoms in groups:
+        lines.append(f"{label} [{'; '.join(settings[:4])}{' ...' if len(settings) > 4 else ''}]:")
+        for c, (form, normalised) in enumerate(parts):
+            lines.append(f"    {'xyzw'[c]}{' (before rsqrt)' if normalised else ''} = {form[:600]}")
+        for atom, text in sorted(atoms.items()):
+            lines.append(f'    where {atom} = {text[:300]}')
+    return lines

@@ -412,25 +412,79 @@ def print_receipt(archive, path):
             print('  limitation:', limitation[:300])
 
 
+def attribute_uses(data, limit=6):
+    """Per pixel program and PS attribute: the export channels reaching it and its smallest consumers."""
+    from rc2016.shaders.bindings import compiled
+    from rc2016.shaders.ir import DAG
+    lines = []
+    for p, program in enumerate(compiled(bytes(data))['programs']):
+        if program['status'] != 'compiled':
+            lines.append(f"pixel program {p}: {program.get('reason', program['status'])[:200]}")
+            continue
+        ir = DAG(program['ir']['nodes'])
+        inputs = {}
+        for i, n in enumerate(ir.nodes):
+            if n['op'] == 'input' and n.get('kind') == 'attribute':
+                inputs.setdefault(n['attribute'], set()).add(i)
+        reach = {}
+        for target, channels in program['ir']['exports'].items():
+            for c, node in enumerate(channels):
+                if node is None:
+                    continue
+                found = ir.reachable([node])
+                for attribute, nodes in inputs.items():
+                    if nodes & found:
+                        reach.setdefault(attribute, []).append(f"{target}.{'xyzw'[c]}")
+        for attribute in sorted(inputs):
+            uses = []
+            for i, n in enumerate(ir.nodes):
+                if inputs[attribute] & set(n.get('args', [])):
+                    text = ir.describe(i, 3)
+                    if text not in uses:
+                        uses.append(text)
+            lines.append(f"pixel program {p} attribute{attribute}: exports {', '.join(reach.get(attribute, [])) or 'none'}")
+            lines.extend(f'    use: {u[:300]}' for u in uses[:limit])
+    return lines
+
+
+def print_interpolants(archive, path):
+    """Vertex-side vector forms and pixel-side uses of every interpolant of a material's graphs."""
+    from rc2016.formats.archive import asset_data, asset_references
+    from rc2016.shaders.interpolants import attribute_report
+    ids = [i for i in archive.resolve(path) if archive.entries[i]['type'] == 'material']
+    if len(ids) != 1:
+        raise ValueError('Ambiguous or missing material ' + path)
+    for graph in sorted({r['path'] for r in asset_references(archive, ids[0]) if r['path'].endswith('.materialgraph')}):
+        gid = [i for i in archive.resolve(graph) if archive.entries[i]['type'] == 'materialgraph'][0]
+        data = asset_data(archive, gid)
+        print('== graph', graph)
+        for line in attribute_report(data) + attribute_uses(data):
+            print(line)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--source', required=True, help='game root holding the archive')
-    parser.add_argument('--output', help='JSON report path (outside the repository); required unless --receipt')
+    parser.add_argument('--output', help='JSON report path (outside the repository); required unless --receipt or --interpolants')
     parser.add_argument('--materials', action='store_true', help='also bind every material (slower)')
     parser.add_argument('--top', type=int, default=25, help='blockers to print')
     parser.add_argument('--receipt', help='print one material path\'s native and world-position preview receipts and stop')
+    parser.add_argument('--interpolants', help='print one material path\'s interpolant vector forms and pixel uses and stop')
     parser.add_argument('--show', help='regular expression of material paths to report in detail (implies --materials)')
     parser.add_argument('--jobs', type=int, default=min(16, os.cpu_count() or 1),
                         help='worker processes (default: CPU count, at most 16; 1 runs in this process)')
     args = parser.parse_args(argv)
-    if not args.receipt and not args.output:
+    if not args.receipt and not args.interpolants and not args.output:
         parser.error('--output is required')
     from rc2016.levels.scene import open_archive
     started = time.time()
     archive = open_archive(args.source)
-    if args.receipt:
+    if args.receipt or args.interpolants:
         try:
-            print_receipt(archive, args.receipt)
+            if args.receipt:
+                print_receipt(archive, args.receipt)
+            if args.interpolants:
+                print_interpolants(archive, args.interpolants)
         finally:
             archive.close()
         return 0
