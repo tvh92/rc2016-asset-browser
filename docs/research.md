@@ -29,6 +29,7 @@ The output folder must be outside the repository and source root. It receives `r
 | `hypothesis.py` | Executable claims over fixed-stride tables or offset-selected records |
 | `cross_reference.py` | Actual vendored dat1lib reader execution and CRC algorithms; guarded generic serialized reader |
 | `report.py` | Two-pass analysis and deterministic JSON/Markdown |
+| `mip_layout.py` | Texture payload sizes against top-mip-only, tile-padded and unpadded mip-chain layouts (`python -m rc2016.research.mip_layout --source-root <Image0>`); a prerequisite for uploading stored mips instead of generating them |
 
 The census ranks undecoded sections before decoded ones, with requested open items first. Within each group, score is file count times total section bytes. Heap coverage uses existing instance/decal reference ranges; unclaimed bytes can include alignment padding. The heap is only partially decoded.
 
