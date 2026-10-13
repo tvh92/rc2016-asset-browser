@@ -55,6 +55,13 @@ class TranslationDiskCacheTests(unittest.TestCase):
         self.disk._file(key).write_bytes(b'{not json')
         self.assertIsNone(self.disk.get(key))
 
+    def test_stats_count_hits_and_misses(self):
+        key = self.disk.key(b'material', [b'graph'])
+        self.assertIsNone(self.disk.get(key))
+        self.disk.put(key, translation())
+        self.disk.get(key); self.disk.get(key)
+        self.assertEqual(self.disk.stats(), dict(hits=2, misses=1))
+
     def test_a_new_session_reuses_the_stored_translation(self):
         calls = []
 

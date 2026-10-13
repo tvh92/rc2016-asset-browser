@@ -196,6 +196,8 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None, workers=N
     started = time.perf_counter()
     try:
         archive = get_archive()
+        disk = getattr(archive, "translation_disk_cache", None)
+        translations_before = disk.stats() if disk is not None and hasattr(disk, "stats") else None
         zones = level_scene.level_zone_paths(archive, level_path) if level_path.endswith(".level") else [level_path]
     except Exception as exc:
         out.put(("fatal", f"{type(exc).__name__}: {exc}"))
@@ -243,7 +245,7 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None, workers=N
     pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="level-load")
     try:
         _load_models(archive, pool, workers, models, catalog, actor_groups, points, out, cancel, started,
-                     actor_decode_seconds)
+                     actor_decode_seconds, translations_before)
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 
@@ -258,7 +260,8 @@ def _post_scene_lighting(archive, zones, out, cancel):
         out.put(('scene_lighting', lighting))
 
 
-def _load_models(archive, pool, workers, models, catalog, actor_groups, points, out, cancel, started, actor_decode_seconds):
+def _load_models(archive, pool, workers, models, catalog, actor_groups, points, out, cancel, started, actor_decode_seconds,
+                 translations_before=None):
     materials = MaterialJobs(archive, pool, out)
     geometry_of = lambda path: level_scene.model_geometry(archive, path)
     geometries, geometry_cache, geometry_paths, overrides = [], {}, {}, dict(outcomes=Counter(), instances=0, models=set())
@@ -353,7 +356,12 @@ def _load_models(archive, pool, workers, models, catalog, actor_groups, points, 
     materials.post(wait=True, cancel=cancel)
     if cancel.is_set():
         return
+    translations = None
+    if translations_before is not None:   # native translations read from disk vs translated this load
+        now = archive.translation_disk_cache.stats()
+        translations = {k: now[k] - translations_before[k] for k in now}
     out.put(("done", dict(geometry_seconds=geometry_seconds, total_seconds=time.perf_counter() - started,
+                          translation_cache=translations,
                           models=len(geometries), materials=len(materials.done), actors=summary, spawns=spawns, actor_seconds=actor_seconds,
                           material_overrides=dict(outcomes=dict(overrides["outcomes"]), instances=overrides["instances"],
                                                   models=len(overrides["models"])))))
@@ -764,6 +772,11 @@ class LevelPanel:
             return
         elif kind == "done":
             p["state"] = f"loaded in {item[1]['total_seconds']:.1f} s"
+            cached = item[1].get("translation_cache")
+            if cached and (cached["hits"] or cached["misses"]):
+                p["state"] += f" (native translations: {cached['hits']} from disk cache, {cached['misses']} translated)"
+                print(f"level viewer: native translations {cached['hits']} from disk cache, "
+                      f"{cached['misses']} translated", file=sys.stderr)
             finish = getattr(self.view, "finish_load", None)
             if finish:
                 finish()   # deferred mip chains build from here

@@ -276,6 +276,10 @@ class TranslationDiskCache(TextureDiskCache):
 
     def __init__(self, folder, limit=TRANSLATION_DISK_CACHE_BYTES):
         super().__init__(folder, limit)
+        self.hits = self.misses = 0   # get() results, for load reports
+
+    def stats(self):
+        return dict(hits=self.hits, misses=self.misses)
 
     def key(self, material_data, graph_datas):
         if _TRANSLATION_CODE_SHA256 is None:
@@ -290,14 +294,15 @@ class TranslationDiskCache(TextureDiskCache):
         try:
             with open(path, 'rb') as f:
                 stored = json.loads(f.read().decode('utf-8'))
-            if stored.get('key') != key:
-                return None
-            result = _from_json(stored['result'])
+            result = _from_json(stored['result']) if stored.get('key') == key else None
             if not isinstance(result, dict):
-                return None
+                raise ValueError('not a stored translation')
             os.utime(path)   # recency for eviction
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
-            return None
+            result = None
+        with self._lock:
+            if result is None: self.misses += 1
+            else: self.hits += 1
         return result
 
     def put(self, key, result):
