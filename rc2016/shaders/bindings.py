@@ -132,6 +132,13 @@ def guard_source_zero_powers(ir,roots):
     return [visit(i) for i in roots],guards
 
 
+def _lowered(program):
+    """Material-independent lowering, cached on the compiled program (callers get a fresh limitations list)."""
+    cached=program.get('_lowered')
+    if cached is None:cached=program['_lowered']=lower_deferred(program['ir'])
+    return dict(cached,limitations=list(cached['limitations']))
+
+
 def _bind(program,contract,material_data,instance):
     from rc2016.formats.materials import texture_slot_records, MATERIAL_TEXTURE_SLOTS
     overrides={}
@@ -147,7 +154,7 @@ def _bind(program,contract,material_data,instance):
         bound[5+j]=dict(api=5+j,path=chosen['path'],slot_key=row['slot_key'],
             type_hash=row['type_hash'],source='material_instance' if chosen is not row else 'graph_default')
     values,receipt=_parameter_values(contract,instance)
-    lowered=lower_deferred(program['ir']);ir=DAG(lowered['nodes']);outputs=lowered['outputs']
+    lowered=_lowered(program);ir=DAG(lowered['nodes']);outputs=lowered['outputs']
     normal=lowered['normal']
     if normal and bound.get(normal['api'],{}).get('path') is None:
         lowered['limitations'].append('Explicitly unset normal texture uses geometry normal.')

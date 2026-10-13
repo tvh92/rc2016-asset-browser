@@ -4,11 +4,13 @@ Ranks why materialgraph pixel programs do not translate, weighted by how many
 materials use each graph, so translator work targets the most common gaps.
 Reads the archive only; the JSON report goes where --output says.
 
-    python -m rc2016.shaders.census --source <game-root> --output <report.json> [--materials]
+    python -m rc2016.shaders.census --source <game-root> --output <report.json> [--materials] [--jobs N]
 """
 import argparse
 from collections import Counter, defaultdict
+from concurrent.futures import ProcessPoolExecutor
 import json
+import os
 import re
 import struct
 import sys
@@ -105,15 +107,9 @@ def diagnostic_reasons(diagnostic):
     return {normalise(_NODE_IDS.sub('nodeN', str(reason)))}
 
 
-def material_translation_status(archive, by_material=None):
-    """Bound per-material translation status and diagnostics (slower: binds every material).
-
-    Materials are visited grouped by graph so the bounded compiled-graph cache is reused.
-    """
+def _material_counts(archive, paths):
     from rc2016.viewer.native_glsl import prepare_material_translation
     statuses, diagnostics = Counter(), Counter()
-    paths = sorted((e['path'] for e in archive.entries.values() if e.get('type') == 'material'),
-                   key=lambda p: ((by_material or {}).get(p, []), p))
     for path in paths:
         result = prepare_material_translation(archive, path)
         statuses[result.get('status')] += 1
@@ -122,22 +118,85 @@ def material_translation_status(archive, by_material=None):
     return statuses, diagnostics
 
 
-def census(archive, materials=False, progress=None):
-    started = time.time()
-    by_material = {}
-    usage = material_graph_usage(archive, by_material)
-    graphs = {}
-    entries = [e for e in archive.entries.values() if e.get('type') == 'materialgraph']
+def _graph_rows(archive, entries):
     from rc2016.formats.archive import asset_data
-    for n, entry in enumerate(sorted(entries, key=lambda e: e['path'])):
-        if progress and n % 200 == 0:
-            progress(f'{n}/{len(entries)} graphs')
+    rows = {}
+    for entry in entries:
         try:
             data = asset_data(archive, entry['id'])
         except (ValueError, KeyError, IndexError, OSError, struct.error) as exc:
-            graphs[entry['path']] = dict(status='unreadable', blockers=[normalise(exc)], programs=0)
+            rows[entry['path']] = dict(status='unreadable', blockers=[normalise(exc)], programs=0)
             continue
-        graphs[entry['path']] = classify_graph(data)
+        rows[entry['path']] = classify_graph(data)
+    return rows
+
+
+# Worker processes open their own archive once.
+_WORKER_ARCHIVE = None
+
+
+def _worker_open(source):
+    global _WORKER_ARCHIVE
+    from rc2016.levels.scene import open_archive
+    _WORKER_ARCHIVE = open_archive(source)
+
+
+def _worker_graphs(entries):
+    return _graph_rows(_WORKER_ARCHIVE, entries)
+
+
+def _worker_materials(paths):
+    return _material_counts(_WORKER_ARCHIVE, paths)
+
+
+def _chunks(items, count):
+    """Contiguous chunks, so materials sharing a graph stay in one worker's cache."""
+    size = max(1, -(-len(items) // count))
+    return [items[i:i + size] for i in range(0, len(items), size)]
+
+
+def _run(pool, function, worker, archive, items, chunks, progress, label):
+    if pool is None:
+        return [function(archive, items)]
+    results = []
+    parts = _chunks(items, chunks)
+    for n, result in enumerate(pool.map(worker, parts), 1):
+        results.append(result)
+        if progress:
+            progress(f'{label}: {n}/{len(parts)} chunks')
+    return results
+
+
+def material_translation_status(archive, by_material=None, pool=None, chunks=1, progress=None):
+    """Bound per-material translation status and diagnostics (slower: binds every material).
+
+    Materials are visited grouped by graph so the bounded compiled-graph cache is reused.
+    """
+    paths = sorted((e['path'] for e in archive.entries.values() if e.get('type') == 'material'),
+                   key=lambda p: ((by_material or {}).get(p, []), p))
+    statuses, diagnostics = Counter(), Counter()
+    for s, d in _run(pool, _material_counts, _worker_materials, archive, paths, chunks, progress, 'materials'):
+        statuses.update(s); diagnostics.update(d)
+    return statuses, diagnostics
+
+
+def census(archive, materials=False, progress=None, jobs=1, source=None):
+    started = time.time()
+    by_material = {}
+    usage = material_graph_usage(archive, by_material)
+    entries = sorted((e for e in archive.entries.values() if e.get('type') == 'materialgraph'), key=lambda e: e['path'])
+    pool = ProcessPoolExecutor(jobs, initializer=_worker_open, initargs=(source,)) if jobs > 1 and source else None
+    try:
+        return _census(archive, materials, progress, pool, jobs * 4, started, by_material, usage, entries)
+    finally:
+        if pool is not None:
+            pool.shutdown()
+
+
+def _census(archive, materials, progress, pool, chunks, started, by_material, usage, entries):
+    graphs = {}
+    for rows in _run(pool, _graph_rows, _worker_graphs, archive, entries, chunks, progress, 'graphs'):
+        graphs.update(rows)
     by_status = Counter()
     weighted_status = Counter()
     blocker_graphs = defaultdict(list)
@@ -164,7 +223,7 @@ def census(archive, materials=False, progress=None):
         if progress:
             progress('binding every material')
         started = time.time()
-        statuses, diagnostics = material_translation_status(archive, by_material)
+        statuses, diagnostics = material_translation_status(archive, by_material, pool, chunks, progress)
         report['seconds']['materials'] = round(time.time() - started, 1)
         report['material_status'] = dict(statuses)
         report['material_diagnostics'] = [dict(reason=r, materials=c) for r, c in diagnostics.most_common()]
@@ -177,12 +236,15 @@ def main(argv=None):
     parser.add_argument('--output', required=True, help='JSON report path (outside the repository)')
     parser.add_argument('--materials', action='store_true', help='also bind every material (slower)')
     parser.add_argument('--top', type=int, default=25, help='blockers to print')
+    parser.add_argument('--jobs', type=int, default=min(8, os.cpu_count() or 1),
+                        help='worker processes (default: CPU count, at most 8; 1 runs in this process)')
     args = parser.parse_args(argv)
     from rc2016.levels.scene import open_archive
     started = time.time()
     archive = open_archive(args.source)
     try:
-        report = census(archive, args.materials, progress=lambda m: print(m, file=sys.stderr))
+        report = census(archive, args.materials, progress=lambda m: print(m, file=sys.stderr, flush=True),
+                        jobs=args.jobs, source=args.source)
     finally:
         archive.close()
     with open(args.output, 'w', encoding='utf-8') as handle:
