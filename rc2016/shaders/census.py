@@ -119,6 +119,27 @@ _SUMMARY = 'No portable deferred writer with a bounded source pass contract'
 _ATTRIBUTE = re.compile(r'input attribute(\d+)\.')
 
 
+def engine_terms(data, limit=6):
+    """Smallest expressions that consume an engine CB0 word or pixel position, per compiled program."""
+    from rc2016.shaders.bindings import compiled
+    from rc2016.shaders.ir import DAG
+    found = []
+    for program in compiled(bytes(data))['programs']:
+        if program['status'] != 'compiled':
+            continue
+        ir = DAG(program['ir']['nodes'])
+        engine = {i for i, n in enumerate(ir.nodes) if n['op'] == 'input' and
+                  (n.get('kind') == 'ps_input' or (n.get('kind') == 'cb' and n.get('api') == 0))}
+        for i, n in enumerate(ir.nodes):
+            if n['op'] in ('add', 'mul', 'sub', 'u_and') and engine & set(n.get('args', [])):
+                text = ir.describe(i, 3)
+                if text not in found:
+                    found.append(text)
+            if len(found) >= limit:
+                return found
+    return found
+
+
 def material_detail(archive, path, result, reasons):
     """Blockers of one material plus where each blocking interpolant comes from."""
     from rc2016.formats.archive import asset_data, asset_references
@@ -129,6 +150,9 @@ def material_detail(archive, path, result, reasons):
         graphs = sorted({r['path'] for r in asset_references(archive, ids[0]) if r['path'].endswith('.materialgraph')})
         detail['graphs'] = graphs
         attributes = {int(m.group(1)) for r in reasons for m in _ATTRIBUTE.finditer(r)}
+        if any('CB0[' in r or 'ps.POS' in r for r in reasons) and graphs:
+            gid = [i for i in archive.resolve(graphs[0]) if archive.entries[i]['type'] == 'materialgraph'][0]
+            detail['engine_terms'] = engine_terms(asset_data(archive, gid))
         for graph in graphs[:1] if attributes else []:
             gid = [i for i in archive.resolve(graph) if archive.entries[i]['type'] == 'materialgraph'][0]
             detail['interpolants'] = interpolant_sources(asset_data(archive, gid), attributes)
@@ -279,6 +303,11 @@ def _print_shown(details):
     """Shown materials grouped by identical blockers; interpolant sources listed once per group."""
     ready = sum(d['status'] == 'ready' for d in details)
     print(f'shown materials: {len(details)} ({ready} ready)')
+    terms = Counter(t for d in details if d['status'] != 'ready' for t in d.get('engine_terms', []))
+    if terms:
+        print('expressions consuming engine CB0 words or pixel position (materials):')
+        for term, count in terms.most_common(12):
+            print(f'  {count:4d}  {term[:400]}')
     groups = defaultdict(list)
     for d in details:
         if d['status'] != 'ready':
@@ -290,8 +319,8 @@ def _print_shown(details):
         print('  blockers:', reasons[:400])
         for name, entry in json.loads(interpolants).items():
             print(f"  {name} (PS semantic {entry['semantics']}):")
-            for source in entry['sources'][:4]:
-                print('    ' + source[:300])
+            for source in entry['sources'][:2]:
+                print('    ' + source[:900])
 
 
 def main(argv=None):

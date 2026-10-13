@@ -187,7 +187,27 @@ class ControlFlowTests(unittest.TestCase):
         self.assertEqual(dag.evaluate(compiler.v[3], {'v2': 2., 'v3': 3., 'CB2[0]': 0.}), 2.)
         self.assertEqual(dag.evaluate(compiler.v[3], {'v2': 2., 'v3': 3., 'CB2[0]': word(1)}), 3.)
 
+    def test_vccz_skip_over_a_vcc_masked_region(self):
+        # if (v1 > v2) v3 = v1; compiled as a VCCZ skip over an exec-masked region.
+        code = program(vopc('V_CMP_GT_F32', V + 1, 2), ('branch', 'S_CBRANCH_VCCZ', 'skip'),
+                       sop1('S_AND_SAVEEXEC_B64', 10, 106), vmov(3, V + 1), sop2('S_OR_B64', 126, 126, 10),
+                       ('label', 'skip'))
+        for a, b in [(1., 2.), (3., 2.)]:
+            with self.subTest(a=a, b=b):
+                compiler = Compiler(code, [])
+                for reg in (1, 2):
+                    compiler.v[reg] = compiler.ir.node('input', name=f'v{reg}', kind='test')
+                compiler.v[3] = compiler.v[2]
+                compiler.run(decoder().decode_stream(code, 0))
+                self.assertEqual(DAG(compiler.ir.nodes).evaluate(compiler.v[3], {'v1': a, 'v2': b}), max(a, b))
+                self.assertEqual(compiler.ir.value(compiler.exec), 1.)
+
     def test_lane_varying_vcc_branch_stays_unsupported(self):
+        # Vector work before the mask: lanes without VCC would be affected.
+        code = program(vopc('V_CMP_GT_F32', V + 1, 2), ('branch', 'S_CBRANCH_VCCZ', 'skip'), vmov(3, V + 1),
+                       sop1('S_AND_SAVEEXEC_B64', 10, 106), ('label', 'skip'))
+        with self.assertRaisesRegex(ValueError, 'lane-varying VCC'):
+            run(code, {1: 1., 2: 2.})
         code = program(vopc('V_CMP_GT_F32', V + 1, 2), ('branch', 'S_CBRANCH_VCCZ', 'skip'), ('label', 'skip'))
         with self.assertRaisesRegex(ValueError, 'lane-varying VCC'):
             run(code, {1: 1., 2: 2.})

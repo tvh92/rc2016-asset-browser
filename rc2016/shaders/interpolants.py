@@ -94,6 +94,18 @@ def shader_headers(data):
     return rows
 
 
+def listing(instructions, upto, limit=14):
+    """Compact opcode listing of the first instructions, through the one at offset upto."""
+    rows = []
+    for i in instructions[:limit]:
+        f = i['fields']
+        operands = ','.join(str(x) for x in (f.get('dst') or []) + (f.get('src') or []))
+        rows.append(f"{i['relative']}:{i['name'].replace('GCN_', '')}({operands})")
+        if i['relative'] >= upto:
+            break
+    return ' '.join(rows)
+
+
 def vertex_exports(row):
     """{parameter slot: [IR node per channel]} and the DAG, or (None, reason)."""
     if 'code' not in row:
@@ -105,10 +117,11 @@ def vertex_exports(row):
                 'input', name=f"vertex.semantic{entry['semantic']}.{'xyzw'[j]}", kind='vertex_input',
                 semantic=entry['semantic'], channel=j)
     compiler.fetch_call = True
+    instructions = decoder().decode_stream(row['code'], 0)
     try:
-        compiler.run(decoder().decode_stream(row['code'], 0))
+        compiler.run(instructions)
     except (ValueError, IndexError, KeyError, struct.error) as exc:
-        return None, f'{type(exc).__name__}: {exc}'
+        return None, f'{type(exc).__name__}: {exc}; starts: ' + listing(instructions, compiler.current)
     params = {t - 32: v for t, v in compiler.exports.items() if 32 <= t < 64}
     return (params, compiler.ir), None
 

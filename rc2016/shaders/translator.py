@@ -20,7 +20,7 @@ import sys
 
 from rc2016.shaders.ir import DAG, bits, from_bits
 
-VERSION=10
+VERSION=11
 ROOT=Path(__file__).resolve().parents[2]
 SHADER_SECTION=0x873D1E6C
 # VALU instructions that also write a scalar carry/flag register pair.
@@ -345,6 +345,16 @@ class Compiler:
             if a and b:return [self.ir.op('select',n['args'][0],x,y) for x,y in zip(a,b)]
         return None
 
+    def guarded_by_vcc(self,target):
+        """The skipped region begins with S_AND_SAVEEXEC_B64 on VCC, before any vector work or VCC/EXEC write."""
+        for j in getattr(self,'instructions',[])[getattr(self,'position',0)+1:]:
+            if j['relative']>=target:return False
+            name=j['name'].replace('GCN_','').replace('_E64','')
+            if name=='S_AND_SAVEEXEC_B64':return j['fields']['src'][0]==106
+            if j['kind'] not in (0,1,2,3,4,10):return False
+            if any(r in (106,107,126,127) for r in j['fields'].get('dst',[]) or []):return False
+        return False
+
     def wave_uniform(self,value):
         """True when a value depends only on constants and constant-buffer words."""
         for j in self.ir.reachable([value]):
@@ -373,9 +383,13 @@ class Compiler:
         elif name in ('S_CBRANCH_VCCZ','S_CBRANCH_VCCNZ'):
             # VCCZ is wave-wide; it is a uniform branch only when VCC is the same in every lane.
             vcc=self.mask(106)
-            if vcc is None or not self.wave_uniform(vcc):
-                raise ValueError(f'Control flow unsupported at {i["relative"]}: {name} on lane-varying VCC')
-            condition=vcc if name=='S_CBRANCH_VCCNZ' else self.p_not(vcc)
+            if vcc is not None and self.wave_uniform(vcc):
+                condition=vcc if name=='S_CBRANCH_VCCNZ' else self.p_not(vcc)
+            elif vcc is not None and name=='S_CBRANCH_VCCZ' and self.guarded_by_vcc(target):
+                # A skip over a region masked to the VCC lanes: lanes with VCC set
+                # fall through, the others are inactive in the region either way.
+                condition=zero
+            else:raise ValueError(f'Control flow unsupported at {i["relative"]}: {name} on lane-varying VCC')
         else:raise ValueError(f'Control flow unsupported at {i["relative"]}: {name}')
         taken=self.p_and(self.bp,condition)
         if target<=i['relative']:self.back=(target,taken)  # unrolled by compile()
@@ -691,8 +705,9 @@ class Compiler:
         taken predicate (bounded unrolling) and resumes after the branch when every
         iteration's exit has been merged."""
         index={i['relative']:n for n,i in enumerate(instructions)};n=0;iterations=Counter()
+        self.instructions=instructions
         while n<len(instructions):
-            i=instructions[n]
+            i=instructions[n];self.position=n
             if i['relative'] in self.pending:self.bp=self.p_or(self.bp,self.pending.pop(i['relative']))
             if self.ir.value(self.bp)==0:n+=1;continue
             self.step(i)
