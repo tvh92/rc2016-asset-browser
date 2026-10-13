@@ -525,6 +525,44 @@ def print_vertex_colours(archive, needle, limit=5, material=None, dump=0):
             print(line + f': colour min/mean/max {stats}; distinct RGBA {len(np.unique(c, axis=0))}', flush=True)
 
 
+def print_instances(archive, needle, limit=8):
+    """Zone instances of models whose path contains needle: zone section sizes, the record's
+    undecoded header words (+0x5C..+0xB0) and the start of its tail, to look for per-instance
+    data such as vertex colours."""
+    import struct
+    from rc2016.levels.scene import asset_bytes
+    from rc2016.levels.zone_format import DATA_HEAP, INSTANCE_OFFSETS, RECORD_HEADER_SIZE, decode_zone, sections
+    zones = sorted({e['path'] for e in archive.entries.values() if e['type'] == 'zone'})
+    shown = 0
+    for zone in zones:
+        data = asset_bytes(archive, zone)
+        try:
+            decoded = decode_zone(data)
+        except ValueError:
+            continue
+        hits = [i for i in decoded['instances'] if needle.lower() in decoded['models'][i['model_index']].lower()]
+        if not hits:
+            continue
+        table = sections(data)
+        heap = table[DATA_HEAP][0]
+        offsets = struct.unpack_from(f'<{table[INSTANCE_OFFSETS][1] // 4}I', data, table[INSTANCE_OFFSETS][0])
+        print('== zone', zone, f'| {len(decoded["instances"])} instances | sections (tag bytes):',
+              ', '.join(f'0x{t:08X} {size}' for t, (_, size) in sorted(table.items())), flush=True)
+        for inst in hits:
+            r = heap + offsets[inst['index']]
+            header = data[r + 0x5C:r + RECORD_HEADER_SIZE]
+            words = ' '.join(f'{w:08x}' for w in struct.unpack(f'<{len(header) // 4}I', header))
+            tail = bytes.fromhex(inst['tail'])
+            print(f"  instance {inst['index']} {decoded['models'][inst['model_index']]} flags {inst['flags']} "
+                  f"heap offset {offsets[inst['index']]:#x} tail {len(tail)} bytes")
+            print(f'    +0x5c words {words}')
+            print(f'    tail {tail[:64].hex(" ")}')
+        shown += 1
+        if shown >= limit:
+            break
+    print(f'{shown} zones shown', flush=True)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--source', required=True, help='game root holding the archive')
@@ -534,6 +572,7 @@ def main(argv=None):
     parser.add_argument('--receipt', help='print one material path\'s native and world-position preview receipts and stop')
     parser.add_argument('--interpolants', help='print one material path\'s interpolant vector forms and pixel uses and stop')
     parser.add_argument('--vertex-colours', help='print colour-stream statistics per mesh of model paths containing this text and stop')
+    parser.add_argument('--instances', help='print zone instance records of models whose path contains this text and stop')
     parser.add_argument('--dump-sections', type=int, default=0, metavar='BYTES',
                         help='with --vertex-colours: hex-dump the first BYTES of each undecoded model section')
     parser.add_argument('--colour-material', help='with --vertex-colours: only models and meshes using a material path containing this text')
@@ -543,13 +582,15 @@ def main(argv=None):
     parser.add_argument('--jobs', type=int, default=min(16, os.cpu_count() or 1),
                         help='worker processes (default: CPU count, at most 16; 1 runs in this process)')
     args = parser.parse_args(argv)
-    if not args.receipt and not args.interpolants and not args.vertex_colours and not args.output:
+    if not args.receipt and not args.interpolants and not args.vertex_colours and not args.instances and not args.output:
         parser.error('--output is required')
     from rc2016.levels.scene import open_archive
     started = time.time()
     archive = open_archive(args.source)
-    if args.receipt or args.interpolants or args.vertex_colours:
+    if args.receipt or args.interpolants or args.vertex_colours or args.instances:
         try:
+            if args.instances:
+                print_instances(archive, args.instances)
             if args.vertex_colours:
                 print_vertex_colours(archive, args.vertex_colours, material=args.colour_material, dump=args.dump_sections)
             if args.receipt:
