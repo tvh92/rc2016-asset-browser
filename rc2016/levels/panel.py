@@ -230,8 +230,9 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None, workers=N
         out.put(("zone", dict(zone=zone, instances=scene["instances"], models=len(scene["models"]), actors=actor_count)))
         points.extend(scene["points"])
         for model in scene["models"]:
-            entry = models.setdefault(model["path"], dict(hidden=model["hidden"], count=0, zones=[]))
+            entry = models.setdefault(model["path"], dict(hidden=model["hidden"], count=0, zones=[], vertex_colours=[]))
             entry["count"] += model["count"]
+            entry["vertex_colours"] += model.get("vertex_colours", [])
             entry["zones"].append((zone, model["groups"]))
     out.put(("bounds", level_scene.core_bounds(points)))
     if level_path.endswith(".level"):
@@ -282,9 +283,16 @@ def _load_models(archive, pool, workers, models, catalog, actor_groups, points, 
             overrides["models"].add(path)
         # Replacement materials load with the model's own (each material path loads once).
         geometry["override_materials"] = [dict(path=material) for material in replacements]
+        alpha, note = level_scene.instance_vertex_alpha(geometry, entry.get("vertex_colours"), entry["count"])
+        if alpha is not None:
+            geometry = dict(geometry, vertex_alpha=alpha)
+        if note:
+            geometry = dict(geometry, vertex_colour_note=note)
         geometries.append(geometry)
         geometry_cache[path.lower()] = geometry
         geometry_paths[path.lower()] = path
+        if geometry.get("vertex_colour_note"):
+            out.put(("vertex_colours", path, geometry["vertex_colour_note"], geometry.get("vertex_alpha") is not None))
         out.put(("model", path, geometry, entry["hidden"], zones))
         out.put(("overrides", dict(outcomes=dict(overrides["outcomes"]), instances=overrides["instances"],
                                    models=len(overrides["models"]))))
@@ -741,6 +749,10 @@ class LevelPanel:
                 print("level viewer: sky:", unsupported["model"], "-", unsupported["reason"], file=sys.stderr)
         elif kind == "overrides":
             p["overrides"] = item[1]
+        elif kind == "vertex_colours":
+            _kind, path, note, used = item
+            p.setdefault("vertex_colours", {})[path] = used
+            print("level viewer: zone-keyed vertex colours (inferred):", path, "-", note, file=sys.stderr)
         elif kind == "materials":
             self.view.add_materials(item[1])
             self.material_paths.update(item[1])
@@ -779,6 +791,9 @@ class LevelPanel:
         errors = f" · {len(p['errors'])} failed" if p.get("errors") else ""
         overrides = override_summary(p.get("overrides"))
         sky = f" · {p['sky']}" if p.get("sky") else ""
+        keyed = p.get("vertex_colours") or {}
+        if keyed:
+            sky += f" · {sum(keyed.values())}/{len(keyed)} models with zone-keyed vertex alpha (inferred)"
         actor_stats = p.get('actors', {})
         actors = (f" · actors {stats.get('actors', 0):,} drawn, {actor_stats.get('unresolved', 0):,} unresolved, "
                   f"{actor_stats.get('skipped_skinned', 0):,} skipped-skinned")

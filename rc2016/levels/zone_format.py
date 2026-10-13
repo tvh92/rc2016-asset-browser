@@ -18,7 +18,21 @@ Instance record (offsets relative to the record):
                         n x 12 bytes: u32 CRC32 of the material slot name, u64 CRC64 of the
                         replacement material path (both normalised: lower case, '/' separators)
 
+    +0x9C  u32          number of position-keyed vertex colours
+    +0xA8  u32          record-relative offset of their keys, 0xFFFFFFFF if none: n x u64, three
+                        21-bit fields (x, y, z from bit 0) each biased by 2^20, sorted ascending
+    +0xAC  u32          record-relative offset of their colours: n x 4 bytes, directly after the keys
+
     0x032D450A  (u32 path offset, u32 0xFFFFFFFF) pairs: the zone's replacement material paths
+
+Vertex colours (vertex_colour_block) were read on one record, the Novalis terrain
+`rp_novalis_level1_tfrag` in `art_terrain.zone` (8,997 entries, the block ending the record).
+A key is the model-space position x 10 rounded to an integer: 8,995 of its keys lie within 0.6
+units per axis of a vertex of the placed model (residuals -0.5..0.5625, so the keys were
+rounded from positions finer than the model's int16 grid), and only part of the terrain is
+listed. Byte 3 is 0 along the visible dirt paths and 255 on the grass around them; byte 0 is
+roughly its inverse. Which shader input each byte feeds, and what unlisted vertices receive,
+are inferred, not decoded.
 
 Material overrides were validated on every main-game zone: 71,145 of 228,727 instances carry
 a block, all inside their records; every non-null replacement hash is a path in the same zone's
@@ -138,6 +152,28 @@ def _material_overrides(data, record, record_size, heap_end, by_hash):
     return result
 
 
+VERTEX_COLOUR_KEY_BITS = 21
+
+
+def vertex_colour_block(data, record, record_size):
+    """(keys int64 (n, 3), colours uint8 (n, 4)) of the instance record at absolute offset ``record``,
+    or None when it has no block or the block does not fit the layout above (count at +0x9C, keys at
+    the offset in +0xA8, colours at the offset in +0xAC directly after them, inside the record).
+    Keys are model-space positions x 10 (see the module docstring)."""
+    import numpy as np
+    count, keys_at = struct.unpack_from('<II', data, record + 0x9C)[0], struct.unpack_from('<I', data, record + 0xA8)[0]
+    colours_at, = struct.unpack_from('<I', data, record + 0xAC)
+    if keys_at == NO_BLOCK or not count or colours_at != keys_at + 8 * count \
+            or keys_at < RECORD_HEADER_SIZE or colours_at + 4 * count > record_size or record + record_size > len(data):
+        return None
+    raw = np.frombuffer(data, '<u8', count, record + keys_at)
+    mask, bias = np.uint64((1 << VERTEX_COLOUR_KEY_BITS) - 1), 1 << (VERTEX_COLOUR_KEY_BITS - 1)
+    keys = np.stack([((raw >> np.uint64(VERTEX_COLOUR_KEY_BITS * a)) & mask).astype(np.int64) - bias
+                     for a in range(3)], axis=1)
+    colours = np.frombuffer(data, np.uint8, 4 * count, record + colours_at).reshape(count, 4).copy()
+    return keys, colours
+
+
 def _cstring(data, offset):
     return data[offset:data.index(b'\0', offset)].decode('ascii')
 
@@ -192,8 +228,10 @@ def decode_zone_arrays(data):
     per-instance dicts, matrix lists or the tail hex.
 
     {'models', 'override_materials', 'instances' (count), 'matrices' float32 (n, 16) row-vector,
-     'model_index' uint32 (n,), 'overrides' {instance number: decode_zone's material_overrides list}}.
-    Only instances with a nonzero override count appear in 'overrides'. Any invariant failure is
+     'model_index' uint32 (n,), 'overrides' {instance number: decode_zone's material_overrides list},
+     'vertex_colours' {instance number: vertex_colour_block}}.
+    Only instances with a nonzero override count appear in 'overrides', and only those with a
+    vertex-colour block in 'vertex_colours'. Any invariant failure is
     re-raised by decode_zone itself, so the message is the one the full decoder gives."""
     import numpy as np
     table = sections(data)
@@ -207,7 +245,7 @@ def decode_zone_arrays(data):
     rel = np.frombuffer(data, '<u4', size // 4, off).astype(np.int64)
     replacements = override_materials(data, table)
     n = len(rel)
-    result = dict(models=models, override_materials=replacements, instances=n, overrides={},
+    result = dict(models=models, override_materials=replacements, instances=n, overrides={}, vertex_colours={},
                   matrices=np.zeros((0, 16), np.float32), model_index=np.zeros(0, np.uint32))
     if not n:
         return result
@@ -233,6 +271,11 @@ def decode_zone_arrays(data):
     counts = np.frombuffer(data, np.uint8)[r + 0x99]
     for i in np.flatnonzero(counts).tolist():
         result['overrides'][i] = _material_overrides(data, int(r[i]), int(record_size[i]), heap + heap_size, by_hash)
+    has_colours = np.frombuffer(data, np.uint8)[r[:, None] + np.arange(0xA8, 0xAC)].view('<u4')[:, 0] != NO_BLOCK
+    for i in np.flatnonzero(has_colours).tolist():
+        block = vertex_colour_block(data, int(r[i]), int(record_size[i]))
+        if block is not None:
+            result['vertex_colours'][i] = block
     result.update(matrices=matrices, model_index=model_index)
     return result
 
@@ -245,7 +288,8 @@ def _arrays_from_full(data):
     return dict(models=zone['models'], override_materials=zone['override_materials'], instances=len(instances),
                 matrices=np.array([[x for row in i['matrix_rows'] for x in row] for i in instances], np.float32).reshape(-1, 16),
                 model_index=np.array([i['model_index'] for i in instances], np.uint32),
-                overrides={n: i['material_overrides'] for n, i in enumerate(instances) if i['material_overrides']})
+                overrides={n: i['material_overrides'] for n, i in enumerate(instances) if i['material_overrides']},
+                vertex_colours={})
 
 
 def _unorm_1010102(word):

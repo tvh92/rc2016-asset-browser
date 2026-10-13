@@ -595,7 +595,9 @@ class LevelViewport(ModelViewport):
         p=np.asarray(geometry['positions']).reshape(-1,3)
         record['local_bounds']=(tuple(p.min(axis=0)),tuple(p.max(axis=0)))
         self._scene_revision=getattr(self,'_scene_revision',0)+1
-        record["buffers"] = [record[k] for k in ("vbo", "nbo", "tbo", "ibo")]
+        alpha = geometry.get("vertex_alpha")
+        record["abo"] = self._buffer(self.GL_ARRAY_BUFFER, alpha) if alpha is not None and len(alpha) * 3 == len(geometry["positions"]) else None
+        record["buffers"] = [record[k] for k in ("vbo", "nbo", "tbo", "ibo", "abo") if record[k]]
         self._ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0); self._ext["glBindBuffer"](self.GL_ELEMENT_ARRAY_BUFFER, 0)
         self._models[path] = record
 
@@ -685,6 +687,15 @@ class LevelViewport(ModelViewport):
             ext["glBindBuffer"](self.GL_ARRAY_BUFFER, model["nbo"]); gl.glNormalPointer(self.GL_FLOAT, 0, None)
             ext["glBindBuffer"](self.GL_ARRAY_BUFFER, model["tbo"]); gl.glTexCoordPointer(2, self.GL_FLOAT, 0, None)
             ext["glBindBuffer"](self.GL_ELEMENT_ARRAY_BUFFER, model["ibo"])
+            # Per-vertex colour alpha (zone position-keyed colours); without it the generic value
+            # set in _begin_attributes (1.0) applies.
+            alpha = INSTANCE_ATTRIBUTES["aRockAlpha"]
+            if model.get("abo"):
+                ext["glBindBuffer"](self.GL_ARRAY_BUFFER, model["abo"])
+                sh.glEnableVertexAttribArray(alpha)
+                sh.glVertexAttribPointer(alpha, 1, self.GL_FLOAT, 0, 4, None)
+            else:
+                sh.glDisableVertexAttribArray(alpha)
             ext["glBindBuffer"](self.GL_ARRAY_BUFFER, group[0])
             for row in range(4):
                 location = INSTANCE_ATTRIBUTES[f"aInst{row}"]
@@ -951,6 +962,9 @@ class LevelViewport(ModelViewport):
             self._build_draw_list()
 
     def _begin_attributes(self):
+        from rc2016.viewer.shading import INSTANCE_ATTRIBUTES
+        # Models without keyed vertex colours read the generic colour alpha 1.
+        self._shading.glVertexAttrib4f(INSTANCE_ATTRIBUTES["aRockAlpha"], 1.0, 0.0, 0.0, 1.0)
         self._bound_vao = self._front = None
 
     def _end_attributes(self):

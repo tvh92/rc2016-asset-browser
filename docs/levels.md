@@ -56,12 +56,21 @@ Instance record (offsets relative to the record):
 | `+0x58` | u32 | index into the `0xC6A5905E` model list |
 | `+0x5C` | u32 | flags, kept raw (values seen: `0x440000`, `0x440020`, `0x740000`, ...; meaning unknown) |
 | `+0x99` | u8 | number of material overrides |
+| `+0x9C` | u32 | number of [position-keyed vertex colours](#position-keyed-vertex-colours) |
 | `+0xA4` | u32 | record-relative offset of the material-override block, `0xFFFFFFFF` when there is none |
-| `+0xB0` | bytes | optional tail, kept raw as hex. Holds the material-override block and other blocks: `+0xA0` and `+0xA8` (with `+0x9A`, `+0x9C`, `+0xAC`) locate blocks that are not decoded |
+| `+0xA8` | u32 | record-relative offset of the vertex-colour keys, `0xFFFFFFFF` when there are none |
+| `+0xAC` | u32 | record-relative offset of the vertex colours |
+| `+0xB0` | bytes | optional tail, kept raw as hex. Holds the material-override block, the vertex-colour block and a block at `+0xA0` (with `+0x9A`) that is not decoded |
 
 The decoder enforces these invariants and raises if any fails: size field is at least `0xB0` and inside the heap; size field matches the stride to the next record (rounded up to 8); the last record's tail may overrun an unpadded heap by fewer than 8 bytes (13 of the 229 zones); w column is `(0,0,0,1)`; model index is in range; ids are unique; a nonzero override count has a block, and the block lies inside the record.
 
 Validation: every `.zone` in the archive that has the three sections decodes with all invariants holding, 229 zones and 228,727 instances. 585 zones have no model-instance table (lighting, sound, nav, gameplay-only). In Novalis `art_buildings.zone`, 3,167 instances use all 136 listed models. 3,999 matrices in the corpus are sheared (worst axis cosine 0.685) and 17,511 are mirrored, so placement must keep the full matrix (no TRS decomposition).
+
+### Position-keyed vertex colours
+
+An instance can carry vertex colours for its model, keyed by position. `zone_format.vertex_colour_block` reads `n` (`+0x9C`) u64 keys at the offset in `+0xA8`, sorted ascending, then `n` 4-byte colours at the offset in `+0xAC`, directly after the keys and inside the record. A key packs three 21-bit fields (x, y, z from bit 0), each biased by 2^20 (bit 63 is also set). The layout was read on one record, the Novalis terrain `rp_novalis_level1_tfrag` in `art_terrain.zone`: 8,997 entries, the block ending the record. There a key is the model-space position x 10, rounded: 8,995 keys lie within 0.6 units per axis of a vertex of the placed model, with residuals from -0.5 to 0.5625, so the keys were rounded from positions finer than the model's int16 grid. Only part of the terrain is listed (9,631 of 44,982 vertices). Byte 3 is 0 along the dirt paths and plaza seen in the game and 255 on the grass around them; byte 0 is roughly its inverse.
+
+The level viewer uses byte 3 as the model's colour alpha (`scene.keyed_vertex_colours`, `instance_vertex_alpha`): each vertex takes the colour of the nearest key within 0.6 units per axis, unlisted vertices take 255, and the alpha feeds the squared vertex-alpha input of the blend rules (`vRockAlpha`, [viewer](viewer.md)). The terrain blend graph's vertex shader squares semantic 5 alpha, or on one per-draw path a value loaded from a separate typed buffer, which this block is taken to fill. That mapping, the byte order, the meaning of bytes 0-2 and the value for unlisted vertices are inferred, not decoded. The viewer keeps one vertex buffer per model, so colours are used only when every placed instance of the model carries the same block; otherwise the model keeps alpha 1 and the load log says why. The status line counts the models drawn with keyed alpha. The Blender research pipeline builds single models, not levels, and does not use these colours.
 
 ### Per-instance material overrides
 
@@ -279,7 +288,7 @@ For ranked structural candidates, dat1lib cross-checks and serialized schemas ac
 - Gameplay actors use the source-placement layer below. Runtime quest/save/spawn visibility, animation, attachments and unproven drawing components remain unsupported; ambiguous classes are skipped and reported.
 - Distance LOD: every instance draws the Highest LOD. The decoder selects only Highest, Lowest or All per look (not LOD 1-2), the game's LOD switch distances are not decoded, and instance buffers are not split per LOD.
 - Not handled: `_imposter` zones, quest-overlay regions, VFX, lights, collision volumes, `.level` spawn records (`0x3395AEC1`), decals, fog, sky meshes on graphs other than `Rk_Sky_Dome`, the stars term, cloud scrolling (time is frozen) and the atmosphere scattering tables.
-- Undecoded instance fields: flags at `+0x5C`, the tail blocks other than material overrides, the heap's other objects.
+- Undecoded instance fields: flags at `+0x5C`, the tail block at `+0xA0` (with `+0x9A`), the heap's other objects. Position-keyed vertex colours are decoded from one validated record; their shader meaning is inferred (see above).
 
 ## Gameplay actor decoder (`actor_format.py`)
 
