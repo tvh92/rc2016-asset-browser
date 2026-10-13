@@ -152,8 +152,13 @@ def world_position_translation(archive, path):
         for g in graphs:
             gids = [i for i in archive.resolve(g) if archive.entries[i]['type'] == 'materialgraph']
             if len(gids) != 1: raise ValueError('Ambiguous experimental source '+g)
-            datas.append(asset_data(archive, gids[0]))
-        result = bindings.prepare_translation(datas, material, extract_material_parameters(material), world_position=True)
+            datas.append(bytes(asset_data(archive, gids[0])))
+        disk = getattr(archive, 'translation_disk_cache', None)
+        key = disk.key(bytes(material), datas, variant='world_position') if disk is not None else None
+        result = disk.get(key) if key else None
+        if result is None:
+            result = bindings.prepare_translation(datas, material, extract_material_parameters(material), world_position=True)
+            if key: disk.put(key, result)
         _remember(cache, path, result)
     return cache[path]
 

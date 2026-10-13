@@ -45,6 +45,17 @@ class TranslationDiskCacheTests(unittest.TestCase):
         self.assertNotEqual(key, self.disk.key(b'material', [b'graph2']))
         self.assertNotEqual(key, self.disk.key(b'material', [b'graph', b'graph']))
 
+    def test_variant_key_is_separate_and_default_is_unchanged(self):
+        import hashlib
+        from rc2016.viewer import native_glsl
+        key = self.disk.key(b'material', [b'graph'])
+        self.assertEqual(key, self.disk.key(b'material', [b'graph'], variant=''))
+        legacy = hashlib.sha256(repr((native_glsl.TRANSLATION_DISK_CACHE_VERSION, native_glsl._TRANSLATION_CODE_SHA256,
+                                      hashlib.sha256(b'material').hexdigest(),
+                                      [hashlib.sha256(b'graph').hexdigest()])).encode()).hexdigest()
+        self.assertEqual(key, legacy)
+        self.assertNotEqual(key, self.disk.key(b'material', [b'graph'], variant='world_position'))
+
     def test_unstorable_and_damaged_entries_are_ignored(self):
         key = self.disk.key(b'material', [b'graph'])
         self.disk.put(key, dict(status='ready', raw=b'bytes'))
@@ -77,6 +88,23 @@ class TranslationDiskCacheTests(unittest.TestCase):
                 archive.translation_disk_cache = self.disk
                 self.assertEqual(prepare_material_translation(archive, 'm.material'), translation())
         self.assertEqual(calls, [([b'graph'], b'material')])
+
+    def test_world_position_translation_is_reused_across_sessions(self):
+        from rc2016.viewer.experimental_materials import world_position_translation
+        calls = []
+
+        def prepare(graphs, material, instance, world_position=False):
+            calls.append((graphs, material, world_position))
+            return translation()
+        with patch('rc2016.formats.archive.asset_data', side_effect=lambda archive, i: b'material' if i == 1 else b'graph'), \
+             patch('rc2016.formats.archive.asset_references', return_value=[dict(path='g.materialgraph')]), \
+             patch('rc2016.formats.materials.extract_material_parameters', return_value={}), \
+             patch('rc2016.shaders.bindings.prepare_translation', side_effect=prepare):
+            for _session in range(2):
+                archive = Archive()
+                archive.translation_disk_cache = self.disk
+                self.assertEqual(world_position_translation(archive, 'm.material'), translation())
+        self.assertEqual(calls, [([b'graph'], b'material', True)])
 
 
 if __name__ == '__main__':

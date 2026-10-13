@@ -281,12 +281,15 @@ class TranslationDiskCache(TextureDiskCache):
     def stats(self):
         return dict(hits=self.hits, misses=self.misses)
 
-    def key(self, material_data, graph_datas):
+    def key(self, material_data, graph_datas, variant=''):
+        """Cache key; a non-empty ``variant`` separates alternative translations of the same inputs."""
         if _TRANSLATION_CODE_SHA256 is None:
             return None
-        return hashlib.sha256(repr((TRANSLATION_DISK_CACHE_VERSION, _TRANSLATION_CODE_SHA256,
-                                    hashlib.sha256(material_data).hexdigest(),
-                                    [hashlib.sha256(g).hexdigest() for g in graph_datas])).encode()).hexdigest()
+        parts = (TRANSLATION_DISK_CACHE_VERSION, _TRANSLATION_CODE_SHA256,
+                 hashlib.sha256(material_data).hexdigest(),
+                 [hashlib.sha256(g).hexdigest() for g in graph_datas])
+        if variant: parts += (variant,)
+        return hashlib.sha256(repr(parts).encode()).hexdigest()
 
     def get(self, key):
         import json, os

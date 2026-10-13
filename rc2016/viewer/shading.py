@@ -1083,12 +1083,16 @@ class Shading:
             self.programs[size] = (*self._link(VERTEX, FRAGMENT, dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE), OPAQUE_UNIFORMS), size)
         return self.programs[size]
 
+    def native_program_key(self, translation, srgb, instanced=False, scene=False, experimental=False):
+        """The ``programs`` key native_program links under; present once that program is linked."""
+        from rc2016.viewer.native_glsl import EMITTER_VERSION
+        return ('native', EMITTER_VERSION, instanced, scene, experimental, translation['translation_sha256'],
+                tuple(sorted(srgb.items())), FRAGMENT, INSTANCED_VERTEX if instanced else VERTEX)
+
     def native_program(self, translation, srgb, instanced=False, scene=False, experimental=False):
         from rc2016.viewer.native_glsl import fragment_source
-        from rc2016.viewer.native_glsl import EMITTER_VERSION
         vertex = INSTANCED_VERTEX if instanced else VERTEX
-        key = ('native', EMITTER_VERSION, instanced, scene, experimental, translation['translation_sha256'],
-               tuple(sorted(srgb.items())), FRAGMENT, vertex)
+        key = self.native_program_key(translation, srgb, instanced, scene, experimental)
         if key not in self.programs:
             surface = fragment_source(translation, srgb, experimental=experimental)
             names = (*OPAQUE_UNIFORMS, *(s['uniform'] for s in surface['samplers']))

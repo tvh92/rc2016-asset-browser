@@ -418,7 +418,8 @@ class LevelViewport(ModelViewport):
         self.__dict__["_material_pump"] = None
         queue = self.__dict__.setdefault("_material_queue", {})
         compile_queue = self.__dict__.setdefault("_compile_queue", [])
-        if not (queue or compile_queue) or not self._make_current():
+        links = self.__dict__.setdefault("_program_links", {})
+        if not (queue or compile_queue or self._pending_links()) or not self._make_current():
             return
         deadline = time.perf_counter() + (self.MATERIAL_BUDGET_SECONDS if budget is None else budget)
         uploaded = False
@@ -443,26 +444,80 @@ class LevelViewport(ModelViewport):
             self._schedule_draw()
         while compile_queue and time.perf_counter() < deadline:
             self._precompile(compile_queue.pop(0))
-        if queue or compile_queue:
+        linked = False
+        for key in self._pending_links():   # at least one link per tick
+            if linked and time.perf_counter() >= deadline:
+                break
+            try:
+                self._shading.native_program(*links[key])
+                del links[key]
+            except Exception:
+                links[key] = "failed"   # drawn as selected, so the draw reports the error as before
+            linked = True
+        if linked:
+            self.__dict__.pop("_program_memo", None)
+            if self._draw_list is not None:
+                self._sort_draw_list()
+            self._schedule_draw()
+        if queue or compile_queue or self._pending_links():
             self._material_pump = self.after(15, self._pump_materials)
         elif self.__dict__.get("_loading_done") and not self.__dict__.get("_mipmap_pump"):
             self.build_deferred_mipmaps()
 
     def _precompile(self, path):
-        """Link a material's native surface program before its first draw (Shaded mode only); a
-        failure shows up again, and is reported, when the material is drawn."""
+        """Queue the link of a material's native or experimental surface program before its first
+        draw (Shaded mode only); a failure shows up again, and is reported, when the material is drawn."""
         entry = self._materials.get(path) or {}
-        if getattr(self, "_shading", None) is None or self._mode != "Shaded" or not entry.get("native_translation"):
+        if (getattr(self, "_shading", None) is None or self._mode != "Shaded"
+                or not (entry.get("native_translation") or entry.get("experimental_preview"))):
             return
-        try:
-            self._surface_program(entry, 2, instanced=True)
-        except Exception:
-            pass
+        self._selected_surface(entry, 2)
+
+    def _pending_links(self):
+        return [key for key, args in self.__dict__.get("_program_links", {}).items() if args != "failed"]
+
+    def _selected_surface(self, entry, level):
+        """The model viewer's selection, except that a surface whose program is not linked yet is drawn
+        as the next one down (experimental, then native, then the plain shader) until the material pump
+        has linked it within its time budget. Enabling previews or scene effects swaps in hundreds of
+        programs; linking them all inside one frame froze the window."""
+        surface = super()._selected_surface(entry, level)
+        if not surface[0] or self._surface_linked(surface, queue=True):
+            return surface
+        if surface[2]:
+            saved = self.experimental_materials
+            self.experimental_materials = False
+            try:
+                surface = super()._selected_surface(entry, level)
+            finally:
+                self.experimental_materials = saved
+            if not surface[0] or self._surface_linked(surface, queue=False):
+                return surface
+        return None, {}, False
+
+    def _surface_linked(self, surface, queue):
+        """Whether the level program of a (translation, textures, experimental) surface is linked, or
+        failed to link; with ``queue``, an unlinked one is queued for the material pump."""
+        sh = getattr(self, "_shading", None)
+        if sh is None:
+            return True
+        translation, textures, experimental = surface
+        args = (translation, {api: texture[1] for api, texture in textures.items()}, True,
+                bool(self.scene_effects_active()), experimental)
+        key = sh.native_program_key(*args)
+        links = self.__dict__.setdefault("_program_links", {})
+        if key in sh.programs or links.get(key) == "failed":
+            return True
+        if queue and key not in links:
+            links[key] = args
+            if not self.__dict__.get("_material_pump"):
+                self._material_pump = self.after(15, self._pump_materials)
+        return False
 
     def finish_load(self):
         """The loader is done: build the deferred mip chains once queued materials are uploaded."""
         self._loading_done = True
-        if not (self.__dict__.get("_material_queue") or self.__dict__.get("_compile_queue")):
+        if not (self.__dict__.get("_material_queue") or self.__dict__.get("_compile_queue") or self._pending_links()):
             self.build_deferred_mipmaps()
 
     def build_deferred_mipmaps(self, budget=None):
@@ -598,7 +653,7 @@ class LevelViewport(ModelViewport):
         pump = self.__dict__.get("_material_pump")
         if pump:
             self.after_cancel(pump)
-        self._material_pump, self._material_queue, self._compile_queue = None, {}, []
+        self._material_pump, self._material_queue, self._compile_queue, self._program_links = None, {}, [], {}
         self._cull, self._cull_masks, self._cull_counts, self._cull_camera = None, {}, {}, None
         self._stats_base = None
         self._hidden_zones = set()
@@ -779,6 +834,9 @@ class LevelViewport(ModelViewport):
                                             self.material_overrides)
         self._cull = None
         self._stats_base = None
+        self._sort_draw_list()
+
+    def _sort_draw_list(self):
         # Keep all draws of one native program together, then retain material/model ordering.
         def program_key(item):
             key = item[0]; entry = self._materials.get(key[0]) or {}
