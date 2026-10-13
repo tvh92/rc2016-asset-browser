@@ -93,6 +93,34 @@ def drop_uploaded_pixels(cache, entries, uploaded):
             cache[key] = {k: v for k, v in texture.items() if k not in ("pixels", "slices")}
 
 
+def restore_native_pixels(archive, entries, posted):
+    """Give native and experimental textures their pixels where the GL side has not uploaded them yet.
+
+    The GL side uploads each (path, sRGB variant) once and then never reads that texture's pixels
+    again. Material workers hand over cached textures whose pixels drop_uploaded_pixels may have
+    dropped, so only a variant first posted here is reloaded: once per variant, not once per
+    material binding. ``posted`` accumulates the variants, in posting order."""
+    from rc2016.viewer.textures import load_texture
+    reloaded = {}
+    for entry in entries.values():
+        for receipt_key, texture_key in (("native_translation", "native_textures"),
+                                         ("experimental_preview", "experimental_textures")):
+            receipt, textures = entry.get(receipt_key), entry.get(texture_key)
+            if not receipt or not textures:
+                continue
+            normal_api = (receipt.get("normal") or {}).get("api")
+            for api, texture in list(textures.items()):
+                variant = (texture["path"], bool(texture.get("srgb")) and api != normal_api)
+                if variant in posted:
+                    continue
+                posted.add(variant)
+                if "pixels" not in texture:
+                    path = texture["path"]
+                    if path not in reloaded:
+                        reloaded[path] = load_texture(archive, path)
+                    textures[api] = reloaded[path]
+
+
 # Worker threads for model geometry and materials. Archive reads keep per-thread handles; NumPy, zlib
 # and file reads release the GIL, so a few workers overlap decoding with I/O.
 LOAD_WORKERS = max(2, min(6, (os.cpu_count() or 2) - 1))
@@ -126,6 +154,7 @@ class MaterialJobs:
     def __init__(self, archive, pool, out):
         self.archive, self.pool, self.out = archive, pool, out
         self.claimed, self.done, self.cache, self.uploaded, self.jobs = set(), set(), {}, set(), deque()
+        self.native_posted = set()
 
     def submit(self, geometry):
         todo = [m for m in geometry["materials"] + geometry.get("override_materials", [])
@@ -146,6 +175,10 @@ class MaterialJobs:
                 self.out.put(("error", "materials", f"{type(exc).__name__}: {exc}"))
                 continue
             self.done.update(entries)
+            try:
+                restore_native_pixels(self.archive, entries, self.native_posted)
+            except Exception as exc:
+                self.out.put(("error", "materials", f"{type(exc).__name__}: {exc}"))
             if entries:
                 self.out.put(("materials", entries))
             drop_uploaded_pixels(self.cache, entries, self.uploaded)
