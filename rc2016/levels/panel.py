@@ -372,7 +372,7 @@ class LevelPanel:
         self.zone_filter, self.on_done, self.on_open_model = zone_filter, on_done, on_open_model
         self.archive, self.archive_root, self.archive_lock = None, None, threading.Lock()
         self.events, self.cancel, self.generation = queue.Queue(), threading.Event(), 0
-        self.relay, self.material_paths, self.preview_paths = None, set(), set()
+        self.relay, self.material_paths, self.preview_paths = None, {}, set()
         self._stats_due = False
         self.zone_vars, self.zone_rows, self.progress = {}, {}, {}
         self.closed, self.loaded_level, self.levels = False, None, []
@@ -581,7 +581,7 @@ class LevelPanel:
                              instances=0, started=time.perf_counter())
         generation, cancel = self.generation, self.cancel
         relay = _Relay(self.events, generation)
-        self.relay, self.material_paths, self.preview_paths = relay, set(), set()
+        self.relay, self.material_paths, self.preview_paths = relay, {}, set()
         root = str(self.source_root() or "")
         threading.Thread(target=load_level, args=(lambda: self._archive(root), level, relay, cancel, self.zone_filter),
                          daemon=True).start()
@@ -593,16 +593,16 @@ class LevelPanel:
         enabled = self.experimental_var.get()
         self.view.set_experimental_materials(enabled and self.material_previews_var.get())
         self.view.set_spawn_preview(enabled and self.spawn_var.get())
-        self._prepare_previews(getattr(self, "material_paths", ()))
+        self._prepare_previews(getattr(self, "material_paths", {}))
 
-    def _prepare_previews(self, paths):
+    def _prepare_previews(self, paths):   # {material path: has a ready native translation}
         """Prepare the experimental previews of loaded materials once they are enabled. Their source
         analysis is slow, so the loader skips it; this runs it beside the view and swaps the
         materials in when done ('preview_materials')."""
         if not (self.experimental_var.get() and self.material_previews_var.get()):
             return
         from rc2016.viewer.experimental_materials import has_preview
-        todo = sorted(p for p in paths if p not in self.preview_paths and has_preview(p))
+        todo = sorted(p for p, ready in paths.items() if p not in self.preview_paths and has_preview(p, ready))
         if not todo or self.relay is None:
             return
         self.preview_paths.update(todo)
@@ -743,8 +743,9 @@ class LevelPanel:
             p["overrides"] = item[1]
         elif kind == "materials":
             self.view.add_materials(item[1])
-            self.material_paths.update(item[1])
-            self._prepare_previews(item[1])
+            ready = {path: bool(entry.get("native_translation")) for path, entry in item[1].items()}
+            self.material_paths.update(ready)
+            self._prepare_previews(ready)
         elif kind == "preview_materials":
             self.view.replace_materials(item[1])
             for path, entry in item[1].items():

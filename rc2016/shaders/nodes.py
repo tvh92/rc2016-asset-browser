@@ -63,7 +63,8 @@ def _frontend(translation,images):
     cache={};samples={};bindings={r['api']:r for r in translation['texture_bindings']}
     simple={'add':'ADD','sub':'SUBTRACT','mul':'MULTIPLY','div':'DIVIDE','abs':'ABSOLUTE',
         'min':'MINIMUM','max':'MAXIMUM','sqrt':'SQRT','sin':'SINE','cos':'COSINE',
-        'pow':'POWER','lt':'LESS_THAN','gt':'GREATER_THAN'}
+        'pow':'POWER','lt':'LESS_THAN','gt':'GREATER_THAN',
+        'floor':'FLOOR','fract':'FRACT'}
     def math_node(operation,args,extra=()):
         n=nodes.new('ShaderNodeMath');n.operation=operation
         for j,s in enumerate(args):links.new(s,n.inputs[j])
@@ -77,6 +78,12 @@ def _frontend(translation,images):
         elif op=='input':
             if n.get('kind') == 'attribute' and n.get('attribute') == 0 and n.get('channel') in (0,1):
                 socket=game_uv[n['channel']]
+            elif n.get('kind') == 'front_facing':
+                if 'front_facing' not in cache:
+                    geometry=nodes.new('ShaderNodeNewGeometry');geometry.name='Native front facing'
+                    front=nodes.new('ShaderNodeMath');front.operation='SUBTRACT';front.inputs[0].default_value=1
+                    links.new(geometry.outputs['Backfacing'],front.inputs[1]);cache['front_facing']=front.outputs[0]
+                socket=cache['front_facing']
             elif translation.get('status') == 'experimental' and (n.get('kind'),n.get('channel')) in preview_inputs:
                 socket=preview_inputs[(n['kind'],n.get('channel'))]
             else:raise ValueError('Unbound Blender input '+n.get('name',''))

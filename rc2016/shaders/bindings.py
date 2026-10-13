@@ -9,13 +9,13 @@ import math
 import struct
 from functools import lru_cache
 
-from rc2016.shaders.ir import DAG
+from rc2016.shaders.ir import DAG, bits
 from rc2016.shaders.translator import compile_graph, lower_deferred, sections
 from rc2016.shaders.families import graph_parameter_tables
 
 PORTABLE_OPS={'const','texture','input','add','sub','mul','div','neg','abs','min',
               'max','sqrt','rsqrt','rcp','log2','exp2','pow','sat','sin','cos',
-              'lt','le','gt','ge','eq','ne','select'}
+              'lt','le','gt','ge','eq','ne','select','floor','fract'}
 
 
 @lru_cache(maxsize=64)
@@ -132,7 +132,38 @@ def guard_source_zero_powers(ir,roots):
     return [visit(i) for i in roots],guards
 
 
-def _bind(program,contract,material_data,instance):
+def bind_front_face(ir,roots):
+    """Bind the FRONT_FACE pixel input where the program only tests it against zero.
+
+    The test becomes 1 - front_facing (0/1), which both frontends supply. This
+    relies on the GCN convention that the input is nonzero for front faces (as
+    used by Mesa's radeonsi driver); it is not captured from the game. Any other
+    use leaves the input unbound.
+    """
+    reachable=ir.reachable(roots)
+    face={i for i in reachable if ir.nodes[i]['op']=='input' and ir.nodes[i].get('kind')=='ps_input'
+          and ir.nodes[i].get('input')=='FRONT_FACE'}
+    if not face:return roots,False
+    facing=ir.node('input',name='front_facing',kind='front_facing');substitutions={}
+    for i in reachable:
+        n=ir.nodes[i]
+        if n['op']!='u_eq' or not face&set(n['args']):continue
+        other=[a for a in n['args'] if a not in face]
+        if len(other)==1 and ir.value(other[0]) is not None and bits(ir.value(other[0]))==0:
+            substitutions[i]=ir.op('sub',ir.const(1.),facing)
+    bound=ir.replace(roots,substitutions)
+    if face&ir.reachable(bound):return roots,False
+    return bound,True
+
+
+def _lowered(program):
+    """Material-independent lowering, cached on the compiled program (callers get a fresh limitations list)."""
+    cached=program.get('_lowered')
+    if cached is None:cached=program['_lowered']=lower_deferred(program['ir'])
+    return dict(cached,limitations=list(cached['limitations']))
+
+
+def _bind(program,contract,material_data,instance,world_position=False,normal_attributes=(),stream_channels=None):
     from rc2016.formats.materials import texture_slot_records, MATERIAL_TEXTURE_SLOTS
     overrides={}
     for row in texture_slot_records(material_data,MATERIAL_TEXTURE_SLOTS):
@@ -147,7 +178,7 @@ def _bind(program,contract,material_data,instance):
         bound[5+j]=dict(api=5+j,path=chosen['path'],slot_key=row['slot_key'],
             type_hash=row['type_hash'],source='material_instance' if chosen is not row else 'graph_default')
     values,receipt=_parameter_values(contract,instance)
-    lowered=lower_deferred(program['ir']);ir=DAG(lowered['nodes']);outputs=lowered['outputs']
+    lowered=_lowered(program);ir=DAG(lowered['nodes']);outputs=lowered['outputs']
     normal=lowered['normal']
     if normal and bound.get(normal['api'],{}).get('path') is None:
         lowered['limitations'].append('Explicitly unset normal texture uses geometry normal.')
@@ -156,8 +187,32 @@ def _bind(program,contract,material_data,instance):
     if normal:roots+=normal['xyz']
     substitutions={i:ir.const(values[n['dword']]) for i,n in enumerate(list(ir.nodes))
         if n['op']=='input' and n.get('kind')=='cb' and n['api']==2 and n['dword'] in values}
-    replaced=ir.replace(roots,substitutions)
+    replaced=ir.replace(roots,substitutions);adapted=0
+    if world_position:
+        from rc2016.shaders.engine_inputs import reconstruct_world_position
+        replaced,adapted=reconstruct_world_position(ir,replaced)
+        if not adapted:raise ValueError('No camera + ray * POS_W world-position expression')
+        normals={}
+        for i in ir.reachable(replaced):
+            n=ir.nodes[i]
+            if n['op']=='input' and n.get('kind')=='attribute' and n.get('attribute') in normal_attributes and n.get('channel') in (0,1,2):
+                normals[i]=ir.node('input',name=f"preview_normal.{n['channel']}",kind='preview_normal',channel=n['channel'])
+        colours={}
+        for i in ir.reachable(replaced):
+            n=ir.nodes[i]
+            if n['op']=='input' and n.get('kind')=='attribute' and (stream_channels or {}).get((n.get('attribute'),n.get('channel')))==(COLOUR_SEMANTIC,3):
+                colours[i]=ir.node('input',name='preview_vertex_alpha_squared',kind='preview_vertex_alpha_squared')
+        if colours:
+            lowered['limitations'].append(f'Experimental: interpolant channels that every traced vertex program can pass as vertex semantic {COLOUR_SEMANTIC}.w squared are read as the model colour stream alpha squared. The per-draw flags choosing that path, and semantic {COLOUR_SEMANTIC} being the colour stream, are inferred; level instances use alpha 1.')
+            normals.update(colours)
+        if normals:
+            replaced=ir.replace(replaced,normals)
+            lowered['limitations'].append('Experimental: interpolants '+', '.join(f'attribute{a}.xyz' for a in sorted(normal_attributes))+' are, in every traced vertex program and flag path, per-draw words times one vertex stream (a transformed stream, optionally normalised) and are read as the geometry normal; that the stream is the normal and the matrix object-to-world is inferred, and the packed vertex frame is not reconstructed.')
+        lowered['limitations'].append(f'Experimental: {adapted} expressions of the form CB0[28..30] + (CB0[92..95] + CB0[100..103]*POS_Y + POS_X*(CB0[96..99] + CB0[104..107]*POS_Y)) * POS_W are read as world position and replaced by viewer world position. This engine meaning is inferred from the expression shape, not decoded from the game.')
     replaced,zero_guards=guard_source_zero_powers(ir,replaced)
+    replaced,front_face=bind_front_face(ir,replaced)
+    if front_face:
+        lowered['limitations'].append('FRONT_FACE is bound as front-facing (gl_FrontFacing / 1 - Backfacing) through its zero test, assuming the GCN convention nonzero = front face; not captured from the game.')
     if zero_guards:
         lowered['limitations'].append('Source LOG/MUL/EXP with a proven nonnegative base and positive bound exponent preserves zero; positive-input arithmetic is unchanged. Other singular math retains portable frontend semantics.')
     outputs=dict(albedo=replaced[:3],F0=replaced[3:6],gloss=replaced[6],emission=replaced[7])
@@ -166,7 +221,8 @@ def _bind(program,contract,material_data,instance):
     for i in sorted(used):
         n=ir.nodes[i]
         if n['op'] not in PORTABLE_OPS:errors.append(dict(node=i,reason=n.get('reason',n['op'])))
-        elif n['op']=='input' and not (n.get('kind')=='attribute' and n.get('attribute')==0 and n.get('channel') in (0,1)):
+        elif n['op']=='input' and not (n.get('kind')=='attribute' and n.get('attribute')==0 and n.get('channel') in (0,1)) and n.get('kind')!='front_facing' \
+                and not (adapted and n.get('kind') in ('preview_position','preview_normal','preview_vertex_alpha_squared')):
             errors.append(dict(node=i,reason='Unbound engine/interpolant input '+n['name']))
         elif n['op']=='texture' and not bound.get(n['api'],{}).get('path'):
             errors.append(dict(node=i,reason='Sampled material texture is unset or unbound',api=n['api']))
@@ -184,7 +240,8 @@ def _bind(program,contract,material_data,instance):
     active={n['api'] for n in compact.nodes if n['op']=='texture'}
     return dict(nodes=compact.nodes,outputs=outputs,normal=normal,
         texture_bindings=[bound[a] for a in sorted(active)],parameters=receipt,
-        pass_contract_index=contract['index'],limitations=lowered['limitations'],source_zero_power_guards=zero_guards)
+        pass_contract_index=contract['index'],limitations=lowered['limitations'],source_zero_power_guards=zero_guards,
+        **({'world_position_terms':adapted} if adapted else {}))
 
 
 def program_contracts(data,program,contracts):
@@ -227,7 +284,7 @@ def surface_signature(bound):
         if i not in memo:
             n=bound['nodes'][i];op=n['op'];args=[node(j) for j in n['args']]
             if op=='const':record=[op,n['value']]
-            elif op=='input':record=[op,n['kind'],n['attribute'],n['channel']]
+            elif op=='input':record=[op,n['kind'],n.get('attribute'),n.get('channel')]
             elif op=='texture':
                 b=bindings[n['api']]
                 record=[op,b['path'],b['type_hash'],n['api']==normal_api,n['channel'],args]
@@ -240,21 +297,38 @@ def surface_signature(bound):
     return hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest()
 
 
-def prepare_translation(graph_datas,material_data,instance):
+WORLD_POSITION_CONTRACT='world-position-reconstruction-v1'
+# Vertex input semantic read as the model RGBA8 colour stream by the experimental adapter
+# (traced exports carry semantic 3 as UV0); an inference, not a decoded binding.
+COLOUR_SEMANTIC=5
+
+
+def prepare_translation(graph_datas,material_data,instance,world_position=False):
+    """Bound portable translation. world_position=True builds the experimental
+    receipt that substitutes inferred world-position expressions; it is never ready."""
     result=dict(schema='rcps4-bound-shader-translation-v1',status='unsupported',diagnostics=[],game_equivalence=False)
     if len(graph_datas)!=1:
         result['diagnostics'].append('Translation requires one unambiguous source graph');return result
     data=bytes(graph_datas[0]);graph=compiled(data)
+    normal_attributes=set();stream_channels={}
+    if world_position:
+        from rc2016.shaders.interpolants import rotated_stream_attributes
+        from rc2016.shaders.interpolants import squared_stream_channels
+        try:normal_attributes=set(rotated_stream_attributes(data))
+        except (ValueError,KeyError,IndexError,struct.error):normal_attributes=set()
+        try:stream_channels=squared_stream_channels(data)
+        except (ValueError,KeyError,IndexError,struct.error):stream_channels={}
     try:contracts=pass_contracts(data)
     except ValueError as exc:result['diagnostics'].append(str(exc));return result
     candidates=[]
     for program in graph['programs']:
-        if program['status']!='compiled':continue
+        if program['status']!='compiled':
+            result['diagnostics'].append(dict(shader_id=program['shader_id'],reason='compile: '+program.get('reason','')));continue
         try:matched=program_contracts(data,program,contracts)
         except ValueError as exc:
             result['diagnostics'].append(str(exc));continue
         for contract in matched:
-            try:bound=_bind(program,contract,material_data,instance)
+            try:bound=_bind(program,contract,material_data,instance,world_position,normal_attributes,stream_channels)
             except ValueError as exc:
                 result['diagnostics'].append(dict(shader_id=program['shader_id'],contract=contract['index'],reason=str(exc)));continue
             signature=json.dumps({k:bound[k] for k in ('nodes','outputs','normal','texture_bindings')},sort_keys=True)
@@ -280,5 +354,50 @@ def prepare_translation(graph_datas,material_data,instance):
         'UV attribute 0.xy is source UV0 in game space (V unflipped for arithmetic, flipped back per sample). Runtime draw selection is not established.',
         'Texture sampling uses Blender linear filtering and repeat addressing; native sampler-state translation is not implemented.',
         'Shared deferred BRDF is the existing Blender approximation; this is not full game shader equivalence.']
+    if world_position:
+        result.update(status='experimental',preview_contract=WORLD_POSITION_CONTRACT,automatic_ready=False,
+            material_sha256=hashlib.sha256(bytes(material_data)).hexdigest())
+        result['limitations'].insert(0,'Experimental world-position preview: an inferred engine meaning of CB0 and pixel position replaces runtime data; not a ready translation.')
     result['translation_sha256']=hashlib.sha256(candidate['signature'].encode()).hexdigest()
     return result
+
+
+def bound_attribute_uses(graph_data,material_data,instance,limit=4):
+    """Diagnostic: with material constants bound and world position adapted, the
+    outputs each PS attribute reaches and the smallest clamped (sat/min/max) and other
+    expressions using it, per portable program and pass. Interpolants stay unbound."""
+    from rc2016.shaders.engine_inputs import reconstruct_world_position
+    data=bytes(graph_data);graph=compiled(data);lines=[];seen=set()
+    contracts=pass_contracts(data)
+    for program in graph['programs']:
+        if program['status']!='compiled':continue
+        try:matched=program_contracts(data,program,contracts)
+        except ValueError:continue
+        for contract in matched:
+            values,_=_parameter_values(contract,instance)
+            lowered=_lowered(program);ir=DAG(lowered['nodes']);outputs=lowered['outputs']
+            named=[('albedo',r) for r in outputs['albedo']]+[('F0',r) for r in outputs['F0']]+[('gloss',outputs['gloss']),('emission',outputs['emission'])]
+            if lowered['normal']:named+=[('normal',r) for r in lowered['normal']['xyz']]
+            substitutions={i:ir.const(values[n['dword']]) for i,n in enumerate(list(ir.nodes))
+                if n['op']=='input' and n.get('kind')=='cb' and n['api']==2 and n['dword'] in values}
+            roots=ir.replace([r for _,r in named],substitutions)
+            roots,_=reconstruct_world_position(ir,roots)
+            live=ir.reachable(roots);order=sorted(live)
+            # One pass in index order (arguments precede users): attributes and size below each node.
+            below={};size={}
+            for i in order:
+                n=ir.nodes[i];args=n.get('args',[])
+                below[i]=frozenset({n['attribute']}) if n['op']=='input' and n.get('kind')=='attribute' else \
+                    frozenset().union(*(below[j] for j in args)) if args else frozenset()
+                size[i]=1+sum(size[j] for j in args) if args else 1
+            block=[f"pixel {program['shader_id']} pass {contract['index']}:"]
+            for a in sorted(set().union(*(below[r] for r in roots))):
+                outs=sorted({named[k][0] for k,r in enumerate(roots) if a in below[r]})
+                clamps=sorted((i for i in order if a in below[i] and ir.nodes[i]['op'] in ('sat','min','max') and size[i]<=200),
+                              key=lambda i:size[i],reverse=True)
+                block.append(f"  attribute{a}: reaches {', '.join(outs)}")
+                block+=[f'    clamp: {ir.describe(i,10)[:500]}' for i in clamps[:limit]]
+            key='\n'.join(block[1:])
+            if key in seen:lines.append(block[0]+' same as an earlier pass');continue
+            seen.add(key);lines+=block
+    return lines

@@ -4,11 +4,37 @@ Node IDs are references; constants always have their own nodes. Unknown values
 remain explicit and only reachable unknowns prevent emitting a material.
 """
 import math
+import struct
 
 
 OPS = {'add', 'sub', 'mul', 'div', 'neg', 'abs', 'min', 'max', 'sqrt',
        'rsqrt', 'rcp', 'log2', 'exp2', 'pow', 'sat', 'sin', 'cos',
-       'lt', 'le', 'gt', 'ge', 'eq', 'ne', 'select', 'pack', 'bit_and', 'bit_or'}
+       'lt', 'le', 'gt', 'ge', 'eq', 'ne', 'select', 'pack', 'bit_and', 'bit_or',
+       'floor', 'fract'} | {'u_and', 'u_or', 'u_xor', 'u_andn2', 'u_shl', 'u_shr',
+       'u_eq', 'u_lt', 'u_le', 'i_lt', 'i_le', 'u_bit', 'u_add', 'u_sub', 'u_mul', 'i_shr',
+       'u_bfe', 'i2f', 'u2f', 'f2i', 'f2u'}
+# Uniform 32-bit integer operations. Operands and bitwise results are F32
+# values whose bit pattern is the integer (as scalar constant-buffer words are
+# read); comparisons return 0/1. They fold once material constants are bound
+# and are not portable: neither frontend emits them.
+
+
+def bits(x):
+    return struct.unpack('<I', struct.pack('<f', x))[0]
+
+
+def from_bits(b):
+    return struct.unpack('<f', struct.pack('<I', b & 0xffffffff))[0]
+
+
+def signed(b):
+    return b - (1 << 32) if b & 0x80000000 else b
+
+
+def _f2i(x, low, high):
+    # V_CVT_[IU]32_F32: truncate toward zero, saturate, NaN -> 0.
+    if math.isnan(x): return from_bits(0)
+    return from_bits(int(max(low, min(high, math.trunc(x)))) if math.isfinite(x) else (high if x > 0 else low))
 
 
 def compute(op, a):
@@ -27,6 +53,18 @@ def compute(op, a):
         'ne':lambda: float(a[0]!=a[1]), 'select':lambda: a[1] if a[0] else a[2],
         'pack':lambda: list(a), 'bit_and':lambda: int(a[0])&int(a[1]),
         'bit_or':lambda: int(a[0])|int(a[1]),
+        'floor':lambda: float(math.floor(a[0])), 'fract':lambda: a[0]-math.floor(a[0]),
+        'u_and':lambda: from_bits(bits(a[0])&bits(a[1])), 'u_or':lambda: from_bits(bits(a[0])|bits(a[1])),
+        'u_xor':lambda: from_bits(bits(a[0])^bits(a[1])), 'u_andn2':lambda: from_bits(bits(a[0])&~bits(a[1])),
+        'u_shl':lambda: from_bits(bits(a[0])<<(bits(a[1])&31)), 'u_shr':lambda: from_bits(bits(a[0])>>(bits(a[1])&31)),
+        'u_eq':lambda: float(bits(a[0])==bits(a[1])), 'u_lt':lambda: float(bits(a[0])<bits(a[1])),
+        'u_le':lambda: float(bits(a[0])<=bits(a[1])), 'i_lt':lambda: float(signed(bits(a[0]))<signed(bits(a[1]))),
+        'i_le':lambda: float(signed(bits(a[0]))<=signed(bits(a[1]))), 'u_bit':lambda: float((bits(a[0])>>(bits(a[1])&31))&1),
+        'u_add':lambda: from_bits(bits(a[0])+bits(a[1])), 'u_sub':lambda: from_bits(bits(a[0])-bits(a[1])),
+        'u_mul':lambda: from_bits(bits(a[0])*bits(a[1])), 'i_shr':lambda: from_bits(signed(bits(a[0]))>>(bits(a[1])&31)),
+        'u_bfe':lambda: from_bits((bits(a[0])>>(bits(a[1])&31))&((1<<(bits(a[2])&31))-1)),
+        'i2f':lambda: float(signed(bits(a[0]))), 'u2f':lambda: float(bits(a[0])),
+        'f2i':lambda: _f2i(a[0], -2**31, 2**31-1), 'f2u':lambda: _f2i(a[0], 0, 2**32-1),
     }[op]()
 
 

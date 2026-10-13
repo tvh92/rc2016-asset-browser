@@ -100,17 +100,19 @@ class OnDemandPreviewTests(unittest.TestCase):
         panel.experimental_var=Var(False);panel.material_previews_var=Var(True)
         panel.relay=type('Relay',(),{'put':lambda _,item:posted.append(item)})()
         panel.cancel=threading.Event();panel.source_root=lambda:'';panel._archive=lambda root:'archive'
-        panel.material_paths,panel.preview_paths=set(),set()
+        panel.material_paths,panel.preview_paths={},set()
         def entries(archive,materials,done,cache,previews=False):
             calls.append(([m['path'] for m in materials],previews));return {m['path']:dict(path=m['path']) for m in materials}
-        paths={'other.material',terrain_preview.MATERIAL}
+        # A pinned preview, a ready native material (no preview) and one without a native
+        # translation (the generic world-position adapter may apply).
+        paths={'other.material':True,terrain_preview.MATERIAL:True,'generic.material':False}
         with patch.object(scene,'material_entries',side_effect=entries), patch('threading.Thread',Thread):
             panel._prepare_previews(paths)
             self.assertEqual(calls,[])   # disabled: no analysis
             panel.experimental_var.value=True
             panel._prepare_previews(paths);panel._prepare_previews(paths)
-        self.assertEqual(calls,[([terrain_preview.MATERIAL],True)])
-        self.assertEqual(posted,[('preview_materials',{terrain_preview.MATERIAL:dict(path=terrain_preview.MATERIAL)})])
+        self.assertEqual(calls,[(['generic.material',terrain_preview.MATERIAL],True)])
+        self.assertEqual(posted,[('preview_materials',{p:dict(path=p) for p in ('generic.material',terrain_preview.MATERIAL)})])
 
     def test_replace_materials_requeues_posted_and_queued_entries(self):
         view=object.__new__(LevelViewport)
@@ -173,3 +175,47 @@ class MountainSourceTests(unittest.TestCase):
             self.assertTrue(all(t.get('pixels') for t in entry['experimental_textures'].values()))
         finally:archive.close()
 
+
+
+class GenericPreviewFallbackTests(unittest.TestCase):
+    def receipt(self, normal_albedo=True):
+        from rc2016.shaders.bindings import WORLD_POSITION_CONTRACT
+        ir = DAG()
+        normal = ir.node('input', kind='preview_normal', channel=1, name='preview_normal.1')
+        position = ir.node('input', kind='preview_position', channel=0, name='preview_position.0')
+        zero = ir.const(0)
+        return dict(status='experimental', preview_contract=WORLD_POSITION_CONTRACT,
+                    nodes=ir.nodes, normal=None, limitations=['source limitation'],
+                    outputs=dict(albedo=[normal if normal_albedo else position]*3,
+                                 F0=[normal]*3, gloss=zero, emission=zero))
+
+    def test_normal_dependent_albedo_retains_normal_mapped_fallback(self):
+        from rc2016.viewer.experimental_materials import preview_with_fallback
+        raw = self.receipt()
+        guarded = preview_with_fallback(raw, {'_n': {'path': 'source-normal'}})
+        self.assertFalse(guarded['viewer_override'])
+        self.assertIn('identity, space', guarded['viewer_override_limitation'])
+        self.assertNotIn('viewer_override', raw)
+        self.assertEqual(raw['limitations'], ['source limitation'])
+        view = object.__new__(ModelViewport)
+        view.experimental_materials=True; view.native_translation=False
+        entry = dict(experimental_preview=guarded, experimental_textures={})
+        self.assertIsNone(view._selected_surface(entry, 2)[0])
+        entry['experimental_preview'] = raw
+        self.assertIs(view._selected_surface(entry, 2)[0], raw)
+
+    def test_position_only_albedo_and_noncolour_normal_use_remain_selected(self):
+        from rc2016.viewer.experimental_materials import preview_with_fallback
+        raw = self.receipt(normal_albedo=False)
+        self.assertIs(preview_with_fallback(raw, {'_n': 'normal'}), raw)
+        raw = self.receipt()
+        self.assertIs(preview_with_fallback(raw, {}), raw)
+        raw['normal'] = {'xyz': [0, 0, 0]}
+        self.assertIs(preview_with_fallback(raw, {'_n': 'normal'}), raw)
+
+    def test_pinned_and_unsupported_receipts_keep_their_contracts(self):
+        from rc2016.viewer.experimental_materials import preview_with_fallback
+        raw = tiny_preview()
+        self.assertIs(preview_with_fallback(raw, {'_n': 'normal'}), raw)
+        unsupported = {'status': 'unsupported'}
+        self.assertIs(preview_with_fallback(unsupported, {'_n': 'normal'}), unsupported)

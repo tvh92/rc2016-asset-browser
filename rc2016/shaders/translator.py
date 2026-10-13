@@ -2,6 +2,13 @@
 
 No graph-name, shader-ID or code-hash recipe dispatch. Hashes identify source
 bytes only. Unsupported reachable instructions/branches remain diagnostics.
+
+Forward branches and the exec mask are linearised by predication: a block
+predicate (uniform control flow) and the exec predicate (per-lane activity)
+are 0/1 DAG values, and each register write merges as select(active, new, old).
+Branches on exec state are resolved for an active lane, which assumes scalar
+state written inside an exec-skipped region is not read after it, as in
+structured compiler output. Backward branches (loops) remain unsupported.
 """
 from collections import Counter
 import hashlib
@@ -11,14 +18,49 @@ import re
 import struct
 import sys
 
-from rc2016.shaders.ir import DAG
+from rc2016.shaders.ir import DAG, bits, from_bits
 
-VERSION=3
+VERSION=12
 ROOT=Path(__file__).resolve().parents[2]
 SHADER_SECTION=0x873D1E6C
 # VALU instructions that also write a scalar carry/flag register pair.
 CARRY_OUT={'V_ADD_I32','V_SUB_I32','V_SUBREV_I32','V_ADDC_U32','V_SUBB_U32','V_SUBBREV_U32',
            'V_DIV_SCALE_F32','V_DIV_SCALE_F64'}
+
+# Variants that differ from the base opcode only for zero times infinity/NaN
+# (DX9 legacy multiply), NaN operands, or by clamping an infinite result to
+# the largest finite float. The IR has finite values only, where they agree.
+MAX_PREDICATE_ATOMS=12
+INTEGER_VALU={'V_ADD_I32','V_SUB_I32','V_SUBREV_I32','V_AND_B32','V_OR_B32','V_XOR_B32','V_LSHLREV_B32',
+              'V_LSHRREV_B32','V_ASHRREV_I32','V_LSHL_B32','V_LSHR_B32','V_ASHR_I32','V_MUL_LO_I32','V_MUL_LO_U32',
+              'V_MUL_U32_U24','V_MAD_U32_U24','V_BFE_U32','V_BFI_B32','V_CVT_F32_I32','V_CVT_F32_U32',
+              'V_CVT_I32_F32','V_CVT_U32_F32','V_CVT_F32_UBYTE0','V_CVT_F32_UBYTE1','V_CVT_F32_UBYTE2','V_CVT_F32_UBYTE3'}
+MAX_LOOP_ITERATIONS=32
+_PATTERNS={}
+
+
+def atom_pattern(n,j):
+    """Truth table of atom j over n atoms: bit k set where bit j of k is set."""
+    key=(n,j)
+    if key not in _PATTERNS:
+        size=1<<n;block=1<<j
+        # Repeat (block zeros, block ones) across the table: the repunit of 2*block-bit blocks.
+        repunit=((1<<size)-1)//((1<<(2*block))-1)
+        _PATTERNS[key]=(((1<<block)-1)<<block)*repunit
+    return _PATTERNS[key]
+PREDICATE_OPS={'mul','max','sub','select'}
+MASK_OP=re.compile(r'S_(AND|OR|XOR|ANDN2|ORN2|NAND|NOR|XNOR|MOV|NOT)(_SAVEEXEC)?_B64')
+UNIFORM_INT_OPS={'u_and','u_or','u_xor','u_andn2','u_shl','u_shr','u_eq','u_lt','u_le','i_lt','i_le','u_bit',
+                 'u_add','u_sub','u_mul','i_shr','u_bfe','f2i','f2u'}
+# name -> (IR op, SCC): 'nonzero' result != 0, 'carry'/'borrow' unsigned, 'keep' unchanged, None unmodelled.
+UNIFORM_SOP2={'S_AND_B32':('u_and','nonzero'),'S_OR_B32':('u_or','nonzero'),'S_XOR_B32':('u_xor','nonzero'),
+              'S_ANDN2_B32':('u_andn2','nonzero'),'S_LSHL_B32':('u_shl','nonzero'),'S_LSHR_B32':('u_shr','nonzero'),
+              'S_ASHR_I32':('i_shr','nonzero'),'S_ADD_U32':('u_add','carry'),'S_SUB_U32':('u_sub','borrow'),
+              'S_ADD_I32':('u_add',None),'S_SUB_I32':('u_sub',None),'S_MUL_I32':('u_mul','keep')}
+FINITE_ALIASES={'V_MUL_LEGACY_F32':'V_MUL_F32','V_MAC_LEGACY_F32':'V_MAC_F32',
+                'V_MAD_LEGACY_F32':'V_MAD_F32','V_MIN_LEGACY_F32':'V_MIN_F32',
+                'V_MAX_LEGACY_F32':'V_MAX_F32','V_RCP_CLAMP_F32':'V_RCP_F32',
+                'V_RSQ_CLAMP_F32':'V_RSQ_F32','V_LOG_CLAMP_F32':'V_LOG_F32'}
 
 
 def decoder():
@@ -67,25 +109,56 @@ def pixel_programs(data):
             kind,api,reg,flags=struct.unpack_from('<4B',data,p)
             slots.append(dict(kind=kind,api=api,reg=reg,flags=flags))
         code=data[code_start:code_start+length]
+        # Gnm layout: 8-byte ShaderCommonData (23-bit size, usage-slot count in the
+        # top byte, as read above), then PsStageRegisters from offset 8:
+        # PGM_LO, PGM_HI, RSRC1, RSRC2, Z_FORMAT, COL_FORMAT, INPUT_ENA, INPUT_ADDR, ...
+        rsrc1,=struct.unpack_from('<I',data,stage+16)
+        ena,addr=struct.unpack_from('<2I',data,stage+32)
         result.append(dict(header_offset=pos,code_offset=code_start,code_size=len(code),
             code_sha256=hashlib.sha256(code).hexdigest(),shader_id=f'0x{struct.unpack_from("<I",data,orb+16)[0]:08x}',
-            usage_slots=slots,code=code))
+            usage_slots=slots,code=code,ps_input_ena=ena,ps_input_addr=addr,vgpr_count=(rsrc1&63)*4+4))
     return result
 
 
+# SPI_PS_INPUT_ADDR bits in order, with their VGPR widths; enabled inputs are
+# packed from VGPR 0 in this order.
+PS_INPUTS=(('PERSP_SAMPLE',2),('PERSP_CENTER',2),('PERSP_CENTROID',2),('PERSP_PULL_MODEL',3),
+           ('LINEAR_SAMPLE',2),('LINEAR_CENTER',2),('LINEAR_CENTROID',2),('LINE_STIPPLE',1),
+           ('POS_X',1),('POS_Y',1),('POS_Z',1),('POS_W',1),('FRONT_FACE',1),('ANCILLARY',1),
+           ('SAMPLE_COVERAGE',1),('POS_FIXED_PT',1))
+
+
+def ps_input_registers(addr,ena,vgpr_count=None):
+    """{VGPR: (input, component, loaded)} for an input-address word; {} if it cannot fit the program."""
+    layout={};reg=0
+    for bit,(name,width) in enumerate(PS_INPUTS):
+        if not (addr>>bit)&1:continue
+        for j in range(width):layout[reg+j]=(name,j if width>1 else None,bool((ena>>bit)&1))
+        reg+=width
+    if addr>>len(PS_INPUTS) or (vgpr_count is not None and reg>vgpr_count):return {}
+    return layout
+
+
 class Compiler:
-    def __init__(self,code,usage_slots):
+    def __init__(self,code,usage_slots,ps_input_addr=None,ps_input_ena=None,vgpr_count=None):
         self.code=code;self.ir=DAG();self.v={};self.s={};self.descriptors={};self.exports={}
         self.samples=[];self.diagnostics=[];self.current=0;self.scalar_bits={}
-        self.saved_exec=set()
+        self.exec=self.ir.const(1.);self.bp=self.ir.const(1.);self.masks={};self.scc=None;self.scc_source='program start'
+        self.pending={};self.premerged=set();self.exec_masked_export=False
+        self.pred_tables={};self.pred_memo={};self.back=None;self.fetch_call=False;self.lane_checks={};self.runtime_conditions=False;self.lane_values=set()
+        if ps_input_addr is not None:
+            for reg,(name,j,loaded) in ps_input_registers(ps_input_addr,ps_input_ena or 0,vgpr_count).items():
+                label='ps.'+name+('' if j is None else f'.{j}')
+                self.v[reg]=(self.ir.node('input',name=label,kind='ps_input',input=name,component=j) if loaded
+                             else self.unknown(f'Uninitialized VGPR {reg} (PS input {label} not loaded)'))
         self.slots=usage_slots
         for slot in usage_slots:
             if slot['reg']<16:
                 width=8 if slot['kind']==0 else 4 if slot['kind'] in (1,2) else 2
                 for j in range(width):self.descriptors[slot['reg']+j]=dict(slot,word=j)
 
-    def unknown(self,reason,*args):
-        return self.ir.node('unsupported',args,reason=reason,offset=self.current)
+    def unknown(self,reason,*args,**meta):
+        return self.ir.node('unsupported',args,reason=reason,offset=self.current,**meta)
 
     def getv(self,i):
         if i not in self.v:self.v[i]=self.unknown(f'Uninitialized VGPR {i}')
@@ -95,12 +168,264 @@ class Compiler:
         if i not in self.s:self.s[i]=self.unknown(f'Uninitialized SGPR {i}')
         return self.s[i]
 
-    def invalidate_exec_snapshot(self,start,count):
-        self.saved_exec={r for r in self.saved_exec if not (r<start+count and start<r+2)}
+    # Lane and block predicates are 0/1 values built from atoms (comparisons,
+    # uniform conditions) with and (mul), or (max), not (1 - x) and select.
+    # Each result is folded by its truth table, held as a bitmask over atom
+    # assignments, so a restored exec mask is the constant 1 again and equal
+    # predicates share a node.
+    def predicate(self,value):
+        if value not in self.pred_memo:self.pred_memo[value]=self._predicate(value)
+        return self.pred_memo[value]
+
+    def _predicate(self,value):
+        if self.ir.value(value) is not None or self.ir.nodes[value]['op'] not in PREDICATE_OPS:return value
+        atoms=set();pending=[value];seen=set()
+        while pending:
+            i=pending.pop()
+            if i in seen or self.ir.value(i) is not None:continue
+            seen.add(i)
+            if self.ir.nodes[i]['op'] in PREDICATE_OPS:pending.extend(self.ir.nodes[i]['args'])
+            else:atoms.add(i)
+        if len(atoms)>MAX_PREDICATE_ATOMS:return value
+        atoms=sorted(atoms);size=1<<len(atoms);full=(1<<size)-1
+        tables={a:atom_pattern(len(atoms),j) for j,a in enumerate(atoms)}
+        def table(i):
+            if i in tables:return tables[i]
+            constant=self.ir.value(i)
+            if constant is not None:
+                if constant not in (0,1):raise ValueError('non-boolean')
+                return full if constant else 0
+            n=self.ir.nodes[i];a=n['args']
+            if n['op']=='mul':r=table(a[0])&table(a[1])
+            elif n['op']=='max':r=table(a[0])|table(a[1])
+            elif n['op']=='sub' and self.ir.value(a[0])==1:r=full^table(a[1])
+            elif n['op']=='select':p=table(a[0]);r=(p&table(a[1]))|((full^p)&table(a[2]))
+            else:raise ValueError('non-boolean')
+            tables[i]=r;return r
+        try:result=table(value)
+        except ValueError:return value
+        if result in (0,full):return self.ir.const(float(result==full))
+        # Canonical key over the atoms the function depends on.
+        used=[j for j in range(len(atoms)) if ((result>>(1<<j))&full&~tables[atoms[j]])!=(result&full&~tables[atoms[j]])]
+        reduced=0
+        for k in range(1<<len(used)):
+            source=sum(1<<used[q] for q in range(len(used)) if (k>>q)&1)
+            reduced|=((result>>source)&1)<<k
+        key=(tuple(atoms[j] for j in used),reduced)
+        if len(used)==1 and reduced==0b10:return atoms[used[0]]
+        return self.pred_tables.setdefault(key,value)
+
+    def p_and(self,a,b):return self.predicate(self.ir.op('mul',a,b))
+
+    def p_not(self,a):return self.predicate(self.ir.op('sub',self.ir.const(1.),a))
+
+    def p_or(self,a,b):return self.predicate(self.ir.op('max',a,b))
+
+    def p_xor(self,a,b):
+        return self.predicate(self.ir.op('max',self.ir.op('mul',a,self.ir.op('sub',self.ir.const(1.),b)),
+                                         self.ir.op('mul',b,self.ir.op('sub',self.ir.const(1.),a))))
+
+    def p_select(self,p,a,b):return self.predicate(self.ir.op('select',p,a,b))
+
+    def mask_high(self,mask):
+        return self.ir.node('unsupported',[mask],reason='Lane mask high word')
+
+    def mask(self,raw):
+        """Lane predicate held by a 64-bit scalar operand, or None."""
+        if raw==126:return self.exec
+        if raw==128:return self.ir.const(0.)
+        if raw==193:return self.ir.const(1.)
+        m=self.masks.get(raw)
+        if m is not None and self.s.get(raw)==m and self.s.get(raw+1)==self.mask_high(m):return m
+        return None
+
+    def set_mask(self,dst,value):
+        old=self.mask(dst)
+        if old is not None:value=self.p_select(self.bp,value,old)
+        for reg in (dst,dst+1):self.descriptors.pop(reg,None);self.scalar_bits.pop(reg,None)
+        self.s[dst]=value;self.s[dst+1]=self.mask_high(value);self.masks[dst]=value
+        self.premerged.update((dst,dst+1))
+
+    def set_exec(self,value):
+        self.exec=self.p_select(self.bp,value,self.exec)
+
+    def mask_op(self,k,name,f):
+        """Exact lane-mask algebra for 64-bit scalar logic on known masks; False if not applicable."""
+        m=MASK_OP.fullmatch(name)
+        if not m:return False
+        op,saveexec=m.group(1),bool(m.group(2))
+        dst=f['dst'][0];raws=f['src'][:1 if k==0 else 2];srcs=[self.mask(r) for r in raws]
+        if any(x is None for x in srcs):return False
+        # Integer 64-bit constants (address or descriptor words) keep the scalar path.
+        if dst!=126 and not saveexec and all(r in (128,193) for r in raws):return False
+        binary={'AND':lambda a,b:self.p_and(a,b),'OR':self.p_or,'XOR':self.p_xor,
+                'ANDN2':lambda a,b:self.p_and(a,self.p_not(b)),'ORN2':lambda a,b:self.p_or(a,self.p_not(b)),
+                'NAND':lambda a,b:self.p_not(self.p_and(a,b)),'NOR':lambda a,b:self.p_not(self.p_or(a,b)),
+                'XNOR':lambda a,b:self.p_not(self.p_xor(a,b))}
+        if saveexec:
+            # D = EXEC; EXEC = S0 op EXEC; SCC = (EXEC != 0).
+            if op not in binary or dst==126:return False
+            old=self.exec;self.set_mask(dst,old);self.set_exec(binary[op](srcs[0],old));self.scc=('exec',)
+            return True
+        if k==0 and op in ('MOV','NOT'):
+            value=srcs[0] if op=='MOV' else self.p_not(srcs[0])
+        elif k==1 and op in binary:value=binary[op](*srcs)
+        else:return False
+        if dst==126:self.set_exec(value)
+        else:self.set_mask(dst,value)
+        if op!='MOV':
+            # SCC = (mask != 0) wave-wide: fixed (1) for any lane inside the mask.
+            self.scc=('exec',) if dst==126 else ('mask',value);self.scc_source=name+' (lane mask)'
+        return True
+
+    def scalar_operand_bits(self,raw,literal_bits):
+        if raw<=127:return self.scalar_bits.get(raw)
+        if raw==255:return literal_bits
+        return self.inline_bits(raw)
+
+    def runtime_condition(self,i):
+        """Diagnostic tracing only: an unresolved scalar compare becomes an opaque 0/1
+        atom, so both paths are traced and merged by select. Never bound."""
+        return self.ir.node('input',name=f'runtime_flag@{i["relative"]}',kind='runtime_flag')
+
+    def describe_scalar(self,raw,literal_bits):
+        """Short provenance of a scalar operand, for diagnostics."""
+        known=self.scalar_operand_bits(raw,literal_bits)
+        if known is not None:return f'0x{known:x}'
+        node=self.s.get(raw) if raw<=127 else None
+        return f's{raw}' if node is None else f's{raw}='+self.ir.describe(node,2)[:120]
+
+    def uniform(self,raw,literal_bits):
+        """Uniform 32-bit scalar as an F32-bit-pattern node: known bits, a constant-buffer word or a uniform op."""
+        known=self.scalar_operand_bits(raw,literal_bits)
+        if known is not None:
+            value=from_bits(known)
+            return self.ir.const(value) if math.isfinite(value) else None
+        node=self.s.get(raw) if raw<=127 else None
+        if node is None:return None
+        n=self.ir.nodes[node]
+        return node if (n['op']=='input' and n.get('kind')=='cb') or n['op'] in UNIFORM_INT_OPS else None
+
+    def uniform_condition(self,name,a,b):
+        """SCC of S_CMP(K)/S_BITCMP on uniform operands, or None."""
+        if a is None or b is None:return None
+        if name.startswith('S_BITCMP'):
+            bit=self.ir.op('u_bit',a,b)
+            return bit if name.startswith('S_BITCMP1') else self.p_not(bit)
+        m=re.match(r'S_CMPK?_(EQ|LG|LT|LE|GT|GE)_([UI])32$',name)
+        if not m:return None
+        relation,kind=m.groups();lt,le=('u_lt','u_le') if kind=='U' else ('i_lt','i_le')
+        if relation in ('EQ','LG'):
+            c=self.ir.op('u_eq',a,b);return c if relation=='EQ' else self.p_not(c)
+        return {'LT':lambda:self.ir.op(lt,a,b),'LE':lambda:self.ir.op(le,a,b),
+                'GT':lambda:self.ir.op(lt,b,a),'GE':lambda:self.ir.op(le,b,a)}[relation]()
+
+    def uniform_sop(self,k,name,f,i):
+        """Exact SOP2 integer logic on uniform values; SCC = result != 0. False if not applicable."""
+        if k==1 and name in UNIFORM_SOP2:
+            literal_bits=struct.unpack_from('<I',self.code,i['relative']+4)[0] if i['length']>4 else None
+            a,b=(self.uniform(r,literal_bits) for r in f['src'][:2]);dst=f['dst'][0];op,scc=UNIFORM_SOP2[name]
+        elif k==3 and name in ('S_ADDK_I32','S_MULK_I32'):
+            dst=(w:=i['word'])>>16&127
+            a,b=self.uniform(dst,None),self.uniform(255,struct.unpack('<h',struct.pack('<H',w&0xffff))[0]&0xffffffff)
+            op,scc=('u_add',None) if name=='S_ADDK_I32' else ('u_mul','keep')
+        else:return False
+        if a is None or b is None:return False
+        value=self.ir.op(op,a,b);self.write_uniform(dst,value)
+        if scc=='nonzero':self.scc=('uniform',self.p_not(self.ir.op('u_eq',value,self.ir.const(0.))))
+        elif scc=='carry':self.scc=('uniform',self.ir.op('u_lt',value,a))
+        elif scc=='borrow':self.scc=('uniform',self.ir.op('u_lt',a,b))
+        elif scc is None:self.scc=None;self.scc_source=name
+        return True
+
+    def write_uniform(self,dst,value):
+        """Known words keep the integer form scalar moves use, for addressing."""
+        constant=self.ir.value(value);self.descriptors.pop(dst,None)
+        if constant is not None:
+            word=bits(constant);self.s[dst]=self.ir.const(word);self.scalar_bits[dst]=word
+        else:self.s[dst]=value;self.scalar_bits.pop(dst,None)
+
+    def unpack(self,value):
+        n=self.ir.nodes[value]
+        if n['op']=='pack':return list(n['args'])
+        if n['op']=='const' and isinstance(n['value'],float):
+            # A packed register written as one 32-bit word: two F16 halves, low first.
+            word=bits(n['value']);halves=struct.unpack('<2e',struct.pack('<I',word))
+            return [self.ir.const(h) for h in halves] if all(map(math.isfinite,halves)) else None
+        if n['op']=='select':
+            a,b=self.unpack(n['args'][1]),self.unpack(n['args'][2])
+            if a and b:return [self.ir.op('select',n['args'][0],x,y) for x,y in zip(a,b)]
+        return None
+
+    def guarded_by_vcc(self,target):
+        """The skipped region begins with S_AND_SAVEEXEC_B64 on VCC, before any vector work or VCC/EXEC write."""
+        for j in getattr(self,'instructions',[])[getattr(self,'position',0)+1:]:
+            if j['relative']>=target:return False
+            name=j['name'].replace('GCN_','').replace('_E64','')
+            if name=='S_AND_SAVEEXEC_B64':return j['fields']['src'][0]==106
+            if j['kind'] not in (0,1,2,3,4,10):return False
+            if any(r in (106,107,126,127) for r in j['fields'].get('dst',[]) or []):return False
+        return False
+
+    def wave_uniform(self,value):
+        """True when a value depends only on constants, constant-buffer words and values
+        held in scalar registers (one value per wave, even when unresolved)."""
+        scalar={v for r,v in self.s.items() if r<106}
+        if self.lane_values:
+            # The scalar path of a first-lane check holds the lane's own value in SGPRs.
+            scalar={v for v in scalar if not self.ir.reachable([v])&self.lane_values}
+        stack,seen=[value],set()
+        while stack:
+            j=stack.pop()
+            if j in seen or j in scalar:continue
+            seen.add(j);n=self.ir.nodes[j]
+            if n['op'] in ('texture','unsupported') or (n['op']=='input' and n.get('kind') not in ('cb','runtime_flag')):return False
+            stack.extend(n.get('args',[]))
+        return True
+
+    def branch(self,i,name,f):
+        target=i['relative']+f['branch_target_relative']
+        one=self.ir.const(1.);zero=self.ir.const(0.)
+        # For an active lane exec is nonzero, so exec tests have a fixed outcome,
+        # unless the mask is known to be empty for every lane (a finished loop).
+        any_exec=zero if self.ir.value(self.exec)==0 else one
+        if name=='S_BRANCH':condition=one
+        elif name=='S_CBRANCH_EXECZ':condition=self.p_not(any_exec)
+        elif name=='S_CBRANCH_EXECNZ':condition=any_exec
+        elif name in ('S_CBRANCH_SCC0','S_CBRANCH_SCC1'):
+            # A lane inside the tested mask sees SCC = 1. Lanes outside a non-exec
+            # mask (killed lanes, or lanes the region below masks off) are assumed
+            # not to depend on the branch, as for exec-skipped regions.
+            if self.scc==('exec',):condition=any_exec
+            elif self.scc and self.scc[0]=='mask':condition=zero if self.ir.value(self.scc[1])==0 else one
+            elif self.scc and self.scc[0]=='uniform':condition=self.scc[1]
+            else:raise ValueError(f'Control flow unsupported at {i["relative"]}: {name} on unresolved SCC from {self.scc_source}')
+            if name=='S_CBRANCH_SCC0':condition=self.p_not(condition)
+        elif name in ('S_CBRANCH_VCCZ','S_CBRANCH_VCCNZ'):
+            # VCCZ is wave-wide; it is a uniform branch only when VCC is the same in every lane.
+            vcc=self.mask(106)
+            if name=='S_CBRANCH_VCCZ' and vcc in self.lane_checks:
+                # Uniformity check: VCCZ takes the scalar path when every lane equals the
+                # first. The other path loops over distinct values to compute the same
+                # per-lane result, so one lane follows the scalar path with first = its own value.
+                first,lane=self.lane_checks[vcc];condition=one
+                for reg,value in list(self.s.items()):
+                    if value==first:self.s[reg]=lane;self.lane_values.add(lane)
+            elif vcc is not None and self.wave_uniform(vcc):
+                condition=vcc if name=='S_CBRANCH_VCCNZ' else self.p_not(vcc)
+            elif vcc is not None and name=='S_CBRANCH_VCCZ' and self.guarded_by_vcc(target):
+                # A skip over a region masked to the VCC lanes: lanes with VCC set
+                # fall through, the others are inactive in the region either way.
+                condition=zero
+            else:raise ValueError(f'Control flow unsupported at {i["relative"]}: {name} on lane-varying VCC')
+        else:raise ValueError(f'Control flow unsupported at {i["relative"]}: {name}')
+        taken=self.p_and(self.bp,condition)
+        if target<=i['relative']:self.back=(target,taken)  # unrolled by compile()
+        else:self.pending[target]=self.p_or(self.pending.get(target,zero),taken)
+        self.bp=self.p_and(self.bp,self.p_not(condition))
 
     def clobber_s(self,start,count,reason):
         """Every SGPR write not modelled exactly must drop known bits/descriptors."""
-        self.invalidate_exec_snapshot(start,count)
         for reg in range(start,start+count):
             self.s[reg]=self.unknown(reason);self.descriptors.pop(reg,None);self.scalar_bits.pop(reg,None)
 
@@ -133,7 +458,6 @@ class Compiler:
         imm=bool(w&256)
         offset=(w&255)*4 if imm else self.ir.value(self.gets(w&255))
         origin=self.descriptors.get(base,{})
-        self.invalidate_exec_snapshot(dst,count)
         for j in range(count):
             reg=dst+j;self.descriptors.pop(reg,None);self.scalar_bits.pop(reg,None)
             if origin.get('kind')==2 and 'BUFFER_LOAD'in name and offset is not None:
@@ -142,12 +466,15 @@ class Compiler:
             elif origin.get('kind')==0x1b and offset is not None:
                 slot=next((s for s in self.slots if s['reg']==16+int(offset)//4),None)
                 if slot:self.descriptors[reg]=dict(slot,word=j)
-                self.s[reg]=self.unknown('Extended descriptor value')
+                self.s[reg]=self.unknown('Extended descriptor value',word=j)
             elif origin.get('kind') in (0x13,0x15) and offset is not None:
                 is_resource=origin['kind']==0x13
                 self.descriptors[reg]=dict(kind=0 if is_resource else 1,api=int(offset)//(32 if is_resource else 16),word=j)
-                self.s[reg]=self.unknown('Descriptor word')
-            else:self.s[reg]=self.unknown('Unresolved scalar memory load')
+                self.s[reg]=self.unknown('Descriptor word',word=j)
+            # Each loaded dword is a distinct unknown: one node per instruction would make
+            # different words of a multi-dword load compare and cancel as equal.
+            else:self.s[reg]=self.unknown('Unresolved scalar memory load',word=j,base=base,
+                                         load_offset=None if offset is None else int(offset))
 
     def instruction(self,i):
         self.current=i['relative'];k=i['kind'];w=i['word'];q=i['wide'];f=i['fields']
@@ -156,10 +483,37 @@ class Compiler:
             # The shared decoder exposes no SOPK fields; SDST is bits 22:16.
             # Compares write only SCC and SETREG writes a hardware register.
             f=dict(f,dst=[] if name.startswith(('S_CMPK','S_SETREG')) else [(w>>16)&127])
-        restoring_exec=(name=='S_MOV_B64' and f.get('src',[None])[0] in self.saved_exec)
-        if ('CMPX' in name or 'SAVEEXEC' in name or name in ('S_SETPC_B64','S_SWAPPC_B64') or
-            (k in (0,1,2,3) and name!='S_WQM_B64' and not restoring_exec and any(r in (126,127) for r in f.get('dst',[])))):
+        if k in (0,1) and self.mask_op(k,name,f):return
+        if name=='S_SWAPPC_B64' and self.fetch_call:
+            # Vertex fetch subroutine: its loads are pre-bound as vertex inputs by
+            # input semantic; only the return-address pair is written here.
+            self.clobber_s(f['dst'][0],2,name);return
+        if ('SAVEEXEC' in name or name in ('S_SETPC_B64','S_SWAPPC_B64') or
+            (k in (0,1,2,3) and name!='S_WQM_B64' and any(r in (126,127) for r in f.get('dst',[])))):
             raise ValueError(f'Execution-mask/control flow unsupported at {i["relative"]}: {name}')
+        if k==2:
+            # SOPC: S0 bits 7:0, S1 bits 15:8; only SCC is written.
+            literal_bits=struct.unpack_from('<I',self.code,i['relative']+4)[0] if i['length']>4 else None
+            c=self.uniform_condition(name,*(self.uniform(r,literal_bits) for r in (w&255,(w>>8)&255)))
+            if c is None and self.runtime_conditions:c=self.runtime_condition(i)
+            self.scc=('uniform',c) if c is not None else None
+            if c is None:self.scc_source=name+' of '+', '.join(self.describe_scalar(r,literal_bits) for r in (w&255,(w>>8)&255))
+            return
+        if k==3 and name.startswith('S_CMPK_'):
+            simm=w&0xffff
+            if name.endswith('_I32'):simm=struct.unpack('<h',struct.pack('<H',simm))[0]&0xffffffff
+            c=self.uniform_condition(name,self.uniform((w>>16)&127,None),self.uniform(255,simm))
+            if c is None and self.runtime_conditions:c=self.runtime_condition(i)
+            self.scc=('uniform',c) if c is not None else None
+            if c is None:self.scc_source=name
+            return
+        if self.uniform_sop(k,name,f,i):return
+        if k==1 and name=='S_CSELECT_B32' and self.scc and self.scc[0]=='uniform':
+            literal_bits=struct.unpack_from('<I',self.code,i['relative']+4)[0] if i['length']>4 else None
+            a,b=(self.uniform(r,literal_bits) for r in f['src'][:2]);dst=f['dst'][0]
+            if a is not None and b is not None:
+                self.write_uniform(dst,self.ir.op('select',self.scc[1],a,b));return
+        if k in (0,1,3) and not name.startswith(('S_MOV','S_CMOV','S_GETPC')):self.scc=None;self.scc_source=name
         literal=struct.unpack_from('<f',self.code,i['relative']+i['length']-4)[0] if i['length']>4 else 0.
         if k==10:self.load(i);return
         if k==9:
@@ -182,13 +536,15 @@ class Compiler:
             channels=[]
             if f['compressed']:
                 for reg in f['src_registers']:
-                    value=self.getv(reg);n=self.ir.nodes[value]
-                    channels.extend(n['args'] if n['op']=='pack' else [self.unknown('Unresolved packed export')]*2)
+                    value=self.getv(reg);n=self.ir.nodes[value];pair=self.unpack(value)
+                    channels.extend(pair or [self.unknown('Unresolved packed export from '+(n.get('reason') or n['op']))]*2)
             else:channels=[self.getv(reg) for reg in f['src_registers']]
+            if self.ir.value(self.exec)!=1:self.exec_masked_export=True
             self.exports[f['target']]=[v if f['enable_mask']&(1<<j) else None for j,v in enumerate(channels)]
             return
         if k==4:
-            if 'BRANCH'in name:raise ValueError(f'Control flow unsupported at {i["relative"]}: {name}')
+            if name=='S_ENDPGM':self.bp=self.ir.const(0.)
+            elif 'BRANCH'in name:self.branch(i,name,f)
             return
         if k in (0,1,2,3):
             dst=f.get('dst',[None])[0]
@@ -196,7 +552,6 @@ class Compiler:
             count=2 if 'B64'in name else 1
             if name in ('S_MOV_B32','S_MOV_B64'):
                 raw=f['src'][0]
-                snapshot=name=='S_MOV_B64' and (raw==126 or raw in self.saved_exec)
                 if raw<=127:
                     # Keep integer address/offset values; F32 readers use the copied bits.
                     rows=[(self.gets(raw+j),self.scalar_bits.get(raw+j),self.descriptors.get(raw+j)) for j in range(count)]
@@ -212,8 +567,6 @@ class Compiler:
                         high=(0xffffffff if 193<=raw<=208 else 0) if 128<=raw<=208 else None
                         rows.append((self.ir.const(-1 if high else 0),high,None) if high is not None
                                     else (self.unknown('Unmodelled 64-bit scalar source'),None,None))
-                self.invalidate_exec_snapshot(dst,count)
-                if snapshot:self.saved_exec.add(dst)
                 for j,(value,bits,descriptor) in enumerate(rows):
                     self.s[dst+j]=value
                     if bits is not None:self.scalar_bits[dst+j]=bits
@@ -222,9 +575,8 @@ class Compiler:
                     else:self.descriptors.pop(dst+j,None)
             elif name=='S_MOVK_I32':
                 simm=struct.unpack('<h',struct.pack('<H',w&0xffff))[0]
-                self.invalidate_exec_snapshot(dst,1)
                 self.s[dst]=self.ir.const(simm);self.scalar_bits[dst]=simm&0xffffffff;self.descriptors.pop(dst,None)
-            elif name=='S_WQM_B64' and dst==126:self.invalidate_exec_snapshot(dst,count)
+            elif name=='S_WQM_B64' and dst==126:pass  # whole-quad helpers do not change active lanes' values
             else:self.clobber_s(dst,count,name)
             return
         if k==13 and name in ('TBUFFER_LOAD_FORMAT_X','TBUFFER_LOAD_FORMAT_XY',
@@ -254,16 +606,29 @@ class Compiler:
                 if m['neg']:args[j]=self.ir.op('neg',args[j])
         d=f['dst'][0]
         if name in ('V_READFIRSTLANE_B32','V_READLANE_B32'):
-            self.clobber_s(d,1,name);return
+            self.clobber_s(d,1,name)
+            # Kept as an unresolved scalar of the lane value, for the uniformity check below.
+            if name=='V_READFIRSTLANE_B32':self.s[d]=self.unknown(name,args[0])
+            return
         if name in CARRY_OUT:
             # VOP2 forms write VCC; VOP3b forms name their SGPR pair in bits 14:8.
             self.clobber_s(106 if k==6 else (q>>8)&127,2,name)
         if 'CMP'in name:
             self.clobber_s(d,2,name)
-            cmp=next((op for token,op in [('NE','ne'),('LE','le'),('GE','ge'),('LT','lt'),('GT','gt'),('EQ','eq')] if '_'+token+'_'in name),None)
-            self.s[d]=self.ir.op(cmp,*args[:2]) if cmp else self.unknown(name,*args[:2]);return
+            value=self.compare(name,args[:2])
+            # Inactive lanes write 0; CMPX also writes the result to EXEC.
+            self.set_mask(d,self.p_and(value,self.exec))
+            if 'CMPX' in name:self.set_exec(self.p_and(self.exec,value))
+            return
+        name=FINITE_ALIASES.get(name,name)
+        if name in INTEGER_VALU:
+            # Integer results are exact on bit patterns; clamp/omod do not apply.
+            value=(self.unknown(name+' with clamp/omod',*args) if k==7 and (f['omod'] or f['clamp'])
+                   else self.integer_valu(name,args))
+            self.v[d]=value;return
         unary={'V_MOV_B32':None,'V_RSQ_F32':'rsqrt','V_RCP_F32':'rcp','V_SQRT_F32':'sqrt',
-               'V_LOG_F32':'log2','V_EXP_F32':'exp2','V_COS_F32':'cos','V_SIN_F32':'sin'}
+               'V_LOG_F32':'log2','V_EXP_F32':'exp2','V_COS_F32':'cos','V_SIN_F32':'sin',
+               'V_FLOOR_F32':'floor','V_FRACT_F32':'fract'}
         binary={'V_MUL_F32':'mul','V_ADD_F32':'add','V_SUB_F32':'sub','V_MIN_F32':'min','V_MAX_F32':'max'}
         if name in ('V_COS_F32','V_SIN_F32'):
             # GCN trigonometric operands are cycles, Blender/IR operands radians.
@@ -274,9 +639,24 @@ class Compiler:
         elif name=='V_MAC_F32':value=self.ir.op('add',self.getv(d),self.ir.op('mul',*args[:2]))
         elif name in ('V_MAD_F32','V_FMA_F32','V_MADMK_F32','V_MADAK_F32'):
             value=self.ir.op('add',self.ir.op('mul',*args[:2]),args[2])
+        elif name=='V_CEIL_F32':value=self.ir.op('neg',self.ir.op('floor',self.ir.op('neg',args[0])))
+        elif name=='V_TRUNC_F32':
+            value=self.ir.op('select',self.ir.op('ge',args[0],self.ir.const(0.)),self.ir.op('floor',args[0]),
+                             self.ir.op('neg',self.ir.op('floor',self.ir.op('neg',args[0]))))
+        elif name in ('V_MIN3_F32','V_MAX3_F32'):
+            op='min' if name=='V_MIN3_F32' else 'max'
+            value=self.ir.op(op,self.ir.op(op,args[0],args[1]),args[2])
+        elif name=='V_MED3_F32':
+            value=self.ir.op('max',self.ir.op('min',args[0],args[1]),
+                             self.ir.op('min',self.ir.op('max',args[0],args[1]),args[2]))
         elif name=='V_CVT_PKRTZ_F16_F32':value=self.ir.op('pack',*args[:2])
+        elif name=='V_CVT_PKNORM_U16_F32':value=self.ir.op('pack',*(self.ir.op('sat',x) for x in args[:2]))
+        elif name=='V_CVT_PKNORM_I16_F32':
+            value=self.ir.op('pack',*(self.ir.op('max',self.ir.const(-1.),self.ir.op('min',self.ir.const(1.),x)) for x in args[:2]))
         elif name=='V_CNDMASK_B32':
-            predicate=args[2] if k==7 else self.gets(106)
+            raw=src[2] if k==7 else 106
+            predicate=self.mask(raw)
+            if predicate is None:predicate=args[2] if k==7 else self.gets(106)
             value=self.ir.op('select',predicate,args[1],args[0])
         else:value=self.unknown(name,*args)
         if k==7:
@@ -284,17 +664,122 @@ class Compiler:
             if f['clamp']:value=self.ir.op('sat',value)
         self.v[d]=value
 
+    def compare(self,name,args):
+        """V_CMP(X) on F32 (ordered/negated forms) or exact 32-bit integers."""
+        m=re.match(r'V_CMPX?_([A-Z]+)_([FIU])32$',name)
+        if not m:return self.unknown(name,*args)
+        relation,kind=m.groups();a,b=args
+        if kind=='F':
+            # The IR holds finite values, where negated and ordered forms reduce to plain compares.
+            table={'EQ':('eq',a,b),'NE':('ne',a,b),'LG':('ne',a,b),'NEQ':('ne',a,b),'LT':('lt',a,b),'LE':('le',a,b),
+                   'GT':('gt',a,b),'GE':('ge',a,b),'NGE':('lt',a,b),'NGT':('le',a,b),'NLE':('gt',a,b),'NLT':('ge',a,b)}
+            if relation not in table:return self.unknown(name,*args)
+            op,x,y=table[relation];return self.ir.op(op,x,y)
+        lt,le=('u_lt','u_le') if kind=='U' else ('i_lt','i_le')
+        table={'EQ':('u_eq',a,b),'LT':(lt,a,b),'LE':(le,a,b),'GT':(lt,b,a),'GE':(le,b,a)}
+        # The VOP3 opcode table names integer not-equal LG, the VOPC table NE.
+        if relation in ('NE','LG'):
+            for first,lane in ((a,b),(b,a)):
+                n=self.ir.nodes[first]
+                if n['op']=='unsupported' and n.get('reason')=='V_READFIRSTLANE_B32' and n['args']==[lane]:
+                    # Lanes whose value differs from the first lane: a wave uniformity check.
+                    check=self.unknown('Lane differs from first lane',first);self.lane_checks[check]=(first,lane)
+                    return check
+            return self.p_not(self.ir.op('u_eq',a,b))
+        if relation not in table:return self.unknown(name,*args)
+        op,x,y=table[relation];return self.ir.op(op,x,y)
+
+    def integer_valu(self,name,a):
+        c=lambda word:self.ir.const(from_bits(word))
+        op=self.ir.op
+        if name=='V_ADD_I32':return op('u_add',a[0],a[1])
+        if name=='V_SUB_I32':return op('u_sub',a[0],a[1])
+        if name=='V_SUBREV_I32':return op('u_sub',a[1],a[0])
+        if name=='V_AND_B32':return op('u_and',a[0],a[1])
+        if name=='V_OR_B32':return op('u_or',a[0],a[1])
+        if name=='V_XOR_B32':return op('u_xor',a[0],a[1])
+        if name=='V_LSHLREV_B32':return op('u_shl',a[1],a[0])
+        if name=='V_LSHRREV_B32':return op('u_shr',a[1],a[0])
+        if name=='V_ASHRREV_I32':return op('i_shr',a[1],a[0])
+        if name=='V_LSHL_B32':return op('u_shl',a[0],a[1])
+        if name=='V_LSHR_B32':return op('u_shr',a[0],a[1])
+        if name=='V_ASHR_I32':return op('i_shr',a[0],a[1])
+        if name=='V_MUL_LO_I32' or name=='V_MUL_LO_U32':return op('u_mul',a[0],a[1])
+        if name=='V_MUL_U32_U24':return op('u_mul',op('u_and',a[0],c(0xffffff)),op('u_and',a[1],c(0xffffff)))
+        if name=='V_MAD_U32_U24':return op('u_add',op('u_mul',op('u_and',a[0],c(0xffffff)),op('u_and',a[1],c(0xffffff))),a[2])
+        if name=='V_BFE_U32':return op('u_bfe',a[0],a[1],a[2])
+        if name=='V_BFI_B32':return op('u_or',op('u_and',a[0],a[1]),op('u_andn2',a[2],a[0]))
+        if name=='V_CVT_F32_I32':return op('i2f',a[0])
+        if name=='V_CVT_F32_U32':return op('u2f',a[0])
+        if name=='V_CVT_I32_F32':return op('f2i',a[0])
+        if name=='V_CVT_U32_F32':return op('f2u',a[0])
+        n=int(name[-1])  # V_CVT_F32_UBYTE0..3
+        return op('u2f',op('u_bfe',a[0],c(8*n),c(8)))
+
+    def step(self,i):
+        """Execute one instruction and merge its writes under the active predicates."""
+        bp,live_exec=self.bp,self.exec
+        if self.ir.value(bp)==1 and self.ir.value(live_exec)==1:
+            self.instruction(i);return
+        v0,s0=dict(self.v),dict(self.s);e0={t:list(x) for t,x in self.exports.items()};self.premerged=set()
+        self.instruction(i)
+        # Initial register contents (unwritten, or hardware PS inputs) are dead once a
+        # program reuses the register, so lanes that skip the write do not read them.
+        dont_care=lambda n:((self.ir.nodes[n]['op']=='unsupported' and self.ir.nodes[n].get('reason','').startswith('Uninitialized'))
+                            or self.ir.nodes[n].get('kind')=='ps_input')
+        live=self.p_and(bp,live_exec)
+        for reg,value in list(self.v.items()):
+            old=v0.get(reg)
+            if old is not None and old!=value and not dont_care(old):self.v[reg]=self.ir.op('select',live,value,old)
+        if self.ir.value(bp)!=1:
+            for reg,value in list(self.s.items()):
+                old=s0.get(reg)
+                if reg in self.premerged or old is None or old==value or dont_care(old):continue
+                self.s[reg]=self.ir.op('select',bp,value,old)
+                self.descriptors.pop(reg,None);self.scalar_bits.pop(reg,None)
+            for target,channels in list(self.exports.items()):
+                old=e0.get(target)
+                if old is None or old==channels:continue
+                self.exports[target]=[n if o is None else o if n is None else self.ir.op('select',bp,n,o)
+                                      for n,o in zip(channels,old)]
+
+    def run(self,instructions):
+        """Execute in address order; a taken backward branch re-runs its body under the
+        taken predicate (bounded unrolling) and resumes after the branch when every
+        iteration's exit has been merged."""
+        index={i['relative']:n for n,i in enumerate(instructions)};n=0;iterations=Counter()
+        self.instructions=instructions
+        while n<len(instructions):
+            i=instructions[n];self.position=n
+            if i['relative'] in self.pending:self.bp=self.p_or(self.bp,self.pending.pop(i['relative']))
+            if self.ir.value(self.bp)==0:n+=1;continue
+            self.step(i)
+            if self.back is not None:
+                target,taken=self.back;self.back=None
+                if self.ir.value(taken)!=0:
+                    iterations[target]+=1
+                    if iterations[target]>MAX_LOOP_ITERATIONS:
+                        raise ValueError(f'Loop at {target} not shown to end within {MAX_LOOP_ITERATIONS} iterations')
+                    if target not in index:raise ValueError(f'Branch target {target} is not an instruction')
+                    after=i['relative']+i['length']
+                    self.pending[after]=self.p_or(self.pending.get(after,self.ir.const(0.)),self.bp)
+                    self.bp=taken;n=index[target];continue
+            n+=1
+
     def compile(self):
         instructions=decoder().decode_stream(self.code,0)
-        for i in instructions:self.instruction(i)
+        self.run(instructions)
         if not all(t in self.exports and all(x is not None for x in self.exports[t]) for t in (0,1,2)):
             raise ValueError('Not a complete three-target deferred writer')
-        return dict(nodes=self.ir.nodes,exports={str(k):v for k,v in self.exports.items()},
+        if self.exec_masked_export:
+            # Fail closed until the discard predicate is carried to both frontends.
+            raise ValueError('Exec-masked exports (alpha test/discard) are not translated')
+        return dict(nodes=self.ir.nodes,exports={str(k):v for k,v in self.exports.items()},exec_masked_export=self.exec_masked_export,
             samples=self.samples,instruction_count=len(instructions),opcode_counts=dict(Counter(i['name'] for i in instructions)))
 
 
-def compile_program(code,usage_slots):
-    return Compiler(code,usage_slots).compile()
+def compile_program(code,usage_slots,ps_input_addr=None,ps_input_ena=None,vgpr_count=None):
+    return Compiler(code,usage_slots,ps_input_addr,ps_input_ena,vgpr_count).compile()
 
 
 def _terms(ir,index,coefficient=1.,result=None):
@@ -404,11 +889,12 @@ def compile_graph(data):
     results=[]
     for program in pixel_programs(data):
         row={k:v for k,v in program.items() if k!='code'}
-        try:row.update(status='compiled',ir=compile_program(program['code'],program['usage_slots']))
+        try:row.update(status='compiled',ir=compile_program(program['code'],program['usage_slots'],
+            program.get('ps_input_addr'),program.get('ps_input_ena'),program.get('vgpr_count')))
         except (ValueError,IndexError,KeyError,struct.error) as exc:row.update(status='unsupported',reason=str(exc))
         results.append(row)
     return dict(schema='rcps4-native-shader-ir-v1',translator_version=VERSION,
         graph_sha256=hashlib.sha256(data).hexdigest(),programs=results,
-        limitations=['Deferred writers only; branch control flow and forward light loops are unsupported.',
+        limitations=['Deferred writers only; forward branches and exec masks are linearised by predication, loops and forward light loops are unsupported.',
                     'Float16 target quantization is recorded at exports but the material DAG retains float precision.',
                     'Compiled IR alone does not establish per-pass CB or resource binding, vertex TBN, or runtime selection.'])

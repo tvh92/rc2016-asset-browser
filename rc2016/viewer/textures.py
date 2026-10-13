@@ -1285,7 +1285,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
                     entry['native_textures'] = native_textures
             except (ValueError, KeyError, IndexError, OSError) as exc:
                 entry['native_error'] = str(exc)
-            from rc2016.viewer.experimental_materials import prepare_preview
+            from rc2016.viewer.experimental_materials import prepare_preview, preview_with_fallback
             try:
                 preview = prepare_preview(archive, material['path']) if previews else None
                 if preview:
@@ -1295,7 +1295,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
                         if not texture or texture.get('array_size',1) != 1:
                             raise ValueError('Experimental source texture unavailable: '+binding['path'])
                         preview_textures[binding['api']] = texture
-                    entry['experimental_preview'] = preview
+                    entry['experimental_preview'] = preview_with_fallback(preview, entry)
                     entry['experimental_textures'] = preview_textures
             except (ValueError, KeyError, IndexError, OSError, StopIteration) as exc:
                 entry['experimental_error'] = str(exc)
