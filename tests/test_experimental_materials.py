@@ -67,6 +67,62 @@ class PreviewGateTests(unittest.TestCase):
         self.assertTrue(panel.material_previews_var.get());self.assertTrue(panel.spawn_var.get())
 
 
+
+class OnDemandPreviewTests(unittest.TestCase):
+    """Preview source analysis is slow: loads skip it until the previews are enabled."""
+
+    def test_material_textures_skip_preview_analysis_unless_asked(self):
+        from unittest.mock import patch
+        from rc2016.viewer.textures import material_textures
+        from rc2016.viewer.experimental_materials import MATERIAL
+        with patch('rc2016.viewer.textures.material_texture_paths',return_value={}), \
+             patch('rc2016.viewer.native_glsl.selected_translation',return_value=None), \
+             patch('rc2016.viewer.experimental_materials.prepare_preview') as prepare:
+            entry=material_textures(None,[dict(index=0,path=MATERIAL)],{},previews=False)[0]
+            prepare.assert_not_called()
+            self.assertNotIn('experimental_preview',entry)
+            material_textures(None,[dict(index=0,path=MATERIAL)],{})
+            prepare.assert_called_once_with(None,MATERIAL)
+
+    def test_panel_prepares_enabled_previews_once_beside_the_load(self):
+        import threading
+        from unittest.mock import patch
+        from rc2016.levels import scene
+        from rc2016.shaders import terrain_preview
+        class Var:
+            def __init__(self,value):self.value=value
+            def get(self):return self.value
+        class Thread:
+            def __init__(self,target,**_kw):self.target=target
+            def start(self):self.target()
+        posted=[];calls=[]
+        panel=object.__new__(LevelPanel)
+        panel.experimental_var=Var(False);panel.material_previews_var=Var(True)
+        panel.relay=type('Relay',(),{'put':lambda _,item:posted.append(item)})()
+        panel.cancel=threading.Event();panel.source_root=lambda:'';panel._archive=lambda root:'archive'
+        panel.material_paths,panel.preview_paths=set(),set()
+        def entries(archive,materials,done,cache,previews=False):
+            calls.append(([m['path'] for m in materials],previews));return {m['path']:dict(path=m['path']) for m in materials}
+        paths={'other.material',terrain_preview.MATERIAL}
+        with patch.object(scene,'material_entries',side_effect=entries), patch('threading.Thread',Thread):
+            panel._prepare_previews(paths)
+            self.assertEqual(calls,[])   # disabled: no analysis
+            panel.experimental_var.value=True
+            panel._prepare_previews(paths);panel._prepare_previews(paths)
+        self.assertEqual(calls,[(sorted(paths),True)])
+        self.assertEqual(posted,[('preview_materials',{p:dict(path=p) for p in paths})])
+
+    def test_replace_materials_requeues_posted_and_queued_entries(self):
+        view=object.__new__(LevelViewport)
+        view._materials={'a':'old a','b':'old b'};view._pending_materials={}
+        view._material_queue={'c':'old c'}
+        added=[]
+        view.add_materials=lambda entries:added.append(dict(entries))
+        view.replace_materials({'a':'new a','c':'new c'})
+        self.assertEqual(view._materials,{'b':'old b'})
+        self.assertEqual(view._material_queue,{})
+        self.assertEqual(added,[{'a':'new a','c':'new c'}])
+
 @unittest.skipUnless(os.environ.get('RC2016_RESEARCH'),'real source controls need RC2016_RESEARCH')
 class MountainSourceTests(unittest.TestCase):
     @classmethod

@@ -93,6 +93,34 @@ def drop_uploaded_pixels(cache, entries, uploaded):
             cache[key] = {k: v for k, v in texture.items() if k not in ("pixels", "slices")}
 
 
+def restore_native_pixels(archive, entries, posted):
+    """Give native and experimental textures their pixels where the GL side has not uploaded them yet.
+
+    The GL side uploads each (path, sRGB variant) once and then never reads that texture's pixels
+    again. Material workers hand over cached textures whose pixels drop_uploaded_pixels may have
+    dropped, so only a variant first posted here is reloaded: once per variant, not once per
+    material binding. ``posted`` accumulates the variants, in posting order."""
+    from rc2016.viewer.textures import load_texture
+    reloaded = {}
+    for entry in entries.values():
+        for receipt_key, texture_key in (("native_translation", "native_textures"),
+                                         ("experimental_preview", "experimental_textures")):
+            receipt, textures = entry.get(receipt_key), entry.get(texture_key)
+            if not receipt or not textures:
+                continue
+            normal_api = (receipt.get("normal") or {}).get("api")
+            for api, texture in list(textures.items()):
+                variant = (texture["path"], bool(texture.get("srgb")) and api != normal_api)
+                if variant in posted:
+                    continue
+                posted.add(variant)
+                if "pixels" not in texture:
+                    path = texture["path"]
+                    if path not in reloaded:
+                        reloaded[path] = load_texture(archive, path)
+                    textures[api] = reloaded[path]
+
+
 # Worker threads for model geometry and materials. Archive reads keep per-thread handles; NumPy, zlib
 # and file reads release the GIL, so a few workers overlap decoding with I/O.
 LOAD_WORKERS = max(2, min(6, (os.cpu_count() or 2) - 1))
@@ -126,6 +154,7 @@ class MaterialJobs:
     def __init__(self, archive, pool, out):
         self.archive, self.pool, self.out = archive, pool, out
         self.claimed, self.done, self.cache, self.uploaded, self.jobs = set(), set(), {}, set(), deque()
+        self.native_posted = set()
 
     def submit(self, geometry):
         todo = [m for m in geometry["materials"] + geometry.get("override_materials", [])
@@ -146,6 +175,10 @@ class MaterialJobs:
                 self.out.put(("error", "materials", f"{type(exc).__name__}: {exc}"))
                 continue
             self.done.update(entries)
+            try:
+                restore_native_pixels(self.archive, entries, self.native_posted)
+            except Exception as exc:
+                self.out.put(("error", "materials", f"{type(exc).__name__}: {exc}"))
             if entries:
                 self.out.put(("materials", entries))
             drop_uploaded_pixels(self.cache, entries, self.uploaded)
@@ -171,11 +204,9 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None, workers=N
     if zone_filter:
         zones = [z for z in zones if level_scene.zone_label(z) in zone_filter or z in zone_filter]
     out.put(("zones", zones))
-    try:
-        from rc2016.levels.scene_lighting import load_scene_lighting
-        out.put(('scene_lighting',load_scene_lighting(archive,all_zones)))
-    except Exception as exc:
-        out.put(('scene_lighting',{'lights':[],'probes':[],'notes':[f'Authored lighting unavailable: {exc}']}))
+    # Authored lighting reads every zone again; decode it beside the geometry rather than before it.
+    threading.Thread(target=_post_scene_lighting, args=(archive, all_zones, out, cancel), daemon=True,
+                     name="level-lighting").start()
     from rc2016.levels.actors import ActorCatalog, actor_groups
     catalog = ActorCatalog(archive)
     actor_decode_seconds = 0.0
@@ -215,6 +246,16 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None, workers=N
                      actor_decode_seconds)
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
+
+
+def _post_scene_lighting(archive, zones, out, cancel):
+    try:
+        from rc2016.levels.scene_lighting import load_scene_lighting
+        lighting = load_scene_lighting(archive, zones)
+    except Exception as exc:
+        lighting = {'lights': [], 'probes': [], 'notes': [f'Authored lighting unavailable: {exc}']}
+    if not cancel.is_set():
+        out.put(('scene_lighting', lighting))
 
 
 def _load_models(archive, pool, workers, models, catalog, actor_groups, points, out, cancel, started, actor_decode_seconds):
@@ -331,6 +372,7 @@ class LevelPanel:
         self.zone_filter, self.on_done, self.on_open_model = zone_filter, on_done, on_open_model
         self.archive, self.archive_root, self.archive_lock = None, None, threading.Lock()
         self.events, self.cancel, self.generation = queue.Queue(), threading.Event(), 0
+        self.relay, self.material_paths, self.preview_paths = None, set(), set()
         self._stats_due = False
         self.zone_vars, self.zone_rows, self.progress = {}, {}, {}
         self.closed, self.loaded_level, self.levels = False, None, []
@@ -539,6 +581,7 @@ class LevelPanel:
                              instances=0, started=time.perf_counter())
         generation, cancel = self.generation, self.cancel
         relay = _Relay(self.events, generation)
+        self.relay, self.material_paths, self.preview_paths = relay, set(), set()
         root = str(self.source_root() or "")
         threading.Thread(target=load_level, args=(lambda: self._archive(root), level, relay, cancel, self.zone_filter),
                          daemon=True).start()
@@ -550,6 +593,31 @@ class LevelPanel:
         enabled = self.experimental_var.get()
         self.view.set_experimental_materials(enabled and self.material_previews_var.get())
         self.view.set_spawn_preview(enabled and self.spawn_var.get())
+        self._prepare_previews(getattr(self, "material_paths", ()))
+
+    def _prepare_previews(self, paths):
+        """Prepare the experimental previews of loaded materials once they are enabled. Their source
+        analysis is slow, so the loader skips it; this runs it beside the view and swaps the
+        materials in when done ('preview_materials')."""
+        if not (self.experimental_var.get() and self.material_previews_var.get()):
+            return
+        from rc2016.viewer.experimental_materials import has_preview
+        todo = sorted(p for p in paths if p not in self.preview_paths and has_preview(p))
+        if not todo or self.relay is None:
+            return
+        self.preview_paths.update(todo)
+        relay, cancel, root = self.relay, self.cancel, str(self.source_root() or "")
+
+        def work():
+            try:
+                entries = level_scene.material_entries(self._archive(root), [dict(path=p) for p in todo],
+                                                       frozenset(), {}, previews=True)
+            except Exception as exc:
+                relay.put(("error", "material previews", f"{type(exc).__name__}: {exc}"))
+                return
+            if not cancel.is_set():
+                relay.put(("preview_materials", entries))
+        threading.Thread(target=work, daemon=True, name="material-previews").start()
 
     def _ground_controls_changed(self, event=None):
         try:
@@ -675,6 +743,13 @@ class LevelPanel:
             p["overrides"] = item[1]
         elif kind == "materials":
             self.view.add_materials(item[1])
+            self.material_paths.update(item[1])
+            self._prepare_previews(item[1])
+        elif kind == "preview_materials":
+            self.view.replace_materials(item[1])
+            for path, entry in item[1].items():
+                if entry.get("experimental_error"):
+                    print("level viewer: material preview:", path, "-", entry["experimental_error"], file=sys.stderr)
         elif kind == "error":
             p.setdefault("errors", []).append(item[1:])
             print("level viewer:", *item[1:], file=sys.stderr)

@@ -117,17 +117,19 @@ class PortableSurfaceTests(unittest.TestCase):
         self.assertEqual(view._materials['a']['_c'],(5,True))
         self.assertIsNone(view._draw_list)
 
-    def test_native_upload_reloads_pixels_released_after_a_hand_upload(self):
+    def test_native_binding_hands_over_the_cached_texture_without_reloading(self):
+        # A released texture is restored once per GL variant by the level loader
+        # (restore_native_pixels), not decoded again for every material binding it.
         from rc2016.viewer.textures import material_textures
-        texture=dict(path='a.texture',pixels=b'pixels',array_size=1)
-        cache={'a.texture':dict(path='a.texture',array_size=1)}
+        cached=dict(path='a.texture',array_size=1)
+        cache={'a.texture':cached}
         ready=dict(status='ready',texture_bindings=[dict(api=5,path='a.texture')])
         with patch('rc2016.viewer.textures.material_texture_paths',return_value={}), \
              patch('rc2016.viewer.native_glsl.selected_translation',return_value=ready), \
-             patch('rc2016.viewer.textures.load_texture',return_value=texture) as load:
+             patch('rc2016.viewer.textures.load_texture') as load:
             entry=material_textures(None,[dict(index=0,path='a.material')],cache)[0]
-        load.assert_called_once_with(None,'a.texture')
-        self.assertEqual(entry['native_textures'][5]['pixels'],b'pixels')
+        load.assert_not_called()
+        self.assertIs(entry['native_textures'][5],cached)
         self.assertIs(entry['native_translation'],ready)
 
     def test_coverage_and_recorder_are_material_and_program_specific(self):

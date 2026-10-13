@@ -103,6 +103,7 @@ Select one source row to load its geometry. Archive metadata is loaded once; onl
 - The viewer reads only the first copy of an asset that the archive repeats (`verify_repeats = False`, as the level viewer does); the scan and pipeline still compare every copy.
 - Each `Archive` memoizes decompressed assets and their reference lists (`asset_data`, `asset_references`; LRU, 256 MB, single assets over 32 MB are not kept), so a material, its graphs and texture headers are read once per model open although textures, the texture list, rule coverage and the native translation all need them. `texture_header` is memoized per built asset and filled by `load_texture`'s own parse. These caches and the texture caches of `material_textures` are thread-safe; the level viewer resolves materials from a thread pool.
 - Decoded top mips are kept on disk in `.cache/texture_preview` (`TextureDiskCache`, at most 2 GB, least recently used removed first). The key covers the archive metadata hashes, the texture's archive location and the source of the texture decoders, so a changed archive or decoder misses. Files are written atomically and carry a payload hash; a damaged file is decoded again.
+- Native shader translations (`prepare_material_translation`) are kept on disk in `.cache/native_translation` (`TranslationDiskCache`, at most 256 MB, least recently used removed first). The key covers the material bytes, its material-graph bytes and the source of the translator, so a changed asset or translator code translates again. A damaged or unreadable file is ignored and rewritten. The research pipeline does not use this cache.
 - Models are decoded from memory with `decode_model(..., as_arrays=True)`: positions, normals and triangles stay NumPy arrays through `mesh_payload` and `prepare_viewport`, and skin weights are decoded per batch with NumPy. UVs, skin and rock-alpha values reach the payload as flat lists, as before.
 - The loader's lock covers its own state only; the decode, texture reads and viewport arrays run outside it, so clip, pose and texture-list requests are not queued behind a model decode.
 - `prepare_viewport` builds the GL arrays with NumPy and falls back to the pure-Python `validate_mesh`, which also supplies the exact error message for an invalid payload. Both paths produce identical arrays.
@@ -452,6 +453,7 @@ The **Gallery** tab shows rendered thumbnails of the models selected in the tree
 - `<repo>/.cache/shared_index`: parsed `layout.csv` and the shared index sidecar.
 - `<repo>/.cache/source_preview`: the viewer's archive working cache.
 - `<repo>/.cache/texture_preview`: decoded texture top mips for the model and level viewers (at most 2 GB).
+- `<repo>/.cache/native_translation`: native shader translations for the model and level viewers (at most 256 MB).
 - `<repo>/.cache/shared_index/file_hashes.json`, `located_roots.json`: file hashes by size and modification time, and the located archive root per game folder.
 - `<repo>/.cache/reviews`: isolated Blender review runs.
 - `<repo>/.cache/environment`: shared HDRI lighting maps (`<hdri hash>_v<version>.npz`).

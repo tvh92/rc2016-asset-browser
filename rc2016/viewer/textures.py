@@ -768,6 +768,8 @@ class TextureDiskCache:
     the folder exceeds ``limit`` bytes.
     """
 
+    SUFFIX = '.rctx'
+
     def __init__(self, folder, limit=TEXTURE_DISK_CACHE_BYTES):
         self.folder, self.limit = Path(folder), limit
         self._lock = threading.Lock()
@@ -788,7 +790,7 @@ class TextureDiskCache:
                                     texture_path, rows)).encode()).hexdigest()
 
     def _file(self, key):
-        return self.folder / key[:2] / f'{key}.rctx'
+        return self.folder / key[:2] / f'{key}{self.SUFFIX}'
 
     def get(self, key):
         import hashlib, json, os
@@ -857,7 +859,7 @@ class TextureDiskCache:
         try:
             for sub in self.folder.iterdir():
                 if sub.is_dir():
-                    for path in sub.glob('*.rctx'):
+                    for path in sub.glob('*' + self.SUFFIX):
                         try:
                             st = path.stat(); rows.append((path, st.st_size, st.st_mtime_ns))
                         except OSError:
@@ -1156,7 +1158,8 @@ def _with_pixels(archive, cache: dict, path):
     return texture
 
 
-def material_textures(archive, materials: list[dict], cache: dict, translations: dict | None = None) -> dict[int, dict]:
+def material_textures(archive, materials: list[dict], cache: dict, translations: dict | None = None,
+                      previews: bool = True) -> dict[int, dict]:
     """Material slot -> {'_c'/'_g'/'_n'/'_pick': texture or None, 'k', 'g_mode', 'self_lit', 'spec', 'gloss'[, 'pick']}.
 
     Missing or unloadable textures are None and that part is shaded without
@@ -1166,6 +1169,8 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
     palette, screen timeline, puddle and RockBlend layers) are then reloaded.
     ``translations``, when given, receives {material path: selected native translation or None}
     for materials whose texture paths resolved, so material_rules need not select it again.
+    ``previews`` prepares the opt-in experimental material previews; their source analysis is
+    expensive, so a caller that has not enabled them passes False and prepares them on demand.
     Thread-safe for concurrent calls sharing one ``cache``.
     """
 
@@ -1268,10 +1273,11 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
                     native_textures = {}
                     for binding in translated['texture_bindings']:
                         path = binding['path']
-                        _cached_texture(archive, cache, path, tolerate=False)
-                        # Native uploads use a separate sRGB/linear GL object. A hand
-                        # upload of this path may already have released its CPU pixels.
-                        texture = _with_pixels(archive, cache, path)
+                        # Native uploads use a separate sRGB/linear GL object. A caller that
+                        # dropped this texture's pixels restores them for a variant it has not
+                        # uploaded yet (the level loader's restore_native_pixels); reloading here
+                        # would decode a shared texture again for every material binding it.
+                        texture = _cached_texture(archive, cache, path, tolerate=False)
                         if not texture or texture.get('array_size', 1) != 1:
                             raise ValueError('Native source texture unavailable or not 2D: ' + path)
                         native_textures[binding['api']] = texture
@@ -1281,12 +1287,11 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
                 entry['native_error'] = str(exc)
             from rc2016.viewer.experimental_materials import prepare_preview, preview_with_fallback
             try:
-                preview = prepare_preview(archive, material['path'])
+                preview = prepare_preview(archive, material['path']) if previews else None
                 if preview:
                     preview_textures = {}
                     for binding in preview['texture_bindings']:
-                        _cached_texture(archive, cache, binding['path'], tolerate=False)
-                        texture = _with_pixels(archive, cache, binding['path'])
+                        texture = _cached_texture(archive, cache, binding['path'], tolerate=False)
                         if not texture or texture.get('array_size',1) != 1:
                             raise ValueError('Experimental source texture unavailable: '+binding['path'])
                         preview_textures[binding['api']] = texture

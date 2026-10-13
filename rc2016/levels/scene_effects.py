@@ -1,6 +1,10 @@
 """Live scene buffers and viewer-allocated key shadows; native selection is unproven."""
 import ctypes as C
+import time
 AO_UNIT, SHADOW_UNIT = 16, 17
+# Scene content changes (models, instances, materials) arrive many times a second during a load; each
+# shadow refresh redraws the whole unculled level, so content-driven refreshes wait this long apart.
+SHADOW_REFRESH_SECONDS = 2.0
 SCENE_UNIFORMS = ('uSceneEnabled','uSceneAOEnabled','uSceneShadowEnabled','uSceneAO','uSceneShadow',
                   'uSceneSize','uSceneShadowSize','uSceneShadowMatrix','uSceneLightCount','uSceneLightPos','uSceneLightColour')
 HELPERS = '''
@@ -45,6 +49,7 @@ class SceneEffects:
     def __init__(self,gl,shading):
         self.gl,self.sh=gl,shading;self.size=None;self.fbos=[];self.textures=[];self.ao=None;self.ao_texture=0
         self.shadow_size=2048;self.shadow_key=None;self.shadow_matrix=None;self.view_shadow_matrix=None
+        self.shadow_time=0.;self.shadow_retry=None
         ui,si,vp=C.c_uint,C.c_int,C.c_void_p
         def fn(n,result,args):
             address=gl.wglGetProcAddress(n.encode())
@@ -91,12 +96,12 @@ class SceneEffects:
                 else:
                     from rc2016.viewer.viewport import RIG_TO_WORLD
                     direction=np.linalg.solve(np.array(view.OBJECT_TO_WORLD),np.array(RIG_TO_WORLD)@np.array([-.45,.65,.62]))
-                bounds=view.scene_bounds();key=(bounds,tuple(direction),view._scene_revision)
-                if key!=self.shadow_key:
-                    sv,sp,self.shadow_matrix=shadow_matrices(bounds,direction);self.bind(0x8D40,self.shadow_fbo)
+                key=(view._scene_revision,tuple(float(x) for x in direction))
+                if key!=self.shadow_key and self._shadow_due(view,key,time.perf_counter()):
+                    sv,sp,self.shadow_matrix=shadow_matrices(view.scene_bounds(),direction);self.bind(0x8D40,self.shadow_fbo)
                     gl.glViewport(0,0,self.shadow_size,self.shadow_size);gl.glClear(0x00000100)
                     gl.glMatrixMode(0x1701);gl.glLoadMatrixf((C.c_float*16)(*sp.T.flat));gl.glMatrixMode(0x1700);gl.glLoadMatrixf((C.c_float*16)(*sv.T.flat))
-                    draw_geometry(shadow=True);self.shadow_key=key
+                    draw_geometry(shadow=True);self.shadow_key=key;self.shadow_time=time.perf_counter()
             gl.glMatrixMode(0x1701);gl.glLoadMatrixf(projection);gl.glMatrixMode(0x1700);gl.glLoadMatrixf(modelview)
             if view.scene_ao:
                 self.bind(0x8D40,self.geometry_fbo);self.draw_buffers(2,(C.c_uint*2)(0x8CE0,0x8CE1))
@@ -108,6 +113,18 @@ class SceneEffects:
             self.view_shadow_matrix=None if self.shadow_matrix is None else self.shadow_matrix@np.linalg.inv(vm)
         finally:
             self.bind(0x8D40,0);gl.glPopAttrib();gl.glMatrixMode(0x1701);gl.glLoadMatrixf(projection);gl.glMatrixMode(0x1700);gl.glLoadMatrixf(modelview);self.sh.glActiveTexture(0x84C0)
+    def _shadow_due(self,view,key,now):
+        """Refresh at once for a new light direction or the first map; rate-limit content changes and
+        schedule one redraw so the final scene still gets its map."""
+        if self.shadow_key is None or key[1]!=self.shadow_key[1]:return True
+        wait=self.shadow_time+SHADOW_REFRESH_SECONDS-now
+        if wait<=0:return True
+        if self.shadow_retry is None:
+            def retry():
+                self.shadow_retry=None
+                view._schedule_draw()
+            self.shadow_retry=(view,view.after(int(wait*1000)+1,retry))
+        return False
     def apply(self,view,u):
         sh,gl=self.sh,self.gl;ready=not view._scene_geometry and view.scene_effects_active()
         sh.glUniform1i(u['uSceneEnabled'],int(ready));sh.glUniform1i(u.get('uSceneGeometry',-1),int(view._scene_geometry))
@@ -120,6 +137,10 @@ class SceneEffects:
         if self.view_shadow_matrix is not None:self.uniform_matrix(u['uSceneShadowMatrix'],1,0,(C.c_float*16)(*self.view_shadow_matrix.T.flat))
         sh.glActiveTexture(0x84C0)
     def close(self):
+        if self.shadow_retry:
+            view,after=self.shadow_retry;self.shadow_retry=None
+            try:view.after_cancel(after)
+            except Exception:pass
         if self.ao:self.ao.close();self.ao=None
         if self.textures:self.gl.glDeleteTextures(len(self.textures),(C.c_uint*len(self.textures))(*self.textures));self.textures=[]
         if self.fbos:self.delete(len(self.fbos),(C.c_uint*len(self.fbos))(*self.fbos));self.fbos=[]
