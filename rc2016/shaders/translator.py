@@ -145,7 +145,7 @@ class Compiler:
         self.samples=[];self.diagnostics=[];self.current=0;self.scalar_bits={}
         self.exec=self.ir.const(1.);self.bp=self.ir.const(1.);self.masks={};self.scc=None;self.scc_source='program start'
         self.pending={};self.premerged=set();self.exec_masked_export=False
-        self.pred_tables={};self.pred_memo={};self.back=None
+        self.pred_tables={};self.pred_memo={};self.back=None;self.fetch_call=False
         if ps_input_addr is not None:
             for reg,(name,j,loaded) in ps_input_registers(ps_input_addr,ps_input_ena or 0,vgpr_count).items():
                 label='ps.'+name+('' if j is None else f'.{j}')
@@ -426,6 +426,10 @@ class Compiler:
             # Compares write only SCC and SETREG writes a hardware register.
             f=dict(f,dst=[] if name.startswith(('S_CMPK','S_SETREG')) else [(w>>16)&127])
         if k in (0,1) and self.mask_op(k,name,f):return
+        if name=='S_SWAPPC_B64' and self.fetch_call:
+            # Vertex fetch subroutine: its loads are pre-bound as vertex inputs by
+            # input semantic; only the return-address pair is written here.
+            self.clobber_s(f['dst'][0],2,name);return
         if ('SAVEEXEC' in name or name in ('S_SETPC_B64','S_SWAPPC_B64') or
             (k in (0,1,2,3) and name!='S_WQM_B64' and any(r in (126,127) for r in f.get('dst',[])))):
             raise ValueError(f'Execution-mask/control flow unsupported at {i["relative"]}: {name}')

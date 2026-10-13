@@ -5,6 +5,7 @@ materials use each graph, so translator work targets the most common gaps.
 Reads the archive only; the JSON report goes where --output says.
 
     python -m rc2016.shaders.census --source <game-root> --output <report.json> [--materials] [--jobs N]
+        [--show REGEX]   (per-material blockers and interpolant sources for matching material paths)
 """
 import argparse
 from collections import Counter, defaultdict
@@ -49,8 +50,13 @@ def classify_graph(data):
         graph = compile_graph(bytes(data))
     except (ValueError, IndexError, KeyError, struct.error) as exc:
         return dict(status='malformed', blockers=[normalise(exc)], programs=0)
+    from rc2016.shaders.interpolants import shader_headers
+    try:
+        layouts = sorted(f"{h.get('layout')}/{h.get('export_entry_bytes')}" for h in shader_headers(bytes(data)) if h['type'] != 2)
+    except (ValueError, IndexError, struct.error) as exc:
+        layouts = ['error: ' + normalise(exc)]
     if not graph['programs']:
-        return dict(status='no_pixel_program', blockers=[], programs=0)
+        return dict(status='no_pixel_program', blockers=[], programs=0, vertex_layouts=layouts)
     blockers, lowered = [], 0
     inputs = sorted({f"{p.get('ps_input_addr', 0):#06x}/{p.get('ps_input_ena', 0):#06x}" for p in graph['programs']})
     for program in graph['programs']:
@@ -70,7 +76,7 @@ def classify_graph(data):
             lowered += 1
     status = 'lowered' if lowered else 'blocked'
     return dict(status=status, blockers=sorted(set(blockers)), programs=len(graph['programs']), lowered_programs=lowered,
-                ps_inputs=inputs)
+                ps_inputs=inputs, vertex_layouts=layouts)
 
 
 def material_graph_usage(archive, by_material=None):
@@ -110,9 +116,31 @@ def diagnostic_reasons(diagnostic):
 _SUMMARY = 'No portable deferred writer with a bounded source pass contract'
 
 
-def _material_counts(archive, paths):
+_ATTRIBUTE = re.compile(r'input attribute(\d+)\.')
+
+
+def material_detail(archive, path, result, reasons):
+    """Blockers of one material plus where each blocking interpolant comes from."""
+    from rc2016.formats.archive import asset_data, asset_references
+    from rc2016.shaders.interpolants import interpolant_sources
+    detail = dict(material=path, status=result.get('status'), reasons=reasons, graphs=[], interpolants={})
+    try:
+        ids = [i for i in archive.resolve(path) if archive.entries[i]['type'] == 'material']
+        graphs = sorted({r['path'] for r in asset_references(archive, ids[0]) if r['path'].endswith('.materialgraph')})
+        detail['graphs'] = graphs
+        attributes = {int(m.group(1)) for r in reasons for m in _ATTRIBUTE.finditer(r)}
+        for graph in graphs[:1] if attributes else []:
+            gid = [i for i in archive.resolve(graph) if archive.entries[i]['type'] == 'materialgraph'][0]
+            detail['interpolants'] = interpolant_sources(asset_data(archive, gid), attributes)
+    except (ValueError, KeyError, IndexError, OSError, struct.error) as exc:
+        detail['error'] = f'{type(exc).__name__}: {exc}'
+    return detail
+
+
+def _material_counts(archive, paths, show=None):
     from rc2016.viewer.native_glsl import prepare_material_translation
-    statuses, diagnostics, combinations = Counter(), Counter(), Counter()
+    statuses, diagnostics, combinations, details = Counter(), Counter(), Counter(), []
+    show = re.compile(show, re.I) if show else None
     for path in paths:
         result = prepare_material_translation(archive, path)
         statuses[result.get('status')] += 1
@@ -122,7 +150,9 @@ def _material_counts(archive, paths):
         if result.get('status') != 'ready':
             # The full set of blockers: binding one input unlocks a material only if it is the whole set.
             combinations[' + '.join(r for r in reasons if r != _SUMMARY) or _SUMMARY] += 1
-    return statuses, diagnostics, combinations
+        if show and show.search(path):
+            details.append(material_detail(archive, path, result, [r for r in reasons if r != _SUMMARY]))
+    return statuses, diagnostics, combinations, details
 
 
 def _graph_rows(archive, entries):
@@ -140,10 +170,12 @@ def _graph_rows(archive, entries):
 
 # Worker processes open their own archive once.
 _WORKER_ARCHIVE = None
+_WORKER_SHOW = None
 
 
-def _worker_open(source):
-    global _WORKER_ARCHIVE
+def _worker_open(source, show=None):
+    global _WORKER_ARCHIVE, _WORKER_SHOW
+    _WORKER_SHOW = show
     from rc2016.levels.scene import open_archive
     _WORKER_ARCHIVE = open_archive(source)
 
@@ -153,7 +185,7 @@ def _worker_graphs(entries):
 
 
 def _worker_materials(paths):
-    return _material_counts(_WORKER_ARCHIVE, paths)
+    return _material_counts(_WORKER_ARCHIVE, paths, _WORKER_SHOW)
 
 
 def _chunks(items, count):
@@ -174,33 +206,34 @@ def _run(pool, function, worker, archive, items, chunks, progress, label):
     return results
 
 
-def material_translation_status(archive, by_material=None, pool=None, chunks=1, progress=None):
+def material_translation_status(archive, by_material=None, pool=None, chunks=1, progress=None, show=None):
     """Bound per-material translation status and diagnostics (slower: binds every material).
 
     Materials are visited grouped by graph so the bounded compiled-graph cache is reused.
     """
     paths = sorted((e['path'] for e in archive.entries.values() if e.get('type') == 'material'),
                    key=lambda p: ((by_material or {}).get(p, []), p))
-    statuses, diagnostics, combinations = Counter(), Counter(), Counter()
-    for s, d, c in _run(pool, _material_counts, _worker_materials, archive, paths, chunks, progress, 'materials'):
-        statuses.update(s); diagnostics.update(d); combinations.update(c)
-    return statuses, diagnostics, combinations
+    statuses, diagnostics, combinations, details = Counter(), Counter(), Counter(), []
+    function = lambda a, items: _material_counts(a, items, show)
+    for s, d, c, x in _run(pool, function, _worker_materials, archive, paths, chunks, progress, 'materials'):
+        statuses.update(s); diagnostics.update(d); combinations.update(c); details.extend(x)
+    return statuses, diagnostics, combinations, sorted(details, key=lambda x: x['material'])
 
 
-def census(archive, materials=False, progress=None, jobs=1, source=None):
+def census(archive, materials=False, progress=None, jobs=1, source=None, show=None):
     started = time.time()
     by_material = {}
     usage = material_graph_usage(archive, by_material)
     entries = sorted((e for e in archive.entries.values() if e.get('type') == 'materialgraph'), key=lambda e: e['path'])
-    pool = ProcessPoolExecutor(jobs, initializer=_worker_open, initargs=(source,)) if jobs > 1 and source else None
+    pool = ProcessPoolExecutor(jobs, initializer=_worker_open, initargs=(source, show)) if jobs > 1 and source else None
     try:
-        return _census(archive, materials, progress, pool, jobs * 4, started, by_material, usage, entries)
+        return _census(archive, materials or bool(show), progress, pool, jobs * 4, started, by_material, usage, entries, show)
     finally:
         if pool is not None:
             pool.shutdown()
 
 
-def _census(archive, materials, progress, pool, chunks, started, by_material, usage, entries):
+def _census(archive, materials, progress, pool, chunks, started, by_material, usage, entries, show=None):
     graphs = {}
     for rows in _run(pool, _graph_rows, _worker_graphs, archive, entries, chunks, progress, 'graphs'):
         graphs.update(rows)
@@ -216,8 +249,10 @@ def _census(archive, materials, progress, pool, chunks, started, by_material, us
                 blocker_graphs[blocker].append(path)
     ranked = sorted(blocker_graphs.items(), key=lambda kv: (-sum(usage.get(p, 0) for p in kv[1]), -len(kv[1]), kv[0]))
     ps_inputs = Counter(x for row in graphs.values() for x in row.get('ps_inputs', ()))
+    vertex_layouts = Counter(x for row in graphs.values() for x in row.get('vertex_layouts', ()))
     report = dict(
         schema='rcps4-shader-census-v1', ps_input_addr_ena=dict(ps_inputs.most_common()),
+        vertex_header_layouts=dict(vertex_layouts.most_common()),
         graphs=len(graphs), graph_status=dict(by_status), material_weighted_graph_status=dict(weighted_status),
         blockers=[dict(reason=reason, graphs=len(paths), materials=sum(usage.get(p, 0) for p in paths),
                        examples=sorted(paths, key=lambda p: -usage.get(p, 0))[:5]) for reason, paths in ranked],
@@ -230,12 +265,33 @@ def _census(archive, materials, progress, pool, chunks, started, by_material, us
         if progress:
             progress('binding every material')
         started = time.time()
-        statuses, diagnostics, combinations = material_translation_status(archive, by_material, pool, chunks, progress)
+        statuses, diagnostics, combinations, details = material_translation_status(archive, by_material, pool, chunks, progress, show)
+        if show:
+            report['shown_materials'] = details
         report['material_blocker_sets'] = [dict(reasons=r, materials=c) for r, c in combinations.most_common()]
         report['seconds']['materials'] = round(time.time() - started, 1)
         report['material_status'] = dict(statuses)
         report['material_diagnostics'] = [dict(reason=r, materials=c) for r, c in diagnostics.most_common()]
     return report
+
+
+def _print_shown(details):
+    """Shown materials grouped by identical blockers; interpolant sources listed once per group."""
+    ready = sum(d['status'] == 'ready' for d in details)
+    print(f'shown materials: {len(details)} ({ready} ready)')
+    groups = defaultdict(list)
+    for d in details:
+        if d['status'] != 'ready':
+            key = (' + '.join(d['reasons']) or '(no reason)',
+                   json.dumps(d.get('interpolants', {}), sort_keys=True))
+            groups[key].append(d['material'])
+    for (reasons, interpolants), paths in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+        print(f'\n{len(paths)} materials, e.g. {paths[0]}')
+        print('  blockers:', reasons[:400])
+        for name, entry in json.loads(interpolants).items():
+            print(f"  {name} (PS semantic {entry['semantics']}):")
+            for source in entry['sources'][:4]:
+                print('    ' + source[:300])
 
 
 def main(argv=None):
@@ -244,6 +300,7 @@ def main(argv=None):
     parser.add_argument('--output', required=True, help='JSON report path (outside the repository)')
     parser.add_argument('--materials', action='store_true', help='also bind every material (slower)')
     parser.add_argument('--top', type=int, default=25, help='blockers to print')
+    parser.add_argument('--show', help='regular expression of material paths to report in detail (implies --materials)')
     parser.add_argument('--jobs', type=int, default=min(16, os.cpu_count() or 1),
                         help='worker processes (default: CPU count, at most 16; 1 runs in this process)')
     args = parser.parse_args(argv)
@@ -252,7 +309,7 @@ def main(argv=None):
     archive = open_archive(args.source)
     try:
         report = census(archive, args.materials, progress=lambda m: print(m, file=sys.stderr, flush=True),
-                        jobs=args.jobs, source=args.source)
+                        jobs=args.jobs, source=args.source, show=args.show)
     finally:
         archive.close()
     with open(args.output, 'w', encoding='utf-8') as handle:
@@ -268,6 +325,9 @@ def main(argv=None):
         for row in report['material_blocker_sets'][:15]:
             print(f"{row['materials']:6d}  {row['reasons'][:300]}")
     print('PS input address/enable words (graphs):', dict(list(report['ps_input_addr_ena'].items())[:8]))
+    print('vertex header layouts (programs):', report['vertex_header_layouts'])
+    if 'shown_materials' in report:
+        _print_shown(report['shown_materials'])
     print('top blockers (materials, graphs, reason):')
     for row in report['blockers'][:args.top]:
         print(f"{row['materials']:6d} {row['graphs']:5d}  {row['reason']}")
