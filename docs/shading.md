@@ -139,6 +139,26 @@ Diagnostic vertex tracing keeps unresolved scalar comparisons as opaque runtime 
 
 SOPC scalar comparisons consume one shared literal dword when either source selector is 255, following the [AMD GCN3 ISA](https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/instruction-set-architectures/gcn3-instruction-set-architecture.pdf). A literal with instruction-like bits remains operand data; the following instruction begins after the literal.
 
+### Explicit instance-record tracing
+
+`vertex_exports(..., context=InstanceRecordContext(...))` accepts one immutable
+272-byte source-CB1 record, its original instance index, an explicitly identified
+wave-uniform instance VGPR, an exact native program SHA-256 and a caller origin.
+The default trace supplies none of these inputs. The context evaluates only
+known, aligned scalar buffer reads inside that record after checking all four
+descriptor words and their path/taint proof. Invalid reads fail atomically;
+other buffers, typed fetches and dynamic vertex values remain unresolved.
+Finite constant first-lane reads may fold inside this explicit context.
+
+The DAG's `vertex_context_receipt` records the supplied origin, code/record hashes,
+instance index, byte window and read spans. Origins are caller assertions; this
+API does not establish runtime binding, shader permutation or draw selection.
+It is a diagnostic input contract, not material admission: viewer and Blender
+frontends do not create records or replace their existing stream proof. No
+captured flags or matrices are applied globally, and `game_equivalence` remains
+false. CPU-decoded normal normalization is not a substitute for raw vertex
+fetch values.
+
 ### Viewer graph rules
 
 For graphs without a registered family, `apply_viewer_graph_rule` builds the asset viewer's per-graph reading on the shared deferred BRDF (rules from `viewer_graph_rule` in `rc2016/formats/materials.py`; the GL implementation is in `rc2016/viewer/shading.py`, see [viewer](viewer.md)).

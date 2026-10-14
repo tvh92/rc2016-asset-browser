@@ -110,14 +110,21 @@ def listing(instructions, upto, limit=14, before=None):
     return ' '.join(rows)
 
 
-def vertex_exports(row, position=False):
+def vertex_exports(row, position=False, *, context=None):
     """{parameter slot: [IR node per channel]} and the DAG, or (None, reason).
 
     With position=True the parameter map also holds the clip position export
-    (EXP target 12) under the key 'position'."""
+    (EXP target 12) under the key 'position'. An explicit InstanceRecordContext
+    resolves only its supplied CB1 record and builtin; no context is inferred."""
     if 'code' not in row:
         return None, 'no verified vertex program'
-    compiler = Compiler(row['code'], row['usage_slots'])
+    if context is None:
+        compiler = Compiler(row['code'], row['usage_slots'])
+    else:
+        from rc2016.shaders.vertex_context import ContextCompiler
+        compiler = ContextCompiler(row['code'], row['usage_slots'], context=context)
+        if any(e['vgpr'] <= context.instance_vgpr < e['vgpr'] + e['size'] for e in row['inputs']):
+            raise ValueError('Instance builtin overlaps a declared vertex input')
     for entry in row['inputs']:
         for j in range(entry['size']):
             compiler.v[entry['vgpr'] + j] = compiler.ir.node(
@@ -131,6 +138,8 @@ def vertex_exports(row, position=False):
         compiler.run(instructions)
     except (ValueError, IndexError, KeyError, struct.error) as exc:
         return None, f'{type(exc).__name__}: {exc}; before: ' + listing(instructions, compiler.current, before=10)
+    if context is not None:
+        compiler.ir.vertex_context_receipt = compiler.context_receipt()
     params = {t - 32: v for t, v in compiler.exports.items() if 32 <= t < 64}
     if position and 12 in compiler.exports:
         params['position'] = compiler.exports[12]
