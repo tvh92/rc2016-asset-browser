@@ -151,7 +151,12 @@ def _trace(p,gd,md):
     compiler.descriptors={}; compiler.s={}
     for reg,value in enumerate(incoming[cj]):
         if value and value[0]=='descriptor':
-            compiler.descriptors[reg]=dict(kind=value[1],api=value[2],word=value[3])
+            descriptor=dict(kind=value[1],api=value[2],word=value[3])
+            if value[1] in (0x13,0x15):
+                origins=[s for s in p['usage_slots'] if s['kind']==value[1] and s['api']==value[2]]
+                if len(origins)!=1:raise ValueError('Ambiguous source descriptor table origin')
+                descriptor.update(reg=origins[0]['reg'],flags=origins[0]['flags'])
+            compiler.descriptors[reg]=descriptor
         elif value and value[0]=='cb':
             compiler.s[reg]=compiler.ir.node('input',name=f'CB{value[1]}[{value[2]}]',kind='cb',api=value[1],dword=value[2])
         elif value and value[0]=='constant':

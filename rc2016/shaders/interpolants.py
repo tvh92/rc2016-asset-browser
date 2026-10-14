@@ -181,51 +181,66 @@ def _squared_stream(ir, channel):
     flags = sorted(j for j in ir.reachable([channel]) if ir.nodes[j].get('kind') == 'runtime_flag')
     if len(flags) > MAX_FLAGS:
         return None
+    sources=set()
     for bits in range(1 << len(flags)):
         folded = ir.replace([channel], {f: ir.const(float(bits >> k & 1)) for k, f in enumerate(flags)})[0]
         n = ir.nodes[folded]
         if n['op'] == 'mul' and n['args'][0] == n['args'][1]:
             v = ir.nodes[n['args'][0]]
             if v['op'] == 'input' and v.get('kind') == 'vertex_input':
-                return v['semantic'], v['channel']
-    return None
+                sources.add((v['semantic'],v['channel']))
+    return next(iter(sources)) if len(sources)==1 else None
 
 
 def squared_stream_channels(data):
-    """{(PS attribute index, channel): (vertex semantic, component)} for interpolant channels
-    that every vertex program exporting them can pass as a squared vertex stream value.
+    """Common squared-channel mapping across pixel layouts (compatibility API)."""
+    return squared_stream_evidence(data)[0]
 
-    Evidence for the experimental adapter only: the runtime flags that select that path
-    are per-draw data, so the path is a choice, not a decoded draw state.
+
+def squared_stream_evidence(data):
+    """(common mapping, mappings by exact pixel Shdr offset).
+
+    Each pixel program's input semantics select the relevant VS exports. All
+    matching verified VS exporters and duplicate slots must agree. A flag path
+    can establish a squared source stream, but runtime selection is unproven.
+    VS compilation and per-node square proofs are shared across pixel layouts.
     """
-    headers = shader_headers(data)
-    pixel = [h for h in headers if h['type'] == PIXEL]
-    vertex = [h for h in headers if h['type'] != PIXEL]
-    compiled, found = {}, {}
-    count = max((len(p['inputs']) for p in pixel), default=0)
-    for index in range(count):
-        semantics = {p['inputs'][index]['semantic'] for p in pixel if index < len(p['inputs'])}
-        rows = [r for r in vertex if any(e['semantic'] in semantics for e in r.get('exports', []))]
-        if len(semantics) != 1 or not rows:
-            continue
-        for channel in range(4):
-            sources = set()
-            for row in rows:
-                key = row['header_offset']
-                if key not in compiled:
-                    compiled[key] = vertex_exports(row)
-                exports, _ = compiled[key]
-                if exports is None:
-                    sources.add(None); break
-                params, ir = exports
-                for slot in [e['slot'] for e in row['exports'] if e['semantic'] in semantics]:
-                    values = params.get(slot)
-                    value = values[channel] if values and channel < len(values) else None
-                    sources.add(None if value is None else _squared_stream(ir, value))
-            if len(sources) == 1 and None not in sources:
-                found[(index, channel)] = sources.pop()
-    return found
-
+    headers=shader_headers(data)
+    pixel=[h for h in headers if h['type']==PIXEL]
+    vertex=[h for h in headers if h['type']!=PIXEL]
+    if any(row.get('layout')!='verified' and not row.get('exports') for row in vertex):
+        # With no semantic table, relevance cannot be disproved for any PS input.
+        return {},{ps['header_offset']:{} for ps in pixel}
+    compiled,proofs={},{}
+    def source(row,slot,channel):
+        key=row['header_offset']
+        if row.get('layout')!='verified':return None
+        if key not in compiled:compiled[key]=vertex_exports(row)
+        exports,_reason=compiled[key]
+        if exports is None:return None
+        params,ir=exports;values=params.get(slot)
+        value=values[channel] if values and channel<len(values) else None
+        if value is None:return None
+        cache=(key,value)
+        if cache not in proofs:proofs[cache]=_squared_stream(ir,value)
+        return proofs[cache]
+    by_header={}
+    for ps in pixel:
+        found={}
+        for index,entry in enumerate(ps['inputs']):
+            semantic=entry['semantic']
+            rows=[r for r in vertex if any(e['semantic']==semantic for e in r.get('exports',[]))]
+            if not rows:continue
+            for channel in range(4):
+                sources={source(row,e['slot'],channel) for row in rows for e in row.get('exports',[]) if e['semantic']==semantic}
+                if len(sources)==1 and None not in sources:found[(index,channel)]=sources.pop()
+        key=ps['header_offset']
+        if key in by_header and by_header[key]!=found:raise ValueError('Conflicting pixel semantic headers')
+        by_header[key]=found
+    common=dict(next(iter(by_header.values()))) if by_header else {}
+    for mapping in by_header.values():
+        common={key:value for key,value in common.items() if mapping.get(key)==value}
+    return common,by_header
 
 MAX_FORM_TERMS = 256
 

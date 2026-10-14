@@ -89,14 +89,14 @@ def compiled(data):
 
 
 def stream_evidence(data):
-    """(rotated-stream PS attributes, squared-stream channels) of a graph's vertex programs, the
-    world-position adapter's interpolant evidence; empty where the analysis fails."""
-    from rc2016.shaders.interpolants import rotated_stream_attributes, squared_stream_channels
+    """(rotated-stream PS attributes, common squared channels, channels by PS header).
+    World-position adapter evidence, empty where analysis fails."""
+    from rc2016.shaders.interpolants import rotated_stream_attributes, squared_stream_evidence
     try:normal_attributes=set(rotated_stream_attributes(data))
     except (ValueError,KeyError,IndexError,struct.error):normal_attributes=set()
-    try:stream_channels=squared_stream_channels(data)
-    except (ValueError,KeyError,IndexError,struct.error):stream_channels={}
-    return normal_attributes,stream_channels
+    try:stream_channels,by_program=squared_stream_evidence(data)
+    except (ValueError,KeyError,IndexError,struct.error):stream_channels,by_program={},{}
+    return normal_attributes,stream_channels,by_program
 
 
 @lru_cache(maxsize=64)
@@ -104,10 +104,11 @@ def _stream_evidence(data):
     return _pooled(stream_evidence,data)
 
 
-def graph_stream_evidence(data):
+def graph_stream_evidence(data,program=None):
     """stream_evidence once per graph, in a worker process when the pool is on: it depends on
     the graph alone, while every material using the graph asks for it."""
-    normal_attributes,stream_channels=_once('stream_evidence',bytes(data),_stream_evidence)
+    normal_attributes,stream_channels,by_program=_once('stream_evidence',bytes(data),_stream_evidence)
+    if program is not None:stream_channels=by_program.get(program.get('header_offset'),{})
     return set(normal_attributes),dict(stream_channels)
 
 
@@ -285,17 +286,27 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
             n=ir.nodes[i]
             if n['op']=='input' and n.get('kind')=='attribute' and n.get('attribute') in normal_attributes and n.get('channel') in (0,1,2):
                 normals[i]=ir.node('input',name=f"preview_normal.{n['channel']}",kind='preview_normal',channel=n['channel'])
-        colours={}
+        normal_adapted=bool(normals)
+        colours={};painted=set();painted_evidence=[]
         for i in ir.reachable(replaced):
             n=ir.nodes[i]
-            if n['op']=='input' and n.get('kind')=='attribute' and (stream_channels or {}).get((n.get('attribute'),n.get('channel')))==(COLOUR_SEMANTIC,3):
+            if n['op']!='input' or n.get('kind')!='attribute':continue
+            proven=(stream_channels or {}).get((n.get('attribute'),n.get('channel')))
+            if proven is None or proven[0]!=COLOUR_SEMANTIC or proven[1] not in (0,1,3):continue
+            component=proven[1];painted.add('rgba'[component])
+            painted_evidence.append(dict(attribute=n['attribute'],channel=n['channel'],semantic=proven[0],component=component))
+            if component==3:
                 colours[i]=ir.node('input',name='preview_vertex_alpha_squared',kind='preview_vertex_alpha_squared')
+            else:
+                masked=ir.node('input',name=f'preview_ground_blend.{component}',kind='preview_ground_blend',channel=component)
+                present=ir.node('input',name='preview_ground_blend.2',kind='preview_ground_blend',channel=2)
+                colours[i]=ir.op('add',masked,ir.op('sub',ir.const(1.),present))
         if colours:
-            lowered['limitations'].append(f'Experimental: interpolant channels that every traced vertex program can pass as vertex semantic {COLOUR_SEMANTIC}.w squared are read as the model colour stream alpha squared. The per-draw flags choosing that path, and semantic {COLOUR_SEMANTIC} being the colour stream, are inferred; level instances use zone-keyed alpha where available, otherwise alpha 1.')
+            lowered['limitations'].append(f'Experimental: interpolants of this pixel program trace to vertex semantic {COLOUR_SEMANTIC} squared components '+','.join(sorted(painted))+'. The runtime flag path and colour-stream identity are inferred; level instances use candidate keyed channels where available. Generic red/green fallback is white 1, not Novalis review controls; standalone red/green stream transport remains unresolved.')
             normals.update(colours)
         if normals:
             replaced=ir.replace(replaced,normals)
-            lowered['limitations'].append('Experimental: interpolants '+', '.join(f'attribute{a}.xyz' for a in sorted(normal_attributes))+' are, in every traced vertex program and flag path, per-draw words times one vertex stream (a transformed stream, optionally normalised) and are read as the geometry normal; that the stream is the normal and the matrix object-to-world is inferred, and the packed vertex frame is not reconstructed.')
+            if normal_adapted:lowered['limitations'].append('Experimental: interpolants '+', '.join(f'attribute{a}.xyz' for a in sorted(normal_attributes))+' are, in every traced vertex program and flag path, per-draw words times one vertex stream (a transformed stream, optionally normalised) and are read as the geometry normal; that the stream is the normal and the matrix object-to-world is inferred, and the packed vertex frame is not reconstructed.')
         lowered['limitations'].append(f'Experimental: {adapted} expressions of the form CB0[28..30] + (CB0[92..95] + CB0[100..103]*POS_Y + POS_X*(CB0[96..99] + CB0[104..107]*POS_Y)) * POS_W are read as world position and replaced by viewer world position. This engine meaning is inferred from the expression shape, not decoded from the game.')
     replaced,zero_guards=guard_source_zero_powers(ir,replaced)
     replaced,front_face=bind_front_face(ir,replaced)
@@ -310,7 +321,7 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
         n=ir.nodes[i]
         if n['op'] not in PORTABLE_OPS:errors.append(dict(node=i,reason=n.get('reason',n['op'])))
         elif n['op']=='input' and not (n.get('kind')=='attribute' and n.get('attribute')==0 and n.get('channel') in (0,1)) and n.get('kind')!='front_facing' \
-                and not (adapted and n.get('kind') in ('preview_position','preview_normal','preview_vertex_alpha_squared')):
+                and not (adapted and n.get('kind') in ('preview_position','preview_normal','preview_vertex_alpha_squared','preview_ground_blend')):
             errors.append(dict(node=i,reason='Unbound engine/interpolant input '+n['name']))
         elif n['op']=='texture' and not bound.get(n['api'],{}).get('path'):
             errors.append(dict(node=i,reason='Sampled material texture is unset or unbound',api=n['api']))
@@ -329,6 +340,8 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
     return dict(nodes=compact.nodes,outputs=outputs,normal=normal,
         texture_bindings=[bound[a] for a in sorted(active)],parameters=receipt,
         pass_contract_index=contract['index'],limitations=lowered['limitations'],source_zero_power_guards=zero_guards,
+        **({'painted_channel_evidence':sorted(painted_evidence,key=lambda row:(row['attribute'],row['channel']))}
+           if world_position and colours else {}),
         **({'world_position_terms':adapted} if adapted else {}))
 
 
@@ -337,23 +350,37 @@ def program_contracts(data,program,contracts):
 
     Corpus controls establish 13 serialized shader records per BC pass. The
     byte pointer and resource bitmap are checked again on every new graph.
-    Broader/dynamic descriptor layouts are deliberately left unsupported.
+    Static tables require complete, path-proven resource/sampler words with
+    equal native APIs from the source table pointers. Dynamic, mixed and
+    independent-sampler layouts remain unsupported.
     """
     spans=sections(data);base,size=spans.get(0xB6D49474,(0,0))
     if size!=len(contracts)*13*20:raise ValueError('Unsupported serialized shader/pass partition')
     shader_base,shader_size=spans[0x873D1E6C];matches=[]
     used={n['api'] for n in program['ir']['nodes'] if n['op']=='texture'}
     apis={s['api'] for s in program['usage_slots'] if s['kind']==0 and s['api']>=5}
+    textures=[n for n in program['ir']['nodes'] if n['op']=='texture']
+    pointers=[s for s in program['usage_slots'] if s['kind'] in (0x13,0x15)]
+    static_table=(not apis and len(pointers)==2 and {s['kind'] for s in pointers}=={0x13,0x15}
+                  and all(s['api']==0 and s.get('flags')==16 for s in pointers)
+                  and bool(textures) and all(n.get('resource_table') is True and n.get('sampler_api')==n['api'] for n in textures))
+    if not static_table and any(n.get('resource_table') for n in textures):return []
     cb=[n['dword'] for n in program['ir']['nodes'] if n['op']=='input' and n.get('kind')=='cb' and n.get('api')==2]
+    joined=[]
     for i in range(size//20):
         cb_mask,resource_mask,technique,relative,blob_size=struct.unpack_from('<5I',data,base+i*20)
         if not blob_size or shader_base+relative+36!=program['header_offset']:continue
         if relative+blob_size>shader_size:raise ValueError('Serialized shader blob exceeds shader section')
+        joined.append(i)
+        if blob_size<=36:continue
+        if 'code_offset' in program and program['code_offset']+program['code_size']+28>shader_base+relative+blob_size:
+            raise ValueError('Serialized shader blob does not contain the source program')
         contract=contracts[i//13]
-        if not apis or max(apis)-4!=len(contract['resources']):continue
-        if any(a is None or a>=32 or not resource_mask&(1<<a) for a in used):continue
+        if not static_table and (not apis or max(apis)-4!=len(contract['resources'])):continue
+        if any(a is None or not 5<=a<min(32,5+len(contract['resources'])) or not resource_mask&(1<<a) for a in used):continue
         if cb and (not cb_mask&4 or contract['cb_bytes']!=(max(cb)+1+3)//4*16):continue
         matches.append(contract)
+    if len(joined)>1:raise ValueError('Ambiguous serialized shader/pass pointer')
     return matches
 
 
@@ -410,6 +437,7 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False)
         try:matched=program_contracts(data,program,contracts)
         except ValueError as exc:
             result['diagnostics'].append(str(exc));continue
+        if world_position:normal_attributes,stream_channels=graph_stream_evidence(data,program)
         for contract in matched:
             try:bound=_bind(program,contract,material_data,instance,world_position,normal_attributes,stream_channels)
             except ValueError as exc:
@@ -421,11 +449,14 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False)
         result['diagnostics'].append('No portable deferred writer with a bounded source pass contract');return result
     signatures={c['surface_signature'] for c in candidates}
     if len(signatures)!=1:
+        result['candidate_surfaces']=[dict(shader_id=c['program']['shader_id'],code_sha256=c['program']['code_sha256'],
+            pass_contract_index=c['bound']['pass_contract_index'],surface_sha256=c['surface_signature'],
+            texture_bindings=c['bound']['texture_bindings']) for c in candidates]
         result['diagnostics'].append('Multiple portable native variants produce different material programs');return result
     candidate=candidates[0];program=candidate['program']
     result.update(candidate['bound'],status='ready',graph_sha256=graph['graph_sha256'],
         code_sha256=program['code_sha256'],code_offset=program['code_offset'],shader_id=program['shader_id'],
-        equivalent_candidates=len(candidates),translator_version=graph['translator_version'],binding_version=3,
+        equivalent_candidates=len(candidates),translator_version=graph['translator_version'],binding_version=4,
         surface_sha256=candidate['surface_signature'],candidate_sources=[dict(
             shader_id=c['program']['shader_id'],code_sha256=c['program']['code_sha256'],
             pass_contract_index=c['bound']['pass_contract_index']) for c in candidates])

@@ -65,6 +65,16 @@ def _frontend(translation,images):
             paint=nodes.new('ShaderNodeAttribute');paint.attribute_name='RC zone ground blend'
             split=nodes.new('ShaderNodeSeparateColor');split.mode='RGB';links.new(paint.outputs['Color'],split.inputs[0])
             for channel in (0,1,2):preview_inputs[('preview_ground_blend',channel)]=split.outputs[channel]
+        if any(n.get('kind') == 'preview_vertex_alpha_squared' for n in translation['nodes']):
+            # Explicit POINT/FLOAT_COLOR diagnostic: masked alpha^2 in R, presence in G.
+            # Colour output of a missing attribute is zero, so fallback is white 1.
+            alpha=nodes.new('ShaderNodeAttribute');alpha.attribute_name='RC zone alpha squared'
+            split=nodes.new('ShaderNodeSeparateColor');split.mode='RGB';links.new(alpha.outputs['Color'],split.inputs[0])
+            missing=nodes.new('ShaderNodeMath');missing.operation='SUBTRACT';missing.inputs[0].default_value=1
+            links.new(split.outputs[1],missing.inputs[1])
+            value=nodes.new('ShaderNodeMath');value.operation='ADD'
+            links.new(split.outputs[0],value.inputs[0]);links.new(missing.outputs[0],value.inputs[1])
+            preview_inputs[('preview_vertex_alpha_squared',None)]=value.outputs[0]
         front = nodes.new('ShaderNodeMath');front.operation='SUBTRACT';front.inputs[0].default_value=1
         links.new(geometry.outputs['Backfacing'],front.inputs[1]);preview_inputs[('preview_front_face',None)] = front.outputs[0]
     cache={};samples={};bindings={r['api']:r for r in translation['texture_bindings']}

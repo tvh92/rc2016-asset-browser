@@ -8,7 +8,7 @@ predicate (uniform control flow) and the exec predicate (per-lane activity)
 are 0/1 DAG values, and each register write merges as select(active, new, old).
 Branches on exec state are resolved for an active lane, which assumes scalar
 state written inside an exec-skipped region is not read after it, as in
-structured compiler output. Backward branches (loops) remain unsupported.
+structured compiler output. Backward branches are unrolled only within a proven bound.
 """
 from collections import Counter
 import hashlib
@@ -21,7 +21,7 @@ import sys
 
 from rc2016.shaders.ir import DAG, bits, from_bits
 
-VERSION=12
+VERSION=13
 ROOT=Path(__file__).resolve().parents[2]
 SHADER_SECTION=0x873D1E6C
 # VALU instructions that also write a scalar carry/flag register pair.
@@ -508,12 +508,58 @@ class Compiler:
         if raw==255:return self.ir.const(literal) if math.isfinite(literal) else self.unknown('Non-finite F32 literal')
         return self.unknown(f'Unsupported encoded operand {raw}')
 
+    @staticmethod
+    def descriptor_identity(descriptor):
+        return {k:v for k,v in descriptor.items() if k not in ('word','guard')}
+
+    def texture_descriptor(self,base,kind,width):
+        """Complete descriptor words, with one identity on every active sample path.
+
+        Table pointers use the same check at width 2. Split loads can assemble a
+        descriptor, but a partial, shifted or conditionally stale word cannot.
+        """
+        first=self.descriptors.get(base)
+        if first is None or first.get('kind')!=kind:return None
+        identity=self.descriptor_identity(first)
+        active=self.p_and(self.bp,self.exec)
+        for word in range(width):
+            entry=self.descriptors.get(base+word)
+            if (entry is None or entry.get('word')!=word or
+                    self.descriptor_identity(entry)!=identity):return None
+            guard=entry.get('guard',self.ir.const(1.))
+            if self.p_and(active,guard)!=active:return None
+        return first
+
+    def merge_table_descriptors(self,bp,before,after,writes):
+        """Metadata obeys the same block predicate as scalar register writes.
+
+        Keep the new identity on its proven path, or combine guards when both
+        paths retain exactly the same identity. Distinct identities at a join
+        remain usable only inside a path that proves the chosen one applies.
+        """
+        for reg,_value in writes:
+            old,new=before.get(reg),after.get(reg)
+            table=lambda d:d is not None and (d.get('kind') in (0x13,0x15) or 'table_slot' in d)
+            if not (table(old) or table(new)):continue
+            if new is not None:
+                guard=self.p_and(bp,new.get('guard',self.ir.const(1.)))
+                if old is not None and self.descriptor_identity(old)==self.descriptor_identity(new) and old.get('word')==new.get('word'):
+                    guard=self.p_or(guard,self.p_and(self.p_not(bp),old.get('guard',self.ir.const(1.))))
+                self.descriptors[reg]=dict(new,guard=guard)
+            elif old is not None:
+                self.descriptors[reg]=dict(old,guard=self.p_and(self.p_not(bp),old.get('guard',self.ir.const(1.))))
+
     def load(self,i):
         w=i['word'];name=i['name'];base=((w>>9)&63)*2;dst=(w>>15)&127
         count=int(name.rsplit('X',1)[1]) if 'DWORDX'in name else 1
         imm=bool(w&256)
         offset=(w&255)*4 if imm else self.ir.value(self.gets(w&255))
         origin=self.descriptors.get(base,{})
+        table_origin=None
+        if origin.get('kind') in (0x13,0x15):
+            table_origin=self.texture_descriptor(base,origin['kind'],2)
+        table_offset=(int(offset) if offset is not None and math.isfinite(offset)
+                      and offset==int(offset) and offset>=0 and int(offset)%4==0 else None)
         for j in range(count):
             reg=dst+j;self.descriptors.pop(reg,None);self.scalar_bits.pop(reg,None)
             if origin.get('kind')==2 and 'BUFFER_LOAD'in name and offset is not None:
@@ -523,10 +569,16 @@ class Compiler:
                 slot=next((s for s in self.slots if s['reg']==16+int(offset)//4),None)
                 if slot:self.descriptors[reg]=dict(slot,word=j)
                 self.s[reg]=self.unknown('Extended descriptor value',word=j)
-            elif origin.get('kind') in (0x13,0x15) and offset is not None:
-                is_resource=origin['kind']==0x13
-                self.descriptors[reg]=dict(kind=0 if is_resource else 1,api=int(offset)//(32 if is_resource else 16),word=j)
-                self.s[reg]=self.unknown('Descriptor word',word=j)
+            elif table_origin is not None and table_offset is not None:
+                is_resource=table_origin['kind']==0x13
+                width=8 if is_resource else 4
+                api,word=divmod(table_offset//4+j,width)
+                if api<32:
+                    slot=(table_origin['kind'],table_origin['api'],table_origin.get('reg'),table_origin.get('flags'))
+                    guard=self.p_and(table_origin.get('guard',self.ir.const(1.)),self.bp)
+                    self.descriptors[reg]=dict(kind=0 if is_resource else 1,api=api,word=word,
+                                               table_slot=slot,guard=guard)
+                self.s[reg]=self.unknown('Descriptor word',word=word)
             # Each loaded dword is a distinct unknown: one node per instruction would make
             # different words of a multi-dword load compare and cancel as equal.
             else:self.s[reg]=self.unknown('Unresolved scalar memory load',word=j,base=base,
@@ -579,14 +631,38 @@ class Compiler:
                 if 'P2' in name else self.unknown(name))
             return
         if k==14:
-            api=self.descriptors.get(((q>>48)&31)*4,{}).get('api')
+            resource_base=((q>>48)&31)*4;sampler_base=((q>>53)&31)*4
+            resource=self.descriptors.get(resource_base,{})
+            api=resource.get('api') if resource.get('kind')==0 else None
+            proof={};reason='Unresolved/unsupported image sample'
+            if 'table_slot' in resource:
+                resource=self.texture_descriptor(resource_base,0,8)
+                sampler=self.texture_descriptor(sampler_base,1,4)
+                if resource is None or sampler is None:
+                    api=None;reason='Incomplete or path-dependent indirect texture/sampler descriptor'
+                elif (resource['table_slot'][:2]!=(0x13,0) or sampler.get('table_slot',())[:2]!=(0x15,0)
+                        or resource['table_slot'][3]!=16 or sampler['table_slot'][3]!=16):
+                    api=None;reason='Unsupported indirect texture/sampler table origin'
+                elif resource['api']!=sampler['api']:
+                    api=None;reason='Indirect texture/sampler APIs differ'
+                else:
+                    api=resource['api'];proof=dict(resource_table=True,sampler_api=sampler['api'])
+            elif any('guard' in self.descriptors.get(base+word,{}) or 'table_slot' in self.descriptors.get(base+word,{})
+                     for base,width in ((resource_base,8),(sampler_base,4)) for word in range(width)):
+                # A mixed join can carry a guarded direct identity too; it must
+                # not escape the indirect proof through the legacy direct path.
+                resource=self.texture_descriptor(resource_base,0,8)
+                sampler=self.texture_descriptor(sampler_base,1,4)
+                if resource is None or sampler is None or 'table_slot' in resource or 'table_slot' in sampler:
+                    api=None;reason='Incomplete, mixed or path-dependent texture/sampler descriptor'
+                else:api=resource['api']
             mask=(q>>8)&15;coord=(q>>32)&255;dst=(q>>40)&255
             sample=len(self.samples);uv=[self.getv(coord+j) for j in range(2)]
-            self.samples.append(dict(api=api,coordinates=uv,offset=i['relative'],opcode=name))
+            self.samples.append(dict(api=api,coordinates=uv,offset=i['relative'],opcode=name,**proof))
             for j,ch in enumerate(c for c in range(4) if mask&(1<<c)):
                 # LZ forces mip 0 with the same u,v address; Blender samples the base level too.
-                self.v[dst+j]=(self.ir.node('texture',uv,api=api,sample=sample,channel=ch)
-                    if api is not None and name in ('IMAGE_SAMPLE','IMAGE_SAMPLE_LZ') else self.unknown('Unresolved/unsupported image sample'))
+                self.v[dst+j]=(self.ir.node('texture',uv,api=api,sample=sample,channel=ch,**proof)
+                    if api is not None and name in ('IMAGE_SAMPLE','IMAGE_SAMPLE_LZ') else self.unknown(reason))
             return
         if k==15:
             channels=[]
@@ -784,6 +860,7 @@ class Compiler:
             if isinstance(registers,Registers):registers.log={};files.append(None)
             else:files.append(dict(registers))
         e0={t:list(x) for t,x in self.exports.items()};self.premerged=set()
+        descriptors_before=dict(self.descriptors)
         try:
             self.instruction(i)
         finally:
@@ -794,6 +871,7 @@ class Compiler:
                     writes.append((log,[(reg,registers[reg]) for reg in sorted(log,key=registers.order.__getitem__)]))
                 else:writes.append((copy,self.changed(registers,copy)))
         (v0,v_writes),(s0,s_writes)=writes
+        descriptors_after=dict(self.descriptors)
         # Initial register contents (unwritten, or hardware PS inputs) are dead once a
         # program reuses the register, so lanes that skip the write do not read them.
         dont_care=lambda n:((self.ir.nodes[n]['op']=='unsupported' and self.ir.nodes[n].get('reason','').startswith('Uninitialized'))
@@ -813,6 +891,8 @@ class Compiler:
                 if old is None or old==channels:continue
                 self.exports[target]=[n if o is None else o if n is None else self.ir.op('select',bp,n,o)
                                       for n,o in zip(channels,old)]
+
+        self.merge_table_descriptors(bp,descriptors_before,descriptors_after,s_writes)
 
     def changed(self,registers,before):
         """(register, value) pairs that differ from ``before``, in ``registers``' own order, for
@@ -984,6 +1064,6 @@ def compile_graph(data):
         results.append(row)
     return dict(schema='rcps4-native-shader-ir-v1',translator_version=VERSION,
         graph_sha256=hashlib.sha256(data).hexdigest(),programs=results,
-        limitations=['Deferred writers only; forward branches and exec masks are linearised by predication, loops and forward light loops are unsupported.',
+        limitations=['Deferred writers only; forward branches and exec masks are linearised by predication; loops require proven bounded termination, and forward light loops remain unsupported.',
                     'Float16 target quantization is recorded at exports but the material DAG retains float precision.',
                     'Compiled IR alone does not establish per-pass CB or resource binding, vertex TBN, or runtime selection.'])

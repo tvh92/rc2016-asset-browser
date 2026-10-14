@@ -153,7 +153,7 @@ class SquaredStreamTests(unittest.TestCase):
         other = ir.node('unsupported', reason='TBUFFER_LOAD_FORMAT_X')
         picked = ir.op('select', flag, other, w)
         channels = [other, other, other, ir.op('mul', picked, picked)]
-        headers = [dict(type=interpolants.PIXEL, inputs=[dict(semantic=15), dict(semantic=18)]),
+        headers = [dict(type=interpolants.PIXEL, header_offset=100, inputs=[dict(semantic=15), dict(semantic=18)]),
                    dict(type=1, header_offset=0, layout='verified', exports=[dict(semantic=18, slot=3)])]
         with mock.patch.object(interpolants, 'shader_headers', return_value=headers), \
                 mock.patch.object(interpolants, 'vertex_exports', return_value=(({3: channels}, ir), None)):

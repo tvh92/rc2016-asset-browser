@@ -191,6 +191,8 @@ def evaluate_surface(translation, uv, sample, *, preview_inputs=None):
                 value = uv[n['channel']]
             elif n.get('kind') == 'front_facing':
                 value = (preview_inputs or {}).get('front_facing', 1.)
+            elif n.get('kind') == 'preview_vertex_alpha_squared' and translation.get('status') == 'experimental':
+                value = (preview_inputs or {}).get(n['name'], 1.)
             elif n.get('kind') == 'preview_ground_blend' and translation.get('status') == 'experimental':
                 value = (preview_inputs or {}).get(n['name'], 0.)
             elif preview_inputs is not None and translation.get('status') == 'experimental':

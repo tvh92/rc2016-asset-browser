@@ -96,7 +96,7 @@ class GraphStreamEvidenceTests(unittest.TestCase):
         results = []
         self.bindings.use_compile_processes(0)
         with patch.object(interpolants, 'rotated_stream_attributes', side_effect=rotated), \
-             patch.object(interpolants, 'squared_stream_channels', return_value={(0, 1): (2, 0)}):
+             patch.object(interpolants, 'squared_stream_evidence', return_value=({(0, 1): (2, 0)}, {})):
             threads = [threading.Thread(target=lambda: results.append(self.bindings.graph_stream_evidence(b'graph')))
                        for _ in range(5)]
             for thread in threads: thread.start()
@@ -108,7 +108,7 @@ class GraphStreamEvidenceTests(unittest.TestCase):
 
     def test_worker_processes_return_what_this_process_computes(self):
         graph = b'not a graph'   # analysis failures give empty evidence, in a worker as here
-        expected = self.bindings.stream_evidence(graph)
+        expected = self.bindings.stream_evidence(graph)[:2]
         self.bindings.use_compile_processes(2)
         self.assertEqual(self.bindings.graph_stream_evidence(graph), expected)
         self.assertIsNotNone(self.bindings._POOL)

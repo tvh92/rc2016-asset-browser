@@ -119,6 +119,9 @@ class SurfaceIdentityTests(unittest.TestCase):
             result=prepare_translation([b'graph'],b'material',{})
         self.assertEqual(result['status'],'unsupported')
         self.assertIn('Multiple portable native variants',result['diagnostics'][-1])
+        self.assertEqual({c['pass_contract_index'] for c in result['candidate_surfaces']},{0,1})
+        self.assertEqual(len({c['surface_sha256'] for c in result['candidate_surfaces']}),2)
+        self.assertEqual({c['texture_bindings'][0]['path'] for c in result['candidate_surfaces']},{'t/source.texture','t/other.texture'})
 
 
 class ArchiveBindingTests(unittest.TestCase):
