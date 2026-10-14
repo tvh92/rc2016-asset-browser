@@ -432,6 +432,10 @@ def _viewer_expected_constants(rule):
         b = terms["bng"]
         e.update({"bng colour": b["colour"], **{"bng P%d" % i: x for i, x in enumerate(b["params"])},
                   "bng detail scale u": b["detail"][0], "bng detail scale v": b["detail"][1], "bng detail strength": b["detail"][2]})
+    if "bright_center" in ported:
+        b = terms["bright_center"]
+        e.update({"bright centre edge": b["edge"], "bright centre colour": b["centre"], "bright centre exponent": b["exponent"],
+                  "bright centre weight": b["weight"], "bright centre F0": b["f0"], "bright centre gloss": b["gloss_sq"]})
     if "facing_glow" in ported:
         f = terms["facing_glow"]
         e.update({"facing glow albedo": f["albedo"], "facing glow bias": f["bias"], "facing glow exponent": f["exponent"],
@@ -498,9 +502,14 @@ def _viewer_required(rule, has_n):
             req("_rock_mask", "_rock_c2", "_rock_g2", *(("_rock_n2",) if has_n else ()))
     if "bng" in ported:
         kind = int(terms["bng"]["kind"])
-        names += ["bng colour"] if kind == 1 or (kind == 4 and lit) else [] if kind == 4 else (["bng P0", "bng P1"] + (["bng P2"] if kind == 6 else []) if has_n else [])
+        names += ["bng colour"] if kind == 1 or (kind == 4 and lit) else [] if kind == 4 else ["bng P0", "bng P1"] if kind == 7 else             (["bng P0", "bng P1"] + (["bng P2"] if kind == 6 else []) if has_n else [])
+        if kind == 9:
+            req("_h")
     if "bng_detail" in ported and has_n:
         names += ["bng detail scale u", "bng detail scale v", "bng detail strength"]; req("_bng_detail")
+    if "bright_center" in ported:
+        names += ["bright centre edge", "bright centre colour", "bright centre exponent", "bright centre weight",
+                  "bright centre F0", "bright centre gloss"]
     if "facing_glow" in ported:
         names += ["facing glow albedo", "facing glow bias", "facing glow exponent", "facing glow a scale",
                   "facing glow a offset", "facing glow amplitude", "facing glow g scale"]

@@ -84,6 +84,15 @@ GRAPH_RULES = (
     ('required/materials/basic_normal_gloss_specfresnel_emissive.',
      dict(g_mode='grey', self_lit='g_blue', self_lit_key=0x66EFA55B, bng=6)),
     ('required/materials/basic_normal_gloss', dict(g_mode='grey')),
+    # Coloured-gloss rim writers, from the native translator's material-bound DAG (pass 0 and 1 agree):
+    # coloured F0 = spec * _g.rgb, gloss = sqrt(sat(Q * _g.a^2)), albedo = _c * (1 + A * mask * rim^P) with
+    # rim = 1.001 - sat(N.V), A = 0xAAC47D17, P = 0xB7BAC19F. A5343A0C (7): N is the interpolated geometry
+    # normal, mask 1, self-lit _c.a * K. 76C79AA4 (8): N is the tangent-mapped _n normal, mask _c.a, no self-lit.
+    # 14B1CC68 (9): N is the mapped normal, mask = the _m slot's R, self-lit = _m.G * K. The detail-normal
+    # samples of 8 and 9 (slot 0x45A52060) are not composed.
+    ('required/materials/basic_normal_coloredgloss_emissive_fresnel.', dict(self_lit_key=0x06F19114, bng=7)),
+    ('required/materials/basic_normal_coloredgloss_fresnel_detail.', dict(self_lit_key=None, bng=8)),
+    ('required/materials/basic_normla_gloss_fresnel_detail_emissive.', dict(self_lit='h_green', self_lit_key=0x66EFA55B, bng=9)),
     ('materialgraph/global/basic_incandescence/', dict(g_mode='grey', self_lit='g_blue', self_lit_key=0x5FD56522)),
     # Other models/enm_blarg_saucer/evidence/COLORPICK_DECODE.md (writer 66744D01)
     ('materialgraph/global/basic_colored_spec_emmisive_in_c_alpha/blarg_saucer_colorpick.',
@@ -183,6 +192,11 @@ GRAPH_RULES = (
     # Forward colour pass 0CD2AAFB rel 12552-12672: white base + red facing glow; Materials/QwarkBulb/README.md.
     ('materialgraph/character/npc/npc_qwark_robot_bulb/npc_qwark_robot_bulb.',
      dict(self_lit_key=None, facing_glow=True)),
+    # Deferred writer D14A48D7 (material-bound DAG, pass 0): t = (1.001 - sat(N.V))^(0.2 (1 - S)) with the
+    # tangent-mapped normal; albedo = _c * (E t + A M w (1 - t)); self-lit = K * _c.R * that red factor;
+    # F0 = grey Fs, gloss = sqrt(sat(G)). w is a blink sat(1 + (1 - B)(0.5 sin(phase) - 0.5)), frozen at sin = 0.
+    ('materialgraph/character/hero/hero_bright_center_light/hero_bright_center_light_variable.',
+     dict(self_lit='bright_center', self_lit_key=0xB7305C21, bright_center=True)),
 )
 # Leaf cut-out (alpha test). The deferred foliage writers kill a fragment when its coverage, `_c`
 # alpha (basic_foliage FE32FE79/B01E7CB2; the tree graphs' 0476D929/6F0C1A0C), is below the
@@ -506,6 +520,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
         bindings = {'_c': 0x49A7866BABDAD780, '_g': 0x49A7866B1576D848, '_n': 0x49A7866B7AE34E7A}
         if kind in (2, 3, 6):
             bindings['_bng_detail'] = 0x49A7866B45A52060
+        if kind == 9:   # _m mask: R gates the rim, G is the self-lit mask
+            bindings['_h'] = 0x49A7866BA6C3B1D5
         for role, slot in bindings.items():
             path = material_slots.get(slot) or slots.get(slot)
             if path:
@@ -523,6 +539,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
             result['gloss'] = value(0x9856BA09, 1.0)
         if kind == 6:
             params = (value(0x9ACE7120, 3.0), value(0x07CC3BD9, 1.0), value(0xD94E1303, 10.0), 0.0)
+        if kind in (7, 8, 9):
+            params = (value(0xAAC47D17, 1.0), value(0xB7BAC19F, 1.0), 0.0, 0.0)
         if kind in (2, 3):
             detail = (value(0x34493800, 1.0), value(0xAD4069BA, 1.0), value(0x49AFC3A0, 0.75))
         if kind == 6:
@@ -540,7 +558,7 @@ def material_texture_paths(archive, material_path: str) -> dict:
                               power_a=value(k['power_a'], 1.0), power_b=value(k['power_b'], 1.0),
                               weight_a=value(k['weight_a'], 0.0), weight_b=value(k['weight_b'], 0.0),
                               mask_b=value(k['mask_b'], 0.0))
-    else:
+    elif rule.get('bng') != 9:   # the 14B1CC68 rim/self-lit mask uses the _h role
         result.pop('_h', None)
     if rule.get('tint_variant'):
         # Exact source slots: default detail-colour and palette names are ambiguous.
@@ -702,6 +720,16 @@ def material_texture_paths(archive, material_path: str) -> dict:
             a_scale=0.30324259, a_offset=0.06301001, g_scale=0.03041702,
             amplitude=0.5, amplitude_input='CB0 dword 115', captured_amplitude=0.01,
             presentation=True, writer='0CD2AAFB')
+    if rule.get('bright_center'):
+        steady = value(0x01B78BF6, 0.15)
+        intensity = value(0x398AD3E2, 5.0)
+        result['bright_center'] = dict(
+            edge=vec3(0x16B8AB81, (0.0, 0.0, 0.0)),
+            centre=[x * intensity for x in vec3(0x5BC2D1F0, (1.0, 0.5271151, 0.462077))],
+            exponent=0.2 * (1.0 - value(0x60DC3D2F, 0.9)),
+            weight=min(1.0, max(0.0, 1.0 - 0.5 * (1.0 - steady))),
+            f0=value(0x08FE9F29, 0.2), gloss_sq=value(0x0B065E94, 0.35), steady=steady, writer='D14A48D7')
+        result['spec'] = result['gloss'] = 1.0   # F0 and gloss are the writer's constants
     return result
 
 
@@ -1185,7 +1213,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             paths = {}
         entry.update(k=paths.get('k', 0.0), g_mode=paths.get('g_mode', 'colored'), self_lit=paths.get('self_lit', 'c_alpha'),
                      spec=paths.get('spec', 1.0), gloss=paths.get('gloss', 1.0))
-        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'parallax', 'parallax_normal'):
+        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'bright_center', 'parallax', 'parallax_normal'):
             if paths.get(key):
                 entry[key] = paths[key]
         if paths.get('foliage'):

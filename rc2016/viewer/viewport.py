@@ -727,7 +727,7 @@ class ModelViewport(_TkFrame):
         """One material's texture_preview entry with its textures uploaded: {role: (GL id, sRGB)} + parameters.
 
         ``by_path`` maps texture path -> (GL id, sRGB) or None and is shared across materials."""
-        uploaded = {key: entry[key] for key in ("k", "g_mode", "self_lit", "spec", "gloss", "pick", "tint", "spec_tint", "forward", "arch_sequence", "vehicle", "facing_glow") if key in entry}
+        uploaded = {key: entry[key] for key in ("k", "g_mode", "self_lit", "spec", "gloss", "pick", "tint", "spec_tint", "forward", "arch_sequence", "vehicle", "facing_glow", "bright_center") if key in entry}
         if "two_color_metal" in entry:
             uploaded["two_color_metal"] = entry["two_color_metal"]
         if "puddles" in entry:
@@ -1365,6 +1365,11 @@ class ModelViewport(_TkFrame):
         sh.glUniform1i(u["uFacingGlow"], 1 if fg and level else 0)
         sh.glUniform4f(u["uFacingGlowP"], *(float(fg.get(key, 0.0)) for key in ("amplitude", "exponent", "a_scale", "a_offset")))
         sh.glUniform3f(u["uFacingGlowQ"], float(fg.get("bias", 0.0)), float(fg.get("g_scale", 0.0)), 0.0)
+        bc = entry.get("bright_center") or {}
+        sh.glUniform1i(u["uBrightCentre"], 1 if bc and level == 2 else 0)
+        sh.glUniform3f(u["uBrightEdge"], *(float(x) for x in bc.get("edge", (0.0, 0.0, 0.0))))
+        sh.glUniform3f(u["uBrightColour"], *(float(x) for x in bc.get("centre", (0.0, 0.0, 0.0))))
+        sh.glUniform4f(u["uBrightP"], *(float(bc.get(key, 0.0)) for key in ("exponent", "weight", "f0", "gloss_sq")))
         sh.glUniform1i(u["uFoliage"], 1 if entry.get("foliage") else 0)
         # Leaf cut-out needs the bound `_c` alpha: Solid mode (level 0) binds no texture and draws whole.
         sh.glUniform1f(u["uAlphaCut"], float(entry.get("alpha_cut", 0.0)) if level and entry.get("_c") else 0.0)

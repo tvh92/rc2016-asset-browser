@@ -1243,6 +1243,8 @@ def apply_viewer_graph_rule(mat, source):
     tint = terms.get('tint') if on('tint') else None
     variant = (tint or {}).get('variant')
     za_w = None
+    bright = terms.get('bright_center') if on('bright_center') else None
+    bright_self = None
     if on('za_fresnel_power'):    # E08357DC: geometry-normal rim suppression of spec and gloss
         ndv = P.sat(P.v('DOT_PRODUCT', Ng, V))
         za_w = P.m('SUBTRACT', 1.0, P.m('POWER', P.m('SUBTRACT', 1.00100004673, ndv), P.const('za fresnel power', terms['za_fresnel_power']), clamp=True))
@@ -1393,6 +1395,13 @@ def apply_viewer_graph_rule(mat, source):
             bng_self = P.m('MULTIPLY', P.sep(albedo)[0], P.m('ADD', 1.0, P.m('MULTIPLY', gB, P.m('SUBTRACT', P.sep(colour)[0], 1.0))))
         # Tangent normal (gl_shading.FRAGMENT normal block); the arch and vehicle writers have none.
         rim_a = rim_b = bng_p = None
+        if kind_terms and kind == 7:   # A5343A0C: rim from the geometry normal, before the tangent map
+            bng_p = lambda i: P.const('bng P%d' % i, bng['params'][i])
+            rim = P.m('SUBTRACT', 1.00100004673, P.sat(P.v('DOT_PRODUCT', Ng, V)))
+            rim_b = P.m('POWER', P.m('ABSOLUTE', rim), bng_p(1))
+            view_terms.append('bng rims')
+        if kind_terms and kind == 9:   # 14B1CC68: self-lit mask = _m.G (K stays the BRDF input)
+            bng_self = P.sep(img('_h').outputs['Color'])[1] if img('_h') else 0.0
         glow = terms.get('glow') if on('glow') else None
         metal = terms.get('two_color_metal') if on('two_color_metal') else None
         if n is not None and not arch and not on('vehicle'):
@@ -1411,7 +1420,7 @@ def apply_viewer_graph_rule(mat, source):
                 x, y = P.m('MULTIPLY_ADD', x, dz, P.m('MULTIPLY', hz, dx)), P.m('MULTIPLY_ADD', y, dz, P.m('MULTIPLY', hz, dy))
                 z = P.m('MULTIPLY', z, dz)
             normal = base_normal = P.tangent_normal(x, y, z, 'Tangent normal (_n, no green flip)')
-            if kind_terms and kind in (3, 6):
+            if kind_terms and kind in (3, 6, 8, 9):
                 rim = P.m('SUBTRACT', 1.00100004673, P.sat(P.v('DOT_PRODUCT', base_normal, V)))
                 bng_p = lambda i: P.const('bng P%d' % i, bng['params'][i])
                 rim_a = P.m('POWER', P.m('ABSOLUTE', rim), bng_p(0)); rim_b = P.m('POWER', P.m('ABSOLUTE', rim), bng_p(1))
@@ -1450,6 +1459,19 @@ def apply_viewer_graph_rule(mat, source):
             albedo = P.v('SCALE', albedo, P.m('ADD', 1.0, P.m('MULTIPLY', P.m('MULTIPLY', bng_p(0), gB), rim_b)))
         if kind_terms and kind == 6 and rim_b is not None:
             albedo = P.v('SCALE', albedo, P.m('SUBTRACT', 1.0, rim_b))
+        if kind_terms and kind in (7, 8, 9) and rim_b is not None:
+            rim_mask = 1.0 if kind == 7 else (c.outputs['Alpha'] if c is not None else 0.0) if kind == 8 else                 (P.sep(img('_h').outputs['Color'])[0] if img('_h') else 0.0)
+            albedo = P.v('SCALE', albedo, P.m('ADD', 1.0, P.m('MULTIPLY', P.m('MULTIPLY', bng_p(0), rim_mask), rim_b)))
+        if bright:   # D14A48D7: t = (1.001 - sat(N.V))^e with the mapped normal
+            t = P.m('POWER', P.m('ABSOLUTE', P.m('SUBTRACT', 1.00100004673, P.sat(P.v('DOT_PRODUCT', final_n, V)))),
+                    P.const('bright centre exponent', bright['exponent']))
+            fac = P.v('ADD', P.v('SCALE', P.const3('bright centre edge', bright['edge']), t),
+                      P.v('SCALE', P.const3('bright centre colour', bright['centre']),
+                          P.m('MULTIPLY', P.const('bright centre weight', bright['weight']), P.m('SUBTRACT', 1.0, t))))
+            bright_self = P.m('MULTIPLY', P.sep(albedo)[0], P.sep(fac)[0])
+            albedo = P.v('MULTIPLY', albedo, fac)
+            view_terms.append('bright centre')
+            limits.append('bright centre: the blink weight is frozen at its sin = 0 value (%g)' % float(bright['weight']))
         glow_mask = P.sep(img('_h').outputs['Color'])[0] if glow and img('_h') else (0.0 if glow else None)
         if glow and int(glow['kind']) == 1:   # 2685144F: _c.rgb never sampled; environment = viewer ambient
             up = P.sep(final_n)[2]
@@ -1481,6 +1503,9 @@ def apply_viewer_graph_rule(mat, source):
             f0 = (0.0, 0.0999755859375, 0.0999755859375); gloss_in = 0.948681201424; spec, gloss_scale = 1.0, 1.0
         elif g is not None:
             f0, gloss_in = g_rgb, g.outputs['Alpha']
+        if bright:   # D14A48D7: grey constant F0, gloss = sqrt(sat(G))
+            fs = P.const('bright centre F0', bright['f0']); f0 = P.comb(fs, fs, fs)
+            gloss_in = P.m('SQRT', P.sat(P.const('bright centre gloss', bright['gloss_sq']))); spec = gloss_scale = 1.0
         spec_tint = terms.get('spec_tint') if on('spec_tint') else None
         if spec_tint is not None and f0 is not None and mode != 'vehicle':
             f0 = P.v('MULTIPLY', f0, P.const3('spec tint', spec_tint))
@@ -1506,6 +1531,8 @@ def apply_viewer_graph_rule(mat, source):
             self_mask = bng_self
         elif arch_self is not None:
             self_mask = arch_self; k = 5.0 * float(arch['intensity'])   # K = 5 * intensity
+        elif bright_self is not None:
+            self_mask = bright_self   # K from material key 0xB7305C21
     # Wire the BRDF.
     L.new(albedo, grp.inputs[0]) if isinstance(albedo, bpy.types.NodeSocket) else setattr(grp.inputs[0], 'default_value', (*albedo, 1.0))
     if f0 is None:

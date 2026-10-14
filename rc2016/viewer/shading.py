@@ -219,6 +219,7 @@ uniform bool uVehicle; uniform sampler2D uTexVehicleP2; uniform bool uHasVehicle
 uniform vec3 uVehicleA; uniform vec3 uVehicleB; uniform vec3 uVehicleP; // palette blend, rim suppression
 uniform float uArchPhase; // t=0; instance interpolants frozen to zero
 uniform bool uFacingGlow; uniform vec4 uFacingGlowP; uniform vec3 uFacingGlowQ; // amplitude, exponent, a scale, a offset; bias, g scale
+uniform bool uBrightCentre; uniform vec3 uBrightEdge; uniform vec3 uBrightColour; uniform vec4 uBrightP; // D14A48D7: exponent, weight, F0, gloss^2
 varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
 varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm;
 const float PI = 3.14159265;
@@ -493,6 +494,10 @@ void main() {
     float bngRimA = 0.0, bngRimB = 0.0;
     if (uBngKind == 1) albedo *= vec3(1.0) + bngGl.b * (uBngColour - vec3(1.0));
     if (uBngKind == 4) bngSelfLit = uK * albedo.r * (1.0 + bngGl.b * (uBngColour.r - 1.0));
+    // A5343A0C: rim from the interpolated geometry normal, before the tangent map. 14B1CC68: _m.G * K.
+    if (uBngKind == 7) bngRimB = pow(abs(1.00100004673 - clamp(dot(N, V), 0.0, 1.0)), uBngP.y);
+    vec4 bngM = uHasH ? texture2D(uTexH, vUV) : vec4(0.0);
+    if (uBngKind == 9) bngSelfLit = bngM.g * uK;
     if (uMode == 2 && uHasN && !uArchSequence && !uVehicle) {
         vec3 dp1 = dFdx(vPos), dp2 = dFdy(vPos); vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
         vec3 p2 = cross(dp2, N), p1 = cross(N, dp1);
@@ -524,7 +529,7 @@ void main() {
         // Image "up" is decreasing t (top row first), so the bitangent is -B.
         if (uRockBlend) z = 1.0 - dot(rg, rg);
         vec3 baseN = normalize(T * scale * rg.x - B * scale * rg.y + N * z);
-        if (uBngKind == 3 || uBngKind == 6) {
+        if (uBngKind == 3 || uBngKind == 6 || uBngKind == 8 || uBngKind == 9) {
             float rim = 1.00100004673 - clamp(dot(baseN, V), 0.0, 1.0);
             bngRimA = pow(abs(rim), uBngP.x);
             bngRimB = pow(abs(rim), uBngP.y);
@@ -570,6 +575,16 @@ void main() {
     }
     if (uBngKind == 3) albedo *= 1.0 + uBngP.x * bngGl.b * bngRimB;
     if (uBngKind == 6) albedo *= 1.0 - bngRimB;
+    if (uBngKind == 7) albedo *= 1.0 + uBngP.x * bngRimB;
+    if (uBngKind == 8) albedo *= 1.0 + uBngP.x * c.a * bngRimB;
+    if (uBngKind == 9) albedo *= 1.0 + uBngP.x * bngM.r * bngRimB;
+    float brightSelfLit = 0.0;
+    if (uMode == 2 && uBrightCentre) { // D14A48D7: t = (1.001 - sat(N.V))^e; albedo = _c * (E t + C w (1 - t))
+        float t = pow(abs(1.00100004673 - clamp(dot(N, V), 0.0, 1.0)), uBrightP.x);
+        vec3 f = uBrightEdge * t + uBrightColour * (uBrightP.y * (1.0 - t));
+        brightSelfLit = uK * albedo.r * f.r;
+        albedo *= f;
+    }
     vec3 L1 = rigKey(), L2 = rigFill();
     vec3 C1 = keyColour(), C2 = fillColour();
     vec3 ambient = ambientLight(N);
@@ -584,7 +599,7 @@ void main() {
     if (uMode == 2) {
         vec4 g = uHasG ? texture2D(uTexG, materialUV) : vec4(0.0);
         vec3 gl = uSrgbG ? linear(g.rgb) : g.rgb;
-        if (uHasG || uVehicle) {
+        if (uHasG || uVehicle || uBrightCentre) {
             vec3 F0; float gloss;
             if (uGMode == 1) {          // skin writer: F0 = grey min(cap 0.5, G), gloss = sqrt(sat(R)) (graph defaults, F term at 0)
                 F0 = vec3(min(0.5, gl.g)); gloss = sqrt(clamp(gl.r, 0.0, 1.0));
@@ -602,6 +617,7 @@ void main() {
                 gloss = sqrt(clamp(uGlossScale * (gl.r + bngRimA), 0.0, 1.0));
             }
             if (uVehicle) { F0 = vec3(0.0, 0.0999755859375, 0.0999755859375); gloss = 0.948681201424; } // packed rel 860, AA=1
+            if (uBrightCentre) { F0 = vec3(uBrightP.z); gloss = sqrt(clamp(uBrightP.w, 0.0, 1.0)); }
             if (uTintVariant >= 3) gloss = sqrt(clamp(uGlossScale * gl.r * 2.0 * tintDetailMask, 0.0, 1.0));
             if (uRockBlend) { F0 = vec3(uSpecScale*rockG.g); gloss = sqrt(clamp(uGlossScale*rockG.r, 0.0, 1.0)); }
             if (uTwoColorMetal) gloss = sqrt(clamp(uGlossScale * gl.r * (1.0 - metalRim), 0.0, 1.0));
@@ -617,8 +633,9 @@ void main() {
             color += albedo * uK * glowMask * (uGlowP.y + p);
         } else if (uGlowKind == 2) { // CA81B14F rel 684-700; attr3.w magnitude frozen to 1
             color += albedo * (uK * albedo.r * glowMask * uGlowP.w);
-        } else if (uBngKind == 1 || uBngKind == 2 || uBngKind == 4 || uBngKind == 6) color += albedo * bngSelfLit;
+        } else if (uBngKind == 1 || uBngKind == 2 || uBngKind == 4 || uBngKind == 6 || uBngKind == 9) color += albedo * bngSelfLit;
         else if (uArchSequence) color += albedo * archSelfLit;
+        else if (uBrightCentre) color += albedo * brightSelfLit;
         else if (uHasC) color += albedo * (uSelfLitG ? gl.b : c.a) * uK;
         if (uFacingGlow) { // 0CD2AAFB rel 12552-12672 (instance flag bit 5 clear: v8 = v9 = 1)
             float f = pow(max(clamp(dot(N, V), 0.0, 1.0) - uFacingGlowQ.x, 0.0), uFacingGlowP.y);
@@ -798,7 +815,8 @@ OPAQUE_UNIFORMS = (
     "uTexP", "uHasP", "uSrgbP", "uPick", "uSpecTint", "uTint", "uTintA", "uTintB", "uTintP", "uTintM",
     "uTintVariant", "uTintPalette", "uTintPaletteBlend", "uTintDetailP", "uTintWorldOrigin",
     "uTexTintDetail", "uHasTintDetail", "uSrgbTintDetail", "uTexH", "uHasH", "uArchSequence", "uTexSequence", "uHasSequence", "uArchColour", "uArchP", "uArchPhase",
-    "uFacingGlow", "uFacingGlowP", "uFacingGlowQ", "uSceneGeometry", *LIGHTING_UNIFORMS)
+    "uFacingGlow", "uFacingGlowP", "uFacingGlowQ", "uBrightCentre", "uBrightEdge", "uBrightColour", "uBrightP",
+    "uSceneGeometry", *LIGHTING_UNIFORMS)
 GLASS_UNIFORMS = ("uSkin", "uBoneTex", "uBoneWidth", "uKind", "uA", "uB", "uC", "uD",
                   "uTexN", "uHasN", "uTexP", "uHasP", "uSrgbP",
                   "uScreenNoiseA", "uScreenNoiseB", "uScreenSrgbN", "uScreenSrgbA", "uScreenSrgbB", *LIGHTING_UNIFORMS)

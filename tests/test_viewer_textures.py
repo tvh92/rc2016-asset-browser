@@ -448,6 +448,32 @@ class TexturePreviewTests(unittest.TestCase):
         self.assertEqual(got['bng']['params'], (3.0, 1.0, 10.0, 0.0))
         self.assertEqual(got['bng']['detail'], (1.0, 1.0, 0.75))
 
+    def test_coloured_gloss_rim_writers(self):
+        from unittest.mock import patch
+        c, g, n, mask = 0x49A7866BABDAD780, 0x49A7866B1576D848, 0x49A7866B7AE34E7A, 0x49A7866BA6C3B1D5
+        defaults = {0xAAC47D17: 1.0, 0xB7BAC19F: 1.0, 0x06F19114: 5.0, 0x66EFA55B: 3.0, 0x62835AF9: 1.0, 0x24F4CA4C: 1.0}
+        rows = [dict(key_hash=0xAAC47D17, size=4, raw_hex=struct.pack('<f', 50.0).hex()),
+                dict(key_hash=0xB7BAC19F, size=4, raw_hex=struct.pack('<f', 8.0).hex())]
+        cases = (('basic_normal_coloredgloss_emissive_fresnel', 7, 5.0), ('basic_normal_coloredgloss_fresnel_detail', 8, 0.0),
+                 ('basic_normla_gloss_fresnel_detail_emissive', 9, 3.0))
+        for name, kind, k in cases:
+            with self.subTest(graph=name):
+                graph = f'required/materials/{name}.materialgraph'
+                strings = ['t/default_c.texture', 't/default_g.texture', 't/default_n.texture', 't/default_m.texture']
+                graph_blob = dat1(strings, lambda at: [(tp.GRAPH_SLOT_SECTION,
+                    slot_rows([(at[0], c), (at[1], g), (at[2], n), (at[3], mask)]))])
+                mat_blob = dat1([graph, 't/body_m.texture'], lambda at: [(tp.MATERIAL_SLOT_SECTION, slot_rows([(at[1], mask)]))])
+                archive = FakeArchive({'m/a.material': ('material', mat_blob), graph: ('materialgraph', graph_blob)})
+                params = dict(parameters=[], unsupported_parameters=rows)
+                with (patch('rc2016.shaders.families.graph_parameter_tables',
+                            return_value=([[dict(key_hash=key) for key in defaults]], defaults)),
+                      patch('rc2016.formats.materials.extract_material_parameters', return_value=params)):
+                    got = tp.material_texture_paths(archive, 'm/a.material')
+                self.assertEqual((got['bng']['kind'], got['bng']['params'][:2]), (kind, (50.0, 8.0)))
+                self.assertEqual((got['g_mode'], got['k']), ('colored', k))
+                # Only the 14B1CC68 writer reads the _m mask (rim R, self-lit G).
+                self.assertEqual(got.get('_h'), 't/body_m.texture' if kind == 9 else None)
+
     def test_base_color_comes_from_material_then_graph(self):
         archive = FakeArchive({
             'm/direct.material': ('material', b'\0t/body_n.texture\0t/body_c.texture\0'),
