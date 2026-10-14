@@ -172,24 +172,81 @@ def interpolant_sources(data, attributes, depth=6):
     return result
 
 
-MAX_FLAGS = 6
+MAX_FLAGS = 12
 
 
 def _squared_stream(ir, channel):
-    """(semantic, component) when some setting of the runtime flags folds the channel to
-    v * v for one vertex input v; None otherwise."""
+    """One squared vertex source on some runtime-flag path; selection is inferred.
+
+    Memoise each node by only the flags it depends on and skip inactive select
+    arms. This preserves DAG.replace folding while admitting bounded larger
+    flag sets without rewalking the entire vertex program for each assignment.
+    """
+    from rc2016.shaders.ir import OPS
     flags = sorted(j for j in ir.reachable([channel]) if ir.nodes[j].get('kind') == 'runtime_flag')
     if len(flags) > MAX_FLAGS:
         return None
+    flag_bits={f:1<<k for k,f in enumerate(flags)};dependencies={};memo={}
+    def mask(i):
+        if i not in dependencies:
+            result=flag_bits.get(i,0)
+            for j in ir.nodes[i].get('args',[]):result |= mask(j)
+            dependencies[i]=result
+        return dependencies[i]
+    mask(channel)
+    def fold(i,bits):
+        key=(i,bits & dependencies[i])
+        if key in memo:return memo[key]
+        n=ir.nodes[i];op=n['op'];args=n.get('args',[])
+        if i in flag_bits:
+            value=ir.const(float(bool(bits & flag_bits[i])))
+        elif op=='select':
+            condition=fold(args[0],bits);known=ir.value(condition)
+            value=fold(args[1] if known else args[2],bits) if known is not None else ir.op(op,condition,fold(args[1],bits),fold(args[2],bits))
+        else:
+            replaced=[fold(j,bits) for j in args]
+            value=ir.op(op,*replaced) if op in OPS else ir.node(op,replaced,**{k:v for k,v in n.items() if k not in ('op','args')})
+        memo[key]=value;return value
     sources=set()
     for bits in range(1 << len(flags)):
-        folded = ir.replace([channel], {f: ir.const(float(bits >> k & 1)) for k, f in enumerate(flags)})[0]
-        n = ir.nodes[folded]
-        if n['op'] == 'mul' and n['args'][0] == n['args'][1]:
-            v = ir.nodes[n['args'][0]]
-            if v['op'] == 'input' and v.get('kind') == 'vertex_input':
+        n=ir.nodes[fold(channel,bits)]
+        if n['op']=='mul' and n['args'][0]==n['args'][1]:
+            v=ir.nodes[n['args'][0]]
+            if v['op']=='input' and v.get('kind')=='vertex_input':
                 sources.add((v['semantic'],v['channel']))
+                if len(sources)>1:return None
     return next(iter(sources)) if len(sources)==1 else None
+
+
+def shader_pass_partitions(data):
+    """Exact nonempty B6 envelope-pointer joins to the 13-record BC partitions.
+
+    None retains the conservative all-exporters analysis for graphs without the
+    table. An invalid table returns no joins. This is a source pass association,
+    not runtime draw or vertex-variant selection.
+    """
+    if len(data)<64:return None
+    try:
+        spans=sections(data)
+        if 0xB6D49474 not in spans:return None
+        from rc2016.shaders.bindings import pass_contracts
+        contracts=pass_contracts(data)
+        base,size=spans[0xB6D49474];shader_base,shader_size=spans[SHADER_SECTION]
+        if size!=len(contracts)*13*20:return {}
+        joined={}
+        for i in range(size//20):
+            _cb,_resources,_word2,relative,blob_size=struct.unpack_from('<5I',data,base+i*20)
+            if not blob_size:continue
+            header=shader_base+relative+36
+            if blob_size<=36 or relative+blob_size>shader_size or header+16>len(data) or data[header:header+4]!=b'Shdr':return {}
+            stage=header+16;stage_size=data[header+9]*4
+            declared=struct.unpack_from('<I',data,stage)[0] & 0x7fffff
+            if stage_size<8 or stage+stage_size+declared>shader_base+relative+blob_size:return {}
+            if header in joined:return {}
+            joined[header]=i//13
+        return joined
+    except (ValueError,KeyError,IndexError,struct.error):
+        return {}
 
 
 def squared_stream_channels(data):
@@ -203,14 +260,14 @@ def squared_stream_evidence(data):
     Each pixel program's input semantics select the relevant VS exports. All
     matching verified VS exporters and duplicate slots must agree. A flag path
     can establish a squared source stream, but runtime selection is unproven.
-    VS compilation and per-node square proofs are shared across pixel layouts.
+    Nonempty source B6 envelope pointers scope exporters to the same BC pass
+    when that table exists; unknown or conflicting joins fail closed. VS
+    compilation and per-node square proofs are shared across pixel layouts.
     """
     headers=shader_headers(data)
     pixel=[h for h in headers if h['type']==PIXEL]
     vertex=[h for h in headers if h['type']!=PIXEL]
-    if any(row.get('layout')!='verified' and not row.get('exports') for row in vertex):
-        # With no semantic table, relevance cannot be disproved for any PS input.
-        return {},{ps['header_offset']:{} for ps in pixel}
+    partitions=shader_pass_partitions(data)
     compiled,proofs={},{}
     def source(row,slot,channel):
         key=row['header_offset']
@@ -226,10 +283,17 @@ def squared_stream_evidence(data):
         return proofs[cache]
     by_header={}
     for ps in pixel:
-        found={}
+        found={};scoped=vertex
+        if partitions is not None:
+            selected=partitions.get(ps['header_offset'])
+            if selected is None or any(row['header_offset'] not in partitions for row in vertex):
+                by_header[ps['header_offset']]={};continue
+            scoped=[row for row in vertex if partitions[row['header_offset']]==selected]
+        if any(row.get('layout')!='verified' and not row.get('exports') for row in scoped):
+            by_header[ps['header_offset']]={};continue
         for index,entry in enumerate(ps['inputs']):
             semantic=entry['semantic']
-            rows=[r for r in vertex if any(e['semantic']==semantic for e in r.get('exports',[]))]
+            rows=[r for r in scoped if any(e['semantic']==semantic for e in r.get('exports',[]))]
             if not rows:continue
             for channel in range(4):
                 sources={source(row,e['slot'],channel) for row in rows for e in row.get('exports',[]) if e['semantic']==semantic}

@@ -170,7 +170,7 @@ def material_detail(archive, path, result, reasons):
         graphs = sorted({r['path'] for r in asset_references(archive, ids[0]) if r['path'].endswith('.materialgraph')})
         detail['graphs'] = graphs
         attributes = {int(m.group(1)) for r in reasons for m in _ATTRIBUTE.finditer(r)}
-        if any('CB0[' in r or 'ps.POS' in r for r in reasons) and graphs:
+        if any('CB0[' in r or 'ps.POS' in r or 'Unbound engine/interpolant input attribute' in r for r in reasons) and graphs:
             gid = [i for i in archive.resolve(graphs[0]) if archive.entries[i]['type'] == 'materialgraph'][0]
             data = asset_data(archive, gid)
             detail['engine_terms'] = engine_terms(data)
@@ -211,11 +211,11 @@ def _material_counts(archive, paths, show=None):
         if result.get('status') != 'ready':
             # The full set of blockers: binding one input unlocks a material only if it is the whole set.
             combinations[' + '.join(r for r in reasons if r != _SUMMARY) or _SUMMARY] += 1
-            if any('CB0[' in r or 'ps.POS' in r for r in reasons):
+            if any('CB0[' in r or 'ps.POS' in r or 'Unbound engine/interpolant input attribute' in r for r in reasons):
                 adapted[(world_position_outcome(archive, path), path)] += 1
         if show and show.search(path):
             detail = material_detail(archive, path, result, [r for r in reasons if r != _SUMMARY])
-            if result.get('status') != 'ready' and any('CB0[' in r or 'ps.POS' in r for r in reasons):
+            if result.get('status') != 'ready' and any('CB0[' in r or 'ps.POS' in r or 'Unbound engine/interpolant input attribute' in r for r in reasons):
                 detail['world_position_preview'] = world_position_outcome(archive, path)
             details.append(detail)
     return statuses, diagnostics, combinations, details, adapted
@@ -398,7 +398,7 @@ def print_receipt(archive, path):
     from rc2016.viewer.textures import material_texture_paths
     from rc2016.viewer.native_glsl import prepare_material_translation
     for label, result in (('native', prepare_material_translation(archive, path)),
-                          ('world-position preview', preview_with_fallback(
+                          ('generic experimental preview', preview_with_fallback(
                               world_position_translation(archive, path), material_texture_paths(archive, path)))):
         print(f"== {label}: {result.get('status')}")
         if result.get('status') not in ('ready', 'experimental'):

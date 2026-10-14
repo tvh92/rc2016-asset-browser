@@ -1,8 +1,8 @@
 """Explicit presentation previews; never automatic material readiness.
 
-Pinned previews adapt one source-hashed material each. The generic
-world-position preview applies to any material that is not ready and binds once
-inferred camera + ray * POS_W expressions become viewer world position.
+Pinned previews adapt one source-hashed material each. The generic preview
+applies to materials that are not ready and bind once inferred
+world-position expressions or source-proven squared colour channels are adapted.
 
 The mountain preview deliberately chooses the simpler source writer and adapts
 its unbound position/normal inputs to viewer geometry. Full runtime selection,
@@ -123,20 +123,23 @@ def build_preview(material, graph):
 
 
 def has_preview(path, native_ready=False):
-    """Whether prepare_preview may produce a preview for ``path``: a pinned preview material, or
-    any material without a ready native translation (the generic world-position adapter)."""
+    """Whether prepare_preview may produce a pinned or generic experimental preview
+    for ``path``. Generic position/paint adapters require a non-ready native material."""
     from rc2016.shaders import terrain_preview
     return path.replace('\\','/').lower() in (MATERIAL, terrain_preview.MATERIAL) or not native_ready
 
 
 def world_position_preview(archive, path):
     """Generic experimental receipt for a material that is not ready natively and
-    whose only engine terms are reconstructed world position; None otherwise."""
+    whose unresolved inputs are reconstructed position or proven squared colour
+    channels; None otherwise."""
     from rc2016.viewer.native_glsl import prepare_material_translation
     if archive is None: return None
     native = prepare_material_translation(archive, path)
-    # Opportunistic: only materials whose native binding stops at engine CB0 or pixel-position inputs.
-    if native.get('status') == 'ready' or not any('CB0[' in str(d) or 'ps.POS' in str(d) for d in native.get('diagnostics', [])):
+    # The adapter proves exact PS/VS provenance before accepting any paint lane.
+    if native.get('status') == 'ready' or not any(
+            'CB0[' in str(d) or 'ps.POS' in str(d) or 'Unbound engine/interpolant input attribute' in str(d)
+            for d in native.get('diagnostics', [])):
         return None
     try:
         result = world_position_translation(archive, path)
@@ -146,7 +149,10 @@ def world_position_preview(archive, path):
 
 
 def world_position_translation(archive, path):
-    """The world-position adapter's translation attempt (with diagnostics), cached on the archive."""
+    """The generic position/paint translation attempt, cached on the archive.
+
+    The historical function name and disk variant retain cache/API compatibility;
+    the receipt names the actual position or paint-only contract."""
     from rc2016.formats.archive import asset_data, asset_references
     from rc2016.formats.materials import extract_material_parameters
     from rc2016.viewer.textures import _archive_cache, _remember
@@ -213,12 +219,12 @@ def preview_with_fallback(receipt, fallback):
 
 
 def valid_contract(receipt):
-    """Only independently pinned preview contracts reach experimental emitters."""
+    """Admit explicit source-hashed generic or independently pinned previews."""
     from rc2016.shaders import terrain_preview
     identity = tuple(receipt.get(k) for k in ('preview_contract','code_sha256','graph_sha256','material_sha256'))
-    if receipt.get('preview_contract') == bindings.WORLD_POSITION_CONTRACT:
+    if receipt.get('preview_contract') in (bindings.WORLD_POSITION_CONTRACT, bindings.PAINT_STREAM_CONTRACT):
         # Generic adapter: source-hashed per receipt; the emitters still admit only
-        # UV0, front facing and viewer world position as inputs.
+        # UV0, front facing and explicit position/normal/colour preview inputs.
         return (receipt.get('status') == 'experimental' and receipt.get('automatic_ready') is False
                 and receipt.get('game_equivalence') is False and all(identity[1:]))
     return identity in ((CONTRACT,CODE_SHA,GRAPH_SHA,MATERIAL_SHA),
