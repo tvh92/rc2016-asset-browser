@@ -401,6 +401,8 @@ def print_receipt(archive, path):
                           ('generic experimental preview', preview_with_fallback(
                               world_position_translation(archive, path), material_texture_paths(archive, path)))):
         print(f"== {label}: {result.get('status')}")
+        for candidate in result.get('independent_sampler_candidates',[]):
+            print('  source-proven experimental descriptor candidate:', json.dumps(candidate,sort_keys=True))
         if result.get('status') not in ('ready', 'experimental'):
             for d in result.get('diagnostics', [])[:8]:
                 print('  diagnostic:', str(d.get('reason', d) if isinstance(d, dict) else d)[:300])
@@ -425,6 +427,8 @@ def print_receipt(archive, path):
         print('  parameters:', json.dumps(result.get('parameters'), sort_keys=True)[:600])
         if result.get('neutral_blend_mask_inputs'):
             print('  neutral blend mask review inputs:', json.dumps(result['neutral_blend_mask_inputs'],sort_keys=True))
+        if result.get('independent_sampler_inputs'):
+            print('  experimental independent descriptor indices:', json.dumps(result['independent_sampler_inputs'],sort_keys=True))
         ir = DAG(result['nodes'])
         for key, value in result['outputs'].items():
             for j, node in enumerate(value if isinstance(value, list) else [value]):

@@ -24,7 +24,7 @@ def program(texture_apis=(5, 6), usage_slots=None, cb_dwords=(0, 3), *, indirect
             sampler_apis=None):
     sampler_apis = texture_apis if sampler_apis is None else sampler_apis
     nodes = [dict(op="texture", api=api, **(
-        {"resource_table": True, "sampler_api": sampler_apis[i]} if indirect else {}))
+        {"resource_table": True, "sampler_table": True, "sampler_api": sampler_apis[i]} if indirect else {}))
         for i, api in enumerate(texture_apis)]
     nodes.extend(dict(op="input", kind="cb", api=2, dword=dword) for dword in cb_dwords)
     if usage_slots is None:
@@ -42,7 +42,7 @@ def record(*, cb_mask=4, resource_mask=(1 << 5) | (1 << 6),
 
 
 def invoke(rows, *, contract_list=None, shader_size=SHADER_SIZE, b6_size=None, shader_base=SHADER_BASE,
-           candidate=None):
+           candidate=None, allow_independent_samplers=False):
     """Place the selected program record in a realistic 13-row pass table."""
     if contract_list is None:
         contract_list = contracts()
@@ -53,7 +53,8 @@ def invoke(rows, *, contract_list=None, shader_size=SHADER_SIZE, b6_size=None, s
              0x873D1E6C: (shader_base, shader_size)}
     data = bytes(spans[0xB6D49474][0]) + table
     with patch("rc2016.shaders.bindings.sections", return_value=spans):
-        return program_contracts(data, candidate or program(), contract_list)
+        return program_contracts(data, candidate or program(), contract_list,
+                                 allow_independent_samplers=allow_independent_samplers)
 
 
 def pass_rows(index=13, **changes):
@@ -73,6 +74,54 @@ class IndirectPassJoinTests(unittest.TestCase):
         ], indirect=True)
         indirect_match = invoke(pass_rows(), candidate=indirect)
         self.assertEqual([c["index"] for c in indirect_match], [1])
+
+    def test_independent_tables_are_opt_in_and_resource_api_controls_pass_join(self):
+        indirect = program(texture_apis=(16, 17), usage_slots=[
+            dict(kind=0x13, api=0, reg=12, flags=16),
+            dict(kind=0x15, api=0, reg=14, flags=16),
+        ], indirect=True, sampler_apis=(3, 3))
+        rows = pass_rows(resource_mask=(1 << 16) | (1 << 17))
+        bounded = contracts(resources=13)
+
+        # Strict/native admission remains unchanged. Experimental admission uses
+        # resource APIs 16/17 against the pass span and bitmap; sampler API 3 is
+        # never treated as a material resource.
+        self.assertEqual(invoke(rows, contract_list=bounded, candidate=indirect), [])
+        admitted = invoke(rows, contract_list=bounded, candidate=indirect,
+                         allow_independent_samplers=True)
+        self.assertEqual([c["index"] for c in admitted], [1])
+
+        missing_bitmap_bit = pass_rows(resource_mask=1 << 16)
+        self.assertEqual(invoke(missing_bitmap_bit, contract_list=bounded, candidate=indirect,
+                                allow_independent_samplers=True), [])
+        outside_resource_span = program(texture_apis=(16, 18), usage_slots=[
+            dict(kind=0x13, api=0, reg=12, flags=16),
+            dict(kind=0x15, api=0, reg=14, flags=16),
+        ], indirect=True, sampler_apis=(3, 3))
+        outside_rows = pass_rows(resource_mask=(1 << 16) | (1 << 18))
+        self.assertEqual(invoke(outside_rows, contract_list=bounded, candidate=outside_resource_span,
+                                allow_independent_samplers=True), [])
+
+    def test_equal_api_pair_keeps_legacy_admission_without_sampler_table_marker(self):
+        indirect = program(usage_slots=[
+            dict(kind=0x13, api=0, reg=12, flags=16),
+            dict(kind=0x15, api=0, reg=14, flags=16),
+        ], indirect=True)
+        for node in indirect["ir"]["nodes"]:
+            if node["op"] == "texture":
+                node.pop("sampler_table", None)
+        self.assertEqual([c["index"] for c in invoke(pass_rows(), candidate=indirect)], [1])
+
+    def test_unequal_api_pair_requires_sampler_table_proof(self):
+        indirect = program(usage_slots=[
+            dict(kind=0x13, api=0, reg=12, flags=16),
+            dict(kind=0x15, api=0, reg=14, flags=16),
+        ], indirect=True, sampler_apis=(3, 3))
+        for node in indirect["ir"]["nodes"]:
+            if node["op"] == "texture":
+                node.pop("sampler_table", None)
+        self.assertEqual(invoke(pass_rows(), candidate=indirect,
+                                allow_independent_samplers=True), [])
 
     def test_direct_span_cannot_admit_a_mixed_table_layout(self):
         mixed=program(usage_slots=[dict(kind=0x13,api=0,reg=12,flags=16),

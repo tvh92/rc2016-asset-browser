@@ -21,7 +21,7 @@ import sys
 
 from rc2016.shaders.ir import DAG, bits, from_bits
 
-VERSION=13
+VERSION=14
 ROOT=Path(__file__).resolve().parents[2]
 SHADER_SECTION=0x873D1E6C
 # VALU instructions that also write a scalar carry/flag register pair.
@@ -199,9 +199,10 @@ def ps_input_registers(addr,ena,vgpr_count=None):
 
 
 class Compiler:
-    def __init__(self,code,usage_slots,ps_input_addr=None,ps_input_ena=None,vgpr_count=None):
+    def __init__(self,code,usage_slots,ps_input_addr=None,ps_input_ena=None,vgpr_count=None,*,allow_independent_samplers=False):
         self.code=code;self.ir=DAG();self.v=Registers();self.s=Registers();self.descriptors={};self.exports={}
         self.samples=[];self.diagnostics=[];self.current=0;self.scalar_bits={}
+        self.allow_independent_samplers=allow_independent_samplers
         self.exec=self.ir.const(1.);self.bp=self.ir.const(1.);self.masks={};self.scc=None;self.scc_source='program start'
         self.pending={};self.premerged=set();self.exec_masked_export=False
         self.pred_tables={};self.pred_memo={};self.back=None;self.fetch_call=False;self.lane_checks={};self.runtime_conditions=False;self.lane_values=set()
@@ -643,10 +644,10 @@ class Compiler:
                 elif (resource['table_slot'][:2]!=(0x13,0) or sampler.get('table_slot',())[:2]!=(0x15,0)
                         or resource['table_slot'][3]!=16 or sampler['table_slot'][3]!=16):
                     api=None;reason='Unsupported indirect texture/sampler table origin'
-                elif resource['api']!=sampler['api']:
+                elif resource['api']!=sampler['api'] and not self.allow_independent_samplers:
                     api=None;reason='Indirect texture/sampler APIs differ'
                 else:
-                    api=resource['api'];proof=dict(resource_table=True,sampler_api=sampler['api'])
+                    api=resource['api'];proof=dict(resource_table=True,sampler_table=True,sampler_api=sampler['api'])
             elif any('guard' in self.descriptors.get(base+word,{}) or 'table_slot' in self.descriptors.get(base+word,{})
                      for base,width in ((resource_base,8),(sampler_base,4)) for word in range(width)):
                 # A mixed join can carry a guarded direct identity too; it must
@@ -947,8 +948,9 @@ class Compiler:
             samples=self.samples,instruction_count=len(instructions),opcode_counts=dict(Counter(i['name'] for i in instructions)))
 
 
-def compile_program(code,usage_slots,ps_input_addr=None,ps_input_ena=None,vgpr_count=None):
-    return Compiler(code,usage_slots,ps_input_addr,ps_input_ena,vgpr_count).compile()
+def compile_program(code,usage_slots,ps_input_addr=None,ps_input_ena=None,vgpr_count=None,*,allow_independent_samplers=False):
+    return Compiler(code,usage_slots,ps_input_addr,ps_input_ena,vgpr_count,
+        allow_independent_samplers=allow_independent_samplers).compile()
 
 
 def _terms(ir,index,coefficient=1.,result=None):
@@ -1054,12 +1056,13 @@ def lower_deferred(program):
         unresolved=unresolved,limitations=limitations,reachable_nodes=sorted(used))
 
 
-def compile_graph(data):
+def compile_graph(data,*,allow_independent_samplers=False):
     results=[]
     for program in pixel_programs(data):
         row={k:v for k,v in program.items() if k!='code'}
         try:row.update(status='compiled',ir=compile_program(program['code'],program['usage_slots'],
-            program.get('ps_input_addr'),program.get('ps_input_ena'),program.get('vgpr_count')))
+            program.get('ps_input_addr'),program.get('ps_input_ena'),program.get('vgpr_count'),
+            allow_independent_samplers=allow_independent_samplers))
         except (ValueError,IndexError,KeyError,struct.error) as exc:row.update(status='unsupported',reason=str(exc))
         results.append(row)
     return dict(schema='rcps4-native-shader-ir-v1',translator_version=VERSION,

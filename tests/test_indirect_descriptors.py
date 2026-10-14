@@ -12,8 +12,9 @@ RESOURCE_POINTER = dict(kind=0x13, api=0, reg=12, flags=16)
 SAMPLER_POINTER = dict(kind=0x15, api=0, reg=14, flags=16)
 
 
-def compiler():
-    return Compiler(b"", [RESOURCE_POINTER.copy(), SAMPLER_POINTER.copy()])
+def compiler(allow_independent_samplers=False):
+    return Compiler(b"", [RESOURCE_POINTER.copy(), SAMPLER_POINTER.copy()],
+                    allow_independent_samplers=allow_independent_samplers)
 
 
 def decoded_load(base, destination, byte_offset, words=4):
@@ -85,6 +86,59 @@ class IndirectDescriptorLoadTests(unittest.TestCase):
         self.assertIsNone(c.texture_descriptor(32, 0, 8))
         c.instruction(decoded_sample())
         self.assertIsNone(c.samples[-1]["api"])
+
+
+    def test_independent_complete_tables_keep_resource_api_and_sampler_api_separate(self):
+        # API 17 names the texture resource. API 3 names its independent sampler.
+        c = compiler(allow_independent_samplers=True)
+        load_complete_pair(c, resource_offsets=(17 * 32, 17 * 32 + 16),
+                           sampler_offset=3 * 16)
+        c.instruction(decoded_sample())
+        self.assertEqual(c.samples[-1]["api"], 17)
+        self.assertEqual(c.samples[-1]["sampler_api"], 3)
+        self.assertTrue(c.samples[-1]["resource_table"])
+        self.assertTrue(c.samples[-1]["sampler_table"])
+        textures = [n for n in c.ir.nodes if n["op"] == "texture"]
+        self.assertTrue(textures)
+        self.assertTrue(all(n["api"] == 17 and n["sampler_api"] == 3
+                            and n["resource_table"] is True and n["sampler_table"] is True
+                            for n in textures))
+        self.assertFalse(any(n["op"] == "texture" and n["api"] == 3 for n in c.ir.nodes))
+
+    def test_independent_mode_rejects_partial_wrong_origin_and_guarded_descriptors(self):
+        for failure in ("partial_resource", "partial_sampler", "wrong_pointer_api", "wrong_flags", "unproved_guard"):
+            with self.subTest(failure=failure):
+                c = compiler(allow_independent_samplers=True)
+                if failure == "wrong_pointer_api":
+                    for r in (14, 15): c.descriptors[r]["api"] = 1
+                if failure == "wrong_flags":
+                    for r in (14, 15): c.descriptors[r]["flags"] = 0
+                load_complete_pair(c, resource_offsets=(17 * 32, 17 * 32 + 16),
+                                   sampler_offset=3 * 16)
+                if failure == "partial_resource": c.descriptors.pop(39)
+                if failure == "partial_sampler": c.descriptors.pop(43)
+                if failure == "unproved_guard":
+                    guard = c.ir.node("input", name="unknown_branch", kind="runtime_flag")
+                    for r in range(40, 44): c.descriptors[r]["guard"] = guard
+                c.instruction(decoded_sample())
+                self.assertIsNone(c.samples[-1]["api"])
+                self.assertFalse(any(n["op"] == "texture" for n in c.ir.nodes))
+
+    def test_independent_api_pair_remains_strict_by_default(self):
+        c = compiler()
+        load_complete_pair(c, resource_offsets=(17 * 32, 17 * 32 + 16),
+                           sampler_offset=3 * 16)
+        c.instruction(decoded_sample())
+        self.assertIsNone(c.samples[-1]["api"])
+        self.assertFalse(any(n["op"] == "texture" for n in c.ir.nodes))
+
+    def test_independent_sampler_api_over_31_fails_closed(self):
+        c = compiler(allow_independent_samplers=True)
+        load_complete_pair(c, resource_offsets=(17 * 32, 17 * 32 + 16),
+                           sampler_offset=32 * 16)
+        c.instruction(decoded_sample())
+        self.assertIsNone(c.samples[-1]["api"])
+        self.assertFalse(any(n["op"] == "texture" for n in c.ir.nodes))
 
 
 class ConditionalDescriptorTests(unittest.TestCase):

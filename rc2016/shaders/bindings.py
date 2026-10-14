@@ -64,9 +64,13 @@ def _pooled(function,data):
     return function(data)
 
 
+def _compile_independent_samplers(data):
+    return compile_graph(data,allow_independent_samplers=True)
+
+
 @lru_cache(maxsize=64)
-def _compiled(data):
-    return _pooled(compile_graph,data)
+def _compiled(data,allow_independent_samplers=False):
+    return _pooled(_compile_independent_samplers if allow_independent_samplers else compile_graph,data)
 
 
 _GRAPH_LOCKS={}
@@ -83,8 +87,10 @@ def _once(kind,data,function):
         return function(data)
 
 
-def compiled(data):
-    """compile_graph, once per graph (see _once)."""
+def compiled(data,allow_independent_samplers=False):
+    """Compile once per graph and descriptor mode; strict and preview caches are separate."""
+    if allow_independent_samplers:
+        return _once('compiled_independent_samplers',bytes(data),lambda d:_compiled(d,True))
     return _once('compiled',bytes(data),_compiled)
 
 
@@ -354,6 +360,12 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
     outputs=dict(albedo=newroots[:3],F0=newroots[3:6],gloss=newroots[6],emission=newroots[7])
     if normal:normal=dict(normal,xyz=newroots[8:11])
     active={n['api'] for n in compact.nodes if n['op']=='texture'}
+    independent={ (n['api'],n['sampler_api'],n['sample']) for n in compact.nodes
+        if n['op']=='texture' and n.get('resource_table') is True and n.get('sampler_table') is True
+        and n.get('sampler_api')!=n['api'] }
+    if independent:
+        if not world_position:raise ValueError('Independent texture/sampler APIs require experimental binding')
+        lowered['limitations'].append('Experimental independent descriptor indices: exact source resource APIs select material textures; separately proved sampler APIs are retained as evidence. Native sampler state is unverified; portable filtering and addressing remain review substitutes.')
     return dict(nodes=compact.nodes,outputs=outputs,normal=normal,
         texture_bindings=[bound[a] for a in sorted(active)],parameters=receipt,
         pass_contract_index=contract['index'],limitations=lowered['limitations'],source_zero_power_guards=zero_guards,
@@ -361,17 +373,21 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
         **({'painted_channel_evidence':sorted(painted_evidence,key=lambda row:(row['attribute'],row['channel']))}
            if world_position and colours else {}),
         **({'world_position_terms':adapted} if adapted else {}),
-        **({'neutral_blend_mask_inputs':neutral_masks} if neutral_masks else {}))
+        **({'neutral_blend_mask_inputs':neutral_masks} if neutral_masks else {}),
+        **({'independent_sampler_inputs':[dict(api=a,sampler_api=s,sample=i)
+            for a,s,i in sorted(independent)]} if independent else {}))
 
 
-def program_contracts(data,program,contracts):
+def program_contracts(data,program,contracts,allow_independent_samplers=False):
     """Join native envelope to its source pass, never to a sorted texture list.
 
     Corpus controls establish 13 serialized shader records per BC pass. The
     byte pointer and resource bitmap are checked again on every new graph.
     Static tables require complete, path-proven resource/sampler words with
-    equal native APIs from the source table pointers. Dynamic, mixed and
-    independent-sampler layouts remain unsupported.
+    source table pointers. Native binding requires equal APIs. Experimental
+    binding may retain a separately proved sampler index; only resource APIs
+    select textures and satisfy the B6 span/bitmap. Dynamic and mixed layouts
+    remain unsupported.
     """
     spans=sections(data);base,size=spans.get(0xB6D49474,(0,0))
     if size!=len(contracts)*13*20:raise ValueError('Unsupported serialized shader/pass partition')
@@ -382,7 +398,9 @@ def program_contracts(data,program,contracts):
     pointers=[s for s in program['usage_slots'] if s['kind'] in (0x13,0x15)]
     static_table=(not apis and len(pointers)==2 and {s['kind'] for s in pointers}=={0x13,0x15}
                   and all(s['api']==0 and s.get('flags')==16 for s in pointers)
-                  and bool(textures) and all(n.get('resource_table') is True and n.get('sampler_api')==n['api'] for n in textures))
+                  and bool(textures) and all(n.get('resource_table') is True and (n.get('sampler_api')==n['api']
+                      or (allow_independent_samplers and n.get('sampler_table') is True
+                          and type(n.get('sampler_api')) is int and 0<=n['sampler_api']<32)) for n in textures))
     if not static_table and any(n.get('resource_table') for n in textures):return []
     cb=[n['dword'] for n in program['ir']['nodes'] if n['op']=='input' and n.get('kind')=='cb' and n.get('api')==2]
     joined=[]
@@ -462,7 +480,7 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False)
     result=dict(schema='rcps4-bound-shader-translation-v1',status='unsupported',diagnostics=[],game_equivalence=False)
     if len(graph_datas)!=1:
         result['diagnostics'].append('Translation requires one unambiguous source graph');return result
-    data=bytes(graph_datas[0]);graph=compiled(data)
+    data=bytes(graph_datas[0]);graph=compiled(data,allow_independent_samplers=world_position)
     normal_attributes=set();stream_channels={}
     if world_position:
         normal_attributes,stream_channels=graph_stream_evidence(data)
@@ -472,11 +490,19 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False)
     for program in graph['programs']:
         if program['status']!='compiled':
             result['diagnostics'].append(dict(shader_id=program['shader_id'],reason='compile: '+program.get('reason','')));continue
-        try:matched=program_contracts(data,program,contracts)
+        try:matched=program_contracts(data,program,contracts,allow_independent_samplers=world_position)
         except ValueError as exc:
             result['diagnostics'].append(str(exc));continue
         if world_position:normal_attributes,stream_channels=graph_stream_evidence(data,program)
         for contract in matched:
+            if world_position:
+                split=[dict(api=s['api'],sampler_api=s['sampler_api'],code_offset=s['offset'])
+                    for s in program.get('ir',{}).get('samples',[]) if s.get('resource_table') is True
+                    and s.get('sampler_table') is True and s.get('api')!=s.get('sampler_api')]
+                if split:
+                    result.setdefault('independent_sampler_candidates',[]).append(dict(
+                        shader_id=program['shader_id'],code_sha256=program['code_sha256'],
+                        source_shader_record=contract['source_shader_record'],samples=split))
             try:bound=_bind(program,contract,material_data,instance,world_position,normal_attributes,stream_channels)
             except ValueError as exc:
                 result['diagnostics'].append(dict(shader_id=program['shader_id'],contract=contract['index'],reason=str(exc)));continue
@@ -497,7 +523,7 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False)
     candidate=candidates[0];program=candidate['program']
     result.update(candidate['bound'],status='ready',graph_sha256=graph['graph_sha256'],
         code_sha256=program['code_sha256'],code_offset=program['code_offset'],shader_id=program['shader_id'],
-        equivalent_candidates=len(candidates),translator_version=graph['translator_version'],binding_version=7,
+        equivalent_candidates=len(candidates),translator_version=graph['translator_version'],binding_version=8,
         surface_sha256=candidate['surface_signature'],candidate_sources=[dict(
             shader_id=c['program']['shader_id'],code_sha256=c['program']['code_sha256'],
             pass_contract_index=c['bound']['pass_contract_index'],
