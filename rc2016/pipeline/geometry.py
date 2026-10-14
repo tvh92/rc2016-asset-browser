@@ -349,7 +349,7 @@ def _material(source):
         links.new(principled.outputs['BSDF'],output.inputs['Surface'])
         from rc2016.pipeline import game_shader
         from rc2016.shaders.nodes import apply_translated_material
-        # materials.py decides: a fully ported viewer rule outranks the native translation.
+        # materials.py decides: a fully ported exact viewer rule outranks the native translation.
         viewer_first=source.get('shader_status')=='viewer_graph_rule_frontend'
         applied=viewer_first and game_shader.apply_viewer_graph_rule(material,source)
         if not applied:applied=apply_translated_material(material,source)

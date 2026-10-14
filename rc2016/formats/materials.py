@@ -448,9 +448,14 @@ def _viewer_rule_wins_translation(translated, rule):
     return not (translated and unported and not unported.issubset({'parallax'}))
 
 
-def final_shader_status(build_status, rule, bound_paths, shader_translation, profile, shader_preflights):
+def final_shader_status(build_status, rule, bound_paths, shader_translation, profile, shader_preflights, graph_paths=()):
     """The Blender front-end a material is built with: ``build_status`` (shader_build_status) unless a
-    usable viewer graph rule or a ready native translation replaces it."""
+    usable viewer graph rule or a ready native translation replaces it.
+
+    As in the viewer (native_glsl.selected_translation), only an exact graph rule keeps precedence over a
+    ready translation; a family-prefix or generic reading yields to it.
+    """
+    from rc2016.formats.links import EXACT, rule_coverage
     # The arch-sequence writer never samples _c.
     anchor=rule.get('textures',{}).get('_g' if 'arch_sequence' in rule.get('ported',()) else '_c')
     # The facing-glow writer (Qwark bulb) samples no texture at all.
@@ -458,7 +463,8 @@ def final_shader_status(build_status, rule, bound_paths, shader_translation, pro
                   (anchor in bound_paths or 'facing_glow' in rule.get('ported',())))
     translated=(shader_translation.get('status')=='ready' and not profile and
         not any(p.get('family') in ('skin_emissive','basic_skin','character_glass') for p in shader_preflights))
-    if viewer_ready and _viewer_rule_wins_translation(translated, rule):
+    exact=rule_coverage(list(graph_paths))[0]==EXACT
+    if viewer_ready and (not translated or (exact and _viewer_rule_wins_translation(translated, rule))):
         # Built in Blender by rc_game_shader.apply_viewer_graph_rule (same reading as the asset viewer).
         # A fully ported viewer rule wins over the native translation, which drops tint/pick/foliage
         # terms and the normal map (battery cannon: black trim built white); geometry._material follows.
@@ -704,7 +710,7 @@ def prepare_materials(archive, model_geometry, output_dir, export_textures, log,
             bound={binding['path'] for binding in bindings}
             result['viewer_graph_rule']=viewer_graph_rule(archive,canonical,bound)
             result['shader_status']=final_shader_status(result['shader_status'],result['viewer_graph_rule'],bound,
-                shader_translation,profile,shader_preflights)
+                shader_translation,profile,shader_preflights,graph_paths)
         except Exception as exc:
             result=dict(index=source['index'],name=source['name'],path=canonical,status='failed',reason=str(exc),textures=[])
             errors.append(result.copy())

@@ -135,7 +135,7 @@ def material_row(archive, path):
         status = M.shader_build_status(profile, M.graph_semantics(graphs), bindings, preflights)
         translation = prepare_translation(graph_datas, data, instance)
         rule = M.viewer_graph_rule(archive, path, {b['path'] for b in bindings})
-        status = M.final_shader_status(status, rule, {b['path'] for b in bindings}, translation, profile, preflights)
+        status = M.final_shader_status(status, rule, {b['path'] for b in bindings}, translation, profile, preflights, graphs)
         prefix = next((p for p, _r in T.GRAPH_RULES for g in graphs if g.startswith(p)), None)
         flags = T.material_flags(data)
         blend = T.blend_state(flags)['blend']
