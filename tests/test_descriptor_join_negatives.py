@@ -1,11 +1,5 @@
 """Focused negatives for descriptor-word identity and guarded joins."""
-import sys
 import unittest
-from pathlib import Path
-
-REPO = Path(r"C:/Users/Tim/Documents/Bestanden/R&C (2016) asset browser")
-if str(REPO) not in sys.path:
-    sys.path.insert(0, str(REPO))
 
 from rc2016.shaders.translator import Compiler
 
