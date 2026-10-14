@@ -452,7 +452,7 @@ def blender(args,job,validate,log):
         for line in process.stdout:
             stream.write(line);stream.flush()
             if line.startswith(('BAKED','BUILT','VERIFIED','VALIDATION','Error','Traceback')):print(line.rstrip(),flush=True)
-        code=process.wait()
+        code=process.wait();process.stdout.close()
     if code:raise RuntimeError('Blender failed; see '+str(output))
 
 
@@ -876,7 +876,7 @@ def assemble_source_linked_fusion(selection,manifest,index,args,code_hash,previo
                 for line in proc.stdout:
                     stream.write(line);stream.flush()
                     if line.startswith(('Traceback','Error','{"status"')):print(line.rstrip(),flush=True)
-                code=proc.wait()
+                code=proc.wait();proc.stdout.close()
             if code:raise RuntimeError(f'Fusion variant {stage} failed; inspect {log_path}')
             return log_path
         if final.exists():

@@ -49,7 +49,8 @@ class PipelineGuiBackendTests(unittest.TestCase):
                 self.assertTrue(child_pid_path.exists(), "fake CLI did not start its child")
                 thread.join(timeout=0.2)
                 self.assertTrue(thread.is_alive(), "control requires cancellation while work is active")
-                runner_pid = runner.process.pid if runner.process else None
+                process = runner.process
+                runner_pid = process.pid if process else None
                 runner.cancel()
                 thread.join(timeout=5)
 
@@ -66,6 +67,31 @@ class PipelineGuiBackendTests(unittest.TestCase):
             self.assertFalse(thread.is_alive(),
                 f"GUI runner remained blocked; parent pid={runner_pid}, poll={process_state}")
             self.assertFalse(errors, f"GUI runner raised unexpectedly: {errors!r}")
+            self.assertTrue(process.stdout.closed, "cancelled run left the CLI output pipe open")
+
+    def test_pipeline_runner_closes_cli_output_after_a_finished_run(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            blender = root / "blender.exe"
+            blender.touch()
+            fake_cli = root / "fake_pipeline.py"
+            fake_cli.write_text(
+                "import json\n"
+                "print(json.dumps({'event': 'model_started', 'model': 'fixture/model'}), flush=True)\n"
+                "print(json.dumps({'event': 'delivered', 'model': 'fixture/model'}), flush=True)\n",
+                encoding="utf-8")
+            runner = PipelineBatchRunner(["fixture/model"], root / "source", root / "out",
+                                         Path(sys.executable), blender)
+            created, real_popen = [], subprocess.Popen
+
+            def popen(*args, **kwargs):
+                created.append(real_popen(*args, **kwargs))
+                return created[-1]
+
+            with patch("rc2016.app.batch.PIPELINE_CLI", fake_cli), \
+                    patch("rc2016.app.batch.subprocess.Popen", popen):
+                self.assertEqual(0, runner.run())
+            self.assertTrue(created[0].stdout.closed, "finished run left the CLI output pipe open")
 
     def test_pipeline_runner_builds_one_python_batch_with_reuse(self):
         with tempfile.TemporaryDirectory() as folder:

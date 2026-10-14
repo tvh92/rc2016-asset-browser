@@ -553,6 +553,8 @@ class RendererProcess:
                     continue
         finally:
             code = self.process.wait()
+            self.process.stdout.close()
+            self.log.close()
             self.events.put(dict(event='exit', code=code))
             self.finished.set()
 

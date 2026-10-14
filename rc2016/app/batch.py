@@ -573,6 +573,11 @@ class PipelineBatchRunner:
             else:
                 self.event("log", level="output", message=line)
         return_code = process.wait()
+        # Closing while the reader is still inside a read would block on the
+        # buffer lock, so close only once the reader has seen end of output.
+        reader.join(timeout=2)
+        if not reader.is_alive():
+            process.stdout.close()
         self.process = None
         return return_code
 

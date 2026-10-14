@@ -900,6 +900,7 @@ class ModelExporter:
                 if line.startswith(('EXPORTED', 'Error', 'Traceback')):
                     self.log('  ' + line.rstrip())
             code = self.process.wait()
+            self.process.stdout.close()
             self.process = None
             if self.cancelled():
                 raise Cancelled()

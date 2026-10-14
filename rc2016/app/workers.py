@@ -194,6 +194,7 @@ class ReviewProcess:
                     log.write(line);log.flush()
                     self.event('log', message=line.rstrip())
             code = process.wait()
+            process.stdout.close()   # the loop above ends only after the reader has finished
             if self.cancel_requested.is_set():
                 return {'status': 'cancelled'}
             if not self.report_path.is_file():
