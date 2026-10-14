@@ -112,6 +112,20 @@ def _unorm_1010102_vectors(words, label):
     return np.stack((x/length, y/length, z/length), axis=1)
 
 
+def _unorm_1010102_raw_vectors(words, label='normal'):
+    """Decode xyz from the packed 10:10:10:2 UNORM word without unit normalization.
+
+    This is a separate candidate source vector input; ``normals`` remains the
+    normalized shading normal used by existing viewer and export paths.
+    """
+    values = np.asarray(words, dtype=np.uint32).astype(np.int64)
+    x, y, z = (((values >> shift) & 0x3ff) / 1023.0 * 2.0 - 1.0 for shift in (0, 10, 20))
+    vectors = np.stack((x, y, z), axis=1)
+    if not np.isfinite(vectors).all():
+        raise ValueError(f'Invalid packed {label}')
+    return vectors
+
+
 def _tuples(values):
     return list(map(tuple, values.tolist()))
 
@@ -307,7 +321,8 @@ def decode_model(path, lod='Highest', look=0, expected_sha256=None, preserve_sou
                  data=None, as_arrays=False):
     """Decode a direct PS4 model file (or its ``data`` bytes; ``path`` is then only a label).
 
-    ``as_arrays`` gives each mesh's positions, normals, tangents, packed_tangents, uv0 and
+    ``as_arrays`` gives each mesh's positions, normals, tangents, packed_normals,
+    raw_vectors, packed_tangents, uv0 and
     triangles as numpy arrays instead of lists, for previews that upload them as-is.
     """
     data=read(path) if data is None else bytes(data)
@@ -341,6 +356,7 @@ def decode_model(path, lod='Highest', look=0, expected_sha256=None, preserve_sou
     source_xyz=records['xyzw'][:,:3]
     positions=source_xyz.astype(np.float64)/divisor
     normals=_unorm_1010102_vectors(records['normal'],'normal')
+    raw_vectors=_unorm_1010102_raw_vectors(records['normal'],'normal')
     # Keep the exact uint32 (including its unused 2-bit field) beside the
     # decoded tangent so the source bits stay auditable.
     tangents=records['tangent'].astype(np.uint32)
@@ -366,7 +382,7 @@ def decode_model(path, lod='Highest', look=0, expected_sha256=None, preserve_sou
         uv1=_tuples(np.stack((uv1_words[:,0]/32768.0,1.0-uv1_words[:,1]/32768.0),axis=1))
     if not as_arrays:
         source_xyz=_tuples(source_xyz) if preserve_source_positions else None
-        positions,normals,tangent_vectors,uvs=(_tuples(a) for a in (positions,normals,tangent_vectors,uvs))
+        positions,normals,raw_vectors,tangent_vectors,uvs=(_tuples(a) for a in (positions,normals,raw_vectors,tangent_vectors,uvs))
         tangents=tangents.tolist()
         uv0_secondary_packed=_tuples(uv0_secondary_packed) if uv0_secondary_packed is not None else None
 
@@ -441,11 +457,18 @@ def decode_model(path, lod='Highest', look=0, expected_sha256=None, preserve_sou
         if batch_count and unweighted:
             raise ValueError(f'Mesh {mesh_index} skin batches leave {unweighted} vertices without weights')
         mesh_result=dict(mesh_record)
+        static_vector_eligible = bool(
+            local_count == len(records['normal'][first_vertex:first_vertex+local_count])
+            and not batch_count and not (mesh_flags & 0x40))
+        packed_normal_slice = records['normal'][first_vertex:first_vertex+local_count].copy()
         mesh_result.update(
             semantic_evidence=_semantic_evidence(uv0_bytes_per_vertex),
             triangles=triangles if as_arrays else triangles.tolist(),
             positions=positions[first_vertex:first_vertex+local_count],
             normals=normals[first_vertex:first_vertex+local_count],
+            packed_normals=(packed_normal_slice if as_arrays else packed_normal_slice.tolist()),
+            raw_vectors=raw_vectors[first_vertex:first_vertex+local_count],
+            static_vector_eligible=static_vector_eligible,
             packed_tangents=tangents[first_vertex:first_vertex+local_count],
             tangents=tangent_vectors[first_vertex:first_vertex+local_count],
             uv0=uvs[first_vertex:first_vertex+local_count],
@@ -485,7 +508,7 @@ def inspect_native_model(path, lod='Highest', look=0):
     decoded=decode_model(path,lod,look)
     summary={k:v for k,v in decoded.items() if k!='meshes'}
     summary['meshes']=[]
-    excluded={'positions','normals','packed_tangents','tangents','uv0','uv0_secondary_packed',
+    excluded={'positions','normals','packed_normals','raw_vectors','packed_tangents','tangents','uv0','uv0_secondary_packed',
               'uv1','colors','weights','triangles','source_positions_i16'}
     for mesh in decoded['meshes']:
         row={k:v for k,v in mesh.items() if k not in excluded}

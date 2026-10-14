@@ -237,7 +237,7 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None, workers=N
             entry["count"] += model["count"]
             entry["vertex_colours"].extend(model.get("vertex_colours", []))
             entry.setdefault("vertex_paint_blocks",{}).update(model.get("vertex_paint_blocks",{}))
-            entry["zones"].append((zone, model["groups"]))
+            entry["zones"].append((zone, model["groups"], bool(model.get("static_vector_instances_eligible"))))
     out.put(("bounds", level_scene.core_bounds(points)))
     if level_path.endswith(".level"):
         try:
@@ -277,9 +277,11 @@ def _load_models(archive, pool, workers, models, catalog, actor_groups, points, 
             out.put(("error", path, f"{type(exc).__name__}: {exc}"))
             continue
         zones, replacements = [], {}
-        for zone, groups in entry["zones"]:
+        for zone_entry in entry["zones"]:
+            zone, groups = zone_entry[:2]
+            static_vector_eligible = bool(zone_entry[2]) if len(zone_entry) > 2 else False
             groups, outcomes, changed = level_scene.effective_groups(geometry["materials"], groups)
-            zones.append((zone, groups))
+            zones.append((zone, groups, static_vector_eligible))
             overrides["outcomes"].update(outcomes)
             overrides["instances"] += changed
             for group_key in groups:
@@ -753,8 +755,10 @@ class LevelPanel:
         elif kind == "model":
             _kind, path, geometry, hidden, zones = item
             self.view.add_model(path, geometry, hidden)
-            for zone, groups in zones:
-                self.view.add_instances(zone, path, groups)
+            for zone_entry in zones:
+                zone, groups = zone_entry[:2]
+                static_vector_eligible = bool(zone_entry[2]) if len(zone_entry) > 2 else False
+                self.view.add_instances(zone, path, groups, static_vector_eligible=static_vector_eligible)
             p["models"] += 1
         elif kind == "actors":
             _kind, zone, path, groups, actors = item

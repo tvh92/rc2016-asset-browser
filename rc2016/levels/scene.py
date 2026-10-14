@@ -74,6 +74,8 @@ def zone_scene(archive, zone_path):
     position-keyed vertex colours also has 'vertex_colours': [zone_format.vertex_colour_block]
     and 'vertex_paint_blocks': {content identity: block}; its group keys append that identity
     (empty string for an unpainted instance). Paint and matrices never travel independently.
+    ``static_vector_instances_eligible`` is a conservative per-model flag, true only when every
+    placement has finite transform values and none carries a known unsupported instance flag.
 
     ``groups`` is {(mirrored, overrides): array('f') of 16-float rows}, where ``overrides`` is the
     instance's raw material-override entries as ((slot hash, material path or None, material hash), ...);
@@ -93,6 +95,16 @@ def zone_scene(archive, zone_path):
     if not len(model_index):
         return dict(zone=zone_path, models=[], instances=zone['instances'], points=[])
     flips = mirrored_array(matrices)
+    instance_flags = zone.get('instance_flags')
+    unsupported_vector_instance_flags = 0x00001000 | 0x00000400 | 0x08000000
+    flags_valid = instance_flags is not None and len(instance_flags) == len(model_index)
+    if flags_valid:
+        instance_flags = np.asarray(instance_flags, dtype=np.uint32)
+    for index, model in enumerate(models):
+        member = model_index == index
+        model['static_vector_instances_eligible'] = bool(
+            member.any() and flags_valid and np.isfinite(matrices[member]).all()
+            and not np.any(instance_flags[member] & unsupported_vector_instance_flags))
     # One code per (model, mirrored, overrides) key; override-bearing instances get codes past 2 * models.
     codes = model_index * 2 + flips
     keys, extra = {}, {}
@@ -295,8 +307,9 @@ def core_bounds(points, trim=0.02):
 
 # Decoded level geometry (.npz), keyed by the model's archive bytes and the decoder sources.
 GEOMETRY_CACHE_DIR = Path(__file__).resolve().parents[2] / '.cache' / 'level_geometry'
-GEOMETRY_CACHE_VERSION = 1
-GEOMETRY_ARRAYS = (('positions', 'f', '<f4'), ('normals', 'f', '<f4'), ('uvs', 'f', '<f4'), ('indices', 'I', '<u4'))
+GEOMETRY_CACHE_VERSION = 2
+GEOMETRY_ARRAYS = (('positions', 'f', '<f4'), ('normals', 'f', '<f4'), ('raw_vectors', 'f', '<f4'),
+                   ('uvs', 'f', '<f4'), ('indices', 'I', '<u4'))
 _fingerprint = []
 
 
@@ -408,7 +421,8 @@ def decode_geometry(model_path, data, lod='Highest', look=0):
     import numpy as np
     from rc2016.formats.native_model import decode_model
     decoded = decode_model(model_path, lod=lod, look=look, data=data, as_arrays=True)
-    positions, normals, uvs, indices, batches = [], [], [], [], []
+    positions, normals, raw_vectors, uvs, indices, batches = [], [], [], [], [], []
+    raw_vector_eligible = True
     skinned = any(any(bool(pairs) for pairs in m.get('weights', [])) for m in decoded['meshes'])
     vertex_total = triangle_total = 0
     for mesh in decoded['meshes']:
@@ -416,6 +430,23 @@ def decode_geometry(model_path, data, lod='Highest', look=0):
             continue
         count = len(mesh['positions'])
         positions.append(mesh['positions']); normals.append(mesh['normals'])
+        packed_normals = mesh.get('packed_normals')
+        raw = mesh.get('raw_vectors')
+        mesh_eligible = (mesh.get('static_vector_eligible') and packed_normals is not None
+                         and len(packed_normals) == count and not mesh.get('skin_batch_count', 0)
+                         and not (int(mesh.get('flags', 0)) & 0x40)
+                         and not any(bool(pairs) for pairs in mesh.get('weights', ())))
+        if mesh_eligible:
+            if raw is None:
+                from rc2016.formats.native_model import _unorm_1010102_raw_vectors
+                raw = _unorm_1010102_raw_vectors(packed_normals, 'normal')
+            raw = np.asarray(raw, dtype=np.float32).reshape(-1, 3)
+            if raw.shape == (count, 3) and np.isfinite(raw).all():
+                raw_vectors.append(raw)
+            else:
+                raw_vector_eligible = False
+        else:
+            raw_vector_eligible = False
         uv0 = mesh.get('uv0')
         if uv0 is not None and len(uv0) == count:
             # The decoder flips V for Blender; textures upload top row first, so flip back.
@@ -429,6 +460,8 @@ def decode_geometry(model_path, data, lod='Highest', look=0):
     if not indices:
         raise ValueError('selected look/LOD has no geometry')
     positions = np.concatenate(positions)
+    raw_vector_eligible = bool(raw_vector_eligible and sum(len(values) for values in raw_vectors) == len(positions))
+    raw_vectors = np.concatenate(raw_vectors) if raw_vector_eligible else np.empty((0, 3), dtype=np.float32)
     radius = float(np.max(positions[:, 0] * positions[:, 0] + positions[:, 1] * positions[:, 1]
                           + positions[:, 2] * positions[:, 2]))
 
@@ -443,8 +476,10 @@ def decode_geometry(model_path, data, lod='Highest', look=0):
     sides = positions[triangles[:, 2]] - positions[triangles[:, 0]]
     usable = bool(np.isfinite(positions).all() and np.any(np.linalg.norm(np.cross(edges, sides), axis=1) > 1e-10))
     positions, normals = packed(positions, 'f', np.float32), packed(normals, 'f', np.float32)
+    raw_vectors = packed(raw_vectors, 'f', np.float32)
     uvs, indices = packed(uvs, 'f', np.float32), packed(indices, 'I', np.uint32)
-    return dict(positions=positions, normals=normals, uvs=uvs, indices=indices, batches=batches,
+    return dict(positions=positions, normals=normals, raw_vectors=raw_vectors,
+                static_vector_eligible=raw_vector_eligible, uvs=uvs, indices=indices, batches=batches,
                 materials=[dict(index=m.get('index', i), name=m.get('name'), path=m.get('path'))
                            for i, m in enumerate(decoded['materials'])],
                 radius=math.sqrt(radius), triangles=len(indices) // 3, source_sha256=decoded['source_sha256'],

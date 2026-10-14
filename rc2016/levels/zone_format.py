@@ -228,6 +228,7 @@ def decode_zone_arrays(data):
     per-instance dicts, matrix lists or the tail hex.
 
     {'models', 'override_materials', 'instances' (count), 'matrices' float32 (n, 16) row-vector,
+     'instance_flags' uint32 (n,) from record +0x5c,
      'model_index' uint32 (n,), 'overrides' {instance number: decode_zone's material_overrides list},
      'vertex_colours' {instance number: vertex_colour_block}}.
     Only instances with a nonzero override count appear in 'overrides', and only those with a
@@ -246,7 +247,8 @@ def decode_zone_arrays(data):
     replacements = override_materials(data, table)
     n = len(rel)
     result = dict(models=models, override_materials=replacements, instances=n, overrides={}, vertex_colours={},
-                  matrices=np.zeros((0, 16), np.float32), model_index=np.zeros(0, np.uint32))
+                  matrices=np.zeros((0, 16), np.float32), model_index=np.zeros(0, np.uint32),
+                  instance_flags=np.zeros(0, np.uint32))
     if not n:
         return result
     r = heap + rel
@@ -257,6 +259,7 @@ def decode_zone_arrays(data):
     record_size = np.ascontiguousarray(raw[:, 0x44:0x48]).view('<u4')[:, 0].astype(np.int64)
     ids = np.ascontiguousarray(raw[:, 0x48:0x50]).view('<u8')[:, 0]
     model_index = np.ascontiguousarray(raw[:, 0x58:0x5C]).view('<u4')[:, 0]
+    instance_flags = np.ascontiguousarray(raw[:, 0x5C:0x60]).view('<u4')[:, 0]
     last = np.zeros(n, bool); last[-1] = True
     ok = ((record_size >= RECORD_HEADER_SIZE) & (rel + RECORD_HEADER_SIZE <= heap_size)
           & ((rel + record_size <= heap_size) | (last & (rel + record_size - heap_size < 8))))
@@ -276,7 +279,7 @@ def decode_zone_arrays(data):
         block = vertex_colour_block(data, int(r[i]), int(record_size[i]))
         if block is not None:
             result['vertex_colours'][i] = block
-    result.update(matrices=matrices, model_index=model_index)
+    result.update(matrices=matrices, model_index=model_index, instance_flags=instance_flags)
     return result
 
 
@@ -288,6 +291,7 @@ def _arrays_from_full(data):
     return dict(models=zone['models'], override_materials=zone['override_materials'], instances=len(instances),
                 matrices=np.array([[x for row in i['matrix_rows'] for x in row] for i in instances], np.float32).reshape(-1, 16),
                 model_index=np.array([i['model_index'] for i in instances], np.uint32),
+                instance_flags=np.array([int(i['flags'], 16) for i in instances], np.uint32),
                 overrides={n: i['material_overrides'] for n, i in enumerate(instances) if i['material_overrides']},
                 vertex_colours={})
 
