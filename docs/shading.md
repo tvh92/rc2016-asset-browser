@@ -133,6 +133,12 @@ Unresolved reads retain a diagnostic `buffer_access` record: raw instruction wor
 
 `V_SAD_U32` uses unsigned absolute difference plus its third operand with 32-bit wrap, following the detailed operation in AMD's [GCN3 ISA reference](https://gpuopen.com/download/AMD_GCN3_Instruction_Set_Architecture_rev1.1.pdf). Integer results retain bit-pattern semantics. Constants and exact identities can fold during tracing; live integer expressions remain outside the portable material frontend. Non-finite bit-pattern literals and unverified instruction modifiers retain the existing unsupported limits.
 
+### Scalar predicate tracing
+
+Diagnostic vertex tracing keeps unresolved scalar comparisons as opaque runtime flags. A `predicate` record retains the exact instruction words, opcode, signed or unsigned immediate bits, and scalar operand snapshots. Operand origins use structural hashes independent of DAG numbering; the same instruction address with different origins does not collapse into one atom. Unresolved scalar operations from the supported 32-bit SOP2 table retain diagnostic operand snapshots so preceding masks and offsets can be inspected without evaluating them. Neither record evaluates a comparison, reads buffer contents, selects a draw-time flag or enables a material frontend. Unresolved scalar reads additionally retain a `scalar_memory_access` record with descriptor and address origins. Register offsets require a known unsigned scalar word; the numeric value of an F32 carrier is not used as a byte address.
+
+SOPC scalar comparisons consume one shared literal dword when either source selector is 255, following the [AMD GCN3 ISA](https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/instruction-set-architectures/gcn3-instruction-set-architecture.pdf). A literal with instruction-like bits remains operand data; the following instruction begins after the literal.
+
 ### Viewer graph rules
 
 For graphs without a registered family, `apply_viewer_graph_rule` builds the asset viewer's per-graph reading on the shared deferred BRDF (rules from `viewer_graph_rule` in `rc2016/formats/materials.py`; the GL implementation is in `rc2016/viewer/shading.py`, see [viewer](viewer.md)).

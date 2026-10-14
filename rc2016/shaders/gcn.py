@@ -444,11 +444,11 @@ def encoded_opcode(microcode: int, instr32: int, instr64: int) -> int | None:
 
 
 def literal_count(microcode: int, instr32: int, instr64: int, opcode: int | None = None) -> int:
-    """Return literal words consumed by the exact local opengnm decoder.
+    """Return literal dwords consumed by the instruction formats modeled here.
 
-    In particular, VOP2 src1 is always a VGPR selector, VOP2 MADAK/MADMK
-    synthesize one literal source, and the checked-in VOP3 decoder does not
-    consume literal words even when an encoded source field is 255.
+    GCN2/3 SOPC consumes one shared literal dword when either source selector is
+    255. Other per-format cases below retain their current local-decoder rules;
+    do not infer a literal for VOP3 from a 255 source field.
     """
     opcode = opcode if opcode is not None else 0
     if microcode == 0:  # SOP1
@@ -462,7 +462,9 @@ def literal_count(microcode: int, instr32: int, instr64: int, opcode: int | None
         count += int(opcode == enum_value("GcnOpcodeVOP2", "GCN_V_MADAK_F32"))
         count += int(opcode == enum_value("GcnOpcodeVOP2", "GCN_V_MADMK_F32"))
         return count
-    # opengnm's decodesopc and decodevop3 never advance for literal fields.
+    if microcode == 2:  # SOPC: one shared literal dword for either/both sources
+        return int((instr32 & 0xFF) == 255 or ((instr32 >> 8) & 0xFF) == 255)
+    # The local VOP3 decoder does not consume a literal extension.
     return 0
 
 

@@ -22,7 +22,7 @@ import sys
 
 from rc2016.shaders.ir import DAG, bits, from_bits
 
-VERSION=15
+VERSION=16
 ROOT=Path(__file__).resolve().parents[2]
 SHADER_SECTION=0x873D1E6C
 # VALU instructions that also write a scalar carry/flag register pair.
@@ -347,10 +347,46 @@ class Compiler:
         if raw==255:return literal_bits
         return self.inline_bits(raw)
 
+    def trace_instruction_words(self,i):
+        """Exact words for a decoded instruction, including any consumed literal."""
+        start=i['relative'];length=i.get('length',4)
+        if length>=4 and start>=0 and start+length<=len(self.code):
+            return list(struct.unpack_from(f'<{length//4}I',self.code,start))
+        return [i['word']]+([i['wide']>>32] if i['kind'] in (7,11,12,13,14,15) else [])
+
+    def scalar_operand_trace(self,raw,literal_bits=None,width=1):
+        """Snapshot scalar provenance; values remain unsupported, never evaluated."""
+        words=[]
+        for j in range(width):
+            reg=raw+j if raw<=127 else None
+            known=self.scalar_operand_bits(raw,literal_bits) if j==0 else self.scalar_bits.get(reg)
+            node=self.s.get(reg) if reg is not None and reg<=127 else None
+            word=dict(sgpr=reg,bits=known)
+            if known is None:
+                if node is not None:
+                    word['expression'],word['expression_sha256']=self.buffer_expression(node)
+                else:word['unresolved']=f's{reg}' if reg is not None else f'encoded operand {raw} word {j}'
+            words.append(word)
+        return dict(encoded=raw,width_words=width,words=words)
+
     def runtime_condition(self,i):
-        """Diagnostic tracing only: an unresolved scalar compare becomes an opaque 0/1
-        atom, so both paths are traced and merged by select. Never bound."""
-        return self.ir.node('input',name=f'runtime_flag@{i["relative"]}',kind='runtime_flag')
+        """Opaque diagnostic atom with operand provenance; never bound or evaluated."""
+        w=i['word'];name=i['name'].replace('GCN_','').replace('_E64','')
+        if i['kind']==2:
+            literal=struct.unpack_from('<I',self.code,i['relative']+4)[0] if i['length']>4 else None
+            widths=(2,1) if name.endswith('_B64') else (2,2) if name.endswith(('_U64','_I64')) else (1,1)
+            operands=[self.scalar_operand_trace(r,literal,width) for r,width in zip((w&255,(w>>8)&255),widths)]
+            immediate={}
+        else:
+            simm=w&0xffff;value=struct.unpack('<h',struct.pack('<H',simm))[0] if name.endswith('_I32') else simm
+            operands=[self.scalar_operand_trace((w>>16)&127),self.scalar_operand_trace(255,value&0xffffffff)]
+            immediate=dict(raw_simm16=simm,immediate_value=value)
+        predicate=dict(opcode=name,encoding='SOPC' if i['kind']==2 else 'SOPK',
+            instruction_offset=i['relative'],instruction_words=self.trace_instruction_words(i),
+            operands=operands,predicate_evaluated=False,memory_evaluated=False,**immediate)
+        identity=hashlib.sha256(json.dumps(predicate,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+        return self.ir.node('input',name=f'runtime_flag@{i["relative"]}',kind='runtime_flag',
+                            predicate=dict(predicate,predicate_sha256=identity))
 
     def describe_scalar(self,raw,literal_bits):
         """Short provenance of a scalar operand, for diagnostics."""
@@ -488,10 +524,11 @@ class Compiler:
         else:self.pending[target]=self.p_or(self.pending.get(target,zero),taken)
         self.bp=self.p_and(self.bp,self.p_not(condition))
 
-    def clobber_s(self,start,count,reason):
+    def clobber_s(self,start,count,reason,trace=None):
         """Every SGPR write not modelled exactly must drop known bits/descriptors."""
-        for reg in range(start,start+count):
-            self.s[reg]=self.unknown(reason);self.descriptors.pop(reg,None);self.scalar_bits.pop(reg,None)
+        for j,reg in enumerate(range(start,start+count)):
+            meta={} if trace is None else dict(scalar_instruction=dict(trace,component=j))
+            self.s[reg]=self.unknown(reason,**meta);self.descriptors.pop(reg,None);self.scalar_bits.pop(reg,None)
 
     def float_bits(self,bits):
         value=struct.unpack('<f',struct.pack('<I',bits&0xffffffff))[0]
@@ -566,12 +603,25 @@ class Compiler:
         w=i['word'];name=i['name'];base=((w>>9)&63)*2;dst=(w>>15)&127
         count=int(name.rsplit('X',1)[1]) if 'DWORDX'in name else 1
         imm=bool(w&256)
-        offset=(w&255)*4 if imm else self.ir.value(self.gets(w&255))
+        # Register offsets are unsigned scalar words, not their F32 carriers.
+        offset=(w&255)*4 if imm else self.scalar_operand_bits(w&255,None)
         origin=self.descriptors.get(base,{})
         # A tainted direct descriptor join can make a later scalar load's
         # destination metadata path-dependent too. Carry that diagnostic taint
         # through every loaded word; never clear prior taint.
         base_tainted=any(reg in self.buffer_descriptor_taint for reg in (base,base+1))
+        trace=None
+        if self.runtime_conditions:
+            width=4 if 'BUFFER_LOAD' in name else 2
+            proved=self.texture_descriptor(base,origin.get('kind'),width) if origin else None
+            if any(reg in self.buffer_descriptor_taint for reg in range(base,base+width)):proved=None
+            proof={k:proved[k] for k in ('kind','api','reg','flags','table_slot') if k in proved} if proved else None
+            trace=dict(kind='SMRD',opcode=name,instruction_offset=i.get('relative',self.current),
+                instruction_words=self.trace_instruction_words(i) if 'relative' in i else [w],
+                base_sgpr=base,descriptor_words=width,descriptor_proof=proof,
+                immediate_offset=imm,encoded_offset=w&255,byte_offset=offset,
+                offset_operand=None if imm else self.scalar_operand_trace(w&255),
+                memory_evaluated=False,bounds='unproven')
         table_origin=None
         if origin.get('kind') in (0x13,0x15):
             table_origin=self.texture_descriptor(base,origin['kind'],2)
@@ -600,8 +650,10 @@ class Compiler:
                 self.s[reg]=self.unknown('Descriptor word',word=word)
             # Each loaded dword is a distinct unknown: one node per instruction would make
             # different words of a multi-dword load compare and cancel as equal.
-            else:self.s[reg]=self.unknown('Unresolved scalar memory load',word=j,base=base,
-                                         load_offset=None if offset is None else int(offset))
+            else:
+                meta={} if trace is None else dict(scalar_memory_access=dict(trace,component=j))
+                self.s[reg]=self.unknown('Unresolved scalar memory load',word=j,base=base,
+                                        load_offset=None if offset is None else int(offset),**meta)
 
     def buffer_expression(self,root,depth=4):
         """Bounded diagnostic text with structural hashes instead of DAG IDs."""
@@ -786,7 +838,16 @@ class Compiler:
                 simm=struct.unpack('<h',struct.pack('<H',w&0xffff))[0]
                 self.s[dst]=self.ir.const(simm);self.scalar_bits[dst]=simm&0xffffffff;self.descriptors.pop(dst,None)
             elif name=='S_WQM_B64' and dst==126:pass  # whole-quad helpers do not change active lanes' values
-            else:self.clobber_s(dst,count,name)
+            else:
+                trace=None
+                if self.runtime_conditions and k==1 and name in UNIFORM_SOP2:
+                    literal_bits=struct.unpack_from('<I',self.code,i['relative']+4)[0] if i['length']>4 else None
+                    width=1  # The supported SOP2 table has 32-bit operands.
+                    trace=dict(opcode=name,instruction_offset=i['relative'],
+                        instruction_words=self.trace_instruction_words(i),
+                        operands=[self.scalar_operand_trace(r,literal_bits,width) for r in f.get('src',[])],
+                        memory_evaluated=False,operation_evaluated=False)
+                self.clobber_s(dst,count,name,trace)
             return
         if k in (12,13) and name in BUFFER_LOAD_WORDS:
             self.buffer_load(i,name);return
