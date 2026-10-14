@@ -1,6 +1,6 @@
 # Animation
 
-How packed skeletal animation is stored in Ratchet & Clank (PS4, 2016), how this repository decodes it, and how decoded clips become Blender Actions. Supported scope is the inspected PS4 version-15 layout only: not other codecs or versions, and not shader or VFX animation.
+How packed skeletal animation is stored in Ratchet & Clank (PS4, 2016), how this repository decodes it, and how decoded clips become Blender Actions. Supported scope is the inspected PS4 clip layout, built-header versions 15 (animsets) and 21 (real-time cutscene clips, the same sample layout): not other codecs or versions, and not shader or VFX animation.
 
 Related documents: [pipeline](pipeline.md) (how the build uses the baker, clip selection, NLA and controls), [viewer](viewer.md) (animation preview in the browser).
 
@@ -11,7 +11,8 @@ Related documents: [pipeline](pipeline.md) (how the build uses the baker, clip s
 | `rc2016/formats/container.py` | DAT1 (`1TAD`) container and section inspection; clip inventory. CLI: `python rc2016/formats/container.py file.animset [--json report.json] [--bones names.txt]`. |
 | `rc2016/formats/animation_samples.py` | Lower-level integer sampler: lossless frame-major unsigned deltas plus the packed base records and runtime component offsets. No rotation or translation conversion. |
 | `rc2016/formats/animation_transforms.py` | Model-independent S/Q/T extractor: reads an animset and its original model, resolves joint hashes against the model skeleton, and exports raw clips plus source-scale, source-time JSON. No bone names or authored curves are assumed. Its CLI is the loose-file backend of the GUI. |
-| `rc2016/formats/clips.py` | All embedded clips of an animset in directory order: exact samples, classification, inheritance rule, unsupported rows. |
+| `rc2016/formats/clips.py` | All embedded clips of an animset in directory order: exact samples, classification, inheritance rule, unsupported rows. `extract_set(..., clip_names=)` extracts only the named containers of a file. |
+| `rc2016/formats/animation_sources.py` | Clip sources beyond a model's referenced animsets: cutscene (`cinematic2`) clip directories named by CRC32, `cinematic_sources`, the matching-rig comparison and `borrowed_animset`. |
 | `rc2016/pipeline/animation_bake.py` | Affine bone baking and numerical verification (`make_bake_rig`, `bake_clip`, `world_samples`, `matrix_error`); no character names. The pipeline's buffered production baker is `rc2016/pipeline/blender_support.py` (`bake`), which uses the same SVD scheme. |
 | `rc2016/pipeline/controls.py` | Embedded 3D View **Animations** panel; no external dependencies. (`legacy_controls.py` is an older panel kept so previously delivered files still validate.) |
 
@@ -30,6 +31,7 @@ python rc2016/formats/animation_samples.py --validate-tree <folder> [--report va
 - DAT1 header: u16 section count followed by u16 unknown flags (not a u32 count). Container boundaries are enforced and truncation is rejected.
 - Clip-related section types (`container.SECTION_TYPES`): `anim_clip_base_state` `0x2BB5BC8F`, `anim_clip_path` `0x3976E44C`, `anim_clip_sample_data` `0x3A7B4855`, `anim_clip_data` `0x9FD19C20`, `anim_clip_built` `0x9DF23F77`, `anim_clip_joint_hashes` `0xA3B26640`, `anim_clip_lookup` `0xB79CF1D7`, `anim_clip_sample_elements` `0xD070D358`. Root names follow the public ig-tools schema; the nested animation section names are corroborated by independent public format research.
 - An animset root has `anim_clip_lookup` (16-byte records: u32 name hash, u32 offset into `anim_clip_data`) and `anim_clip_data` holding the embedded clip containers. Lookup entries must stay inside the data section, must not overlap, and must match the clip's own name hash. Nested wrapper layouts without a directory keep physical order. Embedded clips outside the directory are an error.
+- A real-time cutscene (`cinematic2`) root has the same lookup and data sections. All 162 EUR cutscenes parse with the animset directory reader. Their clips carry no `animclip built` name string; a clip's name hash is the game CRC32 of a string stored in the same file (for example `nov_mayor_rt_shot5_npc_Mayor_master`), and only such an exact match names it. Each shot holds one clip per performer (characters, vehicles, cameras), so a shot is matched to a model by joint hashes covering the whole model.
 
 ## Sample layout
 
@@ -42,6 +44,7 @@ python rc2016/formats/animation_samples.py --validate-tree <folder> [--report va
 
 ## Decoder rules
 
+- The built header's u32 at `+0` is 15 for animset clips and 21 for 2,665 of the cutscene clips. Version 21 uses the version-15 sample layout: `pickup_predator_launcher_hero_ratchet` in `hero_ratchet.animset` (15) and its twin in `predator_pickup_cine.cinematic2` (21) have byte-identical base state, joint hashes, sample elements and sample data and decode to identical frames; their headers differ only in that word, the name hash and `+0x08` bit `0x80000`. Every structural check applies to both. Some version-21 clips with `+0x08` bit `0x20000` store fewer samples than frames in an unknown arrangement; they fail the payload-size check and are reported as malformed. Other values (cutscene tracks such as 26, 140, 198, and 47 animset clips) stay unsupported.
 - Runtime S/Q/T component slots are at byte offsets 0/4/8 (scale), 16/20/24/28 (quaternion) and 32/36/40 (translation). The sampler rejects any other offset.
 - Add the unsigned samples to the signed packed base quaternion, then normalize the four-vector (homogeneous coordinates, not already unit length). Rotor curves recover 18, 36 and 72 degree steps within quantization.
 - Packed translation integers and deltas use `2 ** -base_control_byte_15`, the second control byte of the base record. The first control byte is the scale exponent, and unlisted scales are one. Exponents above 30 are unsupported.
@@ -83,7 +86,7 @@ Relative clips are baked as standalone previews: rest translation plus delta tra
 
 ### Bake procedure
 
-1. **Discover.** Read actor and model references and the original animsets. Resolve clip joint hashes against the exact model skeleton (`model_skeleton()`, `embedded_clips()`). Shared animsets may hold unrelated attachments or variants; names do not prove applicability. Record every candidate as included, unrelated or unsupported with a reason.
+1. **Discover.** Read actor and model references and the original animsets. Resolve clip joint hashes against the exact model skeleton (`model_skeleton()`, `embedded_clips()`). Shared animsets may hold unrelated attachments or variants; names do not prove applicability. Record every candidate as included, unrelated or unsupported with a reason. Two opt-in sources extend this (see [pipeline](pipeline.md#animation-in-the-pipeline)): cutscene shots whose joints cover the whole model, and animsets borrowed from a model with the same rest rig.
 2. **Validate the binding before baking.** Compare names, parents, rest S/Q/T, weights and inverse binds. The adapter uses 50 Blender armature units per source translation unit (`local_matrix`); validate this per rig. Preserve the original rig and meshes, and record unmatched clip hashes and unsampled bones.
 3. **Decode.** `sample_transforms(clip)` yields per-frame scale, rotation and translation per joint. Retain raw clips, hashes, exact frame counts and rates. Unsupported channels or scales stay explicit failures. A null collapsed rotation is unresolved; a source-rest fallback is justified only where zero scale and model visibility support it.
 4. **Bake on a separate animation rig.** `make_bake_rig()` copies the armature and gives each bone an unparented, unconnected helper parent (`__sample__<bone>`). `bake_clip()` computes target world matrices with `world_samples()` (applying the chosen inheritance rule, bind corrections and a fixed presentation anchor), takes a 3x3 SVD of each target, puts the left factor (rotation `U`, singular values as scale) on the helper, and the right rotation factor `Vt` (relative to the bone rest) on the bone. This helper/deform hierarchy preserves shear and collapsed scales, which ordinary connected bones cannot. Keys sit on exact source sample frames with constant interpolation, Actions have fake users, quaternions are sign-continuous, and `bake_clip` asserts a maximum matrix error below `1e-3` (the pipeline's validator uses `1e-4`). Do not alter poses to ease framing; fit placement to the camera instead.

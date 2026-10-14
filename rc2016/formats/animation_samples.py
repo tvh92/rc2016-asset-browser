@@ -25,11 +25,19 @@ def require(condition, message):
         raise ValueError(message)
 
 
+# Built-header word +0. Version 21 (real-time cutscene clips) uses the version-15 sample layout: the
+# hero_ratchet.animset clip pickup_predator_launcher_hero_ratchet (15) and its twin in
+# predator_pickup_cine.cinematic2 (21) have byte-identical base state, joint hashes, sample elements and
+# sample data and decode to identical frames; their built headers differ only in this word, the name hash
+# and +0x08 bit 0x80000. Every structural check below still applies to both.
+SUPPORTED_CLIP_VERSIONS = (15, 21)
+
+
 def decode_clip(data: bytes, start: int, names: dict[int, str]) -> dict:
     clip = read_container(data, start, names)
     metadata = clip['metadata']
     require(metadata is not None, 'lookup target is not an animation clip')
-    require(metadata['format_version'] == 15, 'only PS4 clip version 15 is validated')
+    require(metadata['format_version'] in SUPPORTED_CLIP_VERSIONS, 'only PS4 clip versions 15 and 21 are validated')
     sections = {s['type_name']: data[s['offset']:s['offset'] + s['size']]
                 for s in clip['sections'] if s['type_name']}
     for key in ('anim_clip_base_state', 'anim_clip_joint_hashes'):

@@ -12,8 +12,9 @@ from rc2016.formats.container import read_container, inspect, game_crc32, sectio
 from rc2016.formats.animation_samples import decode_clip, require
 
 
-def model_skeleton(path: Path):
-    data = path.read_bytes()
+def model_skeleton(path: Path | bytes):
+    """Joint rows of a decoded model (a path, or the model bytes)."""
+    data = bytes(path) if isinstance(path, (bytes, bytearray, memoryview)) else path.read_bytes()
     sections = {int(s['label_hash'], 16): s for s in section_table(data, 0)}
     joints, transforms = sections[0x15DF9D3B], sections[0xDCC88A19]
     require(joints['size'] % 16 == 0, 'misaligned model joint section')

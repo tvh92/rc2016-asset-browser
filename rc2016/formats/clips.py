@@ -7,6 +7,7 @@ from rc2016.formats.animation_samples import decode_clip
 from rc2016.formats.animation_transforms import sample_transforms
 from rc2016.common import dump, read, sha, write, zip_json
 from rc2016.formats.skeleton import worlds
+from rc2016.formats.animation_sources import crc32
 import numpy as np
 
 
@@ -164,20 +165,32 @@ def ordered_containers(path):
     return ordered, audit['errors']
 
 
-def extract_set(path, rows, cache, profile, log, experimental_ambiguous_inheritance=False):
+def extract_set(path, rows, cache, profile, log, experimental_ambiguous_inheritance=False, clip_names=None):
+    """Every embedded clip of an animset in directory order, decoded, classified and cached.
+
+    ``clip_names`` ({container offset: name}) restricts extraction to those clips and names them, for
+    containers without an 'animclip built' string (cutscenes); each name must hash (game CRC32) to the
+    clip's own name hash. Directory order indices stay those of the whole source file.
+    """
     data = read(path); containers, errors = ordered_containers(path)
     names = {int(r['hash'],16):r['name'] for r in rows}
     entries = []
     for order,c in enumerate(containers):
+        if clip_names is not None and c['offset'] not in clip_names: continue
+        name = c['name'] if clip_names is None else clip_names[c['offset']]
         raw = data[c['offset']:c['offset']+c['declared_size']]
         digest = sha(raw); stem=f'{order:05d}_{digest[:12]}'
         raw_path=cache/(stem+'.animclip'); sample_path=cache/(stem+'.json.gz')
         write(raw_path,raw)
-        entry=dict(order=order,name=c['name'],name_hash=c['metadata']['name_hash'],offset=c['offset'],
+        entry=dict(order=order,name=name,name_hash=c['metadata']['name_hash'],offset=c['offset'],
             raw_sha256=digest,raw_clip=str(raw_path),animset_sha256=sha(data),metadata=c['metadata'])
         try:
             clip=decode_clip(data,c['offset'],names)
-            if not clip['metadata'].get('name_hash_matches_name'): raise ValueError('Clip name/hash mismatch')
+            if clip_names is None:
+                if not clip['metadata'].get('name_hash_matches_name'): raise ValueError('Clip name/hash mismatch')
+            else:
+                if crc32(name) != int(c['metadata']['name_hash'],16): raise ValueError('Clip name/hash mismatch')
+                clip['name']=name
             frames=sample_transforms(clip)
             kind,evidence=classify(rows,frames)
             override=profile.get('classification_overrides',{}).get(digest)

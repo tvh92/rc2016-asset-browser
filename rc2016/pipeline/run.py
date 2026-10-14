@@ -15,6 +15,8 @@ from rc2016.pipeline import VERSION
 from rc2016.formats import archive as archive_module
 from rc2016.formats.archive import Archive,locate
 from rc2016.formats.clips import extract_set
+from rc2016.formats.animation_sources import (CINEMATIC_LIMITATION,CINEMATIC_SOURCE,borrowed_animset,
+    cinematic_sources)
 from rc2016.pipeline.clip_selection import ClipSelectionError, resolve_clip_selection
 from rc2016.common import dump,ensure_separate,extended,file_hash,load,read,safe_name,sha,write,promote
 from rc2016.formats.index import AssetIndex
@@ -547,14 +549,35 @@ def process_model(key,index,args,code_hash,previous,log):
         except Exception as exc:dependency_errors.append(dict(asset_id=dependency,path=archive.entries[dependency]['path'],reason=str(exc)))
     archive.checkpoint()
     entries=[];action_entries=[];animset_errors=[]
-    for animset in related['animsets']:
+    # Referenced animsets first; then the opt-in sources (borrowed animsets, cutscene clips).
+    sources=[dict(asset_id=animset,source_type='animset') for animset in related['animsets']]
+    for borrowed in getattr(args,'borrow_animset',None) or ():
+        sources.append(borrowed_animset(archive,index.graph,borrowed,model['skeleton'],key))
+    if getattr(args,'cinematic_clips',False):
+        found,errors=cinematic_sources(archive,model['skeleton'])
+        animset_errors.extend(dict(animset=e['path'],reason=e['reason'],status='unreadable_cutscene') for e in errors)
+        sources.extend(dict(asset_id=f['asset_id'],source_type=CINEMATIC_SOURCE,limitation=CINEMATIC_LIMITATION,
+            clip_names={c['offset']:c['name'] for c in f['clips']},
+            provenance=dict(clip_name_evidence='name hash equals the game CRC32 of a string in the same cutscene file'))
+            for f in found)
+    related['extra_animation_sources']=[dict(asset_id=s['asset_id'],path=archive.entries[s['asset_id']]['path'],
+        source_type=s['source_type'],**s.get('provenance',{})) for s in sources if s['source_type']!='animset']
+    for row in related['extra_animation_sources']:
+        if row['asset_id'] not in related['related_assets']:related['related_assets'].append(row['asset_id'])
+    if related['extra_animation_sources']:dump(report_dir/'references.json',related)
+    for source in sources:
+        animset=source['asset_id']
         try:
             path=archive.decode(animset)
             cache=model_root/'animation_cache'/animset
             clips,errors=extract_set(path,model['skeleton'],cache,model['profile'],log,
-                experimental_ambiguous_inheritance=args.experimental_ambiguous_inheritance)
+                experimental_ambiguous_inheritance=args.experimental_ambiguous_inheritance,
+                clip_names=source.get('clip_names'))
             for entry in clips:
                 entry['animset_path']=archive.entries[animset]['path']
+                if source['source_type']!='animset':
+                    entry.update(source_type=source['source_type'],source_limitation=source['limitation'],
+                        source_provenance=source.get('provenance',{}))
                 base_action=f"{len(entries):05d} | "+safe_name(entry['name'] or 'unnamed')[:40]
                 if entry.get('experimental_inheritance_preview'):
                     rules=('full','segment_scale_compensation_bit0')
@@ -614,7 +637,7 @@ def process_model(key,index,args,code_hash,previous,log):
             dict(status='veldin_capture_presentation',limitation="Captured Veldin key-light colour/strength, ambient, exposure and tonemap; light direction is presentational and the model's own level lighting is not captured") if args.veldin_look else
             dict(status='external_hdri')),
         features_not_decoded=['Compiled materialgraph runtime parameters','Runtime blend partners/weights','Root-motion path channels','VFX/shader animation','Unrecognized model section semantics'],
-        no_animation_found=not related['animsets'],visual_review='User only; no AI visual inspection or pass/fail gate')
+        no_animation_found=not sources,visual_review='User only; no AI visual inspection or pass/fail gate')
     dump(report_dir/'clips.json',entries)
     dump(report_dir/'limitations.json',limitations)
     decoded_inventory=[]
@@ -637,6 +660,8 @@ def process_model(key,index,args,code_hash,previous,log):
         import_lod=args.import_lod,export_textures=args.export_textures,
         experimental_ambiguous_inheritance=args.experimental_ambiguous_inheritance,
         animation_selection=selection_identity,
+        animation_sources=dict(cinematic_clips=bool(getattr(args,'cinematic_clips',False)),
+            borrowed_animsets=list(getattr(args,'borrow_animset',None) or ())),
         lighting=(dict(source='novalis',probe=args.game_lighting['source_sha256'],faces=[x['sha256'] for x in args.game_lighting['faces']],
             atmosphere_sun=args.game_lighting.get('atmosphere_sun'))
             if args.game_lighting else dict(source='veldin',**args.veldin_look) if args.veldin_look else
@@ -770,7 +795,7 @@ def process_model(key,index,args,code_hash,previous,log):
         classifications=dict(Counter(e['kind'] for e in entries)),validation=str(model_root/'validation/validation.json'),
         validation_sha256=file_hash(model_root/'validation/validation.json'),limitations=str(report_dir/'limitations.json'),
         automated=['archive discovery','asset index','actor reference scan','selective asset extraction/decompression',
-        'skeleton and inverse-bind inspection','exact v15 samples and raw clips','classification evidence','affine action baking',
+        'skeleton and inverse-bind inspection','exact v15/v21 samples and raw clips','classification evidence','affine action baking',
         'embedded controls','source-order NLA','separate-process key and sampled-pose validation'],
         lighting=(dict(source='Novalis game reflection probe',region=args.game_lighting['region'],probe=args.game_lighting['source_path'],
             limitation='Cycles world conversion; Novalis grid mapping, probe selectors, and atmosphere sun-ray direction are decoded. RGB96 is a source-valued surface-light candidate; model placement, light-grid coefficients, and runtime field names remain unresolved') if args.game_lighting else
@@ -1430,6 +1455,10 @@ def main():
     parser.add_argument('--fail-on-missing-assets',action='store_true')
     parser.add_argument('--experimental-ambiguous-inheritance',action='store_true',
         help='Include both decoded full and SSC0 experimental Actions for source-related clips blocked by inheritance ambiguity; SSC0 is preferred, runtime accuracy remains unproven')
+    parser.add_argument('--cinematic-clips',action='store_true',
+        help='Also offer real-time cutscene (cinematic2) clips whose joints cover the whole model; clips are named only by an exact CRC32 match. Pick one with --clip.')
+    parser.add_argument('--borrow-animset',action='append',default=[],
+        help='Also offer this animset (archive path) when the game pairs it with another model whose rest rig matches the selected model; repeat for several')
     parser.add_argument('--blend-only',action='store_true',help='After a fully successful run, keep only the delivered .blend files and the viewer animation index: delete reports, meshes, textures, caches and validation')
     parser.add_argument('--lighting-source',choices=('veldin','novalis','hdri'),default='hdri',
         help='hdri (default): the shared review lighting from --lighting-config; veldin: opt-in captured Veldin key light, ambient, exposure and RC PS4 Game tonemap; novalis: decoded probe')
