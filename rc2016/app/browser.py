@@ -261,7 +261,7 @@ class AssetBrowser:
                         command=self._experimental_materials_changed).pack(side='left')
         ttk.Checkbutton(experimental,text='Material previews',variable=self.material_previews_var,
                         command=self._experimental_materials_changed).pack(side='left',padx=(8,0))
-        ttk.Label(experimental,text='Mountain albedo: matte; detail/variant unverified.',foreground='#6b7280').pack(side='left',padx=8)
+        ttk.Label(experimental,text='Mountain albedo: matte. Empty blend mask: review value 1; runtime unverified.',foreground='#6b7280').pack(side='left',padx=8)
         self.viewport.set_lighting_enabled(self.lighting_enabled_var.get())
         self.viewport.set_experimental_materials(
             self.experimental_materials_var.get() and self.material_previews_var.get())

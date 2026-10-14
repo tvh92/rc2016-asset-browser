@@ -423,6 +423,8 @@ def print_receipt(archive, path):
         for b in result['texture_bindings']:
             print(f"  texture API{b['api']}: {b['path']} ({b['source']})")
         print('  parameters:', json.dumps(result.get('parameters'), sort_keys=True)[:600])
+        if result.get('neutral_blend_mask_inputs'):
+            print('  neutral blend mask review inputs:', json.dumps(result['neutral_blend_mask_inputs'],sort_keys=True))
         ir = DAG(result['nodes'])
         for key, value in result['outputs'].items():
             for j, node in enumerate(value if isinstance(value, list) else [value]):

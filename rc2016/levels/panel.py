@@ -474,7 +474,7 @@ class LevelPanel:
         self.spawn_var = tk.BooleanVar(value=spawn_preview)
         ttk.Checkbutton(experimental, text="Enemy spawns", variable=self.spawn_var,
                         command=self._experimental_changed).grid(row=1, column=1, sticky="w", padx=(8, 0))
-        ttk.Label(experimental, text="Mountains: matte preview. Ground: zone paint inferred; controls fill unlisted vertices. UVs unverified.",
+        ttk.Label(experimental, text="Mountains: matte. Paint and UVs inferred. Empty blend mask: review value 1; game behavior unverified.",
                   foreground="gray", wraplength=250).grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
         from rc2016.shaders.terrain_preview import DEFAULT_CONTROLS
         self.ground_controls = [tk.DoubleVar(value=value) for value in DEFAULT_CONTROLS]

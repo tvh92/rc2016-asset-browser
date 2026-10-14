@@ -276,8 +276,24 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
     if normal:roots+=normal['xyz']
     substitutions={i:ir.const(values[n['dword']]) for i,n in enumerate(list(ir.nodes))
         if n['op']=='input' and n.get('kind')=='cb' and n['api']==2 and n['dword'] in values}
-    replaced=ir.replace(roots,substitutions);adapted=0
+    replaced=ir.replace(roots,substitutions);adapted=0;neutral_masks=[]
     if world_position:
+        # Explicit review input for the decoded rock Blend Mask slot. An empty
+        # instance row is not permission to inherit a graph texture. Only its
+        # scalar R samples may use the neutral review value; colours, normals,
+        # other slots and ordinary native binding remain unsupported.
+        masks={}
+        for i in ir.reachable(replaced):
+            n=ir.nodes[i];row=bound.get(n.get('api'),{})
+            if (n['op']=='texture' and n.get('channel')==0 and not row.get('path')
+                    and row.get('source')=='material_instance'
+                    and (row.get('slot_key'),row.get('type_hash'))==BLEND_MASK_SLOT):
+                masks[i]=ir.const(1.)
+                neutral_masks.append(dict(api=n['api'],sample=n['sample'],channel=0,
+                    slot_key=row['slot_key'],type_hash=row['type_hash'],review_value=1.))
+        if masks:
+            replaced=ir.replace(replaced,masks)
+            lowered['limitations'].append('Experimental neutral blend mask: explicitly unset material Blend Mask R samples use uniform review value 1. The game empty-slot behavior is unverified; this substitutes a review input, never a decoded texture or runtime default. Original colour layers and blend arithmetic are retained.')
         from rc2016.shaders.engine_inputs import reconstruct_world_position
         replaced,adapted=reconstruct_world_position(ir,replaced)
         normals={}
@@ -344,7 +360,8 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
         **({'source_shader_record':dict(contract['source_shader_record'])} if 'source_shader_record' in contract else {}),
         **({'painted_channel_evidence':sorted(painted_evidence,key=lambda row:(row['attribute'],row['channel']))}
            if world_position and colours else {}),
-        **({'world_position_terms':adapted} if adapted else {}))
+        **({'world_position_terms':adapted} if adapted else {}),
+        **({'neutral_blend_mask_inputs':neutral_masks} if neutral_masks else {}))
 
 
 def program_contracts(data,program,contracts):
@@ -433,6 +450,8 @@ PAINT_STREAM_CONTRACT='squared-colour-stream-v1'
 # Vertex input semantic read as the model RGBA8 colour stream by the experimental adapter
 # (traced exports carry semantic 3 as UV0); an inference, not a decoded binding.
 COLOUR_SEMANTIC=5
+# Serialized slot identity of the decoded scalar rock Blend Mask.
+BLEND_MASK_SLOT=(0x3404C763,0x49A7866B)
 
 
 def prepare_translation(graph_datas,material_data,instance,world_position=False):
@@ -478,7 +497,7 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False)
     candidate=candidates[0];program=candidate['program']
     result.update(candidate['bound'],status='ready',graph_sha256=graph['graph_sha256'],
         code_sha256=program['code_sha256'],code_offset=program['code_offset'],shader_id=program['shader_id'],
-        equivalent_candidates=len(candidates),translator_version=graph['translator_version'],binding_version=6,
+        equivalent_candidates=len(candidates),translator_version=graph['translator_version'],binding_version=7,
         surface_sha256=candidate['surface_signature'],candidate_sources=[dict(
             shader_id=c['program']['shader_id'],code_sha256=c['program']['code_sha256'],
             pass_contract_index=c['bound']['pass_contract_index'],
