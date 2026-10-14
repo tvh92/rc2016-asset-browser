@@ -159,6 +159,25 @@ captured flags or matrices are applied globally, and `game_equivalence` remains
 false. CPU-decoded normal normalization is not a substitute for raw vertex
 fetch values.
 
+### Instance vector-matrix arithmetic
+
+`instance_vector_matrix(matrix, copy_linear=...)` ports the source CPU helper
+that writes the three padded vectors at instance-record bytes 128/144/160.
+The supplied native-basis matrix contains four 16-byte axis/translation groups.
+The general branch computes cofactors with the decoded float32 operation order
+and divides by the determinant when its absolute value is at least 2^-20.
+Below that threshold it retains unscaled cofactors. The explicit fast branch
+copies the linear axes unchanged. Output padding is zero; vector magnitudes
+are retained and translation does not affect this vector matrix. With axes
+assembled as columns, the general result is an inverse transpose.
+
+The helper accepts finite float32 arithmetic and rejects overflow/nonfinite
+results. Runtime floating-point controls are not established. Its selector
+comes from CPU instance state, not directly from the GPU record's flags.
+Callers must supply an effective transform and selector explicitly; the helper
+does not establish their zone/runtime origin or assemble other CB1 fields.
+Viewer and Blender material admission remain unchanged.
+
 ### Viewer graph rules
 
 For graphs without a registered family, `apply_viewer_graph_rule` builds the asset viewer's per-graph reading on the shared deferred BRDF (rules from `viewer_graph_rule` in `rc2016/formats/materials.py`; the GL implementation is in `rc2016/viewer/shading.py`, see [viewer](viewer.md)).
