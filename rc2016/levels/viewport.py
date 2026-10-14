@@ -696,6 +696,9 @@ class LevelViewport(ModelViewport):
         return name.value
 
     def _upload_model(self, path, geometry, hidden):
+        for stream in geometry.get('vertex_paints',{}).values():
+            if len(stream['alpha'])*3!=len(geometry['positions']) or len(stream['ground'])!=len(geometry['positions']):
+                raise ValueError('Paint stream does not match model vertex count')
         record = dict(path=path, hidden=hidden, batches=geometry["batches"], triangles=geometry["triangles"],
                       slots={m["index"]: m["path"] for m in geometry["materials"]},
                       vbo=self._buffer(self.GL_ARRAY_BUFFER, geometry["positions"]),
@@ -713,6 +716,17 @@ class LevelViewport(ModelViewport):
         ground = geometry.get("vertex_ground_blend")
         record["gbo"] = self._buffer(self.GL_ARRAY_BUFFER, ground) if ground is not None and len(ground) == len(geometry["positions"]) else None
         record["buffers"] = [record[k] for k in ("vbo", "nbo", "tbo", "ibo", "abo", "gbo") if record[k]]
+        paints=geometry.get('vertex_paints',{})
+        if paints:
+            record['paint_buffers']={}
+            record['uniform_paint']=bool(record['abo'] and record['gbo'] and len(paints)==1)
+            for identity,stream in sorted(paints.items()):
+                # Reuse the uniform stream's existing buffers instead of a second upload.
+                if record['uniform_paint'] and len(paints)==1:abo,gbo=record['abo'],record['gbo']
+                else:
+                    abo=self._buffer(self.GL_ARRAY_BUFFER,stream['alpha']);gbo=self._buffer(self.GL_ARRAY_BUFFER,stream['ground'])
+                    record['buffers'].extend((abo,gbo))
+                record['paint_buffers'][identity]=(abo,gbo)
         self._ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0); self._ext["glBindBuffer"](self.GL_ELEMENT_ARRAY_BUFFER, 0)
         self._models[path] = record
 
@@ -740,7 +754,7 @@ class LevelViewport(ModelViewport):
         record['groups_for'] = None
 
     def _merge_groups(self):
-        """One instance buffer per model, handedness and set of material changes over the visible zones:
+        """One instance buffer per model, handedness, material changes and optional paint identity over visible zones:
         [(buffer, count, mirrored, changes)]. A model is rebuilt only when its own data changed or a
         toggle touches it: a zone it has rows in, or a layer (actors, spawn preview) it has rows in."""
         from array import array
@@ -769,9 +783,10 @@ class LevelViewport(ModelViewport):
                 layers += spawn_zones
             for zone, key, rows in layers:
                 if zone not in hidden:
+                    if model.get('paint_buffers'):key=(*key[:2],key[2] if len(key)>2 else '')
                     merged.setdefault(key, array("f")).extend(rows)
-            model["groups"] = [(self._buffer(self.GL_ARRAY_BUFFER, rows), len(rows) // 16, flip, changes)
-                               for (flip, changes), rows in sorted(merged.items())]
+            model["groups"] = [(self._buffer(self.GL_ARRAY_BUFFER, rows), len(rows) // 16, *key)
+                               for key, rows in sorted(merged.items())]
             model["instance_rows"] = {group[0]: rows for group, rows in zip(model["groups"], (merged[k] for k in sorted(merged)))}
             model["groups_for"] = state
             model["groups_version"] = next(_VERSIONS)
@@ -804,16 +819,20 @@ class LevelViewport(ModelViewport):
             ext["glBindBuffer"](self.GL_ELEMENT_ARRAY_BUFFER, model["ibo"])
             # Attribute 14 is per vertex; the instance matrix rows remain per instance.
             alpha = INSTANCE_ATTRIBUTES["aRockAlpha"]
-            if model.get("abo"):
-                ext["glBindBuffer"](self.GL_ARRAY_BUFFER, model["abo"])
+            paint=group[4] if len(group)>4 else ''
+            abo,gbo=(model.get('paint_buffers',{}).get(paint,(None,None))
+                     if model.get('paint_buffers') else (model.get('abo'),model.get('gbo')))
+            if paint and model.get('uniform_paint'):abo,gbo=model.get('abo'),model.get('gbo')
+            if abo:
+                ext["glBindBuffer"](self.GL_ARRAY_BUFFER, abo)
                 sh.glEnableVertexAttribArray(alpha)
                 sh.glVertexAttribPointer(alpha, 1, self.GL_FLOAT, 0, 4, None)
                 ext["glVertexAttribDivisor"](alpha, 0)
             else:
                 sh.glDisableVertexAttribArray(alpha)
             ground = INSTANCE_ATTRIBUTES["aGroundBlend"]
-            if model.get("gbo"):
-                ext["glBindBuffer"](self.GL_ARRAY_BUFFER, model["gbo"])
+            if gbo:
+                ext["glBindBuffer"](self.GL_ARRAY_BUFFER, gbo)
                 sh.glEnableVertexAttribArray(ground)
                 sh.glVertexAttribPointer(ground, 3, self.GL_FLOAT, 0, 12, None)
                 ext["glVertexAttribDivisor"](ground, 0)

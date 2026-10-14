@@ -236,6 +236,7 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None, workers=N
             entry = models.setdefault(model["path"], dict(hidden=model["hidden"], count=0, zones=[], vertex_colours=[]))
             entry["count"] += model["count"]
             entry["vertex_colours"].extend(model.get("vertex_colours", []))
+            entry.setdefault("vertex_paint_blocks",{}).update(model.get("vertex_paint_blocks",{}))
             entry["zones"].append((zone, model["groups"]))
     out.put(("bounds", level_scene.core_bounds(points)))
     if level_path.endswith(".level"):
@@ -281,7 +282,8 @@ def _load_models(archive, pool, workers, models, catalog, actor_groups, points, 
             zones.append((zone, groups))
             overrides["outcomes"].update(outcomes)
             overrides["instances"] += changed
-            for _flip, applied in groups:
+            for group_key in groups:
+                applied=group_key[1]
                 replacements.update((material, None) for _slot, material in applied)
         if replacements:
             overrides["models"].add(path)
@@ -290,9 +292,15 @@ def _load_models(archive, pool, workers, models, catalog, actor_groups, points, 
         alpha, ground, note = level_scene.instance_vertex_paint(geometry, entry.get("vertex_colours"), entry["count"])
         if alpha is not None:
             geometry = dict(geometry, vertex_alpha=alpha, vertex_ground_blend=ground)
+        blocks=entry.get("vertex_paint_blocks",{})
+        paints=({identity:dict(alpha=alpha,ground=ground,note=note) for identity in blocks}
+                if alpha is not None else level_scene.vertex_paint_streams(geometry,blocks))
+        if paints:
+            geometry=dict(geometry,vertex_paints=paints)
+            note=f'{len(entry.get("vertex_colours",[]))} of {entry["count"]} instances carry {len(paints)} distinct keyed paint blocks'
         if note:
             geometry = dict(geometry, vertex_colour_note=note)
-            out.put(("vertex_colours", path, note, alpha is not None))
+            out.put(("vertex_colours", path, note, alpha is not None or bool(paints)))
         geometries.append(geometry)
         geometry_cache[path.lower()] = geometry
         geometry_paths[path.lower()] = path

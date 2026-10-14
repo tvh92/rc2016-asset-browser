@@ -71,7 +71,9 @@ def zone_label(zone_path):
 def zone_scene(archive, zone_path):
     """{'zone', 'models': [{'path', 'hidden', 'count', 'groups'}], 'instances', 'points'}: translations
     of the instances shown by default, native Y-up world space. A model whose instances carry
-    position-keyed vertex colours also has 'vertex_colours': [zone_format.vertex_colour_block].
+    position-keyed vertex colours also has 'vertex_colours': [zone_format.vertex_colour_block]
+    and 'vertex_paint_blocks': {content identity: block}; its group keys append that identity
+    (empty string for an unpainted instance). Paint and matrices never travel independently.
 
     ``groups`` is {(mirrored, overrides): array('f') of 16-float rows}, where ``overrides`` is the
     instance's raw material-override entries as ((slot hash, material path or None, material hash), ...);
@@ -112,6 +114,16 @@ def zone_scene(archive, zone_path):
         models[index]['count'] = count
     for i, block in sorted(zone.get('vertex_colours', {}).items()):
         models[int(model_index[i])].setdefault('vertex_colours', []).append(block)
+    # Partition only paint-bearing models; no-paint groups keep their existing shape.
+    for index in sorted({int(model_index[i]) for i in zone.get('vertex_colours',{})}):
+        model=models[index];model['groups']={};model['vertex_paint_blocks']={}
+        for i in np.flatnonzero(model_index==index).tolist():
+            block=zone.get('vertex_colours',{}).get(i)
+            paint=vertex_paint_identity(block) if block is not None else ''
+            if block is not None:model['vertex_paint_blocks'].setdefault(paint,block)
+            overrides=tuple((o['slot_hash'],o['material'],o['material_hash']) for o in zone['overrides'].get(i,[]))
+            model['groups'].setdefault((bool(flips[i]),overrides,paint),array('f')).frombytes(
+                np.ascontiguousarray(matrices[i]).tobytes())
     shown = ~np.array([m['hidden'] for m in models], bool)[model_index]
     points = [tuple(p) for p in matrices[shown, 12:15].tolist()]
     return dict(zone=zone_path, models=[m for m in models if m['count']], instances=zone['instances'],
@@ -147,6 +159,23 @@ def keyed_vertex_colours(positions, block):
     return result, matched
 
 
+def vertex_paint_identity(block):
+    """Content identity of a source block; never identifies shader meaning."""
+    import hashlib
+    import numpy as np
+    keys,colours=block
+    return hashlib.sha256(np.asarray(keys,dtype='<i8').tobytes()+np.asarray(colours,dtype='u1').tobytes()).hexdigest()
+
+
+def vertex_paint_streams(geometry, blocks):
+    """Decode each distinct block once; geometry and instance transforms stay shared."""
+    streams={}
+    for identity,block in blocks.items():
+        alpha,ground,note=instance_vertex_paint(geometry,[block],1)
+        streams[identity]=dict(alpha=alpha,ground=ground,note=note)
+    return streams
+
+
 def instance_vertex_alpha(geometry, blocks, instances):
     """Compatibility alpha-only view of instance_vertex_paint."""
     alpha, _ground, note = instance_vertex_paint(geometry, blocks, instances)
@@ -155,8 +184,8 @@ def instance_vertex_alpha(geometry, blocks, instances):
 
 def instance_vertex_paint(geometry, blocks, instances):
     """(alpha array, candidate R/G/key-flag array, note) for a model placed ``instances`` times whose
-    instances carry ``blocks`` (vertex_colour_block results). The level viewer keeps one vertex
-    buffer per model, so colours are used only when every instance carries the same block; the
+    instances carry ``blocks`` (vertex_colour_block results). This legacy uniform adapter
+    supplies a stream only when every instance carries the same block; the
     alpha is byte 3 / 255 and 1 where no key matches. The second array packs
     candidate red, green and a matched-key flag for the experimental ground
     preview. Channels are squared before interpolation in the vertex stage;
@@ -235,14 +264,15 @@ def effective_groups(materials, groups):
     group. Returns (groups, Counter of entry outcomes, number of instances with changed materials)."""
     from collections import Counter
     result, outcomes, changed = {}, Counter(), 0
-    for (flip, overrides), rows in groups.items():
+    for key, rows in groups.items():
+        flip,overrides=key[:2]
         applied, results = resolve_overrides(materials, overrides) if overrides else ((), [])
         count = len(rows) // 16
         for outcome in results:
             outcomes[outcome] += count
         if applied:
             changed += count
-        result.setdefault((flip, applied), array('f')).extend(rows)
+        result.setdefault((flip, applied, *key[2:]), array('f')).extend(rows)
     return result, outcomes, changed
 
 
