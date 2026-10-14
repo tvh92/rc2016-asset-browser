@@ -38,7 +38,10 @@ class TransportTests(unittest.TestCase):
             note=next(e for e in events if e[0]=='vertex_colours')
             self.assertEqual(note[3],not missing_instance)
             if missing_instance:self.assertNotIn('vertex_alpha',posted)
-            else:self.assertEqual(list(posted['vertex_alpha']),[0.,np.float32(128/255)])
+            else:
+                self.assertEqual(list(posted['vertex_alpha']),[0.,np.float32(128/255)])
+                paint=np.asarray(posted['vertex_ground_blend']).reshape(-1,3)
+                np.testing.assert_allclose(paint,[[1/255,2/255,1],[4/255,5/255,1]])
             self.assertNotIn('vertex_alpha',geometry)
 
     def test_alpha_buffer_is_owned_and_uploaded_with_one_value_per_vertex(self):
@@ -58,6 +61,10 @@ class TransportTests(unittest.TestCase):
         self.assertIn(record['abo'],record['buffers'])
         view._upload_model('plain',{k:v for k,v in g.items() if k!='vertex_alpha'},False)
         self.assertIsNone(view._models['plain']['abo'])
+        g["vertex_ground_blend"]=array("f",[1.,0.,1., 0.,1.,1., 0.,0.,0.])
+        view._upload_model("ground",g,False)
+        self.assertIs(uploaded[-1],g["vertex_ground_blend"])
+        self.assertIn(view._models["ground"]["gbo"],view._models["ground"]["buffers"])
 
     def test_vao_alpha_is_per_vertex_and_disabled_for_plain_models(self):
         view=object.__new__(viewport.LevelViewport)
@@ -67,14 +74,20 @@ class TransportTests(unittest.TestCase):
                    'glBindBuffer':Mock(),'glVertexAttribDivisor':Mock()}
         alpha=INSTANCE_ATTRIBUTES['aRockAlpha']
         view._begin_attributes()
-        view._shading.glVertexAttrib4f.assert_called_with(alpha,1.,0.,0.,1.)
+        view._shading.glVertexAttrib4f.assert_any_call(alpha,1.,0.,0.,1.)
+        view._shading.glVertexAttrib4f.assert_any_call(INSTANCE_ATTRIBUTES["aGroundBlend"],0.,0.,0.,0.)
         for paint in (True,False):
-            model=dict(vbo=1,nbo=2,tbo=3,ibo=4,abo=5 if paint else None)
+            model=dict(vbo=1,nbo=2,tbo=3,ibo=4,abo=5 if paint else None,gbo=7 if paint else None)
             view._vao(model,(6,1,False,()))
             if paint:
                 view._shading.glEnableVertexAttribArray.assert_any_call(alpha)
                 view._shading.glVertexAttribPointer.assert_any_call(alpha,1,view.GL_FLOAT,0,4,None)
                 view._ext['glVertexAttribDivisor'].assert_any_call(alpha,0)
-            else:view._shading.glDisableVertexAttribArray.assert_called_with(alpha)
+            else:view._shading.glDisableVertexAttribArray.assert_any_call(alpha)
+            ground=INSTANCE_ATTRIBUTES["aGroundBlend"]
+            if paint:
+                view._shading.glVertexAttribPointer.assert_any_call(ground,3,view.GL_FLOAT,0,12,None)
+                view._ext["glVertexAttribDivisor"].assert_any_call(ground,0)
+            else:view._shading.glDisableVertexAttribArray.assert_any_call(ground)
             for row in range(4):
                 view._ext['glVertexAttribDivisor'].assert_any_call(INSTANCE_ATTRIBUTES[f'aInst{row}'],1)

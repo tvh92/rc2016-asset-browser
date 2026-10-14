@@ -710,7 +710,9 @@ class LevelViewport(ModelViewport):
         self._scene_revision=getattr(self,'_scene_revision',0)+1
         alpha = geometry.get("vertex_alpha")
         record["abo"] = self._buffer(self.GL_ARRAY_BUFFER, alpha) if alpha is not None and len(alpha) * 3 == len(geometry["positions"]) else None
-        record["buffers"] = [record[k] for k in ("vbo", "nbo", "tbo", "ibo", "abo") if record[k]]
+        ground = geometry.get("vertex_ground_blend")
+        record["gbo"] = self._buffer(self.GL_ARRAY_BUFFER, ground) if ground is not None and len(ground) == len(geometry["positions"]) else None
+        record["buffers"] = [record[k] for k in ("vbo", "nbo", "tbo", "ibo", "abo", "gbo") if record[k]]
         self._ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0); self._ext["glBindBuffer"](self.GL_ELEMENT_ARRAY_BUFFER, 0)
         self._models[path] = record
 
@@ -809,6 +811,14 @@ class LevelViewport(ModelViewport):
                 ext["glVertexAttribDivisor"](alpha, 0)
             else:
                 sh.glDisableVertexAttribArray(alpha)
+            ground = INSTANCE_ATTRIBUTES["aGroundBlend"]
+            if model.get("gbo"):
+                ext["glBindBuffer"](self.GL_ARRAY_BUFFER, model["gbo"])
+                sh.glEnableVertexAttribArray(ground)
+                sh.glVertexAttribPointer(ground, 3, self.GL_FLOAT, 0, 12, None)
+                ext["glVertexAttribDivisor"](ground, 0)
+            else:
+                sh.glDisableVertexAttribArray(ground)
             ext["glBindBuffer"](self.GL_ARRAY_BUFFER, group[0])
             for row in range(4):
                 location = INSTANCE_ATTRIBUTES[f"aInst{row}"]
@@ -1123,6 +1133,7 @@ class LevelViewport(ModelViewport):
         from rc2016.viewer.shading import INSTANCE_ATTRIBUTES
         # Generic values are context state, not VAO state; restore white on every pass.
         self._shading.glVertexAttrib4f(INSTANCE_ATTRIBUTES["aRockAlpha"], 1.0, 0.0, 0.0, 1.0)
+        self._shading.glVertexAttrib4f(INSTANCE_ATTRIBUTES["aGroundBlend"], 0.0, 0.0, 0.0, 0.0)
         self._bound_vao = self._front = None
 
     def _end_attributes(self):

@@ -24,6 +24,7 @@ def tree_signature(tree):
             row['image']=dict(path=n.image.get('source_texture_path'),sha=n.image.get('source_texture_sha256'),
                 colorspace=n.image.colorspace_settings.name,alpha=n.image.alpha_mode)
             row.update(interpolation=n.interpolation,extension=n.extension)
+        if n.type=='ATTRIBUTE':row['attribute_name']=n.attribute_name
         if n.type=='NORMAL_MAP':row.update(space=n.space,uv_map=n.uv_map)
         if n.type=='GROUP':row['group']=tree_signature(n.node_tree)
         rows.append(row)
@@ -58,6 +59,12 @@ def _frontend(translation,images):
             negate = nodes.new('ShaderNodeMath');negate.operation='MULTIPLY';negate.inputs[1].default_value=-1
             links.new(native[2],negate.inputs[0]);native[2]=negate.outputs[0]
             for channel, value in enumerate(native):preview_inputs[(kind,channel)] = value
+        # Explicit diagnostic POINT/FLOAT_COLOR attribute: (masked R^2, masked G^2, key flag, 1).
+        # Missing attributes return zero, retaining the uniform review fallback.
+        if any(n.get('kind') == 'preview_ground_blend' for n in translation['nodes']):
+            paint=nodes.new('ShaderNodeAttribute');paint.attribute_name='RC zone ground blend'
+            split=nodes.new('ShaderNodeSeparateColor');split.mode='RGB';links.new(paint.outputs['Color'],split.inputs[0])
+            for channel in (0,1,2):preview_inputs[('preview_ground_blend',channel)]=split.outputs[channel]
         front = nodes.new('ShaderNodeMath');front.operation='SUBTRACT';front.inputs[0].default_value=1
         links.new(geometry.outputs['Backfacing'],front.inputs[1]);preview_inputs[('preview_front_face',None)] = front.outputs[0]
     cache={};samples={};bindings={r['api']:r for r in translation['texture_bindings']}

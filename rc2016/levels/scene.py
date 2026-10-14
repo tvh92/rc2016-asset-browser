@@ -148,20 +148,33 @@ def keyed_vertex_colours(positions, block):
 
 
 def instance_vertex_alpha(geometry, blocks, instances):
-    """(array 'f' of per-vertex alpha or None, note) for a model placed ``instances`` times whose
+    """Compatibility alpha-only view of instance_vertex_paint."""
+    alpha, _ground, note = instance_vertex_paint(geometry, blocks, instances)
+    return alpha, note
+
+
+def instance_vertex_paint(geometry, blocks, instances):
+    """(alpha array, candidate R/G/key-flag array, note) for a model placed ``instances`` times whose
     instances carry ``blocks`` (vertex_colour_block results). The level viewer keeps one vertex
     buffer per model, so colours are used only when every instance carries the same block; the
-    alpha is byte 3 / 255 and 1 where no key matches. Inferred, see zone_format."""
+    alpha is byte 3 / 255 and 1 where no key matches. The second array packs
+    candidate red, green and a matched-key flag for the experimental ground
+    preview. Channels are squared before interpolation in the vertex stage;
+    unlisted vertices use uniform review controls. Inferred, see zone_format."""
     import numpy as np
     if not blocks:
-        return None, None
+        return None, None, None
     first = blocks[0]
     if len(blocks) != instances or any(not (np.array_equal(b[0], first[0]) and np.array_equal(b[1], first[1]))
                                        for b in blocks[1:]):
-        return None, f'{len(blocks)} of {instances} instances carry vertex colours that differ; not shown'
+        return None, None, f'{len(blocks)} of {instances} instances carry vertex colours that differ; not shown'
     colours, matched = keyed_vertex_colours(np.frombuffer(geometry['positions'], np.float32).reshape(-1, 3), first)
     alpha = array('f'); alpha.frombytes((colours[:, 3] / 255.0).astype(np.float32).tobytes())
-    return alpha, f'{int(matched.sum())} of {len(matched)} vertices take one of {len(first[0])} keyed colours'
+    # R/G byte interpretation is a candidate join to the source UNORM4x8
+    # vertex buffer. Unmatched vertices retain the existing review controls.
+    ground = np.column_stack((colours[:, :2] / 255.0, matched)).astype(np.float32)
+    channels = array('f'); channels.frombytes(ground.tobytes())
+    return alpha, channels, f'{int(matched.sum())} of {len(matched)} vertices take one of {len(first[0])} keyed colours'
 
 
 def mirrored_array(matrices):

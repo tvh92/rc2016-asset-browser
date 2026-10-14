@@ -67,6 +67,8 @@ def emit_surface(translation, srgb=None, *, experimental=False):
         elif op == 'input':
             if preview and n.get('kind') in ('preview_position','preview_normal') and n.get('channel') in (0,1,2):
                 expr = ('vTintWorldPos' if n['kind'] == 'preview_position' else 'vTintWorldNrm') + '.' + 'xyz'[n['channel']]
+            elif preview and n.get('kind') == 'preview_ground_blend' and n.get('channel') in (0,1,2):
+                expr = 'vGroundBlend.' + 'xyz'[n['channel']]
             elif preview and n.get('kind') == 'preview_vertex_alpha_squared':
                 expr = 'vRockAlpha'  # colour alpha squared in the vertex stage; level instances: zone-keyed alpha or 1
             elif n.get('kind') == 'front_facing' or (preview and n.get('kind') == 'preview_front_face'):
@@ -189,6 +191,8 @@ def evaluate_surface(translation, uv, sample, *, preview_inputs=None):
                 value = uv[n['channel']]
             elif n.get('kind') == 'front_facing':
                 value = (preview_inputs or {}).get('front_facing', 1.)
+            elif n.get('kind') == 'preview_ground_blend' and translation.get('status') == 'experimental':
+                value = (preview_inputs or {}).get(n['name'], 0.)
             elif preview_inputs is not None and translation.get('status') == 'experimental':
                 value = preview_inputs[n['name']]
             else:

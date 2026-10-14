@@ -1,7 +1,8 @@
 """Opt-in Novalis layer review, separate from production native acceptance.
 
 Source arithmetic and bindings are recovered from an exact native source pass.
-Painted blend channels and sampling coordinates are explicit review controls.
+Matched zone colours are candidate painted inputs; unlisted vertices use
+the existing uniform review controls. Sampling coordinates remain a preview.
 The generated portable IR can be consumed by both GLSL and Blender emitters.
 """
 from collections import deque
@@ -21,10 +22,12 @@ MATERIAL_SHA='74166e3f912e20aaa341254c36be533359a95417d44d6d39e0b4d0592c993b66'
 GRAPH_SHA='2a4bc1df5ada906e9dc64f1bebcd000076a4cfc46799fd9891feb31df8a46770'
 CODE_SHA='07b2b05324b6bcaf675bb6bb3d3833a5087f38017a88bb13ebaf365159d28a3d'
 DEFAULT_CONTROLS=(0.75,0.5,1.0)
-CONTRACT='novalis-ground-uniform-layers-v1'
-NOTE='Ground layers: uniform blend channels and UV0 preview; original painted paths unresolved.'
+LEGACY_CONTRACT='novalis-ground-uniform-layers-v1'
+CONTRACT='novalis-ground-layers-v2'
+NOTE='Ground layers: candidate zone-keyed red/green paint where matched, uniform review controls elsewhere; UV0 and runtime transport unverified.'
 LIMITATIONS=[
-    'Experimental layer review: uniform red/green channels replace unresolved painted streams.',
+    'Experimental layer review: matched zone keys supply candidate red/green bytes, squared before interpolation as in the source vertex program. Their join to the runtime UNORM4x8 buffer is inferred, not captured.',
+    'Unlisted vertices and standalone models retain the uniform red/green review controls; source values for unlisted vertices remain unknown.',
     'UV0 times review scale replaces the unresolved planar/parallax sampling path.',
     'Geometry normal; source composed normals, derivative AA, sampler state and runtime pass selection are not reproduced.',
     'Source pass/texture/parameter bindings and color/F0/flat gloss arithmetic are retained; this is not a ready production native material.']
@@ -194,7 +197,7 @@ def prepare_preview(archive,path):
     return bind_preview(base,DEFAULT_CONTROLS)
 
 def bind_preview(base,controls=DEFAULT_CONTROLS):
-    """Explicit review input substitution, with all other dependencies rejected."""
+    """Candidate vertex paint plus review fallback; reject every other dependency."""
     red,green,scale=map(float,controls)
     if not all(math.isfinite(v) for v in (red,green,scale)) or not (0<=red<=1 and 0<=green<=1 and 0.01<=scale<=100):
         raise ValueError('Ground blend channels must be 0–1 and UV scale 0.01–100')
@@ -202,12 +205,17 @@ def bind_preview(base,controls=DEFAULT_CONTROLS):
     cb2={int(k):v for k,v in base['cb2'].items()}
     uv=[ir.node('input',name='UV0.'+str(ch),kind='attribute',attribute=0,channel=ch) for ch in (0,1)]
     uv=[ir.op('mul',v,ir.const(scale)) for v in uv]
+    paint=[ir.node('input',name='preview_ground_blend.'+str(ch),kind='preview_ground_blend',channel=ch) for ch in (0,1,2)]
+    # Interpolate masked squared colours and the key-presence flag separately.
+    # This equals interpolating each vertex's chosen colour, including borders.
+    blend=[ir.op('add',paint[ch],ir.op('mul',ir.const(value*value),ir.op('sub',ir.const(1.),paint[2])))
+           for ch,value in enumerate((red,green))]
     for i,n in enumerate(list(ir.nodes)):
         if n['op']=='texture':substitutions[i]=ir.node('texture',uv,api=n['api'],sample=n['sample'],channel=n['channel'])
         elif n['op']=='input' and n.get('kind')=='cb' and n['api']==2 and n['dword'] in cb2:
             substitutions[i]=ir.const(cb2[n['dword']])
         elif n['op']=='input' and n.get('kind')=='attribute' and n.get('attribute')==4 and n.get('channel') in (0,1):
-            substitutions[i]=ir.const((red if n['channel']==0 else green)**2)
+            substitutions[i]=blend[n['channel']]
     o=base['outputs'];roots=[*o['albedo'],*o['F0'],o['gloss'],o['emission']]
     roots=ir.replace(roots,substitutions)
     compact=DAG();remap={}
@@ -215,7 +223,8 @@ def bind_preview(base,controls=DEFAULT_CONTROLS):
         if i not in remap:
             n=ir.nodes[i]
             if n['op'] not in PORTABLE_OPS:raise ValueError('Unresolved experimental output: '+n.get('reason',n['op']))
-            if n['op']=='input' and not (n.get('kind')=='attribute' and n.get('attribute')==0 and n.get('channel') in (0,1)):
+            if n['op']=='input' and not ((n.get('kind')=='attribute' and n.get('attribute')==0 and n.get('channel') in (0,1))
+                    or (n.get('kind')=='preview_ground_blend' and n.get('channel') in (0,1,2))):
                 raise ValueError('Unresolved experimental input: '+n['name'])
             remap[i]=compact.node(n['op'],[copy(j) for j in n['args']],**{k:v for k,v in n.items() if k not in ('op','args')})
         return remap[i]
@@ -232,5 +241,5 @@ def bind_preview(base,controls=DEFAULT_CONTROLS):
     return result
 
 def rebind_preview(receipt,controls):
-    if receipt.get('preview_contract')!=CONTRACT:raise ValueError('Unknown ground preview contract')
+    if receipt.get('preview_contract') not in (CONTRACT,LEGACY_CONTRACT):raise ValueError('Unknown ground preview contract')
     return bind_preview(receipt['preview_source'],controls)

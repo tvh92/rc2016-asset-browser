@@ -222,4 +222,5 @@ def valid_contract(receipt):
         return (receipt.get('status') == 'experimental' and receipt.get('automatic_ready') is False
                 and receipt.get('game_equivalence') is False and all(identity[1:]))
     return identity in ((CONTRACT,CODE_SHA,GRAPH_SHA,MATERIAL_SHA),
-                       (terrain_preview.CONTRACT,terrain_preview.CODE_SHA,terrain_preview.GRAPH_SHA,terrain_preview.MATERIAL_SHA))
+                       (terrain_preview.CONTRACT,terrain_preview.CODE_SHA,terrain_preview.GRAPH_SHA,terrain_preview.MATERIAL_SHA),
+                       (terrain_preview.LEGACY_CONTRACT,terrain_preview.CODE_SHA,terrain_preview.GRAPH_SHA,terrain_preview.MATERIAL_SHA))

@@ -68,6 +68,26 @@ class GroundSourceTests(unittest.TestCase):
                     self.assertEqual(result['emission'],0.)
                     self.assertIsNone(result['normal'])
 
+    def test_candidate_paint_uses_squared_vertex_channels_and_exact_mixed_triangle_fallback(self):
+        colors={12:(.2,.3,.4,1),13:(.6,.5,.4,1),14:(.1,.4,.2,1)}
+        sample=lambda api,uv:colors.get(api,{6:(.2,.04,0,1),7:(.6,.08,0,1),8:(.4,.1,0,1),9:(.3,0,0,1)}.get(api))
+        # Interpolation weights .25/.75: painted (R=1,G=0) then an unlisted vertex.
+        for coverage in (0.,.25,1.):
+            inputs={'preview_ground_blend.0':coverage,'preview_ground_blend.1':0.,'preview_ground_blend.2':coverage}
+            r2=coverage+(1-coverage)*ground.DEFAULT_CONTROLS[0]**2
+            g2=(1-coverage)*ground.DEFAULT_CONTROLS[1]**2
+            w=max(0.,min(1.,(.3-r2+.5)/.5))
+            expected=[(a+(b-a)*g2)*(1-w)+c*w for a,b,c in zip(colors[12][:3],colors[13][:3],colors[14][:3])]
+            result=evaluate_surface(self.receipt,(.2,.3),sample,preview_inputs=inputs)
+            for a,b in zip(result['albedo'],expected):self.assertAlmostEqual(a,b)
+        body=emit_surface(self.receipt,experimental=True)['body']
+        for ch in 'xyz':self.assertIn('vGroundBlend.'+ch,body)
+        # Uniform review changes cannot recolour a fully painted vertex.
+        fully={'preview_ground_blend.0':1.,'preview_ground_blend.1':0.,'preview_ground_blend.2':1.}
+        a=evaluate_surface(self.receipt,(.2,.3),sample,preview_inputs=fully)
+        b=evaluate_surface(ground.rebind_preview(self.receipt,(0.,1.,1.)),(.2,.3),sample,preview_inputs=fully)
+        self.assertEqual(a,b)
+
     def test_saved_receipt_and_rebinding_are_stable(self):
         saved=json.loads(json.dumps(self.receipt))
         self.assertEqual(saved,self.receipt)

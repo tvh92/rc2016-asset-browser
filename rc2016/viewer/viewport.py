@@ -1180,6 +1180,8 @@ class ModelViewport(_TkFrame):
             sh.glEnableVertexAttribArray(14); sh.glVertexAttribPointer(14,1,self.GL_FLOAT,0,0,self._vptr(alpha))
         else:
             sh.glDisableVertexAttribArray(14); sh.glVertexAttrib4f(14,1.0,0.0,0.0,0.0)
+        # Standalone models have no zone-keyed stream: retain uniform review controls.
+        sh.glDisableVertexAttribArray(15); sh.glVertexAttrib4f(15,0.0,0.0,0.0,0.0)
         mode = self._mode
         level = {"Shaded": 2, "Textured": 1}.get(mode, 0)
         if uv_array is None:

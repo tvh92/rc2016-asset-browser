@@ -68,6 +68,15 @@ class KeyedColourTests(unittest.TestCase):
         self.assertEqual(matched.tolist(), [True, True, False, False])
         self.assertEqual(colours[:, 3].tolist(), [0, 128, 255, 255])
 
+    def test_ground_candidate_retains_key_presence_instead_of_inventing_unlisted_colours(self):
+        from array import array
+        from rc2016.levels.scene import instance_vertex_paint
+        geometry=dict(positions=array('f',[0,0,0,5,5,5]))
+        alpha,paint,note=instance_vertex_paint(geometry,[self.block],1)
+        self.assertEqual(list(alpha),[0.,1.])
+        np.testing.assert_allclose(np.asarray(paint).reshape(-1,3),[[1/255,2/255,1],[1,1,0]])
+        self.assertIn('1 of 2 vertices',note)
+
     def test_alpha_needs_the_same_block_on_every_instance(self):
         from array import array
         geometry = dict(positions=array('f', [0, 0, 0, 1, -0.5, 0.3]))

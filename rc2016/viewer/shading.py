@@ -105,6 +105,7 @@ ATTRIBUTES = {"aJoints0": 1, "aJoints1": 6, "aWeights0": 7, "aWeights1": 9}
 BONE_TEXTURE_UNIT = 3
 ROCK_TEXTURE_UNIT = 15   # RockBlend sole new sampler, four tiled source slices
 ROCK_ALPHA_ATTRIBUTE = 14
+GROUND_BLEND_ATTRIBUTE = 15
 GLOW_PARALLAX_TEXTURE_UNIT = 13   # prompt 08; existing unit 5 carries the light mask
 VEHICLE_PALETTE_TEXTURE_UNIT = 10   # EB1AC2CD second palette; prompt 05 reservation
 PICK_TEXTURE_UNIT = 4   # colour-pick palette (blarg_saucer_colorpick)
@@ -129,6 +130,7 @@ attribute vec4 aWeights0; attribute vec4 aWeights1;
 varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
 varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm;
 attribute float aRockAlpha; varying float vRockAlpha;
+attribute vec3 aGroundBlend; varying vec3 vGroundBlend;
 // Rows of joint j's row-major skin matrix, as the columns of its transpose.
 mat4 boneT(float j) {
     float x = j * 4.0 + 0.5;
@@ -140,6 +142,7 @@ mat4 boneT(float j) {
 void main() {
     vec4 p = gl_Vertex; vec3 n = gl_Normal;
     vRockAlpha = aRockAlpha * aRockAlpha;
+    vGroundBlend = vec3(aGroundBlend.xy * aGroundBlend.xy * aGroundBlend.z, aGroundBlend.z);
     float total = dot(aWeights0, vec4(1.0)) + dot(aWeights1, vec4(1.0));
     if (uSkin && total > 1e-4) {
         mat4 t = boneT(aJoints0.x) * aWeights0.x + boneT(aJoints0.y) * aWeights0.y
@@ -163,7 +166,7 @@ uniform bool uRockBlend; uniform sampler3D uRockTex; uniform vec3 uRockSrgb;
 uniform vec4 uRockScale0; uniform vec4 uRockScale1;
 uniform vec3 uRockTint; uniform vec4 uRockP; // exponent, tint amount, mask strength, sharpness
 uniform vec3 uRockBreakup; // A3DAA047: enabled, 1/max(1e-5, world tile T), layer UV scale U
-varying float vRockAlpha;
+varying float vRockAlpha; varying vec3 vGroundBlend;
 uniform int uMode;           // 0 solid, 1 base colour, 2 game BRDF, 3 flat colour (wireframe)
 uniform vec3 uColor;
 uniform sampler2D uTexC; uniform sampler2D uTexG; uniform sampler2D uTexN;
@@ -799,16 +802,18 @@ GLASS_UNIFORMS = ("uSkin", "uBoneTex", "uBoneWidth", "uKind", "uA", "uB", "uC", 
 # instance matrix arrives as four per-instance attributes (rows; docs/levels.md), in texcoord
 # 2-5's aliased slots, which no shader reads. Geometry and matrices stay in native Y-up space;
 # the camera matrix carries the presentation basis.
-INSTANCE_ATTRIBUTES = {"aInst0": 10, "aInst1": 11, "aInst2": 12, "aInst3": 13, "aRockAlpha": ROCK_ALPHA_ATTRIBUTE}
+INSTANCE_ATTRIBUTES = {"aInst0": 10, "aInst1": 11, "aInst2": 12, "aInst3": 13, "aRockAlpha": ROCK_ALPHA_ATTRIBUTE, "aGroundBlend": GROUND_BLEND_ATTRIBUTE}
 INSTANCED_VERTEX = """
 #version 120
 attribute vec4 aInst0; attribute vec4 aInst1; attribute vec4 aInst2; attribute vec4 aInst3;
-attribute float aRockAlpha;
+attribute float aRockAlpha; attribute vec3 aGroundBlend;
+varying vec3 vGroundBlend;
 varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
 varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm;
 varying float vRockAlpha;
 void main() {
     vRockAlpha = aRockAlpha * aRockAlpha; // zone position-keyed colour alpha (inferred), else 1
+    vGroundBlend = vec3(aGroundBlend.xy * aGroundBlend.xy * aGroundBlend.z, aGroundBlend.z);
     vec3 a = aInst0.xyz, b = aInst1.xyz, c = aInst2.xyz;
     vec3 p = gl_Vertex.x * a + gl_Vertex.y * b + gl_Vertex.z * c + aInst3.xyz;
     // Columns b x c, c x a, a x b = det * inverse-transpose: exact for the zones' sheared and
@@ -1081,7 +1086,7 @@ class Shading:
             raise ShaderError(f"{joints} joints exceed the {MAX_JOINTS}-joint preview limit")
         size = MAX_JOINTS
         if size not in self.programs:
-            self.programs[size] = (*self._link(VERTEX, FRAGMENT, dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE), OPAQUE_UNIFORMS), size)
+            self.programs[size] = (*self._link(VERTEX, FRAGMENT, dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE, aGroundBlend=GROUND_BLEND_ATTRIBUTE), OPAQUE_UNIFORMS), size)
         return self.programs[size]
 
     def native_program_key(self, translation, srgb, instanced=False, scene=False, experimental=False):
@@ -1097,7 +1102,7 @@ class Shading:
         if key not in self.programs:
             surface = fragment_source(translation, srgb, experimental=experimental)
             names = (*OPAQUE_UNIFORMS, *(s['uniform'] for s in surface['samplers']))
-            attributes = INSTANCE_ATTRIBUTES if instanced else dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE)
+            attributes = INSTANCE_ATTRIBUTES if instanced else dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE, aGroundBlend=GROUND_BLEND_ATTRIBUTE)
             source=surface['source'].replace('#version 120', '#version 120\n#define RC_SCENE_EFFECTS 1',1) if scene else surface['source']
             self.programs[key] = self._link(vertex, source, attributes, names)
         return self.programs[key]

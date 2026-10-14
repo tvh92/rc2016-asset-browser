@@ -287,9 +287,9 @@ def _load_models(archive, pool, workers, models, catalog, actor_groups, points, 
             overrides["models"].add(path)
         # Replacement materials load with the model's own (each material path loads once).
         geometry["override_materials"] = [dict(path=material) for material in replacements]
-        alpha, note = level_scene.instance_vertex_alpha(geometry, entry.get("vertex_colours"), entry["count"])
+        alpha, ground, note = level_scene.instance_vertex_paint(geometry, entry.get("vertex_colours"), entry["count"])
         if alpha is not None:
-            geometry = dict(geometry, vertex_alpha=alpha)
+            geometry = dict(geometry, vertex_alpha=alpha, vertex_ground_blend=ground)
         if note:
             geometry = dict(geometry, vertex_colour_note=note)
             out.put(("vertex_colours", path, note, alpha is not None))
@@ -466,7 +466,7 @@ class LevelPanel:
         self.spawn_var = tk.BooleanVar(value=spawn_preview)
         ttk.Checkbutton(experimental, text="Enemy spawns", variable=self.spawn_var,
                         command=self._experimental_changed).grid(row=1, column=1, sticky="w", padx=(8, 0))
-        ttk.Label(experimental, text="Mountains: matte preview. Ground: uniform blends; painted paths unavailable.",
+        ttk.Label(experimental, text="Mountains: matte preview. Ground: zone paint inferred; controls fill unlisted vertices. UVs unverified.",
                   foreground="gray", wraplength=250).grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
         from rc2016.shaders.terrain_preview import DEFAULT_CONTROLS
         self.ground_controls = [tk.DoubleVar(value=value) for value in DEFAULT_CONTROLS]
