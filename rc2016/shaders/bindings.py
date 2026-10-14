@@ -340,6 +340,7 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
     return dict(nodes=compact.nodes,outputs=outputs,normal=normal,
         texture_bindings=[bound[a] for a in sorted(active)],parameters=receipt,
         pass_contract_index=contract['index'],limitations=lowered['limitations'],source_zero_power_guards=zero_guards,
+        **({'source_shader_record':dict(contract['source_shader_record'])} if 'source_shader_record' in contract else {}),
         **({'painted_channel_evidence':sorted(painted_evidence,key=lambda row:(row['attribute'],row['channel']))}
            if world_position and colours else {}),
         **({'world_position_terms':adapted} if adapted else {}))
@@ -368,7 +369,7 @@ def program_contracts(data,program,contracts):
     cb=[n['dword'] for n in program['ir']['nodes'] if n['op']=='input' and n.get('kind')=='cb' and n.get('api')==2]
     joined=[]
     for i in range(size//20):
-        cb_mask,resource_mask,technique,relative,blob_size=struct.unpack_from('<5I',data,base+i*20)
+        cb_mask,resource_mask,record_word2,relative,blob_size=struct.unpack_from('<5I',data,base+i*20)
         if not blob_size or shader_base+relative+36!=program['header_offset']:continue
         if relative+blob_size>shader_size:raise ValueError('Serialized shader blob exceeds shader section')
         joined.append(i)
@@ -379,12 +380,15 @@ def program_contracts(data,program,contracts):
         if not static_table and (not apis or max(apis)-4!=len(contract['resources'])):continue
         if any(a is None or not 5<=a<min(32,5+len(contract['resources'])) or not resource_mask&(1<<a) for a in used):continue
         if cb and (not cb_mask&4 or contract['cb_bytes']!=(max(cb)+1+3)//4*16):continue
-        matches.append(contract)
+        matches.append(dict(contract,source_shader_record=dict(index=i,file_offset=base+i*20,
+            pass_index=i//13,index_in_pass=i%13,cb_mask=cb_mask,resource_mask=resource_mask,
+            word2_uninterpreted=record_word2,shader_relative_offset=relative,
+            shader_blob_size=blob_size,shader_header_offset=program['header_offset'])))
     if len(joined)>1:raise ValueError('Ambiguous serialized shader/pass pointer')
     return matches
 
 
-def surface_signature(bound):
+def surface_components(bound):
     """Exact structural identity of the portable, source-bound surface slice.
 
     API registers, sample labels and DAG indices do not change a pure sample
@@ -409,7 +413,18 @@ def surface_signature(bound):
     result={key:[node(i) for i in value] if isinstance(value,list) else node(value)
         for key,value in bound['outputs'].items()}
     result['normal']=[node(i) for i in normal['xyz']] if normal else None
-    return hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest()
+    return result
+
+
+def surface_signature(bound):
+    """Combined structural identity, unchanged by diagnostic receipt metadata."""
+    return hashlib.sha256(json.dumps(surface_components(bound),sort_keys=True).encode()).hexdigest()
+
+
+def surface_component_signatures(bound):
+    """Per-output structural identities for diagnostics, not numeric equivalence."""
+    return {key:hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
+            for key,value in surface_components(bound).items()}
 
 
 WORLD_POSITION_CONTRACT='world-position-reconstruction-v1'
@@ -451,15 +466,19 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False)
     if len(signatures)!=1:
         result['candidate_surfaces']=[dict(shader_id=c['program']['shader_id'],code_sha256=c['program']['code_sha256'],
             pass_contract_index=c['bound']['pass_contract_index'],surface_sha256=c['surface_signature'],
-            texture_bindings=c['bound']['texture_bindings']) for c in candidates]
+            texture_bindings=c['bound']['texture_bindings'],component_sha256=surface_component_signatures(c['bound']),
+            **({'source_shader_record':c['bound']['source_shader_record']} if 'source_shader_record' in c['bound'] else {})) for c in candidates]
+        result['differing_components']=[key for key in ('albedo','F0','gloss','emission','normal')
+            if len({c['component_sha256'][key] for c in result['candidate_surfaces']})>1]
         result['diagnostics'].append('Multiple portable native variants produce different material programs');return result
     candidate=candidates[0];program=candidate['program']
     result.update(candidate['bound'],status='ready',graph_sha256=graph['graph_sha256'],
         code_sha256=program['code_sha256'],code_offset=program['code_offset'],shader_id=program['shader_id'],
-        equivalent_candidates=len(candidates),translator_version=graph['translator_version'],binding_version=4,
+        equivalent_candidates=len(candidates),translator_version=graph['translator_version'],binding_version=5,
         surface_sha256=candidate['surface_signature'],candidate_sources=[dict(
             shader_id=c['program']['shader_id'],code_sha256=c['program']['code_sha256'],
-            pass_contract_index=c['bound']['pass_contract_index']) for c in candidates])
+            pass_contract_index=c['bound']['pass_contract_index'],
+            **({'source_shader_record':c['bound']['source_shader_record']} if 'source_shader_record' in c['bound'] else {})) for c in candidates])
     result['limitations']=list(dict.fromkeys(
         limitation for c in candidates for limitation in c['bound']['limitations']))
     result['limitations']+=graph['limitations']+[

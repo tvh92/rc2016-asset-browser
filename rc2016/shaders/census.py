@@ -404,7 +404,20 @@ def print_receipt(archive, path):
         if result.get('status') not in ('ready', 'experimental'):
             for d in result.get('diagnostics', [])[:8]:
                 print('  diagnostic:', str(d.get('reason', d) if isinstance(d, dict) else d)[:300])
+            candidates=result.get('candidate_surfaces',[])
+            if candidates:
+                print('  structurally differing components:', ', '.join(result.get('differing_components',[])))
+            for candidate in candidates[:12]:
+                print('  candidate shader:', candidate['shader_id'], 'pass contract:', candidate['pass_contract_index'])
+                print('    code SHA256:', candidate['code_sha256'], 'surface SHA256:', candidate['surface_sha256'])
+                print('    component SHA256:', json.dumps(candidate.get('component_sha256',{}),sort_keys=True))
+                record=candidate.get('source_shader_record')
+                if record:print('    source shader record:', json.dumps(record,sort_keys=True))
+                for b in candidate['texture_bindings']:
+                    print(f"    texture API{b['api']}: {b['path']} ({b['source']})")
             continue
+        record=result.get('source_shader_record')
+        if record:print('  source shader record:', json.dumps(record,sort_keys=True))
         print('  shader:', result.get('shader_id'), 'pass contract:', result.get('pass_contract_index'),
               'candidates:', len(result.get('candidate_sources', [])))
         for b in result['texture_bindings']:
