@@ -102,6 +102,7 @@ LIGHTING_UNIFORMS = (*SCENE_UNIFORMS, "uLighting", "uLightingEnabled", "uLightFr
 # 5 fog, 8+ texcoords), and a collision fails the link, so use 1, 6, 7 and 9
 # (texcoord 1, which the shader never reads).
 ATTRIBUTES = {"aJoints0": 1, "aJoints1": 6, "aWeights0": 7, "aWeights1": 9}
+STATIC_VECTOR_ATTRIBUTE = 4
 BONE_TEXTURE_UNIT = 3
 ROCK_TEXTURE_UNIT = 15   # RockBlend sole new sampler, four tiled source slices
 ROCK_ALPHA_ATTRIBUTE = 14
@@ -131,6 +132,7 @@ varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
 varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm;
 attribute float aRockAlpha; varying float vRockAlpha;
 attribute vec3 aGroundBlend; varying vec3 vGroundBlend;
+attribute vec3 aStaticPackedVector; varying vec3 vStaticPackedVector;
 // Rows of joint j's row-major skin matrix, as the columns of its transpose.
 mat4 boneT(float j) {
     float x = j * 4.0 + 0.5;
@@ -143,6 +145,9 @@ void main() {
     vec4 p = gl_Vertex; vec3 n = gl_Normal;
     vRockAlpha = aRockAlpha * aRockAlpha;
     vGroundBlend = vec3(aGroundBlend.xy * aGroundBlend.xy * aGroundBlend.z, aGroundBlend.z);
+    // This opt-in source input is supplied separately from the unit shading normal.
+    // The model viewer payload is in display basis (x, -z, y); return it to native Y-up.
+    vStaticPackedVector = vec3(aStaticPackedVector.x, aStaticPackedVector.z, -aStaticPackedVector.y);
     float total = dot(aWeights0, vec4(1.0)) + dot(aWeights1, vec4(1.0));
     if (uSkin && total > 1e-4) {
         mat4 t = boneT(aJoints0.x) * aWeights0.x + boneT(aJoints0.y) * aWeights0.y
@@ -802,15 +807,16 @@ GLASS_UNIFORMS = ("uSkin", "uBoneTex", "uBoneWidth", "uKind", "uA", "uB", "uC", 
 # instance matrix arrives as four per-instance attributes (rows; docs/levels.md), in texcoord
 # 2-5's aliased slots, which no shader reads. Geometry and matrices stay in native Y-up space;
 # the camera matrix carries the presentation basis.
-INSTANCE_ATTRIBUTES = {"aInst0": 10, "aInst1": 11, "aInst2": 12, "aInst3": 13, "aRockAlpha": ROCK_ALPHA_ATTRIBUTE, "aGroundBlend": GROUND_BLEND_ATTRIBUTE}
+INSTANCE_ATTRIBUTES = {"aInst0": 10, "aInst1": 11, "aInst2": 12, "aInst3": 13, "aRockAlpha": ROCK_ALPHA_ATTRIBUTE, "aGroundBlend": GROUND_BLEND_ATTRIBUTE, "aStaticPackedVector": STATIC_VECTOR_ATTRIBUTE}
 INSTANCED_VERTEX = """
 #version 120
 attribute vec4 aInst0; attribute vec4 aInst1; attribute vec4 aInst2; attribute vec4 aInst3;
 attribute float aRockAlpha; attribute vec3 aGroundBlend;
+attribute vec3 aStaticPackedVector;
 varying vec3 vGroundBlend;
 varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
 varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm;
-varying float vRockAlpha;
+varying float vRockAlpha; varying vec3 vStaticPackedVector;
 void main() {
     vRockAlpha = aRockAlpha * aRockAlpha; // zone position-keyed colour alpha (inferred), else 1
     vGroundBlend = vec3(aGroundBlend.xy * aGroundBlend.xy * aGroundBlend.z, aGroundBlend.z);
@@ -819,6 +825,18 @@ void main() {
     // Columns b x c, c x a, a x b = det * inverse-transpose: exact for the zones' sheared and
     // mirrored instances once the determinant's sign is restored.
     vec3 n = mat3(cross(b, c), cross(c, a), cross(a, b)) * gl_Normal * sign(dot(a, cross(b, c)));
+    float la = dot(a, a), lb = dot(b, b), lc = dot(c, c);
+    float det = dot(a, cross(b, c));
+    mat3 cofactors = mat3(cross(b, c), cross(c, a), cross(a, b));
+    // Experimental source-selector preview: compare squared axis lengths, then
+    // use the source CPU helper's linear fast path or inverse-transpose branch.
+    if (abs(la - lb) < 0.001 && abs(la - lc) < 0.001) {
+        vStaticPackedVector = aStaticPackedVector.x * a + aStaticPackedVector.y * b + aStaticPackedVector.z * c;
+    } else if (abs(det) >= 0.00000095367431640625) {
+        vStaticPackedVector = (cofactors * aStaticPackedVector) / det;
+    } else {
+        vStaticPackedVector = cofactors * aStaticPackedVector;
+    }
     vTintWorldPos = p; vTintWorldNrm = n;   // native Y-up world space, as the tint writers read it
     vec4 view = gl_ModelViewMatrix * vec4(p, 1.0);
     vPos = view.xyz; vNrm = gl_NormalMatrix * n; vUV = gl_MultiTexCoord0.xy;
@@ -1086,7 +1104,7 @@ class Shading:
             raise ShaderError(f"{joints} joints exceed the {MAX_JOINTS}-joint preview limit")
         size = MAX_JOINTS
         if size not in self.programs:
-            self.programs[size] = (*self._link(VERTEX, FRAGMENT, dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE, aGroundBlend=GROUND_BLEND_ATTRIBUTE), OPAQUE_UNIFORMS), size)
+            self.programs[size] = (*self._link(VERTEX, FRAGMENT, dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE, aGroundBlend=GROUND_BLEND_ATTRIBUTE, aStaticPackedVector=STATIC_VECTOR_ATTRIBUTE), OPAQUE_UNIFORMS), size)
         return self.programs[size]
 
     def native_program_key(self, translation, srgb, instanced=False, scene=False, experimental=False):
@@ -1102,7 +1120,7 @@ class Shading:
         if key not in self.programs:
             surface = fragment_source(translation, srgb, experimental=experimental)
             names = (*OPAQUE_UNIFORMS, *(s['uniform'] for s in surface['samplers']))
-            attributes = INSTANCE_ATTRIBUTES if instanced else dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE, aGroundBlend=GROUND_BLEND_ATTRIBUTE)
+            attributes = INSTANCE_ATTRIBUTES if instanced else dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE, aGroundBlend=GROUND_BLEND_ATTRIBUTE, aStaticPackedVector=STATIC_VECTOR_ATTRIBUTE)
             source=surface['source'].replace('#version 120', '#version 120\n#define RC_SCENE_EFFECTS 1',1) if scene else surface['source']
             self.programs[key] = self._link(vertex, source, attributes, names)
         return self.programs[key]
@@ -1110,7 +1128,10 @@ class Shading:
     def glass_program(self):
         """The forward (glass) program: same vertex shader and attributes, GLASS_FRAGMENT."""
         if "glass" not in self.programs:
-            self.programs["glass"] = self._link(VERTEX, GLASS_FRAGMENT, ATTRIBUTES, GLASS_UNIFORMS)
+            attributes = dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE,
+                              aGroundBlend=GROUND_BLEND_ATTRIBUTE,
+                              aStaticPackedVector=STATIC_VECTOR_ATTRIBUTE)
+            self.programs["glass"] = self._link(VERTEX, GLASS_FRAGMENT, attributes, GLASS_UNIFORMS)
         return self.programs["glass"]
 
     def instanced_program(self, glass=False, scene=False):

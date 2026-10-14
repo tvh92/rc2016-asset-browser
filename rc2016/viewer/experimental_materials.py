@@ -145,6 +145,9 @@ def world_position_preview(archive, path):
         result = world_position_translation(archive, path)
     except (ValueError, KeyError, IndexError, OSError, struct.error):
         return None
+    if result.get('status') == 'experimental':return result
+    try:result=static_vector_translation(archive,path)
+    except (ValueError,KeyError,IndexError,OSError,struct.error):return None
     return result if result.get('status') == 'experimental' else None
 
 
@@ -222,11 +225,81 @@ def valid_contract(receipt):
     """Admit explicit source-hashed generic or independently pinned previews."""
     from rc2016.shaders import terrain_preview
     identity = tuple(receipt.get(k) for k in ('preview_contract','code_sha256','graph_sha256','material_sha256'))
-    if receipt.get('preview_contract') in (bindings.WORLD_POSITION_CONTRACT, bindings.PAINT_STREAM_CONTRACT):
+    if receipt.get('preview_contract') in (bindings.WORLD_POSITION_CONTRACT, bindings.PAINT_STREAM_CONTRACT, 'static-packed-vector-preview-v1'):
         # Generic adapter: source-hashed per receipt; the emitters still admit only
         # UV0, front facing and explicit position/normal/colour preview inputs.
+        if receipt.get('preview_contract') == 'static-packed-vector-preview-v1':
+            if not receipt.get('static_vector_inputs') or not receipt.get('static_vector_evidence'):return False
+            if not all(p.get('producers') and p.get('runtime_selection_proven') is False for p in receipt['static_vector_evidence']):return False
         return (receipt.get('status') == 'experimental' and receipt.get('automatic_ready') is False
                 and receipt.get('game_equivalence') is False and all(identity[1:]))
     return identity in ((CONTRACT,CODE_SHA,GRAPH_SHA,MATERIAL_SHA),
                        (terrain_preview.CONTRACT,terrain_preview.CODE_SHA,terrain_preview.GRAPH_SHA,terrain_preview.MATERIAL_SHA),
                        (terrain_preview.LEGACY_CONTRACT,terrain_preview.CODE_SHA,terrain_preview.GRAPH_SHA,terrain_preview.MATERIAL_SHA))
+
+
+def _static_colour_fallback(receipt, missing_apis):
+    """Retain exact source albedo when only omitted lighting resources are absent.
+
+    This is an explicit matte presentation policy, never source F0/gloss data.
+    An absent resource anywhere in the albedo slice prevents this fallback.
+    """
+    if not missing_apis:
+        return receipt
+    if (receipt.get('status') != 'experimental'
+            or receipt.get('preview_contract') != 'static-packed-vector-preview-v1'):
+        return None
+    ir = DAG(receipt['nodes'])
+    reachable = ir.reachable(receipt['outputs']['albedo'])
+    albedo_apis = {ir.nodes[i]['api'] for i in reachable if ir.nodes[i]['op'] == 'texture'}
+    if albedo_apis.intersection(missing_apis):
+        return None
+    zero = ir.const(0.)
+    result = dict(receipt, nodes=ir.nodes,
+        outputs=dict(albedo=list(receipt['outputs']['albedo']), F0=[zero] * 3, gloss=zero, emission=zero),
+        normal=None, texture_bindings=[b for b in receipt['texture_bindings'] if b['api'] in albedo_apis],
+        preview_surface_policy='source-colour-matte', missing_lighting_texture_apis=sorted(missing_apis),
+        full_surface_sha256=receipt.get('surface_sha256'))
+    result['limitations'] = [
+        'Colour-only matte presentation: source albedo equations and textures are retained; '
+        'absent non-colour resources prevent full shading. F0, gloss and emission are explicitly '
+        'zero and tangent normals are omitted. These lighting values are preview substitutions.',
+        *receipt.get('limitations', [])]
+    result['surface_sha256'] = bindings.surface_signature(result)
+    result.pop('translation_sha256', None)
+    result['translation_sha256'] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
+    return result
+
+
+def static_vector_translation(archive,path):
+    """Separate opt-in static input policy, never used by the native binder."""
+    from rc2016.formats.archive import asset_data,asset_references
+    from rc2016.formats.materials import extract_material_parameters
+    from rc2016.viewer.textures import _archive_cache,_remember
+    cache=_archive_cache(archive,'_static_vector_preview_cache')
+    if path not in cache:
+        ids=[i for i in archive.resolve(path) if archive.entries[i]['type']=='material']
+        if len(ids)!=1:raise ValueError('Ambiguous static-preview material')
+        material=bytes(asset_data(archive,ids[0]))
+        paths=list(dict.fromkeys(r['path'] for r in asset_references(archive,ids[0]) if r['path'].endswith('.materialgraph')))
+        datas=[]
+        for graph in paths:
+            gids=[i for i in archive.resolve(graph) if archive.entries[i]['type']=='materialgraph']
+            if len(gids)!=1:raise ValueError('Ambiguous static-preview graph')
+            datas.append(bytes(asset_data(archive,gids[0])))
+        disk=getattr(archive,'translation_disk_cache',None)
+        key=disk.key(material,datas,variant='static_vector') if disk is not None else None
+        result=disk.get(key) if key else None
+        if result is None:
+            result=bindings.prepare_translation(datas,material,extract_material_parameters(material),world_position=True,static_vector=True)
+            if key:disk.put(key,result)
+        _remember(cache,path,result)
+    receipt = cache[path]
+    if receipt.get('status') == 'experimental':
+        missing = [b['api'] for b in receipt['texture_bindings']
+                   if not any(archive.entries[i]['type'] == 'texture' for i in archive.resolve(b['path']))]
+        if missing:
+            colour = _static_colour_fallback(receipt, missing)
+            if colour is not None:
+                return colour
+    return receipt

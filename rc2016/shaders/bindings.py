@@ -258,7 +258,7 @@ def _lowered(program):
     return dict(cached,limitations=list(cached['limitations']))
 
 
-def _bind(program,contract,material_data,instance,world_position=False,normal_attributes=(),stream_channels=None):
+def _bind(program,contract,material_data,instance,world_position=False,normal_attributes=(),stream_channels=None,static_attributes=()):
     from rc2016.formats.materials import texture_slot_records, MATERIAL_TEXTURE_SLOTS
     overrides={}
     for row in texture_slot_records(material_data,MATERIAL_TEXTURE_SLOTS):
@@ -282,7 +282,7 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
     if normal:roots+=normal['xyz']
     substitutions={i:ir.const(values[n['dword']]) for i,n in enumerate(list(ir.nodes))
         if n['op']=='input' and n.get('kind')=='cb' and n['api']==2 and n['dword'] in values}
-    replaced=ir.replace(roots,substitutions);adapted=0;neutral_masks=[]
+    replaced=ir.replace(roots,substitutions);adapted=0;neutral_masks=[];static_used=set()
     if world_position:
         # Explicit review input for the decoded rock Blend Mask slot. An empty
         # instance row is not permission to inherit a graph texture. Only its
@@ -308,6 +308,11 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
             if n['op']=='input' and n.get('kind')=='attribute' and adapted and n.get('attribute') in normal_attributes and n.get('channel') in (0,1,2):
                 normals[i]=ir.node('input',name=f"preview_normal.{n['channel']}",kind='preview_normal',channel=n['channel'])
         normal_adapted=bool(normals)
+        for i in ir.reachable(replaced):
+            n=ir.nodes[i]
+            if n['op']=='input' and n.get('kind')=='attribute' and n.get('attribute') in static_attributes and n.get('channel') in (0,1,2):
+                normals[i]=ir.node('input',name=f"preview_static_vector.{n['channel']}",kind='preview_static_vector',channel=n['channel'])
+                static_used.add((n['attribute'],n['channel']))
         colours={};painted=set();painted_evidence=[]
         for i in ir.reachable(replaced):
             n=ir.nodes[i]
@@ -322,7 +327,7 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
                 masked=ir.node('input',name=f'preview_ground_blend.{component}',kind='preview_ground_blend',channel=component)
                 present=ir.node('input',name='preview_ground_blend.2',kind='preview_ground_blend',channel=2)
                 colours[i]=ir.op('add',masked,ir.op('sub',ir.const(1.),present))
-        if not adapted and not colours:
+        if not adapted and not colours and not static_used:
             raise ValueError('No camera + ray * POS_W world-position expression or proven squared colour channel')
         if colours:
             lowered['limitations'].append(f'Experimental: interpolants of this pixel program trace to vertex semantic {COLOUR_SEMANTIC} squared components '+','.join(sorted(painted))+'. The runtime flag path and colour-stream identity are inferred; level instances use candidate keyed channels where available. Generic red/green fallback is white 1, not Novalis review controls; standalone red/green stream transport remains unresolved.')
@@ -330,6 +335,7 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
         if normals:
             replaced=ir.replace(replaced,normals)
             if normal_adapted:lowered['limitations'].append('Experimental: interpolants '+', '.join(f'attribute{a}.xyz' for a in sorted(normal_attributes))+' are, in every traced vertex program and flag path, per-draw words times one vertex stream (a transformed stream, optionally normalised) and are read as the geometry normal; that the stream is the normal and the matrix object-to-world is inferred, and the packed vertex frame is not reconstructed.')
+        if static_used:lowered['limitations'].append('Experimental ordinary-static vector input: source vertex producers in the exact pass prove M*(2*semantic1.xyz-1) under material-derived static flags. The raw packed model word at vertex+8 supplies recentered UNORM xyz without normalization, and the source CPU axis-length classifier selects the per-instance matrix. Fetch identity and absence of alternate/deformed streams are inferred; runtime pass choice is unverified. Skinned and alternate-codec geometry are excluded. Shader colour layers and blend arithmetic are retained.')
         if adapted:lowered['limitations'].append(f'Experimental: {adapted} expressions of the form CB0[28..30] + (CB0[92..95] + CB0[100..103]*POS_Y + POS_X*(CB0[96..99] + CB0[104..107]*POS_Y)) * POS_W are read as world position and replaced by viewer world position. This engine meaning is inferred from the expression shape, not decoded from the game.')
     replaced,zero_guards=guard_source_zero_powers(ir,replaced)
     replaced,front_face=bind_front_face(ir,replaced)
@@ -344,11 +350,12 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
         n=ir.nodes[i]
         if n['op'] not in PORTABLE_OPS:errors.append(dict(node=i,reason=n.get('reason',n['op'])))
         elif n['op']=='input' and not (n.get('kind')=='attribute' and n.get('attribute')==0 and n.get('channel') in (0,1)) and n.get('kind')!='front_facing' \
-                and not (world_position and n.get('kind') in (('preview_position','preview_normal') if adapted else ()) + ('preview_vertex_alpha_squared','preview_ground_blend')):
+                and not (world_position and n.get('kind') in (('preview_position','preview_normal') if adapted else ()) + ('preview_vertex_alpha_squared','preview_ground_blend','preview_static_vector')):
             errors.append(dict(node=i,reason='Unbound engine/interpolant input '+n['name']))
         elif n['op']=='texture' and not bound.get(n['api'],{}).get('path'):
             errors.append(dict(node=i,reason='Sampled material texture is unset or unbound',api=n['api']))
     if errors:raise ValueError(json.dumps(errors[:12],sort_keys=True))
+    if static_attributes and not static_used:raise ValueError('No live source-proven static vector channel')
     # Compact after substitutions so receipts never expose dead engine inputs.
     compact=DAG();remap={}
     def copy(i):
@@ -373,6 +380,7 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
         **({'painted_channel_evidence':sorted(painted_evidence,key=lambda row:(row['attribute'],row['channel']))}
            if world_position and colours else {}),
         **({'world_position_terms':adapted} if adapted else {}),
+        **({'static_vector_inputs':[dict(attribute=a,channel=c) for a,c in sorted(static_used)]} if static_used else {}),
         **({'neutral_blend_mask_inputs':neutral_masks} if neutral_masks else {}),
         **({'independent_sampler_inputs':[dict(api=a,sampler_api=s,sample=i)
             for a,s,i in sorted(independent)]} if independent else {}))
@@ -472,7 +480,7 @@ COLOUR_SEMANTIC=5
 BLEND_MASK_SLOT=(0x3404C763,0x49A7866B)
 
 
-def prepare_translation(graph_datas,material_data,instance,world_position=False):
+def prepare_translation(graph_datas,material_data,instance,world_position=False,*,static_vector=False):
     """Bound portable translation. world_position=True builds the experimental
     receipt that adapts inferred world position or source-proven squared colour
     channels. Paint-only writers require no position or normal substitution;
@@ -480,6 +488,7 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False)
     result=dict(schema='rcps4-bound-shader-translation-v1',status='unsupported',diagnostics=[],game_equivalence=False)
     if len(graph_datas)!=1:
         result['diagnostics'].append('Translation requires one unambiguous source graph');return result
+    if static_vector and not world_position:raise ValueError('Static vector inputs require experimental binding')
     data=bytes(graph_datas[0]);graph=compiled(data,allow_independent_samplers=world_position)
     normal_attributes=set();stream_channels={}
     if world_position:
@@ -494,6 +503,12 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False)
         except ValueError as exc:
             result['diagnostics'].append(str(exc));continue
         if world_position:normal_attributes,stream_channels=graph_stream_evidence(data,program)
+        static_attributes={};static_proof=[]
+        if static_vector:
+            from rc2016.shaders.static_vectors import static_vector_evidence
+            from rc2016.pipeline.render_state import material_flags
+            static_attributes,static_proof=static_vector_evidence(data,program,material_flags(data=material_data))
+            if not static_attributes:continue
         for contract in matched:
             if world_position:
                 split=[dict(api=s['api'],sampler_api=s['sampler_api'],code_offset=s['offset'])
@@ -503,9 +518,10 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False)
                     result.setdefault('independent_sampler_candidates',[]).append(dict(
                         shader_id=program['shader_id'],code_sha256=program['code_sha256'],
                         source_shader_record=contract['source_shader_record'],samples=split))
-            try:bound=_bind(program,contract,material_data,instance,world_position,normal_attributes,stream_channels)
+            try:bound=_bind(program,contract,material_data,instance,world_position,normal_attributes,stream_channels,static_attributes)
             except ValueError as exc:
                 result['diagnostics'].append(dict(shader_id=program['shader_id'],contract=contract['index'],reason=str(exc)));continue
+            if static_proof:bound['static_vector_evidence']=static_proof
             signature=json.dumps({k:bound[k] for k in ('nodes','outputs','normal','texture_bindings')},sort_keys=True)
             candidates.append(dict(bound=bound,program=program,signature=signature,
                 surface_signature=surface_signature(bound)))
@@ -538,7 +554,7 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False)
         'Shared deferred BRDF is the existing Blender approximation; this is not full game shader equivalence.']
     if world_position:
         position_preview=bool(candidate['bound'].get('world_position_terms'))
-        result.update(status='experimental',preview_contract=WORLD_POSITION_CONTRACT if position_preview else PAINT_STREAM_CONTRACT,automatic_ready=False,
+        result.update(status='experimental',preview_contract=('static-packed-vector-preview-v1' if static_vector else WORLD_POSITION_CONTRACT if position_preview else PAINT_STREAM_CONTRACT),automatic_ready=False,
             material_sha256=hashlib.sha256(bytes(material_data)).hexdigest())
         result['limitations'].insert(0,
             'Experimental world-position preview: an inferred engine meaning of CB0 and pixel position replaces runtime data; not a ready translation.' if position_preview else

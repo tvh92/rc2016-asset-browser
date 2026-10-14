@@ -3,6 +3,9 @@ import hashlib
 import json
 
 
+STATIC_VECTOR_ATTRIBUTE = 'RC static packed vector'
+
+
 def _digest(value):
     return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 
@@ -75,6 +78,14 @@ def _frontend(translation,images):
             value=nodes.new('ShaderNodeMath');value.operation='ADD'
             links.new(split.outputs[0],value.inputs[0]);links.new(missing.outputs[0],value.inputs[1])
             preview_inputs[('preview_vertex_alpha_squared',None)]=value.outputs[0]
+        if any(n.get('kind') == 'preview_static_vector' for n in translation['nodes']):
+            # This is a caller-provided POINT/FLOAT_VECTOR mesh attribute in
+            # the source's native Y-up basis. Read xyz directly: it is not a
+            # geometry-normal alias, and must not be normalized or remapped.
+            packed=nodes.new('ShaderNodeAttribute');packed.name='Required native static vector attribute'
+            packed.attribute_name=STATIC_VECTOR_ATTRIBUTE
+            split=nodes.new('ShaderNodeSeparateXYZ');links.new(packed.outputs['Vector'],split.inputs[0])
+            for channel in (0,1,2):preview_inputs[('preview_static_vector',channel)]=split.outputs[channel]
         front = nodes.new('ShaderNodeMath');front.operation='SUBTRACT';front.inputs[0].default_value=1
         links.new(geometry.outputs['Backfacing'],front.inputs[1]);preview_inputs[('preview_front_face',None)] = front.outputs[0]
     cache={};samples={};bindings={r['api']:r for r in translation['texture_bindings']}
@@ -211,6 +222,15 @@ def validate_translated_material(source,material, *, experimental=False):
     assert signature==material.get('rc_translation_tree_sha256'),'Translated node operations, constants or links changed'
     front=material.node_tree.nodes.get('Experimental material preview' if experimental else 'Native translated material')
     assert front and front.node_tree['translation_sha256']==expected['translation_sha256']
+    static_vector_receipt=None
+    if (experimental and expected.get('status') == 'experimental' and
+            any(n.get('op') == 'input' and n.get('kind') == 'preview_static_vector'
+                for n in expected.get('nodes', []))):
+        static_vector_receipt=_validate_static_vector_mesh_attribute(material)
+        attrs=[n for n in front.node_tree.nodes if n.type=='ATTRIBUTE' and
+               n.attribute_name==STATIC_VECTOR_ATTRIBUTE]
+        assert len(attrs)==1 and attrs[0].outputs.get('Vector'), \
+            'Static-vector preview must read the dedicated mesh Vector attribute directly'
     actual=[n for n in front.node_tree.nodes if n.type=='TEX_IMAGE']
     for binding in expected['texture_bindings']:
         textures=[b for b in source['textures'] if b['path']==binding['path']]
@@ -222,6 +242,35 @@ def validate_translated_material(source,material, *, experimental=False):
             assert n.image.get('source_texture_sha256')==texture['dds_sha256']
             assert n.image.colorspace_settings.name==texture['colorspace']
             assert n.image.alpha_mode=='CHANNEL_PACKED'
-    return dict(status='passed_experimental_preview' if experimental else 'passed_native_translation',code_sha256=expected['code_sha256'],
+    result=dict(status='passed_experimental_preview' if experimental else 'passed_native_translation',code_sha256=expected['code_sha256'],
         translation_sha256=expected['translation_sha256'],node_count=len(front.node_tree.nodes),
         limitations=expected['limitations'],game_equivalence=False)
+    if static_vector_receipt is not None:
+        result['static_vector_attribute']=static_vector_receipt
+    return result
+
+
+def _validate_static_vector_mesh_attribute(material):
+    """Require the explicit native vector input on every mesh using this material."""
+    try:
+        import bpy
+    except ImportError as exc:
+        raise AssertionError('Static-vector preview validation requires Blender mesh users') from exc
+    users=[]
+    for obj in bpy.data.objects:
+        if obj.type!='MESH' or obj.data is None:
+            continue
+        if not any(slot.material is material for slot in obj.material_slots):
+            continue
+        attr=obj.data.attributes.get(STATIC_VECTOR_ATTRIBUTE)
+        assert attr is not None, f'{obj.name} lacks required {STATIC_VECTOR_ATTRIBUTE!r} mesh attribute'
+        assert attr.domain=='POINT' and attr.data_type=='FLOAT_VECTOR', \
+            f'{obj.name} {STATIC_VECTOR_ATTRIBUTE!r} must be POINT/FLOAT_VECTOR'
+        assert len(attr.data)==len(obj.data.vertices), \
+            f'{obj.name} {STATIC_VECTOR_ATTRIBUTE!r} length differs from mesh vertices'
+        users.append(obj)
+    assert users, 'No mesh object uses the material with its required static-vector attribute'
+    return dict(name=STATIC_VECTOR_ATTRIBUTE,domain='POINT',data_type='FLOAT_VECTOR',
+                mesh_user_count=len(users),vertex_counts=[len(obj.data.vertices) for obj in users],
+                vector_basis='caller-provided native Y-up xyz, passed through unchanged',
+                source_binding_proven=False,game_equivalence=False)

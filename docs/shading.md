@@ -178,6 +178,20 @@ Callers must supply an effective transform and selector explicitly; the helper
 does not establish their zone/runtime origin or assemble other CB1 fields.
 Viewer and Blender material admission remain unchanged.
 
+The opt-in static packed-vector preview uses this helper with source packed
+10:10:10 UNORM data at vertex byte `+8`. Each component is recentered as
+`2u - 1`; the vector is not normalized and is kept separate from the decoded
+normal. Let `a`, `b`, and `c` be the three linear axes and `l_a = dot(a,a)`
+(likewise for `l_b` and `l_c`). The source CPU selector copies the linear axes
+when `abs(l_a - l_b) < 0.001` and `abs(l_a - l_c) < 0.001`; otherwise it uses
+the inverse transpose, retaining unscaled cofactors when `abs(det) < 2^-20`.
+The source vertex expression agrees for the examined producers in every pass
+under flags 1 and 61. That agreement proves the expression, not runtime pass
+selection or a game draw. Standalone and level viewer inputs remain opt-in;
+Blender requires a separate `POINT`/`FLOAT_VECTOR` attribute baked in native
+Y-up coordinates and validates that attribute after reopening. It does not
+implicitly alias this vector to the normal attribute.
+
 ### Viewer graph rules
 
 For graphs without a registered family, `apply_viewer_graph_rule` builds the asset viewer's per-graph reading on the shared deferred BRDF (rules from `viewer_graph_rule` in `rc2016/formats/materials.py`; the GL implementation is in `rc2016/viewer/shading.py`, see [viewer](viewer.md)).

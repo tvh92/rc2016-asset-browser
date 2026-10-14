@@ -12,7 +12,7 @@ from rc2016.shaders.bindings import PORTABLE_OPS
 from rc2016.shaders.ir import DAG, compute
 from rc2016.viewer.textures import TextureDiskCache
 
-EMITTER_VERSION = 5
+EMITTER_VERSION = 6
 # Reserve vertex bone matrices (3) and shared environment lighting (6).
 TEXTURE_UNITS = (0, 1, 2, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15)
 
@@ -48,6 +48,8 @@ def emit_surface(translation, srgb=None, *, experimental=False):
     samplers = [dict(binding, uniform=f'uNativeTex{api}', unit=TEXTURE_UNITS[i],
                      srgb=bool(srgb.get(api))) for i, (api, binding) in enumerate(sorted(bindings.items()))]
     declarations = '\n'.join(f"uniform sampler2D {r['uniform']};" for r in samplers)
+    if preview and any(n.get('kind')=='preview_static_vector' for n in translation['nodes']):
+        declarations += '\nvarying vec3 vStaticPackedVector;'
     lines, names, samples, visiting = [], {}, {}, set()
     simple = {'add': '+', 'sub': '-', 'mul': '*'}
     comparisons = {'lt': '<', 'le': '<=', 'gt': '>', 'ge': '>=', 'eq': '==', 'ne': '!='}
@@ -67,6 +69,8 @@ def emit_surface(translation, srgb=None, *, experimental=False):
         elif op == 'input':
             if preview and n.get('kind') in ('preview_position','preview_normal') and n.get('channel') in (0,1,2):
                 expr = ('vTintWorldPos' if n['kind'] == 'preview_position' else 'vTintWorldNrm') + '.' + 'xyz'[n['channel']]
+            elif preview and n.get('kind') == 'preview_static_vector' and n.get('channel') in (0,1,2):
+                expr = 'vStaticPackedVector.' + 'xyz'[n['channel']]
             elif preview and n.get('kind') == 'preview_ground_blend' and n.get('channel') in (0,1,2):
                 expr = 'vGroundBlend.' + 'xyz'[n['channel']]
             elif preview and n.get('kind') == 'preview_vertex_alpha_squared':
