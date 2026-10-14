@@ -198,6 +198,26 @@ class ModelDecodeTests(unittest.TestCase):
             self.assertNotIn('skin_joint_array', a)
         self.assertTrue(all(w for m in lists['meshes'] for w in m['weights']))
 
+    def test_static_raw_normal_words_are_preserved_without_normalization(self):
+        rng = np.random.default_rng(17)
+        data = build_model(rng, [(3, 0, 0, 0)], [], b'')
+        decoded = nm.decode_model('static', 'All', data=data)
+        arrays = nm.decode_model('static', 'All', data=data, as_arrays=True)
+        for listed, vectorized in zip(decoded['meshes'], arrays['meshes']):
+            self.assertTrue(listed['static_vector_eligible'])
+            self.assertTrue(vectorized['static_vector_eligible'])
+            np.testing.assert_array_equal(listed['packed_normals'], vectorized['packed_normals'].tolist())
+            np.testing.assert_allclose(listed['raw_vectors'], vectorized['raw_vectors'], rtol=0, atol=1e-15)
+            raw = np.asarray(listed['raw_vectors'])
+            self.assertTrue(np.any(np.abs(np.linalg.norm(raw, axis=1) - 1.0) > 0.1))
+            payload = ld.mesh_payload(dict(decoded, meshes=[listed]), 'All')
+            np.testing.assert_allclose(payload['raw_vectors'], np.column_stack((raw[:, 0], -raw[:, 2], raw[:, 1])))
+            from rc2016.viewer.viewport import prepare_viewport
+            _mesh, prepared, _bounds = prepare_viewport(payload)
+            np.testing.assert_allclose(np.frombuffer(prepared[6], np.float32).reshape(-1, 3), payload['raw_vectors'])
+        flagged = nm.decode_model('alternate', 'All', data=build_model(rng, [(3, 0, 0, 0x40)], [], b''))
+        self.assertFalse(flagged['meshes'][0]['static_vector_eligible'])
+
     def test_light_container_matches_the_full_section_table(self):
         data = skinned_fixture()
         full, light = read_container(data, 0, {}), read_container(data, 0, {}, light=True)
@@ -221,6 +241,8 @@ class ModelDecodeTests(unittest.TestCase):
             self.assertEqual(old['uvs'], [tuple(v) for v in new['uvs']])
             for key in ('batches', 'skin_joints', 'skin_weights', 'rock_alpha', 'rock_alpha_sources', 'selected_mesh_indices', 'source_sha256'):
                 self.assertEqual(old[key], new[key], key)
+            self.assertEqual(old['static_vector_eligible'], new['static_vector_eligible'])
+            self.assertEqual(old['raw_vectors'], new['raw_vectors'])
             from rc2016.viewer.viewport import prepare_viewport
             a, b = prepare_viewport(old), prepare_viewport(new)
             for x, y in zip(a[1], b[1]):

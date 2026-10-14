@@ -102,9 +102,17 @@ class ZoneArraysTests(unittest.TestCase):
         self.assertEqual(fast['models'], full['models'])
         self.assertEqual(fast['override_materials'], full['override_materials'])
         self.assertEqual(fast['model_index'].tolist(), [i['model_index'] for i in full['instances']])
+        self.assertEqual(fast['instance_flags'].tolist(), [int(i['flags'], 16) for i in full['instances']])
         self.assertEqual(fast['matrices'].tolist(), [[x for r in i['matrix_rows'] for x in r] for i in full['instances']])
         self.assertEqual(fast['overrides'], {n: i['material_overrides'] for n, i in enumerate(full['instances'])
                                              if i['material_overrides']})
+
+    def test_full_decoder_fallback_preserves_raw_instance_flags(self):
+        data = zone([record(0, 1)])
+        from rc2016.levels.zone_format import _arrays_from_full
+        arrays = _arrays_from_full(data)
+        self.assertEqual(arrays['instance_flags'].dtype, np.dtype(np.uint32))
+        self.assertEqual(arrays['instance_flags'].tolist(), [0x440000])
 
     def test_invariant_failures_raise_the_full_decoders_error(self):
         good = [record(0, 1), record(0, 2, x=3.0)]
@@ -155,6 +163,7 @@ class CoreBoundsTests(unittest.TestCase):
 class GeometryCacheTests(unittest.TestCase):
     def geometry(self):
         return dict(positions=array('f', [0, 1, 2, 3, 4, 5.5]), normals=array('f', [0, 0, 1, 0, 0, 1]),
+                    raw_vectors=array('f'), static_vector_eligible=False,
                     uvs=array('f', [0, 1, 0.25, 0.5]), indices=array('I', [0, 1, 1]),
                     batches=[(0, 0, 1, True), (None, 1, 0, False)],
                     materials=[dict(index=0, name='a', path='m/a.material'), dict(index=1, name=None, path=None)],

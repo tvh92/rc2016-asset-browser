@@ -8,10 +8,41 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from rc2016.levels import panel, scene, viewport, actors
-from rc2016.viewer.shading import INSTANCE_ATTRIBUTES
+from rc2016.viewer.shading import INSTANCE_ATTRIBUTES, STATIC_VECTOR_ATTRIBUTE
 
 
 class TransportTests(unittest.TestCase):
+    def test_panel_passes_per_zone_static_vector_eligibility(self):
+        panel_view = object.__new__(panel.LevelPanel)
+        panel_view.progress = {'models': 0}
+        panel_view.view = Mock()
+        panel_view._handle(('model', 'm', {}, False, [('good.zone', {}, True), ('bad.zone', {}, False)]))
+        self.assertEqual(panel_view.view.add_instances.call_args_list[0].kwargs,
+                         {'static_vector_eligible': True})
+        self.assertEqual(panel_view.view.add_instances.call_args_list[1].kwargs,
+                         {'static_vector_eligible': False})
+
+    def test_model_static_vector_gate_requires_every_zone_and_no_visible_unknown_layers(self):
+        view=object.__new__(viewport.LevelViewport)
+        view.show_actors=False;view.show_spawn_preview=False
+        model=dict(static_vector_eligible=True,svbo=5,
+                   zones=[('a',(),array('f',[0.]*16)),('b',(),array('f',[0.]*16))],
+                   static_vector_zone_eligibility={'a':True,'b':True},
+                   actor_zones=[],actors=[],spawn_zones=[],spawns=[])
+        self.assertTrue(view._static_vector_eligible_for_model(model))
+        self.assertFalse(view._static_vector_eligible_for_model(dict(model, static_vector_zone_eligibility={'a':True})))
+        self.assertFalse(view._static_vector_eligible_for_model(dict(model, static_vector_zone_eligibility={'a':True,'b':False})))
+        view.show_actors=True
+        self.assertFalse(view._static_vector_eligible_for_model(dict(model, actor_zones=[('actor.zone',(),array('f',[0.]*16))])))
+        view.show_actors=False;view.show_spawn_preview=True
+        self.assertFalse(view._static_vector_eligible_for_model(dict(model, spawn_zones=[('spawn.zone',(),array('f',[0.]*16))])))
+
+    def test_store_instances_defaults_eligibility_to_false(self):
+        view=object.__new__(viewport.LevelViewport)
+        view._models={'m':dict(zones=[],static_vector_zone_eligibility={},groups_for=None)}
+        view._store_instances('unmarked.zone','m',{(False,()):array('f',[0.]*16)})
+        self.assertIs(view._models['m']['static_vector_zone_eligibility']['unmarked.zone'],False)
+
     def test_batched_loader_posts_alpha_without_mutating_cached_geometry(self):
         class Catalog:
             factories, zone_actors = [], {}
@@ -66,6 +97,26 @@ class TransportTests(unittest.TestCase):
         self.assertIs(uploaded[-1],g["vertex_ground_blend"])
         self.assertIn(view._models["ground"]["gbo"],view._models["ground"]["buffers"])
 
+    def test_raw_vector_buffer_requires_exact_eligible_geometry(self):
+        view=object.__new__(viewport.LevelViewport)
+        view._models={};view._ext={'glBindBuffer':Mock()}
+        uploaded=[]
+        def buffer(target,data):
+            uploaded.append(data);return len(uploaded)
+        view._buffer=buffer
+        geometry=dict(positions=array('f',[0,0,0,1,0,0,0,1,0]),normals=array('f',[0,0,1]*3),
+                      uvs=array('f',[0,0]*3),indices=array('I',[0,1,2]),batches=[],triangles=1,materials=[],
+                      raw_vectors=array('f',[.1,.2,.3]*3),static_vector_eligible=True)
+        view._upload_model('static',geometry,False)
+        record=view._models['static']
+        self.assertEqual(record['svbo'],5)
+        self.assertTrue(record['static_vector_eligible'])
+        self.assertIn(record['svbo'],record['buffers'])
+        self.assertIs(uploaded[4],geometry['raw_vectors'])
+        view._upload_model('missing',{k:v for k,v in geometry.items() if k!='raw_vectors'},False)
+        self.assertIsNone(view._models['missing']['svbo'])
+        self.assertFalse(view._models['missing']['static_vector_eligible'])
+
     def test_vao_alpha_is_per_vertex_and_disabled_for_plain_models(self):
         view=object.__new__(viewport.LevelViewport)
         view._gl=Mock();view._shading=Mock()
@@ -77,7 +128,8 @@ class TransportTests(unittest.TestCase):
         view._shading.glVertexAttrib4f.assert_any_call(alpha,1.,0.,0.,1.)
         view._shading.glVertexAttrib4f.assert_any_call(INSTANCE_ATTRIBUTES["aGroundBlend"],0.,0.,0.,0.)
         for paint in (True,False):
-            model=dict(vbo=1,nbo=2,tbo=3,ibo=4,abo=5 if paint else None,gbo=7 if paint else None)
+            model=dict(vbo=1,nbo=2,tbo=3,ibo=4,abo=5 if paint else None,gbo=7 if paint else None,
+                       svbo=8 if paint else None)
             view._vao(model,(6,1,False,()))
             if paint:
                 view._shading.glEnableVertexAttribArray.assert_any_call(alpha)
@@ -89,5 +141,9 @@ class TransportTests(unittest.TestCase):
                 view._shading.glVertexAttribPointer.assert_any_call(ground,3,view.GL_FLOAT,0,12,None)
                 view._ext["glVertexAttribDivisor"].assert_any_call(ground,0)
             else:view._shading.glDisableVertexAttribArray.assert_any_call(ground)
+            if paint:
+                view._shading.glVertexAttribPointer.assert_any_call(STATIC_VECTOR_ATTRIBUTE,3,view.GL_FLOAT,0,12,None)
+                view._ext['glVertexAttribDivisor'].assert_any_call(STATIC_VECTOR_ATTRIBUTE,0)
+            else:view._shading.glDisableVertexAttribArray.assert_any_call(STATIC_VECTOR_ATTRIBUTE)
             for row in range(4):
                 view._ext['glVertexAttribDivisor'].assert_any_call(INSTANCE_ATTRIBUTES[f'aInst{row}'],1)

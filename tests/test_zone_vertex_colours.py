@@ -3,9 +3,10 @@ import unittest
 
 import numpy as np
 
+import rc2016.levels.scene as scene
 from rc2016.levels.scene import instance_vertex_alpha, keyed_vertex_colours, zone_scene
-from rc2016.levels.zone_format import decode_zone_arrays, vertex_colour_block
-from tests.test_level_material_overrides import record, zone
+from rc2016.levels.zone_format import decode_zone_arrays, vertex_colour_block, name_crc32, path_crc64
+from tests.test_level_material_overrides import RED, record, zone
 
 
 def key(x, y, z):
@@ -23,6 +24,12 @@ def coloured_record(model_index, instance_id, entries):
     body += b''.join(bytes(c) for _k, c in entries)
     struct.pack_into('<I', body, 0x44, len(body))
     return bytes(body) + b'\0' * (-len(body) % 8)
+
+
+def record_flags(data, flags):
+    data = bytearray(data)
+    struct.pack_into('<I', data, 0x5C, flags)
+    return bytes(data)
 
 
 class FakeArchive:
@@ -49,7 +56,6 @@ class VertexColourBlockTests(unittest.TestCase):
         data = zone([record(0, 1), coloured_record(0, 2, self.entries)])
         arrays = decode_zone_arrays(data)
         self.assertEqual(sorted(arrays['vertex_colours']), [1])
-        import rc2016.levels.scene as scene
         original = scene.asset_bytes
         scene.asset_bytes = lambda _archive, _path: data
         try:
@@ -57,6 +63,48 @@ class VertexColourBlockTests(unittest.TestCase):
         finally:
             scene.asset_bytes = original
         self.assertEqual(len(models[0]['vertex_colours']), 1)
+
+    def test_static_vector_instance_eligibility_is_whole_model_and_flag_only(self):
+        source_default_flags = zone([record(0, 20)])  # 0x00440000: no known rejected bits
+        original = scene.asset_bytes
+        scene.asset_bytes = lambda _archive, _path: source_default_flags
+        try:
+            self.assertTrue(zone_scene(None, 'z.zone')['models'][0]['static_vector_instances_eligible'])
+        finally:
+            scene.asset_bytes = original
+        good_override = record_flags(record(0, 1, [(name_crc32('Window_Glass'), path_crc64(RED))]), 0)
+        good = record_flags(record(0, 2), 0)
+        blocked = record_flags(record(0, 3), 0x00001000)
+        source = zone([good_override, good, blocked])
+        original = scene.asset_bytes
+        scene.asset_bytes = lambda _archive, _path: source
+        try:
+            model = zone_scene(None, 'z.zone')['models'][0]
+        finally:
+            scene.asset_bytes = original
+        self.assertFalse(model['static_vector_instances_eligible'])
+        self.assertEqual(sum(len(rows) // 16 for rows in model['groups'].values()), 3)
+
+    def test_static_vector_rejects_each_known_instance_flag_and_nonfinite_matrix(self):
+        for flags in (0x00001000, 0x00000400, 0x08000000):
+            source = zone([record_flags(record(0, flags + 1), flags)])
+            original = scene.asset_bytes
+            scene.asset_bytes = lambda _archive, _path, data=source: data
+            try:
+                model = zone_scene(None, 'z.zone')['models'][0]
+            finally:
+                scene.asset_bytes = original
+            self.assertFalse(model['static_vector_instances_eligible'], hex(flags))
+        bad = bytearray(record_flags(record(0, 99), 0))
+        struct.pack_into('<f', bad, 0, float('nan'))
+        source = zone([bytes(bad)])
+        original = scene.asset_bytes
+        scene.asset_bytes = lambda _archive, _path: source
+        try:
+            model = zone_scene(None, 'z.zone')['models'][0]
+        finally:
+            scene.asset_bytes = original
+        self.assertFalse(model['static_vector_instances_eligible'])
 
 
 class KeyedColourTests(unittest.TestCase):

@@ -345,9 +345,9 @@ class LevelViewport(ModelViewport):
         """Upload one model's geometry; its instances come per zone through add_instances."""
         self._gl_call(self._upload_model, path, geometry, hidden)
 
-    def add_instances(self, zone, path, groups):
+    def add_instances(self, zone, path, groups, *, static_vector_eligible=False):
         """One zone's instances of an uploaded model: {mirrored: array('f') of 16-float rows}."""
-        self._gl_call(self._store_instances, zone, path, groups)
+        self._gl_call(self._store_instances, zone, path, groups, bool(static_vector_eligible))
 
     def add_actors(self, zone, path, groups, actors):
         """Batched actor rows plus source identities for click-to-identify."""
@@ -705,8 +705,15 @@ class LevelViewport(ModelViewport):
                       nbo=self._buffer(self.GL_ARRAY_BUFFER, geometry["normals"]),
                       tbo=self._buffer(self.GL_ARRAY_BUFFER, geometry["uvs"]),
                       ibo=self._buffer(self.GL_ELEMENT_ARRAY_BUFFER, geometry["indices"]),
-                      zones=[], actor_zones=[], actors=[], spawn_zones=[], spawns=[], groups=[], groups_for=None,
+                      zones=[], static_vector_zone_eligibility={}, actor_zones=[], actors=[], spawn_zones=[], spawns=[], groups=[], groups_for=None,
                       sphere=model_sphere(geometry))
+        raw_vectors = geometry.get('raw_vectors')
+        record['static_vector_eligible'] = bool(
+            geometry.get('static_vector_eligible') and raw_vectors is not None
+            and len(raw_vectors) == len(geometry['positions'])
+            and len(raw_vectors) % 3 == 0)
+        record['svbo'] = (self._buffer(self.GL_ARRAY_BUFFER, raw_vectors)
+                          if record['static_vector_eligible'] else None)
         import numpy as np
         p=np.asarray(geometry['positions']).reshape(-1,3)
         record['local_bounds']=(tuple(p.min(axis=0)),tuple(p.max(axis=0)))
@@ -715,7 +722,7 @@ class LevelViewport(ModelViewport):
         record["abo"] = self._buffer(self.GL_ARRAY_BUFFER, alpha) if alpha is not None and len(alpha) * 3 == len(geometry["positions"]) else None
         ground = geometry.get("vertex_ground_blend")
         record["gbo"] = self._buffer(self.GL_ARRAY_BUFFER, ground) if ground is not None and len(ground) == len(geometry["positions"]) else None
-        record["buffers"] = [record[k] for k in ("vbo", "nbo", "tbo", "ibo", "abo", "gbo") if record[k]]
+        record["buffers"] = [record[k] for k in ("vbo", "nbo", "tbo", "ibo", "abo", "gbo", "svbo") if record[k]]
         paints=geometry.get('vertex_paints',{})
         if paints:
             record['paint_buffers']={}
@@ -730,14 +737,30 @@ class LevelViewport(ModelViewport):
         self._ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0); self._ext["glBindBuffer"](self.GL_ELEMENT_ARRAY_BUFFER, 0)
         self._models[path] = record
 
-    def _store_instances(self, zone, path, groups):
+    def _store_instances(self, zone, path, groups, static_vector_eligible=False):
         """Keep one zone's instance rows, {(mirrored, material changes): rows}; the GPU buffers merge
         every visible zone (_merge_groups)."""
         record = self._models[path]
         self._scene_revision=getattr(self,'_scene_revision',0)+1
+        eligibility = record.setdefault('static_vector_zone_eligibility', {})
+        eligibility[zone] = bool(eligibility.get(zone, True) and static_vector_eligible)
         for key, rows in sorted(groups.items()):
             record["zones"].append((zone, key, rows))
         record["groups_for"] = None
+
+    def _static_vector_eligible_for_model(self, model):
+        """All source geometry and every relevant zone instance record must be eligible."""
+        if not (model.get('static_vector_eligible') and model.get('svbo')):
+            return False
+        zone_names = {zone for zone, _key, _rows in model.get('zones', ())}
+        zone_eligibility = model.get('static_vector_zone_eligibility') or {}
+        if not zone_names or not all(zone_eligibility.get(zone) is True for zone in zone_names):
+            return False
+        if getattr(self, 'show_actors', False) and (model.get('actor_zones') or model.get('actors')):
+            return False
+        if getattr(self, 'show_spawn_preview', False) and (model.get('spawn_zones') or model.get('spawns')):
+            return False
+        return True
 
     def _store_actors(self, zone, path, groups, actors):
         record = self._models[path]
@@ -838,6 +861,14 @@ class LevelViewport(ModelViewport):
                 ext["glVertexAttribDivisor"](ground, 0)
             else:
                 sh.glDisableVertexAttribArray(ground)
+            static_vector = INSTANCE_ATTRIBUTES["aStaticPackedVector"]
+            if model.get('svbo'):
+                ext["glBindBuffer"](self.GL_ARRAY_BUFFER, model['svbo'])
+                sh.glEnableVertexAttribArray(static_vector)
+                sh.glVertexAttribPointer(static_vector, 3, self.GL_FLOAT, 0, 12, None)
+                ext["glVertexAttribDivisor"](static_vector, 0)
+            else:
+                sh.glDisableVertexAttribArray(static_vector)
             ext["glBindBuffer"](self.GL_ARRAY_BUFFER, group[0])
             for row in range(4):
                 location = INSTANCE_ATTRIBUTES[f"aInst{row}"]
@@ -880,9 +911,16 @@ class LevelViewport(ModelViewport):
         # Keep all draws of one native program together, then retain material/model ordering.
         def program_key(item):
             key = item[0]; entry = self._materials.get(key[0]) or {}
-            t, _textures, _experimental = self._selected_surface(entry, key[1])
-            return (t['translation_sha256'] if t else '', key, item[1]['path'])
+            eligible = self._static_vector_eligible_for_model(item[1])
+            self._static_vector_draw_eligible = eligible
+            try:
+                t, _textures, _experimental = self._selected_surface(entry, key[1])
+            finally:
+                self._static_vector_draw_eligible = False
+            return (not eligible, t['translation_sha256'] if t else '', key, item[1]['path'])
+        self._static_vector_draw_eligible = False
         self._draw_list.sort(key=program_key)
+        self._static_vector_draw_eligible = False
 
     def _setup_camera(self, width, height):
         gl = self._gl
@@ -1153,6 +1191,7 @@ class LevelViewport(ModelViewport):
         # Generic values are context state, not VAO state; restore white on every pass.
         self._shading.glVertexAttrib4f(INSTANCE_ATTRIBUTES["aRockAlpha"], 1.0, 0.0, 0.0, 1.0)
         self._shading.glVertexAttrib4f(INSTANCE_ATTRIBUTES["aGroundBlend"], 0.0, 0.0, 0.0, 0.0)
+        self._shading.glVertexAttrib4f(INSTANCE_ATTRIBUTES["aStaticPackedVector"], 0.0, 0.0, 0.0, 0.0)
         self._bound_vao = self._front = None
 
     def _end_attributes(self):
@@ -1200,6 +1239,7 @@ class LevelViewport(ModelViewport):
                                  TINT_DETAIL_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT,
                                  GLOW_PARALLAX_TEXTURE_UNIT)
         gl, sh = self._gl, self._shading
+        self._static_vector_draw_eligible = False
         program, u = sh.instanced_program(scene=self.scene_effects_active())
         sh.glUseProgram(program)
         base_program, base_u = program, u
@@ -1227,6 +1267,7 @@ class LevelViewport(ModelViewport):
                 if key[1] == 2 and entry.get("forward"):
                     glass.append(item)
                     continue
+                self._static_vector_draw_eligible = self._static_vector_eligible_for_model(model)
                 next_program, next_u = self._surface_program(entry, key[1], instanced=True)
                 if next_program != program:
                     program, u = next_program, next_u
@@ -1249,6 +1290,7 @@ class LevelViewport(ModelViewport):
                     self._material_state(u, key, entry)
                     current = key
                 self._draw_span(model, span, groups)
+                self._static_vector_draw_eligible = False
             gl.glDisable(self.GL_POLYGON_OFFSET_FILL)
             program, u = base_program, base_u
             sh.glUseProgram(program)
@@ -1257,6 +1299,7 @@ class LevelViewport(ModelViewport):
                 sh.glUseProgram(program)
                 self._texture_state, self._active_unit = {}, None
         if geometry:
+            self._static_vector_draw_eligible = False
             self._end_attributes();self._unbind_material_units();sh.glUseProgram(0);return
         wire = mode in ("Wireframe", "Solid + wireframe")
         if wire or self.selected in self._models:
@@ -1278,6 +1321,7 @@ class LevelViewport(ModelViewport):
         self._end_attributes()
         self._unbind_material_units()
         sh.glUseProgram(0)
+        self._static_vector_draw_eligible = False
 
     _bound_vao = _front = None
 

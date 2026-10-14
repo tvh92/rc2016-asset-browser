@@ -23,15 +23,40 @@ def _basis_array(values):
     return out
 
 
+def _static_raw_vectors(mesh, count):
+    """Exact packed-normal-derived xyz, eligible only for a known static source mesh."""
+    if mesh.get('static_vector_eligible') is False or (int(mesh.get('flags', 0)) & 0x40):
+        return None
+    if mesh.get('skin_batch_count', 0) or any(bool(pairs) for pairs in (mesh.get('weights') or ())):
+        return None
+    packed = mesh.get('packed_normals')
+    if packed is None or len(packed) != count:
+        return None
+    vectors = mesh.get('raw_vectors')
+    if vectors is None:
+        from rc2016.formats.native_model import _unorm_1010102_raw_vectors
+        vectors = _unorm_1010102_raw_vectors(packed, 'normal')
+    vectors = np.asarray(vectors, dtype=np.float64).reshape(-1, 3)
+    if len(vectors) != count or not np.isfinite(vectors).all():
+        return None
+    return vectors
+
+
 def _mesh_payload_arrays(decoded, meshes, selected):
     """mesh_payload for decode_model(..., as_arrays=True) meshes: vertices, normals and triangles
     as numpy arrays (viewport.prepare_viewport takes them as-is); uvs, skin and rock alpha as the
     same flat lists as the list path, since the viewport tests those for truth."""
-    vertices,normals,triangles,uvs,batches,joints,weights,alpha,alpha_sources=[],[],[],[],[],[],[],[],[]
+    vertices,normals,raw_vectors,triangles,uvs,batches,joints,weights,alpha,alpha_sources=[],[],[],[],[],[],[],[],[],[]
+    raw_vector_eligible = True
     base=triangle_total=0
     for mesh in meshes:
         positions=np.asarray(mesh['positions'],dtype=np.float64).reshape(-1,3);count=len(positions)
         vertices.append(_basis_array(positions));normals.append(_basis_array(mesh['normals']))
+        raw = _static_raw_vectors(mesh, count)
+        if raw is None:
+            raw_vector_eligible = False
+        else:
+            raw_vectors.append(_basis_array(raw))
         colors=mesh.get('colors')
         alpha.append(np.asarray(colors,dtype=np.float64).reshape(-1,4)[:,3] if colors else np.ones(count))
         alpha_sources.append(dict(mesh=mesh['index'], source='native_colors_alpha' if colors else 'viewer_white_default_1_runtime_input_unresolved'))
@@ -53,7 +78,10 @@ def _mesh_payload_arrays(decoded, meshes, selected):
         triangles.append(tris+base if base else tris)
         base+=count;triangle_total+=len(tris)
     if not base or not triangle_total:raise ValueError('Selected source look/LOD has no geometry')
-    return dict(vertices=np.concatenate(vertices),normals=np.concatenate(normals),triangles=np.concatenate(triangles),
+    return dict(vertices=np.concatenate(vertices),normals=np.concatenate(normals),
+                raw_vectors=np.concatenate(raw_vectors) if raw_vector_eligible and len(raw_vectors)==len(vertices) else None,
+                static_vector_eligible=bool(raw_vector_eligible and len(raw_vectors)==len(vertices)),
+                triangles=np.concatenate(triangles),
                 uvs=np.concatenate(uvs).tolist() if uvs is not None else None,batches=batches,
                 skin_joints=np.concatenate(joints).ravel().tolist(),skin_weights=np.concatenate(weights).ravel().tolist(),
                 rock_alpha=np.concatenate(alpha).tolist(),rock_alpha_sources=alpha_sources,
@@ -67,7 +95,8 @@ def mesh_payload(decoded, lod='Highest', look=0):
     chosen=[m for m in decoded['meshes'] if m['index'] in selected]
     if chosen and all(isinstance(m['positions'],np.ndarray) for m in chosen):
         return _mesh_payload_arrays(decoded,chosen,selected)
-    vertices,normals,triangles,uvs,batches=[],[],[],[],[]
+    vertices,normals,raw_vectors,triangles,uvs,batches=[],[],[],[],[],[]
+    raw_vector_eligible = True
     # Up to 8 skin influences per vertex as flat (joint, weight) lists; all-zero
     # weights mean "not skinned" and the vertex keeps its rest position.
     skin_joints,skin_weights=[],[]
@@ -78,6 +107,11 @@ def mesh_payload(decoded, lod='Highest', look=0):
         # presentation_basis inlined: these loops dominate large models.
         vertices.extend([(x,-z,y) for x,y,z in mesh['positions']])
         normals.extend([(x,-z,y) for x,y,z in mesh['normals']])
+        raw = _static_raw_vectors(mesh, len(mesh['positions']))
+        if raw is None:
+            raw_vector_eligible = False
+        else:
+            raw_vectors.extend([(float(x),-float(z),float(y)) for x,y,z in raw])
         rock_alpha.extend([float(c[3]) for c in mesh['colors']] if mesh.get('colors') else [1.0]*len(mesh['positions']))
         rock_alpha_sources.append(dict(mesh=mesh['index'], source='native_colors_alpha' if mesh.get('colors') else 'viewer_white_default_1_runtime_input_unresolved'))
         if mesh.get('weights'):
@@ -94,7 +128,9 @@ def mesh_payload(decoded, lod='Highest', look=0):
         batches.append(((mesh.get('material') or {}).get('index'),len(triangles),len(mesh['triangles'])))
         triangles.extend([(a+base,b+base,c+base) for a,b,c in mesh['triangles']] if base else [tuple(t) for t in mesh['triangles']])
     if not vertices or not triangles:raise ValueError('Selected source look/LOD has no geometry')
-    return dict(vertices=vertices,normals=normals,triangles=triangles,uvs=uvs,batches=batches,
+    eligible = bool(raw_vector_eligible and len(raw_vectors)==len(vertices))
+    return dict(vertices=vertices,normals=normals,raw_vectors=raw_vectors if eligible else None,
+                static_vector_eligible=eligible,triangles=triangles,uvs=uvs,batches=batches,
                 skin_joints=skin_joints,skin_weights=skin_weights,rock_alpha=rock_alpha,rock_alpha_sources=rock_alpha_sources,
                 source_sha256=decoded['source_sha256'],selected_mesh_indices=sorted(selected),
                 source_exact_geometry=True,game_equivalence=False,material_preview='neutral geometry inspection')
