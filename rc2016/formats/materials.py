@@ -448,6 +448,26 @@ def _viewer_rule_wins_translation(translated, rule):
     return not (translated and unported and not unported.issubset({'parallax'}))
 
 
+def final_shader_status(build_status, rule, bound_paths, shader_translation, profile, shader_preflights):
+    """The Blender front-end a material is built with: ``build_status`` (shader_build_status) unless a
+    usable viewer graph rule or a ready native translation replaces it."""
+    # The arch-sequence writer never samples _c.
+    anchor=rule.get('textures',{}).get('_g' if 'arch_sequence' in rule.get('ported',()) else '_c')
+    # The facing-glow writer (Qwark bulb) samples no texture at all.
+    viewer_ready=(build_status.startswith('color_only_preview') and rule.get('applies') and
+                  (anchor in bound_paths or 'facing_glow' in rule.get('ported',())))
+    translated=(shader_translation.get('status')=='ready' and not profile and
+        not any(p.get('family') in ('skin_emissive','basic_skin','character_glass') for p in shader_preflights))
+    if viewer_ready and _viewer_rule_wins_translation(translated, rule):
+        # Built in Blender by rc_game_shader.apply_viewer_graph_rule (same reading as the asset viewer).
+        # A fully ported viewer rule wins over the native translation, which drops tint/pick/foliage
+        # terms and the normal map (battery cannon: black trim built white); geometry._material follows.
+        return 'viewer_graph_rule_frontend'
+    if translated:
+        return 'native_translated_deferred_frontend'
+    return build_status
+
+
 def _viewer_constant_samples(archive, paths):
     """CPU samples the viewer takes in texture_preview.material_textures (same helper functions)."""
     from rc2016.viewer.textures import load_texture,tint_palette_sample,leaf_palette_sample
@@ -683,21 +703,8 @@ def prepare_materials(archive, model_geometry, output_dir, export_textures, log,
                 shader_status=shader_build_status(profile,semantics,bindings,shader_preflights))
             bound={binding['path'] for binding in bindings}
             result['viewer_graph_rule']=viewer_graph_rule(archive,canonical,bound)
-            rule=result['viewer_graph_rule']
-            # The arch-sequence writer never samples _c.
-            anchor=rule.get('textures',{}).get('_g' if 'arch_sequence' in rule.get('ported',()) else '_c')
-            # The facing-glow writer (Qwark bulb) samples no texture at all.
-            viewer_ready=(result['shader_status'].startswith('color_only_preview') and rule.get('applies') and
-                          (anchor in bound or 'facing_glow' in rule.get('ported',())))
-            translated=(shader_translation.get('status')=='ready' and not profile and
-                not any(p.get('family') in ('skin_emissive','basic_skin','character_glass') for p in shader_preflights))
-            if viewer_ready and _viewer_rule_wins_translation(translated, rule):
-                # Built in Blender by rc_game_shader.apply_viewer_graph_rule (same reading as the asset viewer).
-                # A fully ported viewer rule wins over the native translation, which drops tint/pick/foliage
-                # terms and the normal map (battery cannon: black trim built white); geometry._material follows.
-                result['shader_status']='viewer_graph_rule_frontend'
-            elif translated:
-                result['shader_status']='native_translated_deferred_frontend'
+            result['shader_status']=final_shader_status(result['shader_status'],result['viewer_graph_rule'],bound,
+                shader_translation,profile,shader_preflights)
         except Exception as exc:
             result=dict(index=source['index'],name=source['name'],path=canonical,status='failed',reason=str(exc),textures=[])
             errors.append(result.copy())

@@ -30,6 +30,7 @@ The output folder must be outside the repository and source root. It receives `r
 | `cross_reference.py` | Actual vendored dat1lib reader execution and CRC algorithms; guarded generic serialized reader |
 | `report.py` | Two-pass analysis and deterministic JSON/Markdown |
 | `mip_layout.py` | Texture payload sizes against top-mip-only, tile-padded and unpadded mip-chain layouts (`python -m rc2016.research.mip_layout --source-root <Image0>`); a prerequisite for uploading stored mips instead of generating them |
+| `npc_audit.py` | Per-model animation and material coverage for one path prefix (default `character/npc/`); see [Character audit](#character-audit) |
 
 The census ranks undecoded sections before decoded ones, with requested open items first. Within each group, score is file count times total section bytes. Heap coverage uses existing instance/decal reference ranges; unclaimed bytes can include alignment padding. The heap is only partially decoded.
 
@@ -38,6 +39,17 @@ A candidate stride is a divisor of all observed section sizes, optionally suppor
 Instance fields use actual offsets into the heap and the existing size field. Each aligned slot uses only records containing that slot. Optional tails are not filled with zeros for statistical purposes. Probes stop at 512 bytes, with longer-record and absent-slot counts visible. Distinct-value tracking retains at most 256 values; when exceeded, the count is a lower bound. Displayed distributions may be incomplete. Record examples and counterexamples contain file paths and absolute byte offsets.
 
 Float candidates require finite values with magnitude at most 10 million, excluding nonzero magnitudes below `1e-6`. Unit float3/float4 windows and affine/orthonormal matrix predicates supplement scalar candidates. Small integers can also satisfy index or offset predicates; competing candidates stay visible. CRC matches use ALERT's actual CRC32 and CRC64 routines, normalized asset-index paths and known printable strings. Matching an algorithm is evidence of structure, not field meaning or unique identity.
+
+## Character audit
+
+```
+python -m rc2016.research.npc_audit <game or asset_archive root> --out <folder> [--prefix character/npc/]
+```
+
+Writes `audit.json` and `audit.md` to `--out` (outside the repository and source root). It reads archive bytes in memory, so no decode cache is written. Per model under the prefix:
+
+- **Animation.** The animsets the game pairs with the model (the pipeline's actor-reference walk) with their named clips, each clip's coverage of the model joints, and a suggested plain idle (a clip name containing `idle` without a variant word such as fidget, aim, hover or turn; a hint, not a rule). Every real-time cutscene shot whose joints cover the model is decoded and scored: `motion_score` is the mean per-frame world displacement of all joints, root included, and the lowest decoded absolute shot is `calmest_cutscene_shot`. `same_rig_models` lists other `character/` models whose rest rig `animation_sources.rig_comparison` finds the same (covering at least 90% of the joints), with the animsets the game pairs with them that `--borrow-animset` could offer.
+- **Materials.** For every material the model references: graphs, the matched viewer `GRAPH_RULES` prefix, family preflight, native translation status and its first blockers, blend state, fur-shell flag, and the front-end the pipeline builds (`materials.final_shader_status`, the same decision as `prepare_materials`). `category` ranks the evidence: `native_translation`, `exact_viewer_rule`, `profile_recipe`, `prefix_viewer_rule` (a family prefix such as `basic_skin/`), `partial_family`, `generic_default_reading` (no rule: coloured `_g` and C-alpha self-lit by default), `forward_partial`, `forward_approximation`, `colour_only`, `missing_base_colour`, `unset`, `failed`.
 
 ## dat1lib and serialized sections
 
