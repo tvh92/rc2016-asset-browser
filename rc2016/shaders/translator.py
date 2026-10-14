@@ -12,6 +12,7 @@ structured compiler output. Backward branches are unrolled only within a proven 
 """
 from collections import Counter
 import hashlib
+import json
 import itertools
 import math
 from pathlib import Path
@@ -21,7 +22,7 @@ import sys
 
 from rc2016.shaders.ir import DAG, bits, from_bits
 
-VERSION=14
+VERSION=15
 ROOT=Path(__file__).resolve().parents[2]
 SHADER_SECTION=0x873D1E6C
 # VALU instructions that also write a scalar carry/flag register pair.
@@ -34,8 +35,13 @@ CARRY_OUT={'V_ADD_I32','V_SUB_I32','V_SUBREV_I32','V_ADDC_U32','V_SUBB_U32','V_S
 MAX_PREDICATE_ATOMS=12
 INTEGER_VALU={'V_ADD_I32','V_SUB_I32','V_SUBREV_I32','V_AND_B32','V_OR_B32','V_XOR_B32','V_LSHLREV_B32',
               'V_LSHRREV_B32','V_ASHRREV_I32','V_LSHL_B32','V_LSHR_B32','V_ASHR_I32','V_MUL_LO_I32','V_MUL_LO_U32',
-              'V_MUL_U32_U24','V_MAD_U32_U24','V_BFE_U32','V_BFI_B32','V_CVT_F32_I32','V_CVT_F32_U32',
+              'V_MUL_U32_U24','V_MAD_U32_U24','V_SAD_U32','V_BFE_U32','V_BFI_B32','V_CVT_F32_I32','V_CVT_F32_U32',
               'V_CVT_I32_F32','V_CVT_U32_F32','V_CVT_F32_UBYTE0','V_CVT_F32_UBYTE1','V_CVT_F32_UBYTE2','V_CVT_F32_UBYTE3'}
+BUFFER_LOAD_WORDS={
+    'BUFFER_LOAD_FORMAT_X':1,'BUFFER_LOAD_FORMAT_XY':2,'BUFFER_LOAD_FORMAT_XYZ':3,'BUFFER_LOAD_FORMAT_XYZW':4,
+    'BUFFER_LOAD_UBYTE':1,'BUFFER_LOAD_SBYTE':1,'BUFFER_LOAD_USHORT':1,'BUFFER_LOAD_SSHORT':1,
+    'BUFFER_LOAD_DWORD':1,'BUFFER_LOAD_DWORDX2':2,'BUFFER_LOAD_DWORDX3':3,'BUFFER_LOAD_DWORDX4':4,
+    'TBUFFER_LOAD_FORMAT_X':1,'TBUFFER_LOAD_FORMAT_XY':2,'TBUFFER_LOAD_FORMAT_XYZ':3,'TBUFFER_LOAD_FORMAT_XYZW':4}
 MAX_LOOP_ITERATIONS=32
 _PATTERNS={}
 
@@ -203,6 +209,7 @@ class Compiler:
         self.code=code;self.ir=DAG();self.v=Registers();self.s=Registers();self.descriptors={};self.exports={}
         self.samples=[];self.diagnostics=[];self.current=0;self.scalar_bits={}
         self.allow_independent_samplers=allow_independent_samplers
+        self.buffer_descriptor_taint=set()
         self.exec=self.ir.const(1.);self.bp=self.ir.const(1.);self.masks={};self.scc=None;self.scc_source='program start'
         self.pending={};self.premerged=set();self.exec_masked_export=False
         self.pred_tables={};self.pred_memo={};self.back=None;self.fetch_call=False;self.lane_checks={};self.runtime_conditions=False;self.lane_values=set()
@@ -541,7 +548,12 @@ class Compiler:
         for reg,_value in writes:
             old,new=before.get(reg),after.get(reg)
             table=lambda d:d is not None and (d.get('kind') in (0x13,0x15) or 'table_slot' in d)
-            if not (table(old) or table(new)):continue
+            if not (table(old) or table(new)):
+                # Direct descriptor metadata does not retain both identities
+                # at a conditional join. Do not present it as buffer proof.
+                if any(d is not None and d.get('kind') in (0,1,2,3) for d in (old,new)):
+                    if old is None or new is None or old!=new:self.buffer_descriptor_taint.add(reg)
+                continue
             if new is not None:
                 guard=self.p_and(bp,new.get('guard',self.ir.const(1.)))
                 if old is not None and self.descriptor_identity(old)==self.descriptor_identity(new) and old.get('word')==new.get('word'):
@@ -556,13 +568,19 @@ class Compiler:
         imm=bool(w&256)
         offset=(w&255)*4 if imm else self.ir.value(self.gets(w&255))
         origin=self.descriptors.get(base,{})
+        # A tainted direct descriptor join can make a later scalar load's
+        # destination metadata path-dependent too. Carry that diagnostic taint
+        # through every loaded word; never clear prior taint.
+        base_tainted=any(reg in self.buffer_descriptor_taint for reg in (base,base+1))
         table_origin=None
         if origin.get('kind') in (0x13,0x15):
             table_origin=self.texture_descriptor(base,origin['kind'],2)
         table_offset=(int(offset) if offset is not None and math.isfinite(offset)
                       and offset==int(offset) and offset>=0 and int(offset)%4==0 else None)
         for j in range(count):
-            reg=dst+j;self.descriptors.pop(reg,None);self.scalar_bits.pop(reg,None)
+            reg=dst+j
+            if base_tainted:self.buffer_descriptor_taint.add(reg)
+            self.descriptors.pop(reg,None);self.scalar_bits.pop(reg,None)
             if origin.get('kind')==2 and 'BUFFER_LOAD'in name and offset is not None:
                 dword=int(offset)//4+j
                 self.s[reg]=self.ir.node('input',name=f"CB{origin['api']}[{dword}]",kind='cb',api=origin['api'],dword=dword)
@@ -584,6 +602,61 @@ class Compiler:
             # different words of a multi-dword load compare and cancel as equal.
             else:self.s[reg]=self.unknown('Unresolved scalar memory load',word=j,base=base,
                                          load_offset=None if offset is None else int(offset))
+
+    def buffer_expression(self,root,depth=4):
+        """Bounded diagnostic text with structural hashes instead of DAG IDs."""
+        memo=self.ir.__dict__.setdefault('_buffer_expression_hashes',{})
+        def digest(i):
+            if i not in memo:
+                n=self.ir.nodes[i]
+                record={k:v for k,v in n.items() if k!='args'}
+                record['args']=[digest(j) for j in n.get('args',[])]
+                memo[i]=hashlib.sha256(json.dumps(record,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+            return memo[i]
+        def text(i,left):
+            n=self.ir.nodes[i]
+            if n['op']=='const':return str(n['value'])
+            if n['op']=='input':return n['name']
+            if left==0:return 'expr:'+digest(i)[:16]
+            return n['op']+'('+', '.join(text(j,left-1) for j in n.get('args',[]))+')'
+        return text(root,depth),digest(root)
+
+    def buffer_load(self,i,name):
+        """Record an unresolved read, preserving its actual VGPR write span.
+
+        Descriptor/address strings are diagnostic snapshots, not executable
+        references or decoded buffer contents. Bounds remain unproved.
+        """
+        q=i['wide'];f=i['fields'];kind=i['kind'];dst=f['dst'][0]
+        width=BUFFER_LOAD_WORDS[name];tfe=bool((q>>55)&1)
+        if kind==12 and (q>>16)&1:raise ValueError('Buffer load to LDS is unsupported')
+        if dst+width+int(tfe)>256:raise ValueError('Buffer load destination span exceeds VGPR range')
+        vaddr,srsrc,soffset=f['src'][:3]
+        offen=bool((q>>12)&1);idxen=bool((q>>13)&1);addr64=kind==12 and bool((q>>15)&1)
+        if addr64 and (offen or idxen):raise ValueError('ADDR64 buffer loads require OFFEN and IDXEN disabled')
+        address_words=2 if addr64 else int(offen)+int(idxen)
+        if vaddr+address_words>256:raise ValueError('Buffer load address span exceeds VGPR range')
+        addresses=[self.buffer_expression(self.getv(vaddr+j)) for j in range(address_words)]
+        scalar_word=self.scalar_operand_bits(soffset,None)
+        scalar_node=self.s.get(soffset) if soffset<=127 else None
+        scalar=(f'0x{scalar_word:x}' if scalar_word is not None else
+                f's{soffset}='+self.buffer_expression(scalar_node,2)[0] if scalar_node is not None else f's{soffset}')
+        first=self.descriptors.get(srsrc,{})
+        proved=self.texture_descriptor(srsrc,first.get('kind'),4) if first else None
+        if any(r in self.buffer_descriptor_taint for r in range(srsrc,srsrc+4)):proved=None
+        descriptor={key:proved[key] for key in ('kind','api','reg','flags','table_slot') if key in proved} if proved else None
+        access=dict(kind='MUBUF' if kind==12 else 'MTBUF',opcode=name,tfe=tfe,
+            instruction_offset=i['relative'],instruction_words=[q&0xffffffff,q>>32],
+            operands=dict(vaddr=vaddr,vdata=dst,srsrc=srsrc,soffset=soffset),
+            controls=dict(offset=q&0xfff,offen=offen,idxen=idxen,addr64=addr64),
+            format=dict(source='instruction',data_format=(q>>19)&15,numeric_format=(q>>23)&7) if kind==13 else dict(source='descriptor',decoded=False),
+            descriptor_proof=descriptor,address_expressions=[t for t,h in addresses],
+            address_expression_sha256=[h for t,h in addresses],scalar_offset_expression=scalar,
+            data_words=width,memory_evaluated=False,bounds='unproven')
+        for j in range(width):
+            self.v[dst+j]=self.unknown(name,buffer_access=dict(access,role='data',component=j))
+        if tfe:
+            self.v[dst+width]=self.unknown(name,buffer_access=dict(access,role='tfe_status',component=None))
 
     def instruction(self,i):
         self.current=i['relative'];k=i['kind'];w=i['word'];q=i['wide'];f=i['fields']
@@ -686,7 +759,9 @@ class Compiler:
             if name in ('S_MOV_B32','S_MOV_B64'):
                 raw=f['src'][0]
                 if raw<=127:
-                    # Keep integer address/offset values; F32 readers use the copied bits.
+                    # Snapshot both values and taint before writes: B64 copies may
+                    # overlap their source words. Taint is historical and only grows.
+                    source_tainted=[raw+j in self.buffer_descriptor_taint for j in range(count)]
                     rows=[(self.gets(raw+j),self.scalar_bits.get(raw+j),self.descriptors.get(raw+j)) for j in range(count)]
                 else:
                     # Scalar words keep integer values for addressing and raw bits for F32 readers.
@@ -706,21 +781,15 @@ class Compiler:
                     else:self.scalar_bits.pop(dst+j,None)
                     if descriptor is not None:self.descriptors[dst+j]=dict(descriptor)
                     else:self.descriptors.pop(dst+j,None)
+                    if raw<=127 and source_tainted[j]:self.buffer_descriptor_taint.add(dst+j)
             elif name=='S_MOVK_I32':
                 simm=struct.unpack('<h',struct.pack('<H',w&0xffff))[0]
                 self.s[dst]=self.ir.const(simm);self.scalar_bits[dst]=simm&0xffffffff;self.descriptors.pop(dst,None)
             elif name=='S_WQM_B64' and dst==126:pass  # whole-quad helpers do not change active lanes' values
             else:self.clobber_s(dst,count,name)
             return
-        if k==13 and name in ('TBUFFER_LOAD_FORMAT_X','TBUFFER_LOAD_FORMAT_XY',
-                               'TBUFFER_LOAD_FORMAT_XYZ','TBUFFER_LOAD_FORMAT_XYZW'):
-            # MTBUF loads write only their component span, plus the optional
-            # texture-failure status VGPR (TFE bit 55). Values remain unknown;
-            # preserving neighbouring registers does not bind the buffer.
-            count={'X':1,'XY':2,'XYZ':3,'XYZW':4}[name.rsplit('_',1)[1]]+((q>>55)&1)
-            dst=f['dst'][0]
-            for j in range(count):self.v[dst+j]=self.unknown(name)
-            return
+        if k in (12,13) and name in BUFFER_LOAD_WORDS:
+            self.buffer_load(i,name);return
         if k in (11,12,13):
             dst=f.get('dst',[0])[0]
             for j in range(4):self.v[dst+j]=self.unknown(name)
@@ -756,7 +825,8 @@ class Compiler:
         name=FINITE_ALIASES.get(name,name)
         if name in INTEGER_VALU:
             # Integer results are exact on bit patterns; clamp/omod do not apply.
-            value=(self.unknown(name+' with clamp/omod',*args) if k==7 and (f['omod'] or f['clamp'])
+            value=(self.unknown(name+' with clamp/omod',*args) if k==7 and (f['omod'] or f['clamp']
+                       or (name=='V_SAD_U32' and any(m['abs'] or m['neg'] for m in f['src_modifiers'])))
                    else self.integer_valu(name,args))
             self.v[d]=value;return
         unary={'V_MOV_B32':None,'V_RSQ_F32':'rsqrt','V_RCP_F32':'rcp','V_SQRT_F32':'sqrt',
@@ -825,6 +895,7 @@ class Compiler:
     def integer_valu(self,name,a):
         c=lambda word:self.ir.const(from_bits(word))
         op=self.ir.op
+        if name=='V_SAD_U32':return op('u_sad',a[0],a[1],a[2])
         if name=='V_ADD_I32':return op('u_add',a[0],a[1])
         if name=='V_SUB_I32':return op('u_sub',a[0],a[1])
         if name=='V_SUBREV_I32':return op('u_sub',a[1],a[0])

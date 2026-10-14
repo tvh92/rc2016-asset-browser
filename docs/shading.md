@@ -125,6 +125,14 @@ Skin (`apply_skin_emissive`, group `SKIN_GROUP_NAME`, `SKIN_GROUP_VERSION` 3):
 
 Per-family decodes (decoded writers, native skin and `character_glass` GCN) come from the research notes, which are not included.
 
+### Buffer-read tracing
+
+Known MUBUF and MTBUF loads preserve their decoded component write span and the optional TFE status register. Each unresolved data component and status value has a distinct IR identity, so unrelated fetched words cannot cancel as equal. Adjacent registers retain their values. Loads to LDS and address/destination spans beyond the VGPR range stay unsupported.
+
+Unresolved reads retain a diagnostic `buffer_access` record: raw instruction words, register operands, offset/index controls, instruction format when available, descriptor-word proof, and bounded address-expression snapshots. This record does not evaluate memory or establish buffer bounds, runtime contents, a vertex attribute meaning, or draw selection. Conditional direct descriptor joins with differing or missing identities suppress the diagnostic proof. Descriptor identity alone does not bind a fetch. Typed buffer reads remain unsupported by the rendering frontends.
+
+`V_SAD_U32` uses unsigned absolute difference plus its third operand with 32-bit wrap, following the detailed operation in AMD's [GCN3 ISA reference](https://gpuopen.com/download/AMD_GCN3_Instruction_Set_Architecture_rev1.1.pdf). Integer results retain bit-pattern semantics. Constants and exact identities can fold during tracing; live integer expressions remain outside the portable material frontend. Non-finite bit-pattern literals and unverified instruction modifiers retain the existing unsupported limits.
+
 ### Viewer graph rules
 
 For graphs without a registered family, `apply_viewer_graph_rule` builds the asset viewer's per-graph reading on the shared deferred BRDF (rules from `viewer_graph_rule` in `rc2016/formats/materials.py`; the GL implementation is in `rc2016/viewer/shading.py`, see [viewer](viewer.md)).

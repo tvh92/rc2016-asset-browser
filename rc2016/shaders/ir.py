@@ -12,7 +12,7 @@ OPS = {'add', 'sub', 'mul', 'div', 'neg', 'abs', 'min', 'max', 'sqrt',
        'lt', 'le', 'gt', 'ge', 'eq', 'ne', 'select', 'pack', 'bit_and', 'bit_or',
        'floor', 'fract'} | {'u_and', 'u_or', 'u_xor', 'u_andn2', 'u_shl', 'u_shr',
        'u_eq', 'u_lt', 'u_le', 'i_lt', 'i_le', 'u_bit', 'u_add', 'u_sub', 'u_mul', 'i_shr',
-       'u_bfe', 'i2f', 'u2f', 'f2i', 'f2u'}
+       'u_bfe', 'u_sad', 'i2f', 'u2f', 'f2i', 'f2u'}
 # Uniform 32-bit integer operations. Operands and bitwise results are F32
 # values whose bit pattern is the integer (as scalar constant-buffer words are
 # read); comparisons return 0/1. They fold once material constants are bound
@@ -62,6 +62,7 @@ def compute(op, a):
         'i_le':lambda: float(signed(bits(a[0]))<=signed(bits(a[1]))), 'u_bit':lambda: float((bits(a[0])>>(bits(a[1])&31))&1),
         'u_add':lambda: from_bits(bits(a[0])+bits(a[1])), 'u_sub':lambda: from_bits(bits(a[0])-bits(a[1])),
         'u_mul':lambda: from_bits(bits(a[0])*bits(a[1])), 'i_shr':lambda: from_bits(signed(bits(a[0]))>>(bits(a[1])&31)),
+        'u_sad':lambda: from_bits(abs(bits(a[0])-bits(a[1]))+bits(a[2])),
         'u_bfe':lambda: from_bits((bits(a[0])>>(bits(a[1])&31))&((1<<(bits(a[2])&31))-1)),
         'i2f':lambda: float(signed(bits(a[0]))), 'u2f':lambda: float(bits(a[0])),
         'f2i':lambda: _f2i(a[0], -2**31, 2**31-1), 'f2u':lambda: _f2i(a[0], 0, 2**32-1),
@@ -101,6 +102,11 @@ class DAG:
                 v=compute(op,values)
                 if isinstance(v,(int,float)) and math.isfinite(v):return self.const(v)
             except (ValueError,ZeroDivisionError,OverflowError):pass
+        if op=='u_sad':
+            if args[0]==args[1]:return args[2]
+            for first,second in ((0,1),(1,0)):
+                if values[first] is not None and bits(values[first])==0:
+                    return self.op('u_add',args[second],args[2])
         if op=='mul':
             if 0 in values:return self.const(0.)
             if values[0]==1:return args[1]
