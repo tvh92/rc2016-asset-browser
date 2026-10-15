@@ -391,6 +391,9 @@ def _viewer_expected_constants(rule):
         l = terms["leaf_colour"]; e.update({"leaf exponent":l["exponent"], "leaf scale":l["scale"], "leaf palette":l["palette_rgb"]})
     if "fresnel_tint" in ported:
         f = terms["fresnel_tint"]; e.update({"mushroom fresnel exponent": f["exponent"], "mushroom fresnel colour": f["colour"]})
+    if "hair" in ported:
+        h = terms["hair"]; e.update({"hair albedo": h["albedo"], "hair spec colour": h["spec"], "hair rim exponent": h["rim_exponent"],
+                                     "hair gloss scale": h["gloss_scale"], "hair normal strength": h["normal_strength"]})
     if "pick" in ported:
         p = terms["pick"]; e.update({"pick scale": p["scale"], "pick blend": p["blend"], "pick u": p["u"]})
     if "tint" in ported:
@@ -468,6 +471,8 @@ def _viewer_required(rule, has_n):
         names += ["leaf exponent", "leaf scale", "leaf palette"]; req("_cma")
     if "fresnel_tint" in ported:
         names += ["mushroom fresnel exponent", "mushroom fresnel colour"]; req("_c")
+    if "hair" in ported:
+        names += ["hair albedo", "hair spec colour", "hair rim exponent", "hair gloss scale", "hair normal strength"]; req("_c", "_g")
     if "pick" in ported and "vehicle" not in ported and "tint" not in ported:
         names += ["pick u", "pick scale", "pick blend"]; req("_pick")
     if "tint" in ported:
@@ -648,8 +653,10 @@ def _validate_viewer_rule_material(source, material):
     if facing:   # 0CD2AAFB has no albedo input
         assert {node.name for node in _viewer_upstream(brdf.inputs[0])} == {"VR facing glow albedo"}, \
             "Facing-glow albedo is not the white source constant"
-    elif arch or glow1:   # these writers never sample _c.rgb
+    elif arch or glow1 or "hair" in ported:   # these writers never sample _c.rgb
         assert not reaches(brdf.inputs[0], "_c"), "Viewer-rule albedo samples _c although the writer does not"
+        if "hair" in ported:
+            assert {node.name for node in _viewer_upstream(brdf.inputs[0])} == {"VR hair albedo"},                 "Hair albedo is not the material constant A"
     else:
         assert reaches(brdf.inputs[0], "_c"), "Viewer-rule _c image does not feed the BRDF albedo"
     has_g = bool(rule["textures"].get("_g")) and brdf.inputs[2].is_linked
