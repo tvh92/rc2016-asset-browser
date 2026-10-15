@@ -38,11 +38,11 @@ PROFILE_MIN_SKY = 0.1       # fraction of clear-sky pixels a bin needs to count
 # the low bins. Chosen when the probe was still decoded clamped to 1; kept as a deliberate cap now that it is
 # decoded in HDR (above 24 degrees it removes under 1% of the blue pixels, so those bins are unchanged).
 CLEAR_SKY_MAX = 0.98
-# Dome fog and display, mirrored in SKY_FRAGMENT (rc2016/viewer/shading.py; tests keep the values in step).
+# Dome fog and the sky display of the other tonemaps, mirrored in SKY_FRAGMENT (rc2016/viewer/shading.py; tests keep the values in step).
 # Inferred or calibrated, not decoded; docs/levels.md ("Sky in the level viewer").
 DOME_FOG_DISTANCE = 10000.0   # the dome is treated as a point this far from the camera along the view ray
-DOME_FOG_BRIGHTNESS = 2.5     # dome fog colour = this x the fog (horizon) colour; fitted to the Novalis probe
-SKY_EXPOSURE = 0.9            # sky-only exposure before the Khronos Neutral curve; fitted to one in-game frame
+# The dome fog colour is the geometry's (``rc2016.levels.fog.fog_colour``: one shared inferred factor).
+SKY_EXPOSURE = 0.9            # sky exposure before the Khronos Neutral curve of the non-game tonemaps; fitted to one in-game frame
 ATMOSPHERE_PATH = re.compile(rb'([\x20-\x7e]+\.atmosphere)\x00')
 REFLECTION_PATH = re.compile(rb'([\x20-\x7e]*volumereflections[\x20-\x7e]+\.texture)\x00')
 
@@ -85,16 +85,31 @@ def sun_colour(atmosphere_data):
     return tuple(candidate['surface_irradiance_rgb_candidate'])
 
 
-def fog_profile(atmosphere_data):
-    """Authored fog profile of an atmosphere ({'heights', 'densities'}, ``rc2016.levels.fog.read_profile``), or None."""
+def _header_section(atmosphere_data):
+    """Bytes of the atmosphere's 131552-byte parameter header section, or None."""
     from rc2016.formats.container import read_container
-    from rc2016.levels.fog import read_profile
     from rc2016.pipeline.lighting import ATMOSPHERE_HEADER
     root = read_container(atmosphere_data, 0, {})
     for section in root['sections']:
         if int(section['label_hash'], 16) == ATMOSPHERE_HEADER:
-            return read_profile(atmosphere_data[section['offset']:section['offset'] + section['size']])
+            return atmosphere_data[section['offset']:section['offset'] + section['size']]
     return None
+
+
+def fog_profile(atmosphere_data):
+    """Authored fog profile of an atmosphere ({'heights', 'densities'}, ``rc2016.levels.fog.read_profile``), or None."""
+    from rc2016.levels.fog import read_profile
+    header = _header_section(atmosphere_data)
+    return read_profile(header) if header is not None else None
+
+
+def colour_grade(atmosphere_data):
+    """The atmosphere's 32x32x32 colour-grade LUT as raw R8G8B8A8 bytes (``rc2016.levels.display.grade_from_header``), or None."""
+    from rc2016.levels.display import GRADE_BYTES, GRADE_OFFSET
+    header = _header_section(atmosphere_data)
+    if header is None or len(header) < GRADE_OFFSET + GRADE_BYTES:
+        return None
+    return bytes(header[GRADE_OFFSET:GRADE_OFFSET + GRADE_BYTES])
 
 
 def dome_constants(material_data, graph_data):
@@ -182,7 +197,7 @@ def clear_sky_profile(archive, texture_path):
 
 def level_sky(archive, zone_paths, profile=True):
     """The sky of a level, from its zone list: {'atmosphere', 'sun_ray', 'domes', 'unsupported',
-    'sun_rgb', 'clear_sky', 'fog' (authored height-fog profile or None), 'reflection', 'notes'}, or None when no atmosphere zone names an atmosphere.
+    'sun_rgb', 'clear_sky', 'fog' (authored height-fog profile or None), 'grade' (colour-grade LUT bytes or None), 'reflection', 'notes'}, or None when no atmosphere zone names an atmosphere.
 
     Each dome: {'model', 'geometry' (model_geometry), 'spans': [(first triangle, count)], 'material',
     'constants' (23 floats), 'dome_texture', 'noise_texture', 'stars'}. Textures come from the graph's
@@ -200,7 +215,7 @@ def level_sky(archive, zone_paths, profile=True):
     atmosphere = atmospheres.pop()
     data = asset_bytes(archive, atmosphere)
     result = dict(atmosphere=atmosphere, sun_ray=sun_ray(data), sun_rgb=sun_colour(data), domes=[], unsupported=[],
-                  notes=[], clear_sky=None, reflection=None, fog=fog_profile(data))
+                  notes=[], clear_sky=None, reflection=None, fog=fog_profile(data), grade=colour_grade(data))
     for model in [r['path'] for r in references(data) if r['path'].endswith('.model')]:
         geometry = model_geometry(archive, model)
         slots = {}

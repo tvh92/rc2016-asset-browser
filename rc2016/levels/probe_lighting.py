@@ -18,9 +18,10 @@ Evidence and limits:
 - The glare itself is cut at ``GLARE_THRESHOLD`` and left to the atmosphere sun, so the sun is not
   counted twice. The threshold is a viewer choice (about the 99th percentile of the Novalis probe).
 - Not decoded: how RGB96 scales against the probe (the Novalis sun, 0.7, is small beside the sky
-  irradiance, about 1.5 to 2.2; field names and any multiplier are unresolved), the exposure that
-  maps these units to the display (``REVIEW_EXPOSURE_STOPS`` is 0 so the sky dome drawn behind
-  agrees with the game, and the lit level gets a visual ``DIFFUSE_LIGHT_SCALE`` instead), light-grid
+  irradiance, about 1.5 to 2.2; field names and any multiplier are unresolved), the exposure of
+  Novalis' frame (the Level atmosphere display, ``rc2016.levels.display``, applies the Veldin capture's
+  exposure 4.55 on top of these units; ``REVIEW_EXPOSURE_STOPS`` stays 0 so the sky dome and the lit
+  level share it, and the lit level gets a visual ``DIFFUSE_LIGHT_SCALE`` instead), light-grid
   irradiance, per-region probe selection and occlusion of the sky term. This is a review preview, not
   game lighting.
 - The research pipeline's ``novalis`` source uses a different probe (``NOVALIS_PROBE``, about 25 times
@@ -44,13 +45,14 @@ LATLONG_SIZE = (1024, 512)
 SEAM_RATIO_LIMIT = 2.0        # the pipeline rejects a cube whose seams are worse than this
 FORMAT_BC6H = 95
 REVIEW_EXPOSURE_STOPS = 0.0   # see the module docstring
-# Visual calibration against one in-game Novalis screenshot, not decoded data: with unit scale the lit
-# level came out 1.4 to 2.7 stops darker than the game while the sky dome (drawn in the probe's units, at
-# exposure 0) already matched it, so exposure cannot be raised (it would also raise the sky). The
-# diffuse terms (SH irradiance and sun) are scaled by pi instead, which is 1.65 stops and what a diffuse
-# without the 1/pi factor would give; the specular bands stay in probe units. Best fit over sunlit
-# grass, tree canopy and sunlit rock was 1.5 stops.
-DIFFUSE_LIGHT_SCALE = math.pi
+# Visual calibration against one in-game Novalis screenshot, not decoded data. The sky dome (probe units)
+# already matches the game through the captured display chain (``rc2016.levels.display``), so exposure
+# cannot be raised; the diffuse terms (SH irradiance and sun) are scaled instead, the specular bands stay in
+# probe units. Fitted under that chain (exposure 4.55, the captured tone curve) over sunlit grass, tree
+# canopy and sunlit rock, they land within 0.3 stops of the game with 5.0 (pi is what a diffuse without the
+# 1/pi factor gives; the remaining 1.6 is unexplained, plausibly a runtime sun and sky multiplier: the Veldin
+# capture's key light is 5 to 7 times its atmosphere's RGB96). Under the previous ACES fit the fit was pi.
+DIFFUSE_LIGHT_SCALE = 5.0
 GLARE_THRESHOLD = 2.0         # luminance above which probe radiance is left to the atmosphere sun
 
 

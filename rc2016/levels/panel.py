@@ -685,6 +685,10 @@ class LevelPanel:
     def _lighting_changed(self):
         if self.lighting_var.get() == "Shared HDRI":
             self.tonemap_var.set("Khronos PBR Neutral")
+        elif self.lighting_var.get() == "Level atmosphere":
+            self.tonemap_var.set("Game (captured)")   # the game's own display chain (rc2016/levels/display.py)
+        elif self.tonemap_var.get() == "Game (captured)":
+            self.tonemap_var.set(LevelViewport.TONEMAPS[0])   # that chain belongs to the Level atmosphere lighting
         self.view.set_lighting(self.lighting_var.get(), self.tonemap_var.get())
 
     def _picked(self, path):

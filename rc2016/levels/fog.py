@@ -31,6 +31,9 @@ MIN_TRANSPARENCY = 1e-10
 FOG_EXPONENT = 1.45
 FOG_START = 13.2006
 MIN_DY = 1e-4               # the shader's clamp of the vertical offset (decoded)
+# Fog colour = FOG_COLOUR_SCALE x the sky's horizon colour, for the geometry fog and the dome fog alike (inferred, see
+# ``fog_colour``). The geometry fog used the plain horizon sample (1.0) while the dome fit wanted 2.5.
+FOG_COLOUR_SCALE = 2.5
 
 
 def read_profile(header):
@@ -105,6 +108,22 @@ def horizon_colour(profile):
     return tuple(float(x) for x in profile[0])
 
 
+def fog_colour(profile, scale=None):
+    """The fog colour (HDR, the units of the lit colour before exposure) for a clear-sky profile, or None: ``scale``
+    (default ``FOG_COLOUR_SCALE``) times the lowest bin. One colour serves the geometry fog and the sky dome.
+
+    Inferred, not decoded (the game computes its fog colour on the CPU from the atmosphere; the Veldin capture's
+    was (1.665, 3.720, 5.201), not found in the header). Evidence for a factor above 1: the captured Veldin colour
+    is of the same size as 2.5 x Novalis' horizon sample (about 1.0, 1.7, 2.2 x 2.5 against 1.7, 3.7, 5.2), a fog
+    equal to the horizon sample greys the clouds and the far terrain, and the dome fit of the Novalis probe gave 2
+    to 3. The factor is not decoded and the hue is the sampled horizon's, not the game's."""
+    horizon = horizon_colour(profile)
+    if horizon is None:
+        return None
+    scale = FOG_COLOUR_SCALE if scale is None else float(scale)
+    return tuple(scale * c for c in horizon)
+
+
 def apply_fog(colour, transmittance, fog_colour):
     """CPU reference of the shader's blend: ``mix(fog, colour, T)`` per channel."""
     return tuple(f * (1.0 - transmittance) + c * transmittance for c, f in zip(colour, fog_colour))
@@ -115,7 +134,7 @@ def fog_state(sky, lighting, cam_y, enabled=True):
     profile (``sky['fog']``), a captured clear-sky profile for the colour, and ``enabled``.
     Returns {'colour': RGB, 'ramps': build_ramps(...)}."""
     sky = sky or {}
-    colour = horizon_colour(sky.get('clear_sky'))
+    colour = fog_colour(sky.get('clear_sky'))
     profile = sky.get('fog')
     if not enabled or lighting != 'Level atmosphere' or colour is None or not profile:
         return None

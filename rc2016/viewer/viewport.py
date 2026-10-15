@@ -598,7 +598,7 @@ class ModelViewport(_TkFrame):
         the ctypes conversions) and reused by every program the frame uses."""
         state = self._frame_lighting
         if state is None:
-            from rc2016.viewer.shading import ENVIRONMENT_TEXTURE_UNIT
+            from rc2016.viewer.shading import ENVIRONMENT_TEXTURE_UNIT, GRADE_TEXTURE_UNIT
             gl = self._gl
             hdri = (self.lighting in self.ENVIRONMENT_LIGHTINGS and self._environment_lighting == self.lighting
                     and bool(self._environment) and bool(self._upload_environment()))
@@ -606,7 +606,11 @@ class ModelViewport(_TkFrame):
             gl.glGetFloatv.argtypes = [ctypes.c_uint, ctypes.c_void_p]
             gl.glGetFloatv(self.GL_MODELVIEW_MATRIX, modelview)
             view_to_world, rig = light_frames(list(modelview), self.OBJECT_TO_WORLD, self.RIG_FIXED_TO_WORLD)
-            state = dict(hdri=hdri, tonemap=self.TONEMAPS.index(self.tonemap),
+            tonemap = self.TONEMAPS.index(self.tonemap)
+            grade_texture = self._display_texture_name() if tonemap == self.GAME_TONEMAP and hdri else 0
+            if tonemap == self.GAME_TONEMAP and not grade_texture:
+                tonemap = 0   # the captured display transform belongs to the Level atmosphere lighting only
+            state = dict(hdri=hdri, tonemap=tonemap, grade_unit=GRADE_TEXTURE_UNIT, grade_texture=grade_texture,
                          exposure=2.0 ** self._environment["exposure"] if hdri else 1.0,
                          view_to_world=(ctypes.c_float * 9)(*column_major3(view_to_world)),
                          rig=(ctypes.c_float * 9)(*column_major3(rig)), unit=ENVIRONMENT_TEXTURE_UNIT,
@@ -620,6 +624,42 @@ class ModelViewport(_TkFrame):
                              sun_colour=tuple(float(x) * strength for x in self._environment["sun"]))
             self._frame_lighting = state
         return state
+
+    GAME_TONEMAP = 2   # tonemap index of the captured game display (uTonemap 2); only the level viewer offers it
+
+    def _display_table_key(self):
+        """Hashable identity of the captured display table (rc2016.levels.display.display_table) in use, or None."""
+        return None
+
+    def _display_table_build(self):
+        """The float32 (rows, columns, 3) display table for ``_display_table_key``."""
+        raise NotImplementedError
+
+    def _display_texture_name(self):
+        """GL texture (RGB16F) of the captured display table, or 0 when there is none; rebuilt when its key changes."""
+        key = self._display_table_key()
+        cached = self.__dict__.get('_display_texture')
+        gl = self._gl
+        if cached is not None and cached[0] != key:
+            gl.glDeleteTextures(1, ctypes.byref(ctypes.c_uint(cached[1])))
+            cached = self._display_texture = None
+        if key is None:
+            return 0
+        if cached is None:
+            import numpy as np
+            table = np.ascontiguousarray(self._display_table_build(), np.float32)
+            name = ctypes.c_uint(0)
+            gl.glGenTextures(1, ctypes.byref(name))
+            gl.glBindTexture(self.GL_TEXTURE_2D, name.value)
+            gl.glPixelStorei(self.GL_UNPACK_ALIGNMENT, 1)
+            gl.glTexImage2D(self.GL_TEXTURE_2D, 0, 0x881B, table.shape[1], table.shape[0], 0, 0x1907, self.GL_FLOAT,
+                            table.ctypes.data_as(ctypes.c_void_p))
+            for parameter, value in ((self.GL_TEXTURE_MIN_FILTER, self.GL_LINEAR), (self.GL_TEXTURE_MAG_FILTER, self.GL_LINEAR),
+                                     (self.GL_TEXTURE_WRAP_S, 0x812F), (self.GL_TEXTURE_WRAP_T, 0x812F)):
+                gl.glTexParameteri(self.GL_TEXTURE_2D, parameter, value)
+            gl.glBindTexture(self.GL_TEXTURE_2D, 0)
+            cached = self._display_texture = (key, name.value)
+        return cached[1]
 
     def _fog_values(self):
         """rc2016.levels.fog.uniform_values of the height fog: none in the model viewer (the level viewer overrides this)."""
@@ -647,6 +687,9 @@ class ModelViewport(_TkFrame):
         sh.glUniform1i(u["uEnvTex"], state["unit"])
         sh.glActiveTexture(self.GL_TEXTURE0 + state["unit"])
         gl.glBindTexture(self.GL_TEXTURE_2D, state["texture"])
+        sh.glUniform1i(u["uGradeTex"], state["grade_unit"])
+        sh.glActiveTexture(self.GL_TEXTURE0 + state["grade_unit"])
+        gl.glBindTexture(self.GL_TEXTURE_2D, state["grade_texture"])
         sh.glActiveTexture(self.GL_TEXTURE0)
         if state["hdri"]:
             sh.glUniform3fv(u["uSH"], 9, state["sh"])

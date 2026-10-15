@@ -136,10 +136,15 @@ class LevelFogTests(unittest.TestCase):
         self.assertEqual(fog.horizon_colour([(0.4, 0.7, 0.9), (0.1, 0.2, 0.3)]), (0.4, 0.7, 0.9))
         self.assertIsNone(fog.horizon_colour(None))
 
+    def test_fog_colour_scales_the_horizon_colour(self):
+        self.assertEqual(fog.fog_colour([(0.4, 0.7, 0.9)], 2.0), (0.8, 1.4, 1.8))
+        self.assertEqual(fog.fog_colour([(0.4, 0.7, 0.9)]), tuple(fog.FOG_COLOUR_SCALE * c for c in (0.4, 0.7, 0.9)))
+        self.assertIsNone(fog.fog_colour(None))
+
     def test_fog_state_only_for_level_atmosphere(self):
         sky = dict(clear_sky=[(0.4, 0.7, 0.9), (0.1, 0.2, 0.3)], fog=NOVALIS)
         state = fog.fog_state(sky, 'Level atmosphere', 75.0)
-        self.assertEqual(state['colour'], (0.4, 0.7, 0.9))
+        self.assertEqual(state['colour'], tuple(fog.FOG_COLOUR_SCALE * c for c in (0.4, 0.7, 0.9)))
         self.assertEqual(state['ramps'], fog.build_ramps(NOVALIS, 75.0))
         self.assertIsNone(fog.fog_state(sky, 'Level atmosphere', 75.0, enabled=False))
         self.assertIsNone(fog.fog_state(sky, 'Shared HDRI', 75.0))

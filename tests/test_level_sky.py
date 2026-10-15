@@ -106,12 +106,22 @@ class DomeFogTests(unittest.TestCase):
         near = fog_T((3000 * 0.866, 3000 * 0.5, 0.0), (0.0, 0.0, 0.0), ramps)
         self.assertAlmostEqual(near, sky.dome_fog_transmittance(0.5, ramps), places=3)
 
+    def test_dome_and_geometry_share_one_fog_colour(self):
+        from rc2016.levels import fog
+        from rc2016.viewer import shading
+        self.assertNotIn('SKY_FOG_BRIGHTNESS', shading.SKY_FRAGMENT)       # no second, dome-only factor
+        self.assertIn('mix(uFogColour, rgb,', shading.SKY_FRAGMENT)
+        profile = [(0.4, 0.7, 0.9), (0.1, 0.2, 0.3)]
+        state = fog.fog_state(dict(clear_sky=profile, fog=dict(heights=(-100.0, -52.0, 386.0, 926.0, 400.0),
+                                                              densities=(1.0, 0.1, 0.002, 0.0, 0.0))), 'Level atmosphere', 75.0)
+        self.assertEqual(state['colour'], fog.fog_colour(profile))
+        self.assertEqual(fog.uniform_values(state)[1], state['colour'])    # what both programs receive
+
     def test_glsl_constants_match_the_python_reference(self):
         import re
         from rc2016.viewer import shading
         source = shading.SKY_FRAGMENT
-        for name, value in (('SKY_FOG_DISTANCE', sky.DOME_FOG_DISTANCE), ('SKY_FOG_BRIGHTNESS', sky.DOME_FOG_BRIGHTNESS),
-                            ('SKY_EXPOSURE', sky.SKY_EXPOSURE)):
+        for name, value in (('SKY_FOG_DISTANCE', sky.DOME_FOG_DISTANCE), ('SKY_EXPOSURE', sky.SKY_EXPOSURE)):
             found = re.search(rf'const float {name} = ([0-9.]+);', source)
             self.assertIsNotNone(found, name)
             self.assertEqual(float(found.group(1)), value, name)

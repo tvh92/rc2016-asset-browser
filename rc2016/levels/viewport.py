@@ -261,6 +261,9 @@ class LevelViewport(ModelViewport):
     # (rc2016.levels.probe_lighting); opt-in, review preview.
     LIGHTINGS = ModelViewport.LIGHTINGS + ("Level atmosphere",)
     ENVIRONMENT_LIGHTINGS = ModelViewport.ENVIRONMENT_LIGHTINGS + ("Level atmosphere",)
+    # The game's captured display chain (rc2016.levels.display), offered for the Level atmosphere lighting only: another
+    # lighting falls back to the ACES fit.
+    TONEMAPS = ModelViewport.TONEMAPS + ("Game (captured)",)
     EXT = {
         "glGenBuffers": (None, [ctypes.c_int, ctypes.c_void_p]),
         "glDeleteBuffers": (None, [ctypes.c_int, ctypes.c_void_p]),
@@ -605,6 +608,14 @@ class LevelViewport(ModelViewport):
         # The eye is in the Z-up presentation basis, whose Z is the game's native Y (the fog's height axis).
         return uniform_values(fog_state(getattr(self, "_sky", None), self.lighting if hdri else None, self._eye[2], enabled))
 
+    def _display_table_key(self):
+        grade = (getattr(self, "_sky", None) or {}).get("grade")
+        return None if not grade else (len(grade), hash(grade))
+
+    def _display_table_build(self):
+        from rc2016.levels.display import display_table, grade_from_bytes
+        return display_table(grade_from_bytes(self._sky["grade"]))
+
     def set_fog(self, enabled):
         """Switch the Level atmosphere distance haze on or off (it only applies to that lighting)."""
         self.fog_enabled = bool(enabled)
@@ -633,8 +644,8 @@ class LevelViewport(ModelViewport):
         probe = maps["probe"].rsplit("/", 2)[-2]
         sun = ", ".join(f"{float(x):.2f}" for x in maps["sun_rgb"])
         return (f"Level atmosphere: probe {probe} ambient, sun RGB96 ({sun}) from the atmosphere. Review preview: "
-                f"sun-to-sky scale and exposure are undecoded; diffuse light is scaled by {maps.get('diffuse_scale', 1.0):.2f} "
-                f"to match one in-game screenshot (visual calibration).")
+                f"sun-to-sky scale is undecoded; diffuse light is scaled by {maps.get('diffuse_scale', 1.0):.2f} "
+                f"to match one in-game screenshot (visual calibration). Display: the captured game tone curve and grade.")
 
     def set_show_sky(self, show):
         self.show_sky = bool(show)

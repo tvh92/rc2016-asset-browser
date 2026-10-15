@@ -23,6 +23,7 @@ import struct
 from rc2016.levels.scene_effects import HELPERS as SCENE_HELPERS, SCENE_UNIFORMS
 
 ENVIRONMENT_TEXTURE_UNIT = 6   # shared review HDRI: prefiltered radiance bands (environment.py)
+GRADE_TEXTURE_UNIT = 18        # captured display table (tone curve + colour grade; rc2016/levels/display.py); unit 16, 17 are the scene AO/shadow maps
 # Viewer lighting shared by FRAGMENT and GLASS_FRAGMENT. uLighting 0 is the fixed viewer rig: key and
 # fill lights plus a sky/ground hemisphere, in rig space; uLightFrame maps rig space to view space
 # (identity: the rig turns with the camera; the level viewer fixes it to the world). uLighting 1 is
@@ -35,6 +36,7 @@ LIGHTING = """
 uniform int uLighting; uniform bool uLightingEnabled; uniform mat3 uLightFrame; uniform mat3 uViewToWorld;
 uniform vec3 uSH[9]; uniform sampler2D uEnvTex; uniform vec3 uSunDir; uniform vec3 uSunColour;
 uniform int uTonemap; uniform float uExposure;
+uniform sampler2D uGradeTex;   // captured display table (rc2016/levels/display.py): colour grade rows 0-31, tone curve row 32
 vec3 rigKey() { return uLighting == 1 ? uSunDir * uViewToWorld : uLightFrame * normalize(vec3(-0.45, 0.65, 0.62)); }
 vec3 rigFill() { return uLightFrame * normalize(vec3(0.7, 0.1, 0.4)); }
 vec3 keyColour() { return !uLightingEnabled ? vec3(0.0) : (uLighting == 1 ? uSunColour : vec3(2.6, 2.5, 2.35)); }
@@ -76,8 +78,31 @@ vec3 envSpecular(vec3 N, vec3 V, vec3 F0, vec3 F90, float a, vec3 ambient) {
     return (F0 + (F90 - F0) * pow(1.0 - max(dot(N, V), 0.0), 5.0)) * ambient * (1.0 - 0.6 * a);
 }
 float srgbEncode(float x) { return x <= 0.0031308 ? 12.92 * x : 1.055 * pow(x, 1.0 / 2.4) - 0.055; }
+// uTonemap 2, the game's final display chain for the Level atmosphere lighting (decoded from the Veldin capture; the
+// exposure is that frame's runtime value, assumed for other levels; rc2016/levels/display.py is the CPU reference):
+// exposure, the 1D tone curve over log2 [-8, 5] (table row 32, 1024 samples), sRGB, then the atmosphere's 32^3
+// colour-grade LUT sampled trilinearly (blue slabs side by side in rows 0-31; bilinear in red and green inside a slab).
+const float GAME_EXPOSURE = 4.553783893585205;
+float gameCurve(float c) {
+    float u = clamp((log2(max(c, 1e-10)) + 8.0) / 13.0, 0.0, 1.0);
+    return texture2D(uGradeTex, vec2((u * 1023.0 + 0.5) / 1024.0, 32.5 / 33.0)).r;
+}
+vec3 gameGrade(vec3 c) {
+    vec3 p = clamp(c, 0.0, 1.0) * 31.0;
+    float slab = min(floor(p.b), 30.0), f = p.b - slab;
+    float y = (p.g + 0.5) / 33.0;
+    vec3 a = texture2D(uGradeTex, vec2((slab * 32.0 + p.r + 0.5) / 1024.0, y)).rgb;
+    vec3 b = texture2D(uGradeTex, vec2((slab * 32.0 + 32.0 + p.r + 0.5) / 1024.0, y)).rgb;
+    return mix(a, b, f);
+}
+vec3 gameDisplay(vec3 color) {
+    color *= GAME_EXPOSURE;
+    vec3 t = vec3(gameCurve(color.r), gameCurve(color.g), gameCurve(color.b));
+    return gameGrade(vec3(srgbEncode(t.r), srgbEncode(t.g), srgbEncode(t.b)));
+}
 vec3 display(vec3 color) {
     color *= uExposure;
+    if (uTonemap == 2) return gameDisplay(color);
     if (uTonemap == 1) {   // Khronos PBR Neutral: start compression 0.76, desaturation 0.15
         float x = min(color.r, min(color.g, color.b));
         color -= x < 0.08 ? x - 6.25 * x * x : 0.04;
@@ -95,7 +120,7 @@ vec3 display(vec3 color) {
 }
 """
 LIGHTING += "\n#ifdef RC_SCENE_EFFECTS\n" + SCENE_HELPERS + "\n#else\nfloat sceneAO(){return 1.0;}\nfloat sceneShadow(vec3 p){return 1.0;}\nfloat sceneSpecularOcclusion(vec3 N,vec3 V,float a){return 1.0;}\n#endif\n"
-LIGHTING_UNIFORMS = (*SCENE_UNIFORMS, "uLighting", "uLightingEnabled", "uLightFrame", "uViewToWorld", "uSH", "uEnvTex", "uSunDir", "uSunColour", "uTonemap", "uExposure", "uFogOn", "uFogColour", "uFogA", "uFogB", "uFogAlpha", "uFogBeta", "uFogMisc")
+LIGHTING_UNIFORMS = (*SCENE_UNIFORMS, "uLighting", "uLightingEnabled", "uLightFrame", "uViewToWorld", "uSH", "uEnvTex", "uSunDir", "uSunColour", "uTonemap", "uExposure", "uGradeTex", "uFogOn", "uFogColour", "uFogA", "uFogB", "uFogAlpha", "uFogBeta", "uFogMisc")
 
 # Attribute locations for the two 4-wide skin influence sets. NVIDIA aliases the
 # built-ins to fixed slots (0 vertex, 2 normal, 3 colour, 4 secondary colour,
@@ -1117,7 +1142,6 @@ uniform int uFogOn; uniform vec3 uFogColour;
 uniform vec4 uFogA; uniform vec4 uFogB; uniform vec4 uFogAlpha; uniform vec4 uFogBeta;
 uniform vec4 uFogMisc;   // as in FOG: horizontal-ray c88, c89, exponent, start distance
 const float SKY_FOG_DISTANCE = 10000.0;   // beyond about 3000 units the result no longer changes (Novalis)
-const float SKY_FOG_BRIGHTNESS = 2.5;     // visual calibration (see above): sky fog colour = this x the horizon colour
 // The FOG transmittance of the point SKY_FOG_DISTANCE away along the native direction dir (y is height).
 float skyFogTransmittance(vec3 dir) {
     float dist = SKY_FOG_DISTANCE, dy = dist * dir.y, tau;
@@ -1139,6 +1163,7 @@ float skyFogTransmittance(vec3 dir) {
 // reproduces and the ACES fit (brighter and paler in the mid-tones) does not.
 const float SKY_EXPOSURE = 0.9;
 vec3 skyDisplay(vec3 color) {
+    if (uTonemap == 2) return display(color);   // the captured game display chain (display()), exposure included
     color *= uExposure * SKY_EXPOSURE;
     float x = min(color.r, min(color.g, color.b));
     color -= x < 0.08 ? x - 6.25 * x * x : 0.04;
@@ -1174,7 +1199,7 @@ void main() {
     vec3 rgb = k * (A * ((1.0 - a) * P(16) * r) + C * (P(18) * b) + B * (P(19) * pow(c, P(14)) * (r * (1.0 - a) + b)));
     float coverage = clamp(P(13) * (P(20) * (1.0 - a) * g + a), 0.0, 1.0);
     if (coverage + 1e-7 <= 0.0) discard;   // alpha test against the (presentation) threshold 0
-    if (uFogOn != 0) rgb = mix(uFogColour * SKY_FOG_BRIGHTNESS, rgb, skyFogTransmittance(dir));
+    if (uFogOn != 0) rgb = mix(uFogColour, rgb, skyFogTransmittance(dir));   // the same fog colour as the geometry
     gl_FragColor = vec4(skyDisplay(rgb), coverage);
 }
 """.replace("// @lighting\n", LIGHTING)
