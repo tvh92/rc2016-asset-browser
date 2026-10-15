@@ -55,6 +55,13 @@ class GlowMushroomRuleTests(unittest.TestCase):
                      'mix(uFresnelC.g, albedo.g, fresnel)', 'uFresnelC.b'):
             self.assertIn(text, branch)
 
+    def test_viewer_texture_entry_keeps_fresnel_term(self):
+        archive, paths = extract()
+        with (patch.object(tp, 'material_texture_paths', return_value=paths),
+              patch('rc2016.viewer.native_glsl.selected_translation', return_value=None)):
+            entry = tp.material_textures(archive, [dict(index=0, path='m/mush.material')], {}, previews=False)[0]
+        self.assertEqual(entry['fresnel_tint'], paths['fresnel_tint'])
+
     def test_viewer_rule_ports_the_term(self):
         archive, _ = extract()
         rule = viewer_graph_rule(archive, 'm/mush.material', set())

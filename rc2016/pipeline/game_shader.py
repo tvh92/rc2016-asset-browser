@@ -1093,7 +1093,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 7
+VIEWER_RULE_FRONTEND_VERSION = 9
 
 
 def _viewer_rule_images(nt):
@@ -1340,6 +1340,15 @@ def apply_viewer_graph_rule(mat, source):
         view_terms.append('glow mushroom Fresnel tint')
         limits.append('fresnel_tint: writer F(N.V) uses the geometry normal for both of its Fresnel terms (the second is '
                       'sign-folded and unnormalised in the game); MRT2 gloss alpha is the generic grey-gloss reading')
+    hair = terms.get('hair') if on('hair') else None
+    if hair:
+        # Hair_NewSpec_01 forward pass 94CE8CCE: _c is sampled for alpha only; the albedo is the material vec3 A (CB2 dw0-2).
+        albedo = P.const3('hair albedo', hair['albedo'])
+        view_terms.append('hair')
+        limits.append('hair: pass 0 (program 94CE8CCE) only; the engine light loop, probe/SSR reflections, the w x _g.G environment '
+                      'sheen, fog and the Oren-Nayar diffuse roughness (sigma %.4g from dw3/dw7) are not reproduced (the group diffuse is '
+                      'Lambert); w scales F0 (and so F90) here, the game scales the accumulated specular; second pass (program 7D6552DE) '
+                      'and the instance flag-128 mask texture are not decoded/ported' % float(hair['diffuse_sigma']))
     if facing:   # no albedo input: v76-v78 stay 1.0
         albedo = P.const3('facing glow albedo', facing['albedo'])
     g_rgb = g.outputs['Color'] if g is not None else None
@@ -1517,6 +1526,7 @@ def apply_viewer_graph_rule(mat, source):
         if n is not None and not arch and not on('vehicle'):
             linear_z = rule.get('normal_z') == '1-x*x-y*y'
             strength = P.sat(P.const('metal normal strength', metal['normal_strength'])) if metal else None
+            if hair: strength = P.const('hair normal strength', hair['normal_strength'])   # x, y = 0.3 (2 RG - 1)
             x, y = P.rg(n.outputs['Color'], strength)
             dsq = P.dot2(x, y)
             z = P.m('SUBTRACT', 1.0, dsq, label='Viewer rule normal z = 1-x*x-y*y') if linear_z else \
@@ -1618,6 +1628,14 @@ def apply_viewer_graph_rule(mat, source):
         if bright:   # D14A48D7: grey constant F0, gloss = sqrt(sat(G))
             fs = P.const('bright centre F0', bright['f0']); f0 = P.comb(fs, fs, fs)
             gloss_in = P.m('SQRT', P.sat(P.const('bright centre gloss', bright['gloss_sq']))); spec = gloss_scale = 1.0
+        if hair and g is not None:
+            # 94CE8CCE: F0 = B * _g.G, gloss argument sat(0.71 * _g.R * w), w = 1 - sat(|1.001 - N.V|^E) on the geometry normal.
+            ndv_h = P.sat(P.v('DOT_PRODUCT', P.v('NORMALIZE', Ng), P.v('NORMALIZE', V)))
+            hair_w = P.m('SUBTRACT', 1.0, P.sat(P.m('POWER', P.m('ABSOLUTE', P.m('SUBTRACT', 1.00100004673, ndv_h)),
+                                                       P.const('hair rim exponent', hair['rim_exponent']))))
+            f0 = P.v('MULTIPLY', P.const3('hair spec colour', hair['spec']), P.comb(gG, gG, gG))
+            gloss_in = P.m('SQRT', P.m('MULTIPLY', gR, P.sat(P.m('MULTIPLY', hair_w, P.const('hair gloss scale', hair['gloss_scale'])))))
+            spec = hair_w; gloss_scale = 1.0
         spec_tint = terms.get('spec_tint') if on('spec_tint') else None
         if spec_tint is not None and f0 is not None and mode != 'vehicle':
             f0 = P.v('MULTIPLY', f0, P.const3('spec tint', spec_tint))
@@ -1653,7 +1671,7 @@ def apply_viewer_graph_rule(mat, source):
     else:
         L.new(f0, grp.inputs[2]) if isinstance(f0, bpy.types.NodeSocket) else setattr(grp.inputs[2], 'default_value', (*f0, 1.0))
         L.new(gloss_in, grp.inputs[3]) if isinstance(gloss_in, bpy.types.NodeSocket) else setattr(grp.inputs[3], 'default_value', float(gloss_in))
-    grp.inputs[5].default_value = spec
+    L.new(spec, grp.inputs[5]) if isinstance(spec, bpy.types.NodeSocket) else setattr(grp.inputs[5], 'default_value', spec)
     grp.inputs[6].default_value = gloss_scale
     if self_mask is not None and k > 0.0:
         L.new(self_mask, grp.inputs[1]) if isinstance(self_mask, bpy.types.NodeSocket) else setattr(grp.inputs[1], 'default_value', float(self_mask))

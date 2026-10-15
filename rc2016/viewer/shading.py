@@ -191,6 +191,9 @@ uniform float uAlphaCut; // leaf cut-out: discard when _c.a < threshold (0 = off
 // palette U is a frozen preview input (textures.LEAF_PALETTE_U_PLACEHOLDER).
 uniform bool uLeafColour; uniform vec4 uLeafP; uniform vec3 uLeafPalette; // uLeafPalette = cmb ramp sample
 uniform bool uFresnelTint; uniform vec3 uFresnelC; uniform float uFresnelE; // Novalis glow mushroom F69ADC40 albedo tint
+// Hair_NewSpec_01 forward pass 94CE8CCE: uHairA = constant albedo, uHairB = F0 colour (x _g.G), uHairP = (rim exponent E,
+// gloss scale, diffuse sigma (unused by the Lambert viewer diffuse), normal strength).
+uniform bool uHair; uniform vec3 uHairA; uniform vec3 uHairB; uniform vec4 uHairP;
 uniform sampler2D uTexCma; uniform bool uHasCma; uniform bool uSrgbCma;
 uniform bool uZaFresnel; uniform float uZaFresnelPower; // za_basic_normal_gloss geometry-normal rim suppression
 uniform bool uSelfLitG;       // self-lit mask from _g.B instead of _c.a
@@ -506,6 +509,7 @@ void main() {
         float scale = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-20));
         vec2 rg = texture2D(uTexN, materialUV).rg * 2.0 - 1.0;
         if (uTwoColorMetal) rg *= clamp(uMetalP.w, 0.0, 1.0);
+        if (uHair) rg *= uHairP.w;   // 94CE8CCE: x, y = 0.3 (2 RG - 1) at the close-range fade s = 1
         float z = sqrt(max(0.0, 1.0 - dot(rg, rg)));
         if (uTwoColorMetal) z = 1.0 - dot(rg, rg); // 1012E99D: source fade 2, not a square root
         if (uBngKind > 0) z = 1.0 - dot(rg, rg);
@@ -517,6 +521,7 @@ void main() {
         if (uParallaxNormal) z = 1.0 - dot(rg, rg); // rel1660-1680
         if (uFoliage || (uLeafColour && uLeafP.z > 0.5)) z = 1.0 - dot(rg, rg); // native normal, s=2; engine fade omitted
         if (uZaFresnel) z = 1.0 - dot(rg, rg); // E08357DC normal z weight, close-range fade s=2
+        if (uHair) z = 1.0 - dot(rg, rg);      // 94CE8CCE normal z weight
         if (uTintVariant != 0) {
             z = 1.0 - dot(rg, rg); // native close-range normal, CB0[95]=1
             if ((uTintVariant == 2 && uHasTintDetail) || (uTintVariant == 4 && uHasP)) {
@@ -572,6 +577,14 @@ void main() {
     }
     vec3 metalSpecTint = vec3(1.0);
     float metalRim = 0.0;
+    float hairW = 1.0;
+    if (uMode == 2 && uHair) {
+        // 94CE8CCE: albedo is the material vec3 A (_c is sampled for alpha only); w = 1 - sat((1.001 - |N.V|)^E) on the
+        // geometry normal scales the gloss argument and the accumulated specular. ZA's w is taken before the tangent map.
+        albedo = uHairA;
+        hairW = 1.0 - clamp(pow(abs(1.00100004673 - clamp(dot(normalize(vNrm) * (gl_FrontFacing ? 1.0 : -1.0), V), 0.0, 1.0)), uHairP.x), 0.0, 1.0);
+        metalSpecTint = vec3(hairW);
+    }
     if (uMode == 2 && uTwoColorMetal) {
         N *= gl_FrontFacing ? 1.0 : -1.0;
         float b = 1.00100004673 - clamp(dot(N, V), 0.0, 1.0);
@@ -619,6 +632,7 @@ void main() {
                 F0 = vec3(gl.g * clamp(uSpecScale * zaWeight, 0.0, 1.0));
                 gloss = sqrt(clamp(gl.r * clamp(uGlossScale * zaWeight, 0.0, 1.0), 0.0, 1.0));
             }
+            if (uHair) { F0 = uHairB * gl.g; gloss = sqrt(clamp(gl.r * clamp(uHairP.y * hairW, 0.0, 1.0), 0.0, 1.0)); }
             if (uBngKind == 6) {
                 F0 = vec3(uSpecScale * gl.g * (1.0 + uBngP.z * bngRimA));
                 gloss = sqrt(clamp(uGlossScale * (gl.r + bngRimA), 0.0, 1.0));
@@ -862,7 +876,7 @@ OPAQUE_UNIFORMS = (
     "uTwoColorMetal", "uMetalDiffuseA", "uMetalDiffuseB", "uMetalSpecA", "uMetalSpecB", "uMetalP",
     "uParallax", "uParallaxNormal", "uHasParallaxHeight", "uTexParallaxHeight", "uParallaxP",
     "uFoliage", "uAlphaCut", "uLeafColour", "uLeafP", "uLeafPalette", "uTexCma", "uHasCma", "uSrgbCma",
-    "uFresnelTint", "uFresnelC", "uFresnelE",
+    "uFresnelTint", "uFresnelC", "uFresnelE", "uHair", "uHairA", "uHairB", "uHairP",
     "uZaFresnel", "uZaFresnelPower",
     "uGlowKind", "uGlowColour", "uGlowP", "uTexGlowParallax", "uHasGlowParallax", "uSrgbGlowParallax", "uSrgbGlowMask",
     "uVehicle", "uTexVehicleP2", "uHasVehicleP2", "uSrgbVehicleP2", "uVehicleA", "uVehicleB", "uVehicleP",

@@ -753,6 +753,8 @@ class ModelViewport(_TkFrame):
             uploaded["leaf_colour"] = dict(entry["leaf_colour"])
         if "fresnel_tint" in entry:
             uploaded["fresnel_tint"] = dict(entry["fresnel_tint"])
+        if "hair" in entry:
+            uploaded["hair"] = dict(entry["hair"])
         for role in GL_TEXTURE_ROLES:
             texture = entry.get(role)
             if not texture:
@@ -1315,6 +1317,12 @@ class ModelViewport(_TkFrame):
         sh.glUniform1i(u["uFresnelTint"], 1 if fresnel else 0)
         sh.glUniform3f(u["uFresnelC"], *(float(x) for x in fresnel.get("colour", (1.0, 1.0, 1.0))))
         sh.glUniform1f(u["uFresnelE"], float(fresnel.get("exponent", 1.0)))
+        hair = entry.get("hair") or {}   # constant colours and keys only: model and level viewers both apply it
+        sh.glUniform1i(u["uHair"], 1 if hair else 0)
+        sh.glUniform3f(u["uHairA"], *(float(x) for x in hair.get("albedo", (1.0, 1.0, 1.0))))
+        sh.glUniform3f(u["uHairB"], *(float(x) for x in hair.get("spec", (0.0, 0.0, 0.0))))
+        sh.glUniform4f(u["uHairP"], float(hair.get("rim_exponent", 3.0)), float(hair.get("gloss_scale", 0.71)),
+                       float(hair.get("diffuse_sigma", 0.0)), float(hair.get("normal_strength", 0.3)))
         pom = entry.get('parallax') or {}
         supported = getattr(sh, 'supports_parallax', True)
         valid = parallax_preview_parameters_valid(pom)

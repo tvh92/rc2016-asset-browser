@@ -54,6 +54,16 @@ LEAF_PALETTE_U_PLACEHOLDER = 0.5
 # (0.381, 0.687, 1), E 0.25, K 2. The writer's second Fresnel (sign-folded, unnormalised) is taken as the same F.
 MUSHROOM_FRESNEL_COLOUR_KEY, MUSHROOM_FRESNEL_EXPONENT_KEY, MUSHROOM_SELF_LIT_KEY = 0x3DA84DFD, 0x764792E8, 0xA71C1591
 MUSHROOM_FRESNEL_PRESENTATION = dict(colour=(0.38132601976394653, 0.68668532371521, 1.0), exponent=0.25, self_lit=2.0)
+# hair_newspec_01 forward colour pass (pass 0, pixel program 94CE8CCE; serialized resources api5/6/7 = _c/_g/_n).
+# _c is sampled for alpha only (coverage, dmask 8); the albedo is the material vec3 A (CB2 dw0-2), F0 = B (dw4-6) * _g.G
+# and the gloss argument is 0.71 * _g.R, both scaled by w = 1 - sat((1.001 - |N.V|)^E) (E = dw9, geometry normal);
+# the tangent normal is x, y = 0.3 (2 RG - 1), z = 1 - x^2 - y^2. dw3/dw7 are two diffuse roughness values.
+HAIR_KEYS = dict(albedo=0xA67F3D37, spec=0xFEAF9A36, rough_a=0x2B6D6A7B, rough_b=0xB2643BC1, rim=0x4D385B45)
+HAIR_SLOTS = {'_c': 0x49A7866B1776B09C, '_g': 0x49A7866B6F88A378, '_n': 0x49A7866BE189D5CA}
+HAIR_DEFAULTS = dict(albedo=(0.0043914420530200005, 0.0043914420530200005, 0.006995410192757845),
+                     spec=(0.16202937066555023, 0.08437620848417282, 0.16202937066555023),
+                     rough_a=0.8500000238418579, rough_b=0.009999999776482582, rim=3.0)
+HAIR_GLOSS_SCALE, HAIR_NORMAL_STRENGTH = 0.71, 0.3
 # mo_gbl_color_tint_01 writer BE8C3EE0 (Animation/pipeline/Research/Materials/ColorTint01/COLOR_TINT_DECODE.md)
 TINT_KEYS = dict(spec_tint=0x6B591974, mask_b=0x8ED5C5E8, colour_a=0xA815C29F, colour_b=0x311C9325, power_a=0x9E7A020A,
                  weight_b=0x482ECFEB, weight_a=0xD1279E51, power_b=0x077353B0)
@@ -195,6 +205,10 @@ GRAPH_RULES = (
     # self-lit mask _g.B. The second MRT2 gloss channel is not decoded; grey F0 (MRT2 RGB = _g.G) is shared.
     ('materialgraph/environment/novalis/plant/nov_plant_mushroom_glow_fresnel_01/rp_nov_plant_mushroom_glow_fresnel_01.',
      dict(g_mode='grey', self_lit='g_blue', self_lit_key=MUSHROOM_SELF_LIT_KEY, fresnel_tint=True)),
+    # Forward colour pass 94CE8CCE of Hair_NewSpec_01 (Skidd's agent, mayor, Gadgetron CEO, plumber beard): constant
+    # albedo/specular colours, _c alpha cut-out, ZA-style rim weight. See docs/viewer.md (Hair).
+    ('required/materials/hair_newspec_01.',
+     dict(g_mode='grey', self_lit_key=None, alpha_cut=True, hair=True)),
     # Cached forward 8716DC7A at t=0; Materials/StaleSelfLitKeys/STALE_SELF_LIT_KEYS_DECODE.md.
     ('materialgraph/environment/nebula/ambient/neb_amb_screen_01/mo_neb_amb_screen_01.',
      dict(self_lit_key=None, screen=True)),
@@ -508,6 +522,23 @@ def material_texture_paths(archive, material_path: str) -> dict:
         result['foliage'] = True
     if rule.get('alpha_cut'):
         result['alpha_cut'] = _foliage_alpha_cutoff(data)
+    if rule.get('hair'):
+        # Serialized graph slots, never suffixes: the material also stores stale C/G/N keys of another graph
+        # (the plumber beard binds Shared_Hair_Plumber_c only under one), and its _g key names Shared_Hair_02_g.
+        material_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
+        for role, slot in HAIR_SLOTS.items():
+            path = material_slots.get(slot) or slots.get(slot)
+            if path: result[role] = path
+            else: result.pop(role, None)
+        result.pop('_h', None)
+        result.update(k=0., spec=1., gloss=1., self_lit='none')
+        sigma = lambda g: 2.0 ** (-5.5 * (min(max(g, 0.0), 1.0) ** 0.5))
+        rough_a, rough_b = value(HAIR_KEYS['rough_a'], HAIR_DEFAULTS['rough_a']), value(HAIR_KEYS['rough_b'], HAIR_DEFAULTS['rough_b'])
+        result['hair'] = dict(albedo=vec3(HAIR_KEYS['albedo'], HAIR_DEFAULTS['albedo']), spec=vec3(HAIR_KEYS['spec'], HAIR_DEFAULTS['spec']),
+            rim_exponent=value(HAIR_KEYS['rim'], HAIR_DEFAULTS['rim']), gloss_scale=HAIR_GLOSS_SCALE,
+            normal_strength=HAIR_NORMAL_STRENGTH, rough_a=rough_a, rough_b=rough_b,
+            diffuse_sigma=0.4 * max(sigma(rough_a), sigma(rough_b)) + 0.6 * min(sigma(rough_a), sigma(rough_b)),
+            writer='94CE8CCE', keys={k: v for k, v in HAIR_KEYS.items()})
     if rule.get('leaf_colour'):
         # cma (Fresnel-mixed R) and cmb (palette ramp) by slot hash: material slot, else the graph's.
         material_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
@@ -1261,7 +1292,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             paths = {}
         entry.update(k=paths.get('k', 0.0), g_mode=paths.get('g_mode', 'colored'), self_lit=paths.get('self_lit', 'c_alpha'),
                      spec=paths.get('spec', 1.0), gloss=paths.get('gloss', 1.0))
-        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'bright_center', 'parallax', 'parallax_normal'):
+        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'bright_center', 'parallax', 'parallax_normal', 'hair', 'fresnel_tint'):
             if paths.get(key):
                 entry[key] = paths[key]
         if paths.get('foliage'):
