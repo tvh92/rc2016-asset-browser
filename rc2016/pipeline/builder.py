@@ -27,7 +27,7 @@ from rc2016.formats.texture_transport import validate_reopened_texture_bindings
 from rc2016.shaders.validation import validate_polygon_used_material_preflights
 from rc2016.pipeline.material_presentation_collector import collect_material_presentation_status
 from rc2016.pipeline.scene_defaults import (apply_new_scene_defaults,audit_scene,_configure_optix_gpu,check_shared_lighting,load_shared_lighting,
-    fit_render_region,frame_camera_zoom,visible_mesh_points,pack_scene_images_except_shared_hdri)
+    fit_render_region,fit_render_size,frame_camera_zoom,visible_mesh_points,pack_scene_images_except_shared_hdri)
 
 
 # The game stores assets in Y-up coordinates.  Keep source mesh/bone/action data in
@@ -508,7 +508,10 @@ def build(job):
         model_points=visible_mesh_points(scene)
         embed('Camera zoom.json',frame_camera_zoom(scene,model_points if len(model_points) else np.asarray(bounds)))
     # Render Region around the model in the zoomed camera, with padding (applied after the zoom).
-    embed('Render region.json',fit_render_region(scene))
+    region_receipt=fit_render_region(scene)
+    # Render size follows the texture detail: resolution_percentage only, X/Y and the crop stay as fitted.
+    region_receipt['render_size']=fit_render_size(scene)
+    embed('Render region.json',region_receipt)
     if job.get('veldin_look') and scene.get('lighting_source')!='veldin_capture':
         toolkit=str(Path(job['veldin_look']['view_dir']).parent)
         if toolkit not in sys.path:sys.path.insert(0,toolkit)
