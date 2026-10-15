@@ -231,6 +231,7 @@ The specular and gloss scales (keys `0x62835AF9` and `0x24F4CA4C`) come from the
 | `jn_ground_puddles` (forward `DB75867B`, no-normal `4A6CDAAA`) | Source noise thresholds drive grey F0, gloss and diffuse attenuation; t=0 ripple normal and environment-reflection blend; noise/ripple atlas on unit 14. The emissive sibling stays generic |
 | `npc_qwark_robot_bulb` (exact graph, forward `0CD2AAFB`) | White base (no albedo input) plus the writer's red facing glow at amplitude CB0 dw115 = 0.5 (captured 0.01; blink timing not decoded). Reads as white with a pink-to-red rim, not saturated red |
 | `hero_bright_center_light_glow_variable` (exact graph, forward `93695188`; `uKind` 5) | Antenna glow shell (for example `enm_qwark_light_glow`, an icosphere of radius 0.093 around the 0.016 bulb; shared by about 13 materials). No texture; flags `0x200039` = additive (`SRC_ALPHA`, `ONE`), back faces culled. See [Antenna glow shell](#antenna-glow-shell) |
+| `hero_eye_cornea` (exact graph, forward `A36A97CB`; `uKind` 6; materials `hero_eye_cornea` and `hero_eye_cornea_ratchet`) | Eye cornea over the eye sphere: alpha-over, back faces culled. See [Eye cornea](#eye-cornea) |
 | `nov_plant_mushroom_glow_fresnel_01` (Novalis giant glow mushrooms, `rp_nov_plant_mushroom_large_glow_01` and `rp_nov_plant_mushroom_small_glow_01`; opaque deferred writer `F69ADC40`) | Fresnel albedo tint and self-lit from `_g.B`. MRT1 rg = mix(C.rg, `_c`.rg, F), b = C.b, with F = (1.001 - N.V)^E and the material's C (`0x3DA84DFD`) and E (`0x764792E8`); self-lit = `_g.B` x K (`0xA71C1591`). Geometry normal for both writer Fresnel terms; MRT2 gloss not decoded. The viewer draws the large mesh (402 vertices, about 2.1 m) as this opaque solid writer. The graph's alternate writer `2f28ddb7` is an alpha-cut shell that is not applied: it kills a fragment where min(1, sampler 0 channel 0) < interpolated attribute 0.z, and exports only live lanes. That kill is also gated by a per-draw buffer byte (`TBUFFER_LOAD_FORMAT_X`, resource at register 16) that the material and graph do not contain, so the cut-out and its gate are a [known limitation](#limitations). No forward pass exists for these mushrooms (see [Antenna glow shell](#antenna-glow-shell)) |
 | `hero_bright_center_light_variable` (exact graph, deferred `D14A48D7`; term `bright_center`) | Antenna light with a bright centre and dark rim (for example `enm_qwark_light_center`). t = (1.001 - sat(N.V))^e with the tangent-mapped normal; e = 0.2 x (1 - S), S = key `0x60DC3D2F` (0.9). Factor f = E x t + C x w x (1 - t); albedo = `_c` x f. E = vec3 `0x16B8AB81` (edge, 0), C = vec3 `0x5BC2D1F0` (1, 0.527, 0.462) x intensity `0x398AD3E2` (5). The blink weight w = sat(1 + (1 - B) x (0.5 sin(phase) - 0.5)) with B = `0x01B78BF6` (0.15) is frozen at sin = 0, so w = 1 - 0.5 x (1 - B) (0.575). F0 is the grey constant `0x08FE9F29` (0.2) and gloss = sqrt(sat(G)) with G = `0x0B065E94` (0.35); `_g` is not read. Self-lit = K x `_c.R` x f.R with K = `0xB7305C21`, not `_c.a`. Blender builds the same term and records the frozen blink weight as a limitation |
 
@@ -283,7 +284,7 @@ Graphs with a `forward` rule are drawn after every opaque batch with a second pr
   - The body colour is key `0x1DAF77B8`; its role is inferred.
   - Presentation values (`WATER_PRESENTATION` in `textures.py`): opacity 0.8, F0 0.02, gloss 0.9, normal strength 0.5. The shading is body colour x viewer diffuse x (1 - Fresnel), plus GGX and environment reflection; alpha is raised to 1 by Fresnel.
   - Not drawn: scrolling, foam, depth fade, shoreline coverage and refraction.
-- Other forward graphs (VFX, energy, cornea, other glass families) have no rule and draw opaque.
+- Other forward graphs (VFX, energy, other glass families) have no rule and draw opaque.
 
 #### Antenna glow shell
 
@@ -320,6 +321,45 @@ Limitations:
 - Frozen inputs: the blink sine is 0, so `w = 1 - 0.5 (1 - steady)` (the same convention as the `bright_center` blink); alpha cutoff 0; vertex alpha 1; fog fade 1.
 - The depth-write bit of the flags word (`0x200000`) and the pre-pass `79b1fbf4` are not decoded; the draw uses no depth write like other blended forward materials. The vertex billboard and wobble branches are not modelled.
 - Colour is tonemapped per fragment before blending in the viewer; Cycles blends scene-linear emission before the view transform. Blender's camera distance assumes scene units equal game units.
+
+#### Eye cornea
+
+`hero_eye_cornea` (`uKind` 6) is the forward colour pass `A36A97CB` (a second variant, `AE044D65`, has the same shape). It draws a clear dome over the eye sphere: flags `0x3A` give alpha-over with back faces culled, and the eye underneath is not part of this shader. The `_n` slot is `hemisphere_flatter_n` and the `_pick` slot is `shared_eye_lens_c` (read as its red channel). Material keys, constants-buffer dword in brackets, graph default, NPC value (Ratchet's cornea in the third column):
+
+| Name | Key | Default | NPC (Ratchet) |
+| --- | --- | --- | --- |
+| fade end [0] | `0x8CE80F85` | 14 | 14 |
+| power far [1] | `0xB0624EB0` | 4 | 20 |
+| reflect base [2] | `0xAF7D5E6B` | 0 | 0 (0.03) |
+| power near [3] | `0x621FAA21` | 30 | 85 |
+| fade start [4] | `0xDBAD0A10` | 6 | 6 |
+| reflect weight [5] | `0x223DC13C` | 0.5 | 0.5 (1) |
+| env normal scale [6] | `0x3F13004B` | 0.8 | 0.8 (1) |
+| highlight k [7] | `0xF8828985` | 0 | 1.2 (0.8) |
+| highlight normal scale [8] | `0xE14A15D1` | 0.85 | 0.85 (1) |
+
+With V the unit vector to the camera, `L` the key-light direction, `|p|` the camera distance and `xy` the dome map's `2 RG - 1` (linear z, `1 - x^2 - y^2`, the frame is the interpolated normal and tangent):
+
+```
+Nf    = dome(0.555 xy)     Nh = dome(highlight normal scale xy)     Ne = dome(env normal scale xy)
+F4    = |1.001 - sat(Nf.V)|^4
+F     = sat(reflect base + F4)
+power = near + sat(0.08 |p|) (far - near)
+fade  = sat((|p| - start) / (end - start))
+H     = normalize(0.49 V + 0.51 L)
+lobe  = 4 sat(r.H)^power (1 - fade),  r = 2 (V.Nh) Nh - V
+alpha = sat(lobe + F + 0.06)                                   (times the vertex alpha, 1)
+rgb   = reflection(Ne) (reflect weight + F4) + (lens.r + Llight) lobe (4 - 3 k)
+```
+
+The reflection is the engine's probe loop and a screen-space reflection march mixed by a hit mask, then fogged. The viewer replaces it with the viewer environment (`envSpecular`) at a labelled presentation roughness (GGX alpha `2^-5.5`). Blender builds `F`, `alpha`, and a white Glossy BSDF with the weight `reflect weight + F4` on `Ne`, as `Cull(Mix(alpha, Transparent, Glossy))`; the highlight lobe and lens term need the key-light direction and are viewer-only, and Cycles lights and the HDRI give its highlight.
+
+Limitations:
+
+- The engine light loop (a clustered light list with shadow taps, gated by instance flag bits `0x20` and `0x40`), the probe and screen-space reflection lookups and the fog are not decoded. The light term of the highlight is held at 1, the value the program keeps when its light loop is skipped, and the fog fade at 1.
+- Normal strength (`CB0[95]`) is taken as 1 and the per-instance floats at bytes 8 and 12 (which scale the dome normal and add to the alpha) as 0. A further instance flag (`0x80`) clamps alpha with a sample of the dome at one third of the UV; it is not modelled.
+- The key-light direction `L` is read as `CB0` dwords 128-130 (direction to the light); that role follows from the half-vector form and is not confirmed against a capture. The viewer uses its rig or sun direction for it.
+- Roughness of the reflection, and the exact mix of probe and screen-space samples, are not decoded.
 
 ## Animation playback
 
@@ -465,7 +505,7 @@ The research build consumes the viewer's material reading:
 - **Precedence:** when no registered family applies, the viewer rule wins over a ready native translation if it has no unported term or only parallax is unported (`materials.py` decides `shader_status`, `geometry._material` follows). Any other unported term gives way to the translation.
 - `shader_status` becomes `viewer_graph_rule_frontend`. `rc2016.shaders.validation` checks after reopening: the rule; BRDF to active output; `_c/_g` paths, hashes and native colourspaces; scales and K; every `VR` constant against the rule; and each ported term's constants and images reaching the output. These checks validate stored values and node wiring; they do not establish identical closures or rendered output.
 - `rc2016/pipeline/run.py` hashes `rc2016/viewer/textures.py` into the implementation fingerprint, so a rule change invalidates reused builds.
-- The bulb graph's facing glow is a `VR facing glow emission` through an Add Shader in Blender. The antenna glow shell is an additive `VR bright glow emission` (Add Shader of Transparent and Emission) behind a back-face cull mix, with a blended surface.
+- The bulb graph's facing glow is a `VR facing glow emission` through an Add Shader in Blender. The antenna glow shell is an additive `VR bright glow emission` (Add Shader of Transparent and Emission) behind a back-face cull mix, with a blended surface. The eye cornea is `Cull(Mix(alpha, Transparent, Glossy))` with `VR cornea ...` constants.
 
 Output-folder hygiene (`run.py`): only `work/` and `reports/logs/` are created up front; other folders only for a real build. A model-list scan prunes the unpacked actor files it indexed, and every run deletes its lock file and empty folders. `--blend-only` (keep only the delivered `.blend` files) runs after the log and lock are closed, and only after a fully successful run. `prune_intermediates` uses Windows extended-length paths, because unpacked asset names can exceed 260 characters. A scan leaves only `reports/` (the archive index, needed to find animation sets).
 
@@ -519,7 +559,7 @@ Data-dependent tests read the `RC2016_RESEARCH` environment variable and skip wi
 - The 3D view shows the bind pose or a played clip, not attachments or runtime blending. Lighting is the viewer rig or the shared review HDRI, with no shadows, ambient occlusion or interreflection in the standalone model viewer; the level viewer adds the scene previews described above. Neither selector reproduces the game's lighting. Materials follow the rules above.
 - The rule coverage and Shading filter describe the viewer's rules, not game accuracy.
 - Several graph rules rest on bounded decodes; runtime draw-time inputs (time, instance interpolants, constant-buffer binding) are frozen or unproven.
-- Forward materials other than the character glass, saucer dome, screen, puddle, bulb and antenna glow shell graphs, and the water preview, draw opaque.
+- Forward materials other than the character glass, saucer dome, screen, puddle, bulb, antenna glow shell and eye cornea graphs, and the water preview, draw opaque.
 - Portable exports approximate materials; they are not game-accurate.
 - The Novalis glow mushroom graph's alternate writer `2f28ddb7` (exec-masked exports, alpha cut-out) is not translated. Its kill condition is decoded but gated by a per-draw buffer byte that is not in the material or graph, so the viewer and Blender draw only the opaque `F69ADC40` writer and the large mesh stays solid.
 - Native mouse input and the packaged executable's window have been checked by hand only, not by automated tests.
