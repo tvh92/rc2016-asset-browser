@@ -230,6 +230,7 @@ The specular and gloss scales (keys `0x62835AF9` and `0x24F4CA4C`) come from the
 | `mo_neb_amb_screen_01` (forward `8716DC7A`) | Source timeline/grid, mask, colour/intensity and scroll noise at CB0[99]=0 with frozen cutoff, alpha and fog; units 0/1/2/4 |
 | `jn_ground_puddles` (forward `DB75867B`, no-normal `4A6CDAAA`) | Source noise thresholds drive grey F0, gloss and diffuse attenuation; t=0 ripple normal and environment-reflection blend; noise/ripple atlas on unit 14. The emissive sibling stays generic |
 | `npc_qwark_robot_bulb` (exact graph, forward `0CD2AAFB`) | White base (no albedo input) plus the writer's red facing glow at amplitude CB0 dw115 = 0.5 (captured 0.01; blink timing not decoded). Reads as white with a pink-to-red rim, not saturated red |
+| `hero_bright_center_light_glow_variable` (exact graph, forward `93695188`; `uKind` 5) | Antenna glow shell (for example `enm_qwark_light_glow`, an icosphere of radius 0.093 around the 0.016 bulb; shared by about 13 materials). No texture; flags `0x200039` = additive (`SRC_ALPHA`, `ONE`), back faces culled. See [Antenna glow shell](#antenna-glow-shell) |
 | `hero_bright_center_light_variable` (exact graph, deferred `D14A48D7`; term `bright_center`) | Antenna light with a bright centre and dark rim (for example `enm_qwark_light_center`). t = (1.001 - sat(N.V))^e with the tangent-mapped normal; e = 0.2 x (1 - S), S = key `0x60DC3D2F` (0.9). Factor f = E x t + C x w x (1 - t); albedo = `_c` x f. E = vec3 `0x16B8AB81` (edge, 0), C = vec3 `0x5BC2D1F0` (1, 0.527, 0.462) x intensity `0x398AD3E2` (5). The blink weight w = sat(1 + (1 - B) x (0.5 sin(phase) - 0.5)) with B = `0x01B78BF6` (0.15) is frozen at sin = 0, so w = 1 - 0.5 x (1 - B) (0.575). F0 is the grey constant `0x08FE9F29` (0.2) and gloss = sqrt(sat(G)) with G = `0x0B065E94` (0.35); `_g` is not read. Self-lit = K x `_c.R` x f.R with K = `0xB7305C21`, not `_c.a`. Blender builds the same term and records the frozen blink weight as a limitation |
 
 ### Leaf cut-out
@@ -282,6 +283,42 @@ Graphs with a `forward` rule are drawn after every opaque batch with a second pr
   - Presentation values (`WATER_PRESENTATION` in `textures.py`): opacity 0.8, F0 0.02, gloss 0.9, normal strength 0.5. The shading is body colour x viewer diffuse x (1 - Fresnel), plus GGX and environment reflection; alpha is raised to 1 by Fresnel.
   - Not drawn: scrolling, foam, depth fade, shoreline coverage and refraction.
 - Other forward graphs (VFX, energy, cornea, other glass families) have no rule and draw opaque.
+
+#### Antenna glow shell
+
+`hero_bright_center_light_glow_variable` (`uKind` 5) is the forward colour pass `93695188`: one FP16 target, no texture sample. The `.material` keys are read from the material, else the graph default (`textures.py` rule `params`). With N the interpolated normal, V the unit vector to the camera and `S` .. `rate` the keys below:
+
+```
+NV    = sat(N.V)
+t     = |1.001 - NV| ^ (0.2 (1 - S))
+f     = gain (1 - t)
+d     = 1 - dist_k (|camera - position| - dist0)
+w     = sat(1 + (1 - steady) (0.5 sin(1000 a3.z + rate time) - 0.5))
+x     = d w f
+alpha = sat(x)
+rgb   = 7 amp (Clo + (C - Clo) x^2)          (fog term vanishes at fog fade 1)
+dst  += alpha rgb
+```
+
+| Quantity | Key | Qwark value (graph default) |
+| --- | --- | --- |
+| C | vec3 `0x4E6E03FF` | (0.769, 0.0103, 0) (0.205, 0.0065, 0.0033) |
+| Clo | vec3 `0x68538B05` | (0, 0, 0) (0.033, 0.0033, 0.0015) |
+| dist_k | `0xD76F8651` | 0.001 (0.1) |
+| gain | `0x5DE2C7F0` | 6.5 (10) |
+| dist0 | `0xCF085666` | 6 (6) |
+| steady | `0x01B78BF6` | 0.9 (0.15) |
+| S | `0x60DC3D2F` | 0.9 (0.9) |
+| rate | `0xB162C569` | 3 (4) |
+
+The shell is a halo concentrated at the centre: with S = 0.9 the exponent is 0.02, so x falls from about 0.8 head-on to under 0.1 at N.V = 0.5, and the added intensity (alpha times colour) behaves roughly as x cubed. Front faces only reach the shader because back faces are culled. Blender builds the same equations (`VR bright glow ...` constants, `VR camera distance`, `VR bright glow emission` with strength `7 amp sat(x)` through an Add Shader with Transparent, and a back-face cull mix) with `use_backface_culling` and a blended surface.
+
+Limitations:
+
+- The amplitude `amp` is engine constant `CB0[115]` and is not decoded. It follows the facing-glow convention: captured value 0.01 (near off), shown at the labelled presentation value 0.5 (`BRIGHT_GLOW_PRESENTATION` in `textures.py`).
+- Frozen inputs: the blink sine is 0, so `w = 1 - 0.5 (1 - steady)` (the same convention as the `bright_center` blink); alpha cutoff 0; vertex alpha 1; fog fade 1.
+- The depth-write bit of the flags word (`0x200000`) and the pre-pass `79b1fbf4` are not decoded; the draw uses no depth write like other blended forward materials. The vertex billboard and wobble branches are not modelled.
+- Colour is tonemapped per fragment before blending in the viewer; Cycles blends scene-linear emission before the view transform. Blender's camera distance assumes scene units equal game units.
 
 ## Animation playback
 
@@ -427,7 +464,7 @@ The research build consumes the viewer's material reading:
 - **Precedence:** when no registered family applies, the viewer rule wins over a ready native translation if it has no unported term or only parallax is unported (`materials.py` decides `shader_status`, `geometry._material` follows). Any other unported term gives way to the translation.
 - `shader_status` becomes `viewer_graph_rule_frontend`. `rc2016.shaders.validation` checks after reopening: the rule; BRDF to active output; `_c/_g` paths, hashes and native colourspaces; scales and K; every `VR` constant against the rule; and each ported term's constants and images reaching the output. These checks validate stored values and node wiring; they do not establish identical closures or rendered output.
 - `rc2016/pipeline/run.py` hashes `rc2016/viewer/textures.py` into the implementation fingerprint, so a rule change invalidates reused builds.
-- The bulb graph's facing glow is a `VR facing glow emission` through an Add Shader in Blender.
+- The bulb graph's facing glow is a `VR facing glow emission` through an Add Shader in Blender. The antenna glow shell is an additive `VR bright glow emission` (Add Shader of Transparent and Emission) behind a back-face cull mix, with a blended surface.
 
 Output-folder hygiene (`run.py`): only `work/` and `reports/logs/` are created up front; other folders only for a real build. A model-list scan prunes the unpacked actor files it indexed, and every run deletes its lock file and empty folders. `--blend-only` (keep only the delivered `.blend` files) runs after the log and lock are closed, and only after a fully successful run. `prune_intermediates` uses Windows extended-length paths, because unpacked asset names can exceed 260 characters. A scan leaves only `reports/` (the archive index, needed to find animation sets).
 
@@ -481,6 +518,6 @@ Data-dependent tests read the `RC2016_RESEARCH` environment variable and skip wi
 - The 3D view shows the bind pose or a played clip, not attachments or runtime blending. Lighting is the viewer rig or the shared review HDRI, with no shadows, ambient occlusion or interreflection in the standalone model viewer; the level viewer adds the scene previews described above. Neither selector reproduces the game's lighting. Materials follow the rules above.
 - The rule coverage and Shading filter describe the viewer's rules, not game accuracy.
 - Several graph rules rest on bounded decodes; runtime draw-time inputs (time, instance interpolants, constant-buffer binding) are frozen or unproven.
-- Forward materials other than the character glass, saucer dome, screen, puddle and bulb graphs, and the water preview, draw opaque.
+- Forward materials other than the character glass, saucer dome, screen, puddle, bulb and antenna glow shell graphs, and the water preview, draw opaque.
 - Portable exports approximate materials; they are not game-accurate.
 - Native mouse input and the packaged executable's window have been checked by hand only, not by automated tests.

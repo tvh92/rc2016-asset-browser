@@ -57,6 +57,12 @@ TINT_G_SWITCH = 0x7107A2D8   # < 0.5: grey _g (R gloss, G spec); >= 0.5: coloure
 # The key in the graph's own parameter table wins: materials can store keys their graph never reads.
 SELF_LIT_K_KEYS = (0x66EFA55B, 0x06F19114, 0xF8C61683)
 SPECULAR_SCALE_KEY, GLOSS_SCALE_KEY = 0x62835AF9, 0x24F4CA4C
+# Antenna glow shell forward colour pass 93695188: amplitude is engine constant CB0 dword 115, not decoded.
+# Same labelled convention as facing_glow: captured 0.01 (near off), presentation value 0.5. The blink
+# sine and the cutoff, vertex alpha and fog fade are frozen (sin 0, cutoff 0, alpha 1, fog_fade 1).
+BRIGHT_GLOW_PRESENTATION = dict(amplitude=0.5, amplitude_input='CB0 dword 115', captured_amplitude=0.01,
+                                presentation=True, writer='93695188',
+                                frozen_inputs=dict(sin=0.0, cutoff=0.0, alpha=1.0, fog_fade=1.0))
 # Decoded writers that do not read _g as coloured F0 + gloss alpha (first matching prefix wins).
 # g_mode 'grey': F0 = grey spec*_g.G, gloss = sqrt(sat(gloss*_g.R)); 'grey_skin': the basic_skin
 # front-end (F0 cap 0.5). self_lit 'g_blue' takes the mask from _g.B instead of _c.a.
@@ -197,6 +203,12 @@ GRAPH_RULES = (
     # F0 = grey Fs, gloss = sqrt(sat(G)). w is a blink sat(1 + (1 - B)(0.5 sin(phase) - 0.5)), frozen at sin = 0.
     ('materialgraph/character/hero/hero_bright_center_light/hero_bright_center_light_variable.',
      dict(self_lit='bright_center', self_lit_key=0xB7305C21, bright_center=True)),
+    # Forward colour pass 93695188 (one FP16 target, no texture), flags 0x200039: additive, back faces culled.
+    # The antenna glow shell (enm_qwark_light_glow and the other materials on this graph); no _c/_g/_n is read.
+    ('materialgraph/character/hero/hero_bright_center_light_glow/hero_bright_center_light_glow_variable.',
+     dict(self_lit_key=None, forward='bright_glow', constants=BRIGHT_GLOW_PRESENTATION, params=(
+         ('colour', 0x4E6E03FF, 3), ('colour_lo', 0x68538B05, 3), ('dist_k', 0xD76F8651, 1), ('gain', 0x5DE2C7F0, 1),
+         ('dist0', 0xCF085666, 1), ('steady', 0x01B78BF6, 1), ('sharp', 0x60DC3D2F, 1), ('rate', 0xB162C569, 1)))),
 )
 # Leaf cut-out (alpha test). The deferred foliage writers kill a fragment when its coverage, `_c`
 # alpha (basic_foliage FE32FE79/B01E7CB2; the tree graphs' 0476D929/6F0C1A0C), is below the
@@ -709,6 +721,10 @@ def material_texture_paths(archive, material_path: str) -> dict:
         params.update(rule.get('constants', {}))  # graph constants, not read from the material
         if rule['forward'] == 'water':
             params.update(WATER_PRESENTATION)
+        if rule['forward'] == 'bright_glow':
+            # t = |1.001 - N.V|^e with e = 0.2 (1 - S); w = sat(1 + (1 - B)(0.5 sin - 0.5)) at sin = 0.
+            params['exponent'] = 0.2 * (1.0 - params['sharp'])
+            params['weight'] = min(1.0, max(0.0, 1.0 - 0.5 * (1.0 - params['steady'])))
         result['forward'] = dict(kind=rule['forward'], params=params, **blend_state(material_flags(data)))
     if rule.get('facing_glow'):
         # No texture, parameter, vertex colour or instance input: albedo is 1.0 and the glow is
