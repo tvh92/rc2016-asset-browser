@@ -537,7 +537,10 @@ def build(job):
     catalog['source_catalog']=job.get('clip_catalog',job['clips'])
     embed('Animation Catalog.json',catalog)
     embed('Source Animation Catalog.json',catalog['source_catalog'])
-    if rig:embed('Animation Controls.py',Path(__file__).with_name('controls.py').read_text())
+    if rig:
+        embed('Animation Controls.py',Path(__file__).with_name('controls.py').read_text())
+        # Register the Animations panel when the file opens, so no manual Run Script is needed.
+        bpy.data.texts['Animation Controls.py'].use_module=True
     embed('Source Model Inventory.json',job['model']);embed('Unsupported and unresolved.json',job['limitations'])
     geometry_note=('Native PS4 mesh, UVs, normals, skin weights, material slots and decoded source textures are included. See Source geometry validation.json.\n\n'
         if job.get('native_geometry') else 'Source FBX geometry is included; registration, topology, UVs and weights were checked numerically. See Source geometry validation.json.\n\n'
@@ -546,7 +549,7 @@ def build(job):
     experimental_note=(f"Experimental animation coverage admitted {experimental_count} candidate Actions across ambiguous source clips blocked only by unresolved full/SSC0 inheritance. Both interpretations are available in the selector; SSC0 is the working preview choice. Neither interpretation is established as game/runtime accurate. Raw ambiguity and source hashes remain in the embedded catalog and Unsupported and unresolved.json.\n\n"
         if experimental_count else '')
     embed('START HERE','Press Space/Play: the saved sequential timeline works immediately.\n\n'
-        'For selection, jump-to-boundary and rest restoration: open Text Editor, select Animation Controls.py, and Run Script once. Then N > Animations. No add-on or auto-execution preference is needed.\n\n'
+        'For selection, jump-to-boundary and rest restoration: use N > Animations. The panel registers when the file opens; if Blender asks about automatic script execution for this file, allow it once.\n\n'
         +experimental_note+geometry_note+
         'Relative/additive clips are standalone source-rest previews, not exact in-game blends. See embedded inventory for classifications and limitations.\n'
         'Only structural/numerical validation is performed; no images are rendered. Visual inspection is yours.\n')
