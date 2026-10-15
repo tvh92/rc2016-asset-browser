@@ -106,6 +106,31 @@ class GraphStreamEvidenceTests(unittest.TestCase):
         results[0][0].add(9)   # callers get their own copies
         self.assertEqual(self.bindings.graph_stream_evidence(b'graph'), ({1}, {(0, 1): (2, 0)}))
 
+    def test_halves_are_analysed_only_when_asked_for(self):
+        self.bindings._rotated_evidence.cache_clear()
+        self.bindings._squared_evidence.cache_clear()
+        self.addCleanup(self.bindings._rotated_evidence.cache_clear)
+        self.addCleanup(self.bindings._squared_evidence.cache_clear)
+        self.bindings.use_compile_processes(0)
+        common, by_header = {(0, 1): (2, 0)}, {0x100: {(0, 1): (2, 0)}}
+        with patch.object(interpolants, 'rotated_stream_attributes', return_value={1: 3}) as rotated,              patch.object(interpolants, 'squared_stream_evidence', return_value=(common, by_header)) as squared:
+            self.assertEqual(self.bindings.graph_stream_evidence(b'g', normals=False), (set(), common))
+            self.assertEqual(rotated.call_count, 0)
+            self.assertEqual(self.bindings.graph_stream_evidence(b'g', {'header_offset': 0x100}, normals=False),
+                             (set(), by_header[0x100]))
+            self.assertEqual(self.bindings.graph_stream_evidence(b'g', channels=False), ({1}, {}))
+            self.assertEqual((rotated.call_count, squared.call_count), (1, 1))
+
+    def test_lazy_evidence_loads_on_first_read_and_only_once(self):
+        loads = []
+        evidence = self.bindings._LazyEvidence(lambda: loads.append(1) or {(0, 1): (2, 0)})
+        self.assertEqual(loads, [])
+        self.assertTrue(evidence)
+        self.assertEqual(evidence.get((0, 1)), (2, 0))
+        self.assertIsNone(evidence.get((9, 9)))
+        self.assertIn((0, 1), evidence)
+        self.assertEqual(loads, [1])
+
     def test_worker_processes_return_what_this_process_computes(self):
         graph = b'not a graph'   # analysis failures give empty evidence, in a worker as here
         expected = self.bindings.stream_evidence(graph)[:2]

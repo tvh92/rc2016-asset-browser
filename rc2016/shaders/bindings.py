@@ -148,12 +148,62 @@ def _stream_evidence(data):
     return _pooled(stream_evidence,data)
 
 
-def graph_stream_evidence(data,program=None):
+def rotated_evidence(data):
+    """The rotated-stream half of stream_evidence (module-level: it runs in a worker process)."""
+    from rc2016.shaders.interpolants import rotated_stream_attributes
+    try:return set(rotated_stream_attributes(data))
+    except (ValueError,KeyError,IndexError,struct.error):return set()
+
+
+def squared_evidence(data):
+    """The squared-channel half of stream_evidence: (common channels, channels by PS header)."""
+    from rc2016.shaders.interpolants import squared_stream_evidence
+    try:return squared_stream_evidence(data)
+    except (ValueError,KeyError,IndexError,struct.error):return {},{}
+
+
+@lru_cache(maxsize=64)
+def _rotated_evidence(data):
+    return _pooled(rotated_evidence,data)
+
+
+@lru_cache(maxsize=64)
+def _squared_evidence(data):
+    return _pooled(squared_evidence,data)
+
+
+def graph_stream_evidence(data,program=None,*,normals=True,channels=True):
     """stream_evidence once per graph, in a worker process when the pool is on: it depends on
-    the graph alone, while every material using the graph asks for it."""
-    normal_attributes,stream_channels,by_program=_once('stream_evidence',bytes(data),_stream_evidence)
-    if program is not None:stream_channels=by_program.get(program.get('header_offset'),{})
-    return set(normal_attributes),dict(stream_channels)
+    the graph alone, while every material using the graph asks for it. ``normals=False`` or
+    ``channels=False`` computes (and returns empty for) only the other half, each cached on its own."""
+    if normals and channels:
+        normal_attributes,stream_channels,by_program=_once('stream_evidence',bytes(data),_stream_evidence)
+        if program is not None:stream_channels=by_program.get(program.get('header_offset'),{})
+        return set(normal_attributes),dict(stream_channels)
+    normal_attributes=set(_once('rotated_evidence',bytes(data),_rotated_evidence)) if normals else set()
+    stream_channels={}
+    if channels:
+        common,by_program=_once('squared_evidence',bytes(data),_squared_evidence)
+        stream_channels=by_program.get(program.get('header_offset'),{}) if program is not None else common
+    return normal_attributes,dict(stream_channels)
+
+
+class _LazyEvidence:
+    """Stream evidence that is analysed when _bind first reads it: the rotated normals only matter
+    when the program has a reconstructed world position, the squared channels only when it reads
+    an interpolant, and most programs a level offers for previews need neither."""
+    def __init__(self,load):
+        self._load=load;self._value=None
+
+    def _get(self):
+        if self._value is None:self._value=self._load()
+        return self._value
+
+    def __bool__(self):return bool(self._get())
+    def __iter__(self):return iter(self._get())
+    def __len__(self):return len(self._get())
+    def __contains__(self,item):return item in self._get()
+    def get(self,key,default=None):return self._get().get(key,default)
 
 
 def pass_contracts(data):
@@ -540,7 +590,9 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False,
         try:matched=program_contracts(data,program,contracts,allow_independent_samplers=world_position)
         except ValueError as exc:
             result['diagnostics'].append(str(exc));continue
-        if world_position:normal_attributes,stream_channels=graph_stream_evidence(data,program)
+        if world_position:
+            normal_attributes=_LazyEvidence(lambda program=program:graph_stream_evidence(data,program,channels=False)[0])
+            stream_channels=_LazyEvidence(lambda program=program:graph_stream_evidence(data,program,normals=False)[1])
         static_attributes={};static_proof=[]
         if static_vector:
             from rc2016.shaders.static_vectors import static_vector_evidence
