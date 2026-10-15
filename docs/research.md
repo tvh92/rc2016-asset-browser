@@ -31,6 +31,7 @@ The output folder must be outside the repository and source root. It receives `r
 | `report.py` | Two-pass analysis and deterministic JSON/Markdown |
 | `mip_layout.py` | Texture payload sizes against top-mip-only, tile-padded and unpadded mip-chain layouts (`python -m rc2016.research.mip_layout --source-root <Image0>`); a prerequisite for uploading stored mips instead of generating them |
 | `npc_audit.py` | Per-model animation and material coverage for one path prefix (default `character/npc/`); see [Character audit](#character-audit) |
+| `inheritance_audit.py` | Bit-0 scale-compensation rules: inverse-bind fit of every model and world-basis shear of paired clips per rule (`python -m rc2016.research.inheritance_audit <game or asset_archive root> --out <folder>`); see [pipeline](pipeline.md#inheritance-rule) |
 
 The census ranks undecoded sections before decoded ones, with requested open items first. Within each group, score is file count times total section bytes. Heap coverage uses existing instance/decal reference ranges; unclaimed bytes can include alignment padding. The heap is only partially decoded.
 

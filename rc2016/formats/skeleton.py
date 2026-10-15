@@ -1,6 +1,8 @@
 """Validated model SQT layout plus per-model inverse-bind/inheritance evidence."""
+import json
 import math
 import struct
+from pathlib import Path
 import numpy as np
 from rc2016.formats.container import read_container
 from rc2016.formats.animation_transforms import model_skeleton
@@ -63,6 +65,48 @@ def check_profile_inheritance(rows, inverses, rule):
     return error
 
 
+SSC0 = 'segment_scale_compensation_bit0'
+PROFILE_FOLDER = Path(__file__).resolve().parents[1] / 'pipeline' / 'model_profiles'
+
+
+def bundled_profile(model_sha256):
+    """The hash-bound model profile shipped for this exact source model, or None."""
+    path = PROFILE_FOLDER / (model_sha256 + '.json')
+    return json.loads(path.read_text(encoding='utf-8')) if path.is_file() else None
+
+
+def inheritance_rule(profile):
+    """The rule a preview that has no per-clip candidate comparison applies: the profile's, else the single
+    inverse-bind-compatible one, else the pipeline default (SSC0)."""
+    candidates = profile['inheritance_candidates']
+    return profile.get('inheritance') or (candidates[0] if len(candidates) == 1 else SSC0)
+
+
+def check_profile_rules(override, rows, inverses, candidates):
+    """Validate the rule names of a profile override. The after-rotation rule must fit the inverse binds inside
+    the tolerance (its error is returned); a ``rest_inheritance`` other than that must be one of the
+    inverse-bind-compatible ``candidates``, since the rest pose is what the stored binds describe. The clip
+    ``inheritance`` is not checked against the binds: the animated rule is a profile decision."""
+    rules = (None, 'full', SSC0, AFTER_ROTATION)
+    if override.get('inheritance') not in rules or override.get('rest_inheritance') not in rules:
+        raise ValueError('Unsupported profile inheritance rule')
+    error = None
+    if AFTER_ROTATION in (override.get('inheritance'), override.get('rest_inheritance')):
+        error = check_profile_inheritance(rows, inverses, AFTER_ROTATION)
+    rest = override.get('rest_inheritance')
+    if rest and rest != AFTER_ROTATION and rest not in candidates:
+        raise ValueError('Profile rest rule does not fit the model inverse binds: ' + rest)
+    return error
+
+
+def rest_inheritance_rule(profile):
+    """The rule that composes the rest pose and is checked against the inverse binds: the profile's
+    ``rest_inheritance``, else its ``inheritance``, else the single compatible candidate, else full inheritance
+    for a rig without inverse-bind evidence. Animated samples use ``inheritance_rule`` / the per-clip rule."""
+    candidates = profile['inheritance_candidates']
+    return profile.get('rest_inheritance') or profile.get('inheritance') or (candidates[0] if candidates else 'full')
+
+
 def inspect_model(path, override=None):
     data = read(path); root = read_container(data,0,{})
     if root['declared_size'] != len(data):
@@ -114,10 +158,9 @@ def inspect_model(path, override=None):
     if override:
         if override.get('model_sha256') != sha(data):
             raise ValueError('Profile hash does not match selected source model')
-        if override.get('inheritance') not in (None,'full','segment_scale_compensation_bit0',AFTER_ROTATION):
-            raise ValueError('Unsupported profile inheritance rule')
-        if override.get('inheritance') == AFTER_ROTATION:
-            errors[AFTER_ROTATION] = check_profile_inheritance(rows, inverses, AFTER_ROTATION)
+        after_rotation_error = check_profile_rules(override, rows, inverses, candidates)
+        if after_rotation_error is not None:
+            errors[AFTER_ROTATION] = after_rotation_error
         if override.get('source_to_blender_units',1) != 1:
             raise ValueError('This adapter preserves source numeric units; profile unit conversion is not implemented')
         profile.update(override)

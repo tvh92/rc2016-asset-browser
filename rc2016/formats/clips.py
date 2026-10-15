@@ -236,6 +236,8 @@ def extract_set(path, rows, cache, profile, log, experimental_ambiguous_inherita
                 else:
                     entry.update(status='unsupported',kind='unsupported',reason='Model inverse binds do not establish an inheritance rule; profile required')
             else:
+                # Clips use the profile's animated rule; its separate ``rest_inheritance`` (rest pose, inverse-bind
+                # fit) is deliberately not read here.
                 entry['inheritance']=profile.get('inheritance')
         except (ValueError,KeyError,IndexError,OverflowError,struct.error) as exc:
             message=str(exc)

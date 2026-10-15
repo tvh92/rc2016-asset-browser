@@ -21,7 +21,7 @@ from rc2016.pipeline.clip_selection import ClipSelectionError, resolve_clip_sele
 from rc2016.common import dump,ensure_separate,extended,file_hash,load,read,safe_name,sha,write,promote
 from rc2016.formats.index import AssetIndex
 from rc2016.pipeline.lighting import NOVALIS_REGION,inventory_lighting,prepare_game_lighting
-from rc2016.formats.skeleton import inspect_model
+from rc2016.formats.skeleton import inspect_model,rest_inheritance_rule
 from rc2016.formats.native_model import UnsupportedModelError,inspect_native_model
 from rc2016.formats.materials import prepare_materials,preflight_texture_output
 from rc2016.formats.texture_transport import image_interpretation_key,image_interpretation_identity
@@ -701,10 +701,14 @@ def process_model(key,index,args,code_hash,previous,log):
     if args.force and checkpoint.exists():checkpoint.unlink()
     candidate=args.output_root/'blender'/(stem+'_candidate.blend')
     rules=model['profile']['inheritance_candidates']
-    rest_rule=model['profile'].get('inheritance') or (rules[0] if rules else 'full')
+    rest_rule=rest_inheritance_rule(model['profile'])
     if not rules and not model['profile'].get('inheritance'):
         # A rest-only unsupported file cannot claim an inferred runtime inheritance rule.
         limitations['rest_pose_inheritance']='Ordinary hierarchy diagnostic; source inverse-bind evidence unavailable'
+    if model['profile'].get('rest_inheritance') and model['profile'].get('inheritance') not in (None,rest_rule):
+        # Skinning is clip world * rest inverse, so the clips' rule departs from the bind pose where the rules differ.
+        limitations['rest_pose_inheritance']=('Rest pose and inverse binds use '+rest_rule+'; clips use '+model['profile']['inheritance']+
+            ' (profile-selected split, inferred from animated basis shear, not a trace of the runtime evaluator)')
     texture_transport=[];seen_transport=set()
     for library in [material_library,*part_material_libraries]:
         bindings=list(library.get('textures',[]))

@@ -376,7 +376,7 @@ Limitations:
 
 - Animation sets come from the actors that reference the model in `asset_references.sqlite`, following their configs. Attached actors are not followed.
 - Clips are listed from the ordered containers, decoded on selection (`decode_clip`, `sample_transforms`) and classified (`classify`).
-- Skin matrices = `worlds(rows, frame, rule) @ inverse_bind`, with the pipeline's inheritance rule (a single candidate, else SSC0), conjugated into the preview basis. Rest skinning is exact.
+- Skin matrices = `worlds(rows, frame, rule) @ inverse_bind`, with the pipeline's clip inheritance rule (the bundled profile's, else a single candidate, else SSC0), conjugated into the preview basis. Rest skinning is exact (it is the mesh itself); a clip frame at the rest pose is exact except for a profile whose `rest_inheritance` differs from its clip rule (`npc_sheep`: `2.05e-3` on three right-arm joints, kept uncorrected).
 - Additive-style clips play standalone, not on top of a base pose.
 - The clip picker is a searchable folder list opened by the Animation button. The frame label shows `frame/total @ fps`.
 
@@ -486,7 +486,7 @@ One folder per model in the output root:
 | `textures/` | Material PNGs: `_basecolor`, `_metal_rough`, `_normal`, `_emissive` (OBJ also `_roughness`/`_metallic`); optionally `textures/game_dds/` with the original DDS. Only material maps of polygon-used slots are written |
 | `export.json` | Source ID/path/hash, options, files, clips (and skipped clips with reasons), per-material texture sources and notes |
 
-**Coordinates and skeleton:** Y-up in game units (glTF's convention), game UVs, textures never flipped. GLB/glTF carry the skeleton (local TRS derived from `worlds()`, so either inheritance rule is reproduced), inverse binds, up to 8 influences (two JOINTS/WEIGHTS sets), and every playable clip as a glTF animation (additive clips standalone, as in the viewer). OBJ is the static rest pose.
+**Coordinates and skeleton:** Y-up in game units (glTF's convention), game UVs, textures never flipped. GLB/glTF carry the skeleton (local TRS derived from `worlds()`, so either inheritance rule is reproduced; rest joint nodes use the profile's `rest_inheritance`, clip tracks its clip rule), inverse binds, up to 8 influences (two JOINTS/WEIGHTS sets), and every playable clip as a glTF animation (additive clips standalone, as in the viewer). OBJ is the static rest pose.
 
 **Blender conversion** uses factory settings, `disable_bone_shape=True` (otherwise FBX/USD export the importer's bone-display icosphere as a mesh) and a private user folder. The `.blend` gets `apply_new_scene_defaults(configure_world=False, configure_gpu=False)` (render defaults only: no HDRI world, no OptiX device setup) and packed images. These files carry glTF Principled materials, not the RC PS4 Deferred BRDF; use the research build for that.
 
