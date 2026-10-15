@@ -443,6 +443,11 @@ def _viewer_expected_constants(rule):
                   "facing glow amplitude": f["amplitude"], "facing glow g scale": f["g_scale"]})
     if "alpha_cut" in ported:
         e["alpha cut threshold"] = terms["alpha_cut"]
+    if "bright_glow" in ported:
+        p = terms["bright_glow"]["params"]
+        e.update({"bright glow colour": p["colour"], "bright glow colour lo": p["colour_lo"], "bright glow dist_k": p["dist_k"],
+                  "bright glow dist0": p["dist0"], "bright glow gain": p["gain"], "bright glow weight": p["weight"],
+                  "bright glow exponent": p["exponent"], "bright glow amplitude": p["amplitude"]})
     if "screen" in ported:
         p = terms["screen"]["params"]
         e.update({"screen grid": p["grid"], "screen alpha base": p["alpha_base"], "screen mask strength": p["mask_strength"],
@@ -515,6 +520,9 @@ def _viewer_required(rule, has_n):
                   "facing glow a offset", "facing glow amplitude", "facing glow g scale"]
     if "alpha_cut" in ported:
         names.append("alpha cut threshold"); req("_c")
+    if "bright_glow" in ported:
+        names += ["bright glow colour", "bright glow colour lo", "bright glow dist_k", "bright glow dist0", "bright glow gain",
+                  "bright glow weight", "bright glow exponent", "bright glow amplitude"]
     if "screen" in ported:
         names += ["screen alpha base", "screen mask strength", "screen colour A", "screen colour B", "screen intensity A",
                   "screen intensity B"] + (["screen grid"] if tex.get("_n") else [])
@@ -581,6 +589,20 @@ def _validate_viewer_rule_material(source, material):
         assert rule["terms"]["screen"].get("two_sided") or "VR cull back faces" in names, "Screen back faces are not culled"
         constants = _viewer_check_constants_and_images(source, material, rule, upstream, has_n)
         return dict(status="passed_viewer_graph_rule_frontend", terms=ported, blend=blend, constants=constants,
+                    limitation=material.get("rc_shader_frontend_limitation"))
+    if "bright_glow" in ported:   # Surface = Cull(Add(Transparent, Emission(Clo + (C - Clo) x^2, 7 amp sat(x))))
+        upstream = _viewer_upstream(output.inputs["Surface"])
+        names = {node.name for node in upstream}
+        two_sided = rule["terms"]["bright_glow"].get("two_sided")
+        assert {"VR bright glow emission", "VR bright glow blend additive", "VR camera distance"} <= names, \
+            "Bright glow emission/additive blend/camera distance is not the output"
+        assert rule["terms"]["bright_glow"].get("blend") == "additive", "Bright glow source blend is not additive"
+        assert two_sided or "VR cull back faces" in names, "Bright glow back faces are not culled"
+        assert material.use_backface_culling == (not two_sided), "Bright glow material back-face culling differs from the flags word"
+        if hasattr(material, "surface_render_method"):
+            assert material.surface_render_method == "BLENDED", "Bright glow material is not blended"
+        constants = _viewer_check_constants_and_images(source, material, rule, upstream, has_n)
+        return dict(status="passed_viewer_graph_rule_frontend", terms=ported, blend="additive", constants=constants,
                     limitation=material.get("rc_shader_frontend_limitation"))
     brdf = _from_node(output.inputs["Surface"])
     facing = "facing_glow" in ported

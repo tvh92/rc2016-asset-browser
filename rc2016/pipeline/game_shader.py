@@ -1093,7 +1093,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 5
+VIEWER_RULE_FRONTEND_VERSION = 6
 
 
 def _viewer_rule_images(nt):
@@ -1151,6 +1151,48 @@ def _viewer_rule_screen(mat, rule, img):
             'emission before the view transform; cutoff 0, vertex alpha and fog fade 1']
 
 
+def _viewer_rule_bright_glow(mat, rule):
+    """Antenna glow shell, forward colour pass 93695188 (gl_shading.GLASS_FRAGMENT uKind 5).
+
+    t = |1.001 - N.V|^e, x = (1 - dist_k (|eye - p| - dist0)) w gain (1 - t), alpha = sat(x),
+    rgb = 7 amp (Clo + (C - Clo) x^2); the surface is Add(Transparent, Emission) so that the
+    emission strength 7 amp sat(x) carries the source alpha (SRC_ALPHA, ONE), back faces culled.
+    """
+    nt = mat.node_tree; P = _ViewerNodes(nt)
+    f = rule['terms']['bright_glow']; p = f['params']
+    geo = P.geo()
+    ndv = P.sat(P.v('DOT_PRODUCT', P.v('NORMALIZE', geo.outputs['Normal']), P.v('NORMALIZE', geo.outputs['Incoming'])))
+    t = P.m('POWER', P.m('ABSOLUTE', P.m('SUBTRACT', 1.00100004673, ndv)), P.const('bright glow exponent', p['exponent']))
+    cam = nt.nodes.new('ShaderNodeCameraData'); cam.name = cam.label = 'VR camera distance'
+    d = P.m('SUBTRACT', 1.0, P.m('MULTIPLY', P.const('bright glow dist_k', p['dist_k']),
+                                  P.m('SUBTRACT', cam.outputs['View Distance'], P.const('bright glow dist0', p['dist0']))))
+    x = P.m('MULTIPLY', P.m('MULTIPLY', P.m('MULTIPLY', d, P.const('bright glow weight', p['weight'])),
+                            P.const('bright glow gain', p['gain'])), P.m('SUBTRACT', 1.0, t))
+    lo = P.const3('bright glow colour lo', p['colour_lo'])
+    colour = P.vlerp(lo, P.const3('bright glow colour', p['colour']), P.m('MULTIPLY', x, x))
+    amp = P.const('bright glow amplitude', p['amplitude'])
+    em = P.N.new('ShaderNodeEmission'); em.name = em.label = 'VR bright glow emission'
+    P.L.new(colour, em.inputs['Color']); P.L.new(P.m('MULTIPLY', P.m('MULTIPLY', amp, 7.0), P.sat(x)), em.inputs['Strength'])
+    clear = P.N.new('ShaderNodeBsdfTransparent'); clear.name = 'VR bright glow background'
+    shader = P.N.new('ShaderNodeAddShader'); shader.name = shader.label = 'VR bright glow blend additive'
+    P.L.new(clear.outputs[0], shader.inputs[0]); P.L.new(em.outputs[0], shader.inputs[1])
+    if not f.get('two_sided'):
+        culled = P.N.new('ShaderNodeBsdfTransparent'); culled.name = 'VR culled back face'
+        cull = P.N.new('ShaderNodeMixShader'); cull.name = cull.label = 'VR cull back faces'
+        P.L.new(geo.outputs['Backfacing'], cull.inputs[0]); P.L.new(shader.outputs[0], cull.inputs[1])
+        P.L.new(culled.outputs[0], cull.inputs[2]); shader = cull
+    out = P.N.new('ShaderNodeOutputMaterial'); out.is_active_output = True
+    P.L.new(shader.outputs[0], out.inputs['Surface'])
+    mat.use_backface_culling = not f.get('two_sided')
+    if hasattr(mat, 'surface_render_method'):
+        mat.surface_render_method = 'BLENDED'
+    return ['Forward glow shell 93695188 (unlit, additive): emission amplitude CB0[115] is a labelled presentation value '
+            '(captured 0.01 near off, shown at %g), not decoded; blink sine frozen at 0, cutoff 0, alpha 1, fog fade 1; '
+            'depth write (flags bit 0x200000), pre-pass 79b1fbf4 and the vertex billboard/wobble branches are not modelled; '
+            'Cycles blends scene-linear emission before the view transform, Camera Data distance assumes scene units equal game units'
+            % p['amplitude']]
+
+
 def apply_viewer_graph_rule(mat, source):
     """The asset viewer's per-graph reading on the shared deferred BRDF, for graphs without a
     registered family (pipeline materials.viewer_graph_rule; viewer gl_shading.py Shaded mode).
@@ -1188,7 +1230,8 @@ def apply_viewer_graph_rule(mat, source):
     facing = terms.get('facing_glow') if 'facing_glow' in ported else None   # 0CD2AAFB samples no texture
     if screen and c is None or not screen and terms.get('screen'):
         return False
-    if c is None and not (arch and g is not None) and not facing:
+    glow_shell = 'bright_glow' in ported and 'bright_glow' in terms   # 93695188 samples no texture
+    if c is None and not (arch and g is not None) and not facing and not glow_shell:
         return False
     for node in list(nt.nodes):   # keep every source image node (provenance and coverage reports)
         if node.type != 'TEX_IMAGE':
@@ -1199,6 +1242,10 @@ def apply_viewer_graph_rule(mat, source):
     if screen:
         limits += _viewer_rule_screen(mat, rule, img)
         _finish_viewer_rule(mat, rule, 'forward screen 8716DC7A (t=0, unlit, %s)' % terms['screen'].get('blend'), limits)
+        return True
+    if glow_shell:
+        limits += _viewer_rule_bright_glow(mat, rule)
+        _finish_viewer_rule(mat, rule, 'forward bright glow 93695188 (unlit, additive, back faces culled)', limits)
         return True
     P = _ViewerNodes(nt)
     grp = nt.nodes.new('ShaderNodeGroup'); grp.node_tree = build_group()
