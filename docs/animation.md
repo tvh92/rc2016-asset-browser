@@ -13,6 +13,7 @@ Related documents: [pipeline](pipeline.md) (how the build uses the baker, clip s
 | `rc2016/formats/animation_transforms.py` | Model-independent S/Q/T extractor: reads an animset and its original model, resolves joint hashes against the model skeleton, and exports raw clips plus source-scale, source-time JSON. No bone names or authored curves are assumed. Its CLI is the loose-file backend of the GUI. |
 | `rc2016/formats/clips.py` | All embedded clips of an animset in directory order: exact samples, classification, inheritance rule, unsupported rows. `extract_set(..., clip_names=)` extracts only the named containers of a file. |
 | `rc2016/formats/animation_sources.py` | Clip sources beyond a model's referenced animsets: cutscene (`cinematic2`) clip directories named by CRC32, `cinematic_sources`, the matching-rig comparison and `borrowed_animset`. |
+| `rc2016/export/cutscene_animations.py` | Cutscene animation library: manifest plus GLB per model (see [Cutscene animation library](#cutscene-animation-library)). |
 | `rc2016/pipeline/animation_bake.py` | Affine bone baking and numerical verification (`make_bake_rig`, `bake_clip`, `world_samples`, `matrix_error`); no character names. The pipeline's buffered production baker is `rc2016/pipeline/blender_support.py` (`bake`), which uses the same SVD scheme. |
 | `rc2016/pipeline/controls.py` | Embedded 3D View **Animations** panel; no external dependencies. (`legacy_controls.py` is an older panel kept so previously delivered files still validate.) |
 
@@ -123,6 +124,27 @@ for clip in applicable_clips:
 ```
 
 For the full pipeline path (clip selection, inheritance profiles, caching, NLA and controls) see [pipeline](pipeline.md#animation-in-the-pipeline).
+
+## Cutscene animation library
+
+Characters without an idle animset only move in real-time cutscene (`cinematic2`) assets. `rc2016/export/cutscene_animations.py` exports every such performance of a model, reusing the portable exporter (`rc2016/export/models.py`) with the cutscene shots as its only animation source (`ExportOptions.cinematic_only`; `cinematic` adds them to the model's animset clips; `AnimationLibrary.with_cinematic` builds the clip list):
+
+```text
+python -m rc2016.export.cutscene_animations <game or asset_archive root> --model <archive path or unique stem> [--model ...]
+        --out <folder> [--no-textures] [--overwrite]
+```
+
+Per model it writes `<out>/<model stem>/`:
+
+| File | Content |
+| --- | --- |
+| `<stem>_cutscenes.glb` | The skinned model (geometry, skeleton, materials as in the portable export) with one glTF animation per decoded clip, named by the clip. Native Y-up basis, local TRS per joint per frame at the clip's fps; the cutscene scene space is not re-centred. |
+| `manifest.json` | Model path, a note that these are cutscene performances and not idle loops, counts, the GLB summary and one row for every matching clip, decoded or not: name, name hash, source cutscene asset (path, id, SHA-256 of its decoded bytes), cutscene and shot parsed from the name (`<cutscene>_rt_shot<N>_<performer>`), clip format version, frames, fps, duration, joint counts, `decode_status` and, when not decoded, the reason. |
+| `export.json` | The portable exporter's record (materials, notes, skipped clips). |
+
+`decode_status` is `decoded` (exported), `not_decoded` (the decoder refused it, for example an unsupported clip version or a payload-size mismatch), `not_playable` (decoded but classified as not driving this skeleton) or `unnamed_not_exported` (the clip covers the model's joints but its name hash matches no string of its file, so it is listed and never guessed). Clips whose joints do not cover the whole model are not matched. The command fails if the GLB's animation count differs from the number of decoded rows. For the Novalis mayor, Darla Gratch and Shiv this yields 6 of 7, 8 of 14 and 33 of 35 shots.
+
+The pipeline can bake the same clips into a `.blend`: `--cinematic-clips` offers them, no `--clip` bakes all, and `--active-clip name:<shot>` leaves one as the active Action (see [pipeline](pipeline.md#animation-in-the-pipeline)).
 
 ## External sources (format evidence only; nothing copied or executed)
 

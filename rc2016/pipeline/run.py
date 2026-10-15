@@ -611,6 +611,18 @@ def process_model(key,index,args,code_hash,previous,log):
     action_entries=[row for row in action_entries if (row.get('animset_path'),row.get('order'),row.get('raw_sha256')) in selected_keys]
     entries=catalog
     included=selected_source_rows
+    # --active-clip: the baked Action left active (and framed by the camera) instead of the sequential overview.
+    active_clip_index=None
+    if getattr(args,'active_clip',None):
+        try:
+            active_rows,_catalog=resolve_clip_selection(entries,[args.active_clip])
+        except ClipSelectionError as exc:
+            raise ValueError('Active clip selection failed before Blender: '+str(exc)) from exc
+        active_key=(active_rows[0].get('animset_path'),active_rows[0].get('order'),active_rows[0].get('raw_sha256'))
+        matches=[i for i,row in enumerate(action_entries) if (row.get('animset_path'),row.get('order'),row.get('raw_sha256'))==active_key]
+        if len(matches)!=1:
+            raise ValueError('Active clip %s must be one selected, baked Action (found %d)'%(args.active_clip,len(matches)))
+        active_clip_index=matches[0]
     explicit_clip_selection=bool(args.clip)
     selection_identity=dict(mode='explicit' if explicit_clip_selection else 'all_supported',
         selectors=list(args.clip or ()),
@@ -659,7 +671,7 @@ def process_model(key,index,args,code_hash,previous,log):
         textures={x['path']:(x['built_sha256'],x.get('stream_sha256')) for x in material_library['textures']},
         import_lod=args.import_lod,export_textures=args.export_textures,
         experimental_ambiguous_inheritance=args.experimental_ambiguous_inheritance,
-        animation_selection=selection_identity,
+        animation_selection=selection_identity,active_clip=active_clip_index,
         animation_sources=dict(cinematic_clips=bool(getattr(args,'cinematic_clips',False)),
             borrowed_animsets=list(getattr(args,'borrow_animset',None) or ())),
         lighting=(dict(source='novalis',probe=args.game_lighting['source_sha256'],faces=[x['sha256'] for x in args.game_lighting['faces']],
@@ -717,7 +729,7 @@ def process_model(key,index,args,code_hash,previous,log):
                 stream_size=check.get('stream_size'),stream_occurrences=check.get('stream_occurrences',[]),
                 source_evidence=check))
     job=dict(schema=VERSION,fingerprint=fingerprint,model=model,geometry=geometry,native_geometry=native_geometry,native_parts=native_parts,
-        animation_selection=selection_identity,clip_catalog=entries,
+        animation_selection=selection_identity,active_clip_index=active_clip_index,clip_catalog=entries,
         texture_transport=texture_transport,
         experimental_ambiguous_inheritance=args.experimental_ambiguous_inheritance,
         clips=action_entries,limitations=limitations,candidate=str(candidate),checkpoint=str(checkpoint),
@@ -1457,6 +1469,8 @@ def main():
         help='Include both decoded full and SSC0 experimental Actions for source-related clips blocked by inheritance ambiguity; SSC0 is preferred, runtime accuracy remains unproven')
     parser.add_argument('--cinematic-clips',action='store_true',
         help='Also offer real-time cutscene (cinematic2) clips whose joints cover the whole model; clips are named only by an exact CRC32 match. Pick one with --clip.')
+    parser.add_argument('--active-clip',default=None,
+        help='Exact selector (as --clip) of the one baked clip left as the active Action in the saved file, and framed by the review camera; default: the sequential overview of every clip')
     parser.add_argument('--borrow-animset',action='append',default=[],
         help='Also offer this animset (archive path) when the game pairs it with another model whose rest rig matches the selected model; repeat for several')
     parser.add_argument('--blend-only',action='store_true',help='After a fully successful run, keep only the delivered .blend files and the viewer animation index: delete reports, meshes, textures, caches and validation')

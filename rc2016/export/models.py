@@ -59,16 +59,26 @@ class ExportOptions:
     look: int = 0
     blender: str = ''
     skip_existing: bool = False      # keep a folder whose export.json matches source and options
+    cinematic: bool = False          # also offer the real-time cutscene shots that cover the whole model
+    cinematic_only: bool = False     # only those shots (no animset clips, no reference index needed)
+    file_suffix: str = ''            # appended to the model stem in file names, e.g. '_cutscenes'
 
     def key(self):
         d = asdict(self)
         d.pop('blender'); d.pop('skip_existing')
         d['formats'] = sorted(d['formats']); d['clips'] = list(d['clips'])
+        for name in ('cinematic', 'cinematic_only', 'file_suffix'):   # absent from keys of exports that predate them
+            if not d[name]:
+                d.pop(name)
         return d
 
 
 class Cancelled(Exception):
     pass
+
+
+class NotPlayable(ValueError):
+    """A clip decoded but is classified as not driving this model's skeleton (unrelated or ambiguous)."""
 
 
 def safe_name(value, maximum=70):
@@ -453,7 +463,7 @@ def _clip_tracks(library, index):
     frames = sample_transforms(clip)
     kind, _evidence = classify(library.rows, frames)
     if kind not in PLAYABLE:
-        raise ValueError(f"{kind}; it does not drive this model's skeleton")
+        raise NotPlayable(f"{kind}; it does not drive this model's skeleton")
     if kind == 'relative/additive-style layer':
         rest = {r['hash']: r for r in library.rows}
         frames = [[dict(row, translation=[a + b for a, b in zip(rest[row['hash']]['translation'], row['translation'])],
@@ -611,8 +621,14 @@ class ModelExporter:
                 pass
         return stem, folder
 
-    def export(self, model_id, source_path, options: ExportOptions):
-        """Export one model; returns a summary dict. Raises on failure, Cancelled on cancel."""
+    def export(self, model_id, source_path, options: ExportOptions, cinematic_sources=None):
+        """Export one model; returns a summary dict. Raises on failure, Cancelled on cancel.
+
+        With ``options.cinematic`` or ``cinematic_only`` the real-time cutscene shots covering the whole model
+        are an animation source (``cinematic_sources``: an ``animation_sources.cinematic_sources`` result the
+        caller already has, otherwise scanned here). The summary lists every offered ``clips`` entry
+        (name, kind, fps, frames, source, asset, offset) and ``skipped_clips`` with reasons.
+        """
         stem, folder = self.model_folder(model_id, source_path)
         info_path = folder / 'export.json'
         if options.skip_existing and info_path.is_file():
@@ -630,13 +646,15 @@ class ModelExporter:
         index_root = self.index_root if (self.index_root / 'reports' / 'asset_references.sqlite').is_file() else None
         gltf_based = any(f in options.formats for f in ('glb', 'gltf', 'fbx', 'usd', 'blend'))
         load_animation = options.animations != 'none' and gltf_based   # OBJ is the static rest pose only
+        cutscenes = (options.cinematic or options.cinematic_only) and load_animation
+        animset_root = index_root if load_animation and not options.cinematic_only else None
         self.loader.load(self.source_root, model_id, source_path, options.lod, options.look,
-                         index_root if load_animation else None, False, purpose='export')
+                         animset_root, False, purpose='export')
         decoded, library = self.loader.current, self.loader.animation if load_animation else None
         archive = self.loader.archive
         self._check()
         notes = []
-        if load_animation and decoded['joint_count'] and index_root is None:
+        if load_animation and decoded['joint_count'] and animset_root is None and not options.cinematic_only:
             notes.append('Animations skipped: scan the archive into this output folder first (its reference index links models to animation sets).')
         joint_count = decoded['joint_count'] if library is not None and library.rows else 0
         if decoded['joint_count'] and not joint_count:
@@ -644,6 +662,10 @@ class ModelExporter:
             from rc2016.viewer.animation import AnimationLibrary
             library = AnimationLibrary(archive, self.loader._recent[self.loader.identity]['data'], [])
             joint_count = len(library.rows) if library.rows else 0
+        if cutscenes and library is not None and library.rows:
+            self.log('  scanning real-time cutscenes')
+            library = library.with_cinematic(archive, replace=options.cinematic_only, sources=cinematic_sources)
+            self._check()
         meshes = selected_meshes(decoded, options.lod, options.look)
         if not meshes:
             raise ValueError('The selected look/LOD has no geometry')
@@ -686,13 +708,18 @@ class ModelExporter:
                 self._check()
                 try:
                     kind, fps, tracks = clip_tracks(library, i)
-                    clips_out.append(dict(name=labels[i], kind=kind, fps=fps, tracks=tracks))
+                    clips_out.append(dict(name=labels[i], kind=kind, fps=fps, tracks=tracks,
+                                          source=library.clips[i].get('source', 'animset'),
+                                          asset=library.clips[i]['animset'], offset=library.clips[i]['offset']))
                 except Exception as error:   # one bad clip must not stop the export
-                    skipped.append(dict(name=labels[i], reason=str(error)))
+                    skipped.append(dict(name=labels[i], reason=str(error), not_playable=isinstance(error, NotPlayable),
+                                        source=library.clips[i].get('source', 'animset'),
+                                        asset=library.clips[i]['animset'], offset=library.clips[i]['offset']))
             self.log(f'  {len(clips_out)} clip(s) decoded' + (f', {len(skipped)} skipped' if skipped else ''))
 
         folder.mkdir(parents=True, exist_ok=True)
         written = []
+        file_stem = stem + options.file_suffix
         doc = blob = None
         tex_dir = folder / 'textures'
         need_gltf = any(f in options.formats for f in ('glb', 'gltf', 'fbx', 'usd', 'blend'))
@@ -706,10 +733,10 @@ class ModelExporter:
                 file_doc, file_blob = gltf.finish(embed=False, texture_dir='textures')
                 for name, png in gltf.images:
                     (tex_dir / f'{name}.png').write_bytes(png); texture_files[name] = png
-                write_gltf(folder / f'{stem}.gltf', file_doc, file_blob)
-                written += [f'{stem}.gltf', f'{stem}.bin']
+                write_gltf(folder / f'{file_stem}.gltf', file_doc, file_blob)
+                written += [f'{file_stem}.gltf', f'{file_stem}.bin']
             if 'glb' in options.formats:
-                write_glb(folder / f'{stem}.glb', doc, blob); written.append(f'{stem}.glb')
+                write_glb(folder / f'{file_stem}.glb', doc, blob); written.append(f'{file_stem}.glb')
         if 'obj' in options.formats:
             self._write_obj_materials(folder, stem, maps, tex_dir if options.textures else None, texture_files)
             write_obj(folder / f'{stem}.obj', stem, parts, maps)
@@ -732,7 +759,8 @@ class ModelExporter:
         info = dict(schema='rcps4-portable-export-v1', model_id=model_id, source_path=source_path,
                     source_packed_sha256=decoded['packed_sha256'], options=options.key(), files=sorted(set(written)),
                     look=options.look, lod=options.lod, meshes=[m['index'] for m in meshes],
-                    joints=joint_count, clips=[dict(name=c['name'], kind=c['kind'], fps=c['fps'], frames=len(c['tracks'])) for c in clips_out],
+                    joints=joint_count, clips=[dict(name=c['name'], kind=c['kind'], fps=c['fps'], frames=len(c['tracks']),
+                                                    **({} if c['source'] == 'animset' else dict(source=c['source']))) for c in clips_out],
                     skipped_clips=skipped,
                     materials={str(slot): dict(name=m['name'], textures=m['sources'], notes=m['notes']) for slot, m in maps.items()},
                     notes=notes, coordinates='native Y-up, right-handed, game units; glTF UVs top-left origin',
@@ -740,7 +768,9 @@ class ModelExporter:
                                 'graph-specific tints, palettes, detail maps and runtime effects are not baked. Not game-equivalent.')
         info_path.write_text(json.dumps(info, indent=1), encoding='utf-8')
         message = f"{len(info['files'])} files, {len(clips_out)} clip(s)" + (f", {len(skipped)} clip(s) skipped" if skipped else '')
-        return dict(status='exported', folder=str(folder), message=message, notes=notes)
+        return dict(status='exported', folder=str(folder), message=message, notes=notes,
+                    clips=[{k: v for k, v in c.items() if k != 'tracks'} | dict(frames=len(c['tracks'])) for c in clips_out],
+                    skipped_clips=skipped)
 
     # -- glTF assembly
     def _build_gltf(self, stem, parts, maps, library, clips):

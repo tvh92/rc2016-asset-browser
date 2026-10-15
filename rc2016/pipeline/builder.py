@@ -490,6 +490,12 @@ def build(job):
     if mesh_bounds:bounds=mesh_bounds
     if channel_library:embed('Animation allocation.json',channel_library.summary())
     if not bounds:bounds=[r['translation'] for r in rows] or [[0,0,0]]
+    # With an active clip, frame the camera on that clip's first frame rather than on the last baked Action.
+    active_clip=job.get('active_clip_index')
+    if rig and active_clip is not None:
+        active_action=bpy.data.actions[job['clips'][active_clip]['action']]
+        rig.animation_data.action=active_action;rig.animation_data.action_slot=active_action.slots[0]
+        scene.frame_set(1)
     # New scene only: fit one perspective camera to the bounding sphere, without changing samples.
     if scene.camera is None:
         points=np.asarray(bounds);lo=points.min(axis=0);hi=points.max(axis=0)
@@ -544,7 +550,7 @@ def build(job):
     ns={}
     if rig:
         exec(bpy.data.texts['Animation Controls.py'].as_string(),ns)
-        ns['play_all']() if job['clips'] else ns['restore_rest']()
+        ns['select_clip'](active_clip) if job['clips'] and active_clip is not None else ns['play_all']() if job['clips'] else ns['restore_rest']()
     for obj in scene.objects:obj.select_set(False)
     if rig:
         rig.select_set(True);bpy.context.view_layer.objects.active=rig
@@ -1042,7 +1048,13 @@ def validate(job):
             assert max(head_errors)<1e-5,'Mesh-only correction changed or misregistered the source rig rest heads'
             assert deformation_probe_result is not None,'Pinned corrected deformation probe did not run after reopen'
             result['mesh_position_correction_validation']['deformation_probe']=deformation_probe_result
-        ns['play_all']() if job['clips'] else ns['restore_rest']()
+        active_clip=job.get('active_clip_index')
+        if job['clips'] and active_clip is not None:
+            ns['select_clip'](active_clip)
+            active_action=bpy.data.actions[job['clips'][active_clip]['action']]
+            assert rig.animation_data.action==active_action and all(t.mute for t in rig.animation_data.nla_tracks)
+            result['active_clip']=job['clips'][active_clip]['name']
+        else:ns['play_all']() if job['clips'] else ns['restore_rest']()
     else:result['rest_max_matrix_error']=None
     assert structural_snapshot(scene)==baseline,'Controls changed scene structure'
     result['scene_preservation_passed']=True
