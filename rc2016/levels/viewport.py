@@ -256,6 +256,10 @@ class LevelViewport(ModelViewport):
     # Native Y-up objects; the rig stays fixed to the world, so lighting does not turn with the camera.
     OBJECT_TO_WORLD = ((1.0, 0.0, 0.0), (0.0, 0.0, -1.0), (0.0, 1.0, 0.0))
     RIG_FIXED_TO_WORLD = True
+    # Level atmosphere: the atmosphere zone's reflection probe as ambient and its sun as the key
+    # (rc2016.levels.probe_lighting); opt-in, review preview.
+    LIGHTINGS = ModelViewport.LIGHTINGS + ("Level atmosphere",)
+    ENVIRONMENT_LIGHTINGS = ModelViewport.ENVIRONMENT_LIGHTINGS + ("Level atmosphere",)
     EXT = {
         "glGenBuffers": (None, [ctypes.c_int, ctypes.c_void_p]),
         "glDeleteBuffers": (None, [ctypes.c_int, ctypes.c_void_p]),
@@ -582,7 +586,34 @@ class LevelViewport(ModelViewport):
         """The level's sky (sky.level_sky with a 'textures' {path: load_texture} map), or None."""
         self._release_sky()
         self._sky = sky
+        self._reset_level_environment()
+        if self.lighting == "Level atmosphere":
+            self.set_lighting()
         self._schedule_draw()
+
+    def _reset_level_environment(self):
+        """Forget the Level atmosphere maps, which belong to the sky they were built from."""
+        if self.__dict__.get("_environment_lighting") == "Level atmosphere" and not self._environment_loading:
+            self._environment, self._environment_lighting = None, None
+            self._environment_texture_stale = self._environment_texture is not None
+
+    def _environment_loader(self, lighting):
+        if lighting != "Level atmosphere":
+            return super()._environment_loader(lighting)
+        loader = (self._sky or {}).get("environment_loader")
+        if loader is None:
+            def missing():
+                raise ValueError("the level has no atmosphere zone with exactly one reflection probe")
+            return missing
+        return loader
+
+    def _environment_note(self, lighting, maps):
+        if lighting != "Level atmosphere":
+            return super()._environment_note(lighting, maps)
+        probe = maps["probe"].rsplit("/", 2)[-2]
+        sun = ", ".join(f"{float(x):.2f}" for x in maps["sun_rgb"])
+        return (f"Level atmosphere: probe {probe} ambient, sun RGB96 ({sun}) from the atmosphere. Review preview: "
+                f"sun-to-sky scale and exposure are undecoded.")
 
     def set_show_sky(self, show):
         self.show_sky = bool(show)
@@ -645,6 +676,7 @@ class LevelViewport(ModelViewport):
             if textures:
                 self._gl.glDeleteTextures(len(textures), (ctypes.c_uint * len(textures))(*textures))
         self._release_sky()
+        self._reset_level_environment()
         if self._scene_effects and self._make_current():self._scene_effects.close()
         self._scene_effects=None;self.scene_error=None;self._scene_lighting={'lights':[],'notes':[]}
         self._sky = None

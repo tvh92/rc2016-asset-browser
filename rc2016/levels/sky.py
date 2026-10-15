@@ -66,6 +66,15 @@ def sun_ray(atmosphere_data):
     return tuple(_decode_ps4_atmosphere_header(atmosphere_data)['sun_ray_direction_game_xyz'])
 
 
+def sun_colour(atmosphere_data):
+    """RGB96 direct-light candidate of an atmosphere (header offset 96): the surface irradiance at normal
+    incidence in the units of the reflection captures. Runtime field names are unresolved
+    (``atmosphere_sun_candidate`` in ``rc2016.pipeline.lighting``)."""
+    from rc2016.pipeline.lighting import _decode_ps4_atmosphere_header
+    candidate = _decode_ps4_atmosphere_header(atmosphere_data)['atmosphere_sun_candidate']
+    return tuple(candidate['surface_irradiance_rgb_candidate'])
+
+
 def dome_constants(material_data, graph_data):
     """Constant-buffer dwords 0-22 of a dome material: instance values over graph table-0 defaults."""
     from rc2016.formats.materials import extract_material_parameters
@@ -157,7 +166,7 @@ def clear_sky_profile(archive, texture_path):
 
 def level_sky(archive, zone_paths, profile=True):
     """The sky of a level, from its zone list: {'atmosphere', 'sun_ray', 'domes', 'unsupported',
-    'clear_sky', 'reflection', 'notes'}, or None when no atmosphere zone names an atmosphere.
+    'sun_rgb', 'clear_sky', 'reflection', 'notes'}, or None when no atmosphere zone names an atmosphere.
 
     Each dome: {'model', 'geometry' (model_geometry), 'spans': [(first triangle, count)], 'material',
     'constants' (23 floats), 'dome_texture', 'noise_texture', 'stars'}. Textures come from the graph's
@@ -174,8 +183,8 @@ def level_sky(archive, zone_paths, profile=True):
         raise ValueError(f'atmosphere zones name {len(atmospheres)} atmospheres: {sorted(atmospheres)}')
     atmosphere = atmospheres.pop()
     data = asset_bytes(archive, atmosphere)
-    result = dict(atmosphere=atmosphere, sun_ray=sun_ray(data), domes=[], unsupported=[], notes=[],
-                  clear_sky=None, reflection=None)
+    result = dict(atmosphere=atmosphere, sun_ray=sun_ray(data), sun_rgb=sun_colour(data), domes=[], unsupported=[],
+                  notes=[], clear_sky=None, reflection=None)
     for model in [r['path'] for r in references(data) if r['path'].endswith('.model')]:
         geometry = model_geometry(archive, model)
         slots = {}
@@ -210,8 +219,9 @@ def level_sky(archive, zone_paths, profile=True):
                                         stars=constants[22] != 0.0))
     if any(d['stars'] for d in result['domes']):
         result['notes'].append('stars term (constant dword 22) is not ported')
-    if profile and len(reflections) == 1:
+    if len(reflections) == 1:
         result['reflection'] = next(iter(reflections))
+    if profile and result['reflection']:
         try:
             result['clear_sky'] = clear_sky_profile(archive, result['reflection'])
         except (ImportError, ValueError, OSError) as exc:

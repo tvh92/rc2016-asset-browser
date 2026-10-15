@@ -351,6 +351,7 @@ class _PIXELFORMATDESCRIPTOR(ctypes.Structure):
 class ModelViewport(_TkFrame):
     """Interactive fixed-pipeline preview for decoded source triangles."""
     LIGHTINGS = ("Viewer rig", "Shared HDRI")   # rc2016.viewer.environment.LIGHTINGS
+    ENVIRONMENT_LIGHTINGS = ("Shared HDRI",)    # the lightings that draw from lighting maps (SH, bands, sun)
     TONEMAPS = ("ACES fit", "Khronos PBR Neutral")
     # Object space -> Blender world (None: identity); the level viewer's objects are native Y-up.
     OBJECT_TO_WORLD = None
@@ -428,8 +429,10 @@ class ModelViewport(_TkFrame):
         self._drag = None
         self.lighting, self.tonemap = self.LIGHTINGS[0], self.TONEMAPS[0]
         self.lighting_note = None   # why the shared HDRI is not shown yet, if it is not
-        self._environment = None   # environment.environment_maps() once read
+        self._environment = None   # lighting maps of `_environment_lighting` once read (False: unavailable)
+        self._environment_lighting = None
         self._environment_texture = None
+        self._environment_texture_stale = False
         self._environment_loading = False
         self._label = tk.Label(self, text=self._error, justify="center", anchor="center", wraplength=440)
         self._label.place(relx=0.5, rely=0.5, anchor="center", relwidth=1.0, relheight=1.0)
@@ -506,18 +509,23 @@ class ModelViewport(_TkFrame):
             if tonemap not in self.TONEMAPS:
                 raise ValueError(f"unknown tonemap {tonemap!r}")
             self.tonemap = tonemap
-        if self.lighting == "Shared HDRI" and self._environment is None and not self._environment_loading:
+        wanted = self.lighting if self.lighting in self.ENVIRONMENT_LIGHTINGS else None
+        if wanted and self._environment_lighting != wanted and not self._environment_loading:
+            if self._environment is not None:   # maps of another lighting: drop them and their GL texture
+                self._environment, self._environment_texture_stale = None, self._environment_texture is not None
+            self._environment_lighting = None
+        if wanted and self._environment is None and not self._environment_loading:
             self._environment_loading = True
-            self.lighting_note = "Reading the shared review HDRI…"
+            self.lighting_note = f"Reading {wanted}…"
             import threading
             result = {}
+            loader = self._environment_loader(wanted)
 
             def work():
                 try:
-                    from rc2016.viewer.environment import environment_maps
-                    result["maps"] = environment_maps()
-                except Exception as exc:   # missing NumPy or an unreadable HDRI: say so, keep the rig
-                    result["error"] = f"Shared HDRI unavailable: {type(exc).__name__}: {exc}"
+                    result["maps"] = loader()
+                except Exception as exc:   # missing NumPy, an unreadable HDRI or probe: say so, keep the rig
+                    result["error"] = f"{wanted} unavailable: {type(exc).__name__}: {exc}"
 
             def poll():
                 if "maps" not in result and "error" not in result:
@@ -525,19 +533,31 @@ class ModelViewport(_TkFrame):
                     return
                 self._environment_loading = False
                 self._environment = result.get("maps") or False
-                self.lighting_note = result.get("error")
+                self._environment_lighting = wanted
+                self.lighting_note = result.get("error") or (self._environment_note(wanted, result["maps"]))
                 self._schedule_draw()
                 if self.on_lighting_changed:
                     self.on_lighting_changed()
+                if self.lighting in self.ENVIRONMENT_LIGHTINGS and self.lighting != wanted:
+                    self.set_lighting()   # the selection moved on while this one was loading
             threading.Thread(target=work, daemon=True).start()
             self.after(100, poll)
-        elif self.lighting != "Shared HDRI":
+        elif not wanted:
             self.lighting_note = None
         self._schedule_draw()
         if self.on_lighting_changed:
             self.on_lighting_changed()
 
     on_lighting_changed = None   # called after the lighting or its HDRI maps change
+
+    def _environment_loader(self, lighting):
+        """Callable (run on a worker thread) returning the lighting maps of an ENVIRONMENT_LIGHTINGS entry."""
+        from rc2016.viewer.environment import environment_maps
+        return environment_maps
+
+    def _environment_note(self, lighting, maps):
+        """Status text shown with the lighting once its maps are ready, or None."""
+        return None
 
     def set_lighting_enabled(self, enabled):
         """Gate lighting and scene effects without discarding their chosen settings."""
@@ -549,6 +569,11 @@ class ModelViewport(_TkFrame):
 
     def _upload_environment(self):
         """GL texture of the prefiltered bands (RGB16F, world strength applied), or None."""
+        if self._environment_texture_stale:
+            if self._environment_texture is not None:
+                gl_name = ctypes.c_uint(self._environment_texture)
+                self._gl.glDeleteTextures(1, ctypes.byref(gl_name))
+            self._environment_texture, self._environment_texture_stale = None, False
         if self._environment_texture is None and self._environment:
             import numpy as np
             gl = self._gl
@@ -575,7 +600,8 @@ class ModelViewport(_TkFrame):
         if state is None:
             from rc2016.viewer.shading import ENVIRONMENT_TEXTURE_UNIT
             gl = self._gl
-            hdri = self.lighting == "Shared HDRI" and bool(self._environment) and bool(self._upload_environment())
+            hdri = (self.lighting in self.ENVIRONMENT_LIGHTINGS and self._environment_lighting == self.lighting
+                    and bool(self._environment) and bool(self._upload_environment()))
             modelview = (ctypes.c_float * 16)()
             gl.glGetFloatv.argtypes = [ctypes.c_uint, ctypes.c_void_p]
             gl.glGetFloatv(self.GL_MODELVIEW_MATRIX, modelview)

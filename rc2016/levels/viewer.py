@@ -68,6 +68,8 @@ def main(argv=None):
     parser.add_argument("--experimental-materials", action="store_true",
                         help="enable labelled simplified material previews with unverified runtime inputs")
     parser.add_argument("--no-lighting", action="store_true", help="unlit surface inspection; disable rig/HDRI, AO, shadows and authored lights")
+    parser.add_argument("--lighting", choices=LevelViewport.LIGHTINGS, default=LevelViewport.LIGHTINGS[0],
+                        help="lighting source; Level atmosphere is the reflection probe plus atmosphere sun (review preview)")
     parser.add_argument("--no-actors", action="store_true", help="hide the source-placement actor layer")
     parser.add_argument("--no-sky", action="store_true", help="draw the flat background instead of the level sky")
     parser.add_argument("--no-native-translation", action="store_true",
@@ -97,9 +99,16 @@ def main(argv=None):
             x, y, z, yaw, pitch = args.camera
             panel.view.set_camera((x, y, z), yaw, pitch)
         if args.capture:
-            ok = panel.view.capture_png(args.capture)
-            print("capture", args.capture, ok, panel.progress.get("done"), panel.view.stats(), flush=True)
-            root.destroy()
+            def capture():
+                view = panel.view
+                if view._environment_loading or (view.lighting in view.ENVIRONMENT_LIGHTINGS
+                                                 and view._environment_lighting != view.lighting):
+                    root.after(200, capture)   # the lighting maps are still being built
+                    return
+                ok = view.capture_png(args.capture)
+                print("capture", args.capture, ok, panel.progress.get("done"), view.stats(), view.lighting_note, flush=True)
+                root.destroy()
+            capture()
 
     panel = LevelPanel(root, tk, ttk, source.get, level=args.level or settings["level"], mode=args.mode,
                        zone_filter=args.zones, on_done=finished if (args.capture or args.camera) else None,
@@ -109,6 +118,9 @@ def main(argv=None):
     if args.no_lighting:
         panel.lighting_enabled_var.set(False)
         panel._lighting_enabled_changed()
+    if args.lighting != LevelViewport.LIGHTINGS[0]:
+        panel.lighting_var.set(args.lighting)
+        panel._lighting_changed()
     panel.frame.pack(side="top", fill="both", expand=True)
 
     def close():

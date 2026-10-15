@@ -137,6 +137,7 @@ Atmosphere assets name their sky model first (`atm_novalis.atmosphere` -> `atmos
 - **Cloud domes.** A sky mesh is drawn only when its material's graph is `Rk_Sky_Dome` and the graph bytes match the decoded one (SHA-256 `DOME_GRAPH_SHA256`).
   - Constants: dwords 0-22 come from table 0, instance values over graph defaults (`dome_constants`).
   - Textures come from the graph's slots, overridden by the material's: the distortion noise (`NOISE_SLOT`) and the two cloud-layer slots (`DOME_SLOTS`). Which cloud slot feeds which layer is not decoded. Every dome material binds both to one texture; a material that does not is reported, not drawn. Material slots the graph does not have (Batalia and Gaspar carry two) are ignored.
+- **Sun and probe.** `level_sky` also returns `sun_rgb` (the atmosphere's RGB96 at header offset 96, a direct-light candidate whose runtime field names are unresolved) and `reflection`, the single reflection capture the atmosphere zone names (`textures/atmosphere/volumereflections/<id>/reflection.texture`; `None` when there is not exactly one).
 - **Unsupported sky graphs.** These are reported on stderr and counted on the status line: `rk_sky_dome_flat` (nebula and space domes), `rk_sky_matte` (planets), `rk_sky_cloudlayer`, and the Veldin planet graph.
 - **Coverage.** Domes are drawn for Batalia, Gaspar, Kalebo, Metropolis, Museum, Novalis, Pokitaru, Quartu, Prequartu and Rilgar. The Aridia, Deplanetizer (three levels), Nebula and Phoenix skies use only unported graphs.
 - **Shader port.** `SKY_FRAGMENT` in `rc2016/viewer/shading.py` follows the shader formula, with UV0 in DirectX convention. Engine inputs take presentation values: time 0 (no scrolling), alpha multiplier 1, alpha-test threshold 0, no fog. The stars term (dword 22; non-zero on Gaspar, Metropolis and Rilgar) is not ported. The output goes through the level's tonemap and blends over the clear sky with the material's alpha-over state.
@@ -161,6 +162,7 @@ Two front ends share one implementation:
 | `scene.py` | Data only, no GL: archive access, `zone_scene`, `model_geometry`, `core_bounds`, material lookup |
 | `actor_format.py`, `actors.py` | Actor/component decoding, structural primary binding, source-placement policy and exclusions |
 | `sky.py` | Data only, no GL: the level's atmosphere, cloud domes and clear-sky profile ([sky](#sky-in-the-level-viewer-skypy)) |
+| `probe_lighting.py` | Data only, no GL: the **Level atmosphere** lighting maps from the reflection probe and atmosphere sun ([below](#level-atmosphere-lighting-probe_lightingpy)) |
 | `level_format.py`, `zone_format.py` | The decoders described above |
 
 ### Loading
@@ -195,6 +197,15 @@ A new load cancels the previous one (generation counter; stale events are droppe
 - The sky ([sky](#sky-in-the-level-viewer-skypy)) is drawn before the level; without one the background is a flat colour. No decals or fog; the supported authored-point preview is described above.
 - Per frame, lighting uniforms are computed once (one modelview read-back) and reused for every program; each material's surface program is resolved once.
 - Arriving materials upload their textures for at most `MATERIAL_BUDGET_SECONDS` (8 ms) per Tk tick, then link their native and experimental surface programs in the time left; the rest continues on later ticks. A draw never links: a material whose program is not linked yet (after enabling material previews or scene effects, for example) is drawn with its native surface, or the plain shader, until the pump has linked it. `capture_png` uploads everything first. Camera drags, keys and toggles schedule one redraw per idle pass instead of drawing per event, and the status line refreshes at most four times a second.
+
+### Level atmosphere lighting (`probe_lighting.py`)
+
+The opt-in **Level atmosphere** lighting source replaces the rig or shared HDRI with the level's own data: the atmosphere zone's reflection probe as ambient and specular, and the atmosphere sun as the key light (and the shadow direction). It feeds the same lighting maps as **Shared HDRI**: 9 irradiance SH coefficients, GGX-prefiltered specular bands, a sun direction and an irradiance. The maps are built on a worker thread when the source is first selected and cached under `.cache/environment/level_*.npz`. Levels without an atmosphere zone and a single probe report that and keep the rig.
+
+- **Probe.** A 512x512 BC6H cube (six faces, PS4-tiled). `rc2016/formats/bc6h.py` decodes it to linear float; Pillow clamps BC6H to 1, so it is used only for the two-subset blocks (about 11 % of the Novalis probe), whose partition table is not available here. Modes 11 to 13 match Pillow's decode within 8-bit rounding over the Novalis probe. The cube is resampled to an equirectangular world in Blender's Z-up space through the Direct3D face formulas of `rc2016/pipeline/lighting_blender.py` (face orientation: identity), and rejected if its seam ratio exceeds 2.0 (Novalis 1.28).
+- **Check.** The probe's bright glare lies 7 degrees from the atmosphere's sun direction in Novalis (dot 0.993), which confirms the cube's handedness and face orientation for this probe.
+- **Sun.** Direction is the negated atmosphere ray, colour is RGB96 used as irradiance at normal incidence (as in the research pipeline). Probe texels above luminance 2 (about the 99th percentile in Novalis) are cut from the ambient maps so the sun is not counted twice.
+- **Not decoded.** How RGB96 scales against the probe (Novalis: sun 0.7 against about 1.5 to 2.2 of sky irradiance, so shadows are shallow; a runtime multiplier may exist), the exposure that maps these units to the display (fixed at 0 stops so the lit level agrees with the sky drawn behind it, which is in the probe's units), light-grid irradiance, probe selection per region, and occlusion of the sky term beyond screen-space AO. The research pipeline's `novalis` lighting source uses a different probe (`0xad76696216314d22`, about 25 times dimmer), so the two are not interchangeable. This is a review preview, not game lighting.
 
 ### Modes
 
@@ -240,6 +251,7 @@ python -m rc2016.levels.viewer [--source-root <extracted game folder>]
                                [--mode Shaded|Textured|Solid|Wireframe|"Solid + wireframe"]
                                [--capture out.png] [--camera x,y,z,yaw,pitch]
                                [--no-material-overrides] [--no-native-translation] [--no-sky]
+                               [--lighting "Viewer rig"|"Shared HDRI"|"Level atmosphere"]
 ```
 
 | Option | Meaning |
@@ -253,6 +265,7 @@ python -m rc2016.levels.viewer [--source-root <extracted game folder>]
 | `--no-material-overrides` | Start with **Instance material overrides** off (for before/after captures with the same camera) |
 | `--no-native-translation` | Start with **Native translation** off (hand rules and generic/family readings) |
 | `--no-sky` | Start with **Sky** off (flat background) |
+| `--lighting` | Initial lighting source (default `Viewer rig`); with `--capture` the frame waits until the source's lighting maps are built |
 
 `--capture` and `--camera` take effect when loading finishes. With `--capture` the settings file is not updated and the process prints the capture path, success flag, load timings (including the override outcome counts) and view stats.
 

@@ -95,7 +95,7 @@ class SceneEffects:
         vm=np.array(modelview,dtype=float).reshape(4,4).T;gl.glPushAttrib(0x00004000|0x00000100|0x00000800|0x00002000)
         try:
             if view.scene_shadows:
-                if view.lighting=='Shared HDRI' and view._environment:
+                if view.lighting in view.ENVIRONMENT_LIGHTINGS and view._environment_lighting==view.lighting and view._environment:
                     p=view._environment['sun_direction'];direction=(p[0],p[2],-p[1])
                 else:
                     from rc2016.viewer.viewport import RIG_TO_WORLD

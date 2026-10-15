@@ -59,6 +59,11 @@ def load_sky(archive, zones):
             except (ValueError, KeyError, OSError) as exc:
                 sky["textures"][path] = None
                 sky["notes"].append(f"{path}: {exc}")
+        if sky.get("reflection"):
+            def environment_loader():
+                from rc2016.levels.probe_lighting import level_environment
+                return level_environment(archive, sky)
+            sky["environment_loader"] = environment_loader   # Level atmosphere lighting, built on demand
     return sky
 
 
@@ -123,7 +128,7 @@ def restore_native_pixels(archive, entries, posted):
 
 # Worker threads for model geometry and materials. Archive reads keep per-thread handles; NumPy, zlib
 # and file reads release the GIL, so a few workers overlap decoding with I/O.
-LOAD_WORKERS = max(2, min(6, (os.cpu_count() or 2) - 1))
+LOAD_WORKERS = max(2, min(6, (os.cpu_count() or 2) - 1))
 
 
 def ordered_results(pool, items, function, window, cancel=None):
@@ -424,7 +429,7 @@ class LevelPanel:
         self.lighting_enabled_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(light, text="On", variable=self.lighting_enabled_var,
                         command=self._lighting_enabled_changed).grid(row=0, column=0, sticky="w")
-        lighting_box = ttk.Combobox(light, textvariable=self.lighting_var, values=LevelViewport.LIGHTINGS, state="readonly", width=12)
+        lighting_box = ttk.Combobox(light, textvariable=self.lighting_var, values=LevelViewport.LIGHTINGS, state="readonly", width=16)
         lighting_box.grid(row=0, column=1, sticky="w", padx=(2, 4))
         lighting_box.bind("<<ComboboxSelected>>", lambda _e: self._lighting_changed())
         self.scene_ao_var=tk.BooleanVar(value=True);self.scene_shadows_var=tk.BooleanVar(value=True);self.scene_authored_var=tk.BooleanVar(value=True)
