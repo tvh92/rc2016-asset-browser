@@ -829,7 +829,7 @@ class ModelExporter:
         joint_nodes = []
         if library is not None:
             from rc2016.formats.clips import worlds_batch
-            rest = local_trs(library.rows, worlds_batch(library.rows, [()], library.inheritance)[0])
+            rest = local_trs(library.rows, worlds_batch(library.rows, [()], library.rest_inheritance)[0])
             first = len(doc['nodes'])
             for row, (t, r, s) in zip(library.rows, rest):
                 g.node(name=row['name'], translation=[float(v) for v in t], rotation=[float(v) for v in r],

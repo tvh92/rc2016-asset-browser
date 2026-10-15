@@ -4,7 +4,7 @@ import unittest
 import numpy as np
 
 from rc2016.formats.clips import worlds_batch
-from rc2016.formats.skeleton import AFTER_ROTATION, SSC0, bundled_profile, inheritance_rule
+from rc2016.formats.skeleton import AFTER_ROTATION, SSC0, bundled_profile, inheritance_rule, rest_inheritance_rule
 from rc2016.research.inheritance_audit import basis_shear, bit0_joints, clip_rows, summary
 from tests.test_after_rotation_inheritance import arm
 
@@ -15,14 +15,29 @@ class BundledProfiles(unittest.TestCase):
     def test_bundled_profile_is_found_by_model_hash(self):
         profile = bundled_profile(SHEEP)
         self.assertEqual(profile['model_sha256'], SHEEP)
-        self.assertEqual(profile['inheritance'], AFTER_ROTATION)
+        self.assertEqual(profile['inheritance'], SSC0)
+        self.assertEqual(profile['rest_inheritance'], AFTER_ROTATION)
         self.assertIsNone(bundled_profile('0' * 64))
+
+    def test_only_the_sheep_profile_names_a_rest_rule(self):
+        from rc2016.formats.skeleton import PROFILE_FOLDER
+        import json
+        named = {path.stem: json.loads(path.read_text(encoding='utf-8')).get('rest_inheritance')
+                 for path in PROFILE_FOLDER.glob('*.json')}
+        self.assertEqual({k for k, v in named.items() if v}, {SHEEP})
 
     def test_inheritance_rule_prefers_profile_then_single_candidate_then_ssc0(self):
         self.assertEqual(inheritance_rule(dict(inheritance=AFTER_ROTATION, inheritance_candidates=['full'])), AFTER_ROTATION)
         self.assertEqual(inheritance_rule(dict(inheritance=None, inheritance_candidates=['full'])), 'full')
         self.assertEqual(inheritance_rule(dict(inheritance=None, inheritance_candidates=['full', SSC0])), SSC0)
         self.assertEqual(inheritance_rule(dict(inheritance=None, inheritance_candidates=[])), SSC0)
+
+    def test_rest_rule_prefers_rest_inheritance_then_the_clip_rule_then_candidates_then_full(self):
+        both = dict(inheritance=SSC0, rest_inheritance=AFTER_ROTATION, inheritance_candidates=[])
+        self.assertEqual((inheritance_rule(both), rest_inheritance_rule(both)), (SSC0, AFTER_ROTATION))
+        self.assertEqual(rest_inheritance_rule(dict(inheritance=SSC0, inheritance_candidates=['full'])), SSC0)
+        self.assertEqual(rest_inheritance_rule(dict(inheritance=None, inheritance_candidates=['full', SSC0])), 'full')
+        self.assertEqual(rest_inheritance_rule(dict(inheritance=None, inheritance_candidates=[])), 'full')
 
 
 class BasisShear(unittest.TestCase):

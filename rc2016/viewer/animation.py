@@ -26,7 +26,7 @@ from rc2016.formats.archive import decompress
 from rc2016.formats.clips import classify, ordered_containers
 from rc2016.formats.index import open_asset_index, references
 from rc2016.common import sha
-from rc2016.formats.skeleton import bundled_profile, inheritance_rule, inspect_model, worlds
+from rc2016.formats.skeleton import bundled_profile, inheritance_rule, inspect_model, rest_inheritance_rule, worlds
 
 # Native (x, y, z) -> preview (x, -z, y), the same basis as the geometry.
 BASIS = np.array([[1.0, 0, 0, 0], [0, 0, -1.0, 0], [0, 1.0, 0, 0], [0, 0, 0, 1.0]])
@@ -92,7 +92,11 @@ class AnimationLibrary:
             inspected = inspect_model(model_file, bundled_profile(sha(model_bytes)))
             self.rows = inspected['skeleton']
             self.inverse = [np.array(m) for m in inspected['inverse_bind_matrices']]
+            # Clips compose with ``inheritance``; the rest pose (glTF joint nodes) with ``rest_inheritance``, the rule
+            # that reproduces the stored inverse binds. They differ only for a profile that names both (npc_sheep).
             self.inheritance = inheritance_rule(inspected['profile'])
+            self.rest_inheritance = rest_inheritance_rule(inspected['profile']) if (
+                inspected['profile'].get('rest_inheritance')) else self.inheritance
             self.names = {int(r['hash'], 16): r['name'] for r in self.rows}
             self.clips, self.animset_data = [], {}
             if not self.rows or len(self.inverse) != len(self.rows):
@@ -162,6 +166,9 @@ class AnimationLibrary:
         inverse = np.stack(self.inverse)
         poses = []
         for frame in frames:
+            # Skin = clip world * stored inverse bind, as in the pipeline's Blender rig. Where the rest rule differs
+            # from the clip rule the stored bind is not undone exactly by a clip frame at the rest pose; that
+            # residue (npc_sheep: 2.05e-3 on three right-arm joints) is kept, not corrected.
             skin = np.stack(worlds(self.rows, frame, self.inheritance)) @ inverse
             poses.append((BASIS @ skin @ BASIS.T).astype(np.float32))
         return dict(name=entry['name'], kind=kind, fps=float(clip['metadata']['sample_rate_fps'] or 30.0),
