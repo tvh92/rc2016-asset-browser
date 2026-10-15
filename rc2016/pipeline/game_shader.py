@@ -1093,7 +1093,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 10
+VIEWER_RULE_FRONTEND_VERSION = 11
 
 
 def _viewer_rule_images(nt):
@@ -1237,6 +1237,24 @@ def _viewer_rule_eye_cornea(mat, rule, img):
             'key-light highlight lobe and lens-texture term are viewer-only, and the Glossy BSDF (presentation roughness %.3g) '
             'replaces the engine light loop, reflection probes and screen-space reflections; CB0 normal strength, instance '
             'floats and fog fade are frozen (1, 0, 1)' % (2.0 ** -2.75)]
+def _viewer_skin_spec(P, skin, gR, gG, f, tinted):
+    """(F0 grey, gloss input, F0 rgb or None) of the basic_skin writers 9AAD640B / 0E6CC87B (viewer textures.SKIN_KEYS).
+
+    F0 grey = min(cap, lerp(S, sat(Sf S), F)); gloss = sqrt(sat(lerp(G, sat(Gf G), F))) with S = spec scale * _g.G
+    (basic_skin_02: times spec2) and G = gloss scale * _g.R (times gloss2). The group squares its gloss input, so
+    the input is the square root of the sat'd lerp. basic_skin_02 multiplies the grey term by the unclamped tinted albedo.
+    """
+    qwark = int(skin['kind']) == 2
+    s = P.m('MULTIPLY', gG, P.const('skin spec scale', skin['spec']))
+    gl = P.m('MULTIPLY', gR, P.const('skin gloss scale', skin['gloss']))
+    if qwark:
+        s = P.m('MULTIPLY', s, P.const('skin spec2', skin['spec2']))
+        gl = P.m('MULTIPLY', gl, P.const('skin gloss2', skin['gloss2']))
+    grey = P.m('MINIMUM', P.lerp(s, P.sat(P.m('MULTIPLY', s, P.const('skin spec fresnel', skin['spec_fresnel']))), f),
+               P.const('skin specular cap', skin['cap']), label='skin F0 = min(cap, lerp(spec, sat(Sf spec), F))')
+    gloss_in = P.m('SQRT', P.sat(P.lerp(gl, P.sat(P.m('MULTIPLY', gl, P.const('skin gloss fresnel', skin['gloss_fresnel']))), f)))
+    rgb = P.comb(*(P.sat(P.m('MULTIPLY', grey, ch)) for ch in P.sep(tinted))) if qwark else None
+    return grey, gloss_in, rgb
 
 
 def apply_viewer_graph_rule(mat, source):
@@ -1357,6 +1375,19 @@ def apply_viewer_graph_rule(mat, source):
                       'sheen, fog and the Oren-Nayar diffuse roughness (sigma %.4g from dw3/dw7) are not reproduced (the group diffuse is '
                       'Lambert); w scales F0 (and so F90) here, the game scales the accumulated specular; second pass (program 7D6552DE) '
                       'and the instance flag-128 mask texture are not decoded/ported' % float(hair['diffuse_sigma']))
+    skin = terms.get('skin') if on('skin') else None
+    skin_f = skin_tinted = None
+    if skin:
+        # basic_skin writers 9AAD640B / 0E6CC87B MRT1: F = sat((1.001 - sat(N.V))^P), albedo = sat(_c * lerp(P_alb, tint, F)).
+        ndv = P.sat(P.v('DOT_PRODUCT', P.v('NORMALIZE', Ng), P.v('NORMALIZE', V)))
+        skin_f = P.sat(P.m('POWER', P.m('SUBTRACT', 1.00100004673, ndv), P.const('skin fresnel exponent', skin['exponent'])))
+        tint_rgb = P.sep(P.const3('skin fresnel tint', skin['tint']))
+        scale = P.const('skin albedo scale', skin['albedo'])
+        skin_tinted = P.comb(*(P.m('MULTIPLY', ch, P.lerp(scale, t, skin_f)) for ch, t in zip(P.sep(albedo), tint_rgb)))
+        albedo = P.vsat(skin_tinted)
+        view_terms.append('skin Fresnel albedo')
+        limits.append('skin: writer F uses the interpolated vertex normal (the geometry normal here); the forward skin '
+                      'ramp/scatter term (_g.A, tint 0xCFCCABE4, skin_ramp, wrap) is not reproduced')
     if facing:   # no albedo input: v76-v78 stay 1.0
         albedo = P.const3('facing glow albedo', facing['albedo'])
     if flat:   # basic_emissive 452EDC8C / goo floor 4A73CC38: MRT1 rgb, grey MRT2 F0 and gloss are material constants
@@ -1568,6 +1599,14 @@ def apply_viewer_graph_rule(mat, source):
                 x, y = P.m('MULTIPLY_ADD', x, dz, P.m('MULTIPLY', dx, zw)), P.m('MULTIPLY_ADD', y, dz, P.m('MULTIPLY', dy, zw))
                 z = P.m('MULTIPLY', z, dz)
                 normal = P.tangent_normal(x, y, z, 'VR detailed normal')
+            if on('skin_detail') and img('_bng_detail'):   # F0CD85FF: w = blend * _g.B, second map at UV0 * scale
+                det = terms['skin_detail']
+                vec = P.game_uv(P.const('skin detail uv scale', det['uv_scale']), P.const('skin detail uv scale v', det['uv_scale']))
+                dx, dy = P.rg(P.tex(img('_bng_detail'), vec, 'skin detail normal').outputs['Color'])
+                dz = P.m('SUBTRACT', 1.0, P.dot2(dx, dy)); zw = P.m('MULTIPLY', z, P.m('MULTIPLY', P.const('skin detail blend', det['blend']), gB))
+                x, y = P.m('MULTIPLY_ADD', x, dz, P.m('MULTIPLY', dx, zw)), P.m('MULTIPLY_ADD', y, dz, P.m('MULTIPLY', dy, zw))
+                z = P.m('MULTIPLY', z, dz)
+                normal = P.tangent_normal(x, y, z, 'VR skin detailed normal')
             if rock_w is not None:
                 n2 = img('_rock_n2')
                 if terms['rock_blend'].get('variant') == 'color_breakup':
@@ -1634,7 +1673,11 @@ def apply_viewer_graph_rule(mat, source):
                 rgr, rgg, _ = P.sep(rock_g); f0v = rgg; gloss_in = P.m('SQRT', P.m('MAXIMUM', rgr, 0.0))
             if metal:
                 gloss_in = P.m('SQRT', P.m('MULTIPLY', gR, P.m('SUBTRACT', 1.0, metal_rim)))
-            f0 = P.comb(f0v, f0v, f0v)
+            skin_rgb = None
+            if skin:
+                f0v, gloss_in, skin_rgb = _viewer_skin_spec(P, skin, gR, gG, skin_f, skin_tinted)
+                spec = gloss_scale = 1.0
+            f0 = skin_rgb if skin_rgb is not None else P.comb(f0v, f0v, f0v)
         elif mode == 'vehicle':
             f0 = (0.0, 0.0999755859375, 0.0999755859375); gloss_in = 0.948681201424; spec, gloss_scale = 1.0, 1.0
         elif g is not None:

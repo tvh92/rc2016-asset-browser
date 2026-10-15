@@ -64,6 +64,25 @@ HAIR_DEFAULTS = dict(albedo=(0.0043914420530200005, 0.0043914420530200005, 0.006
                      spec=(0.16202937066555023, 0.08437620848417282, 0.16202937066555023),
                      rough_a=0.8500000238418579, rough_b=0.009999999776482582, rim=3.0)
 HAIR_GLOSS_SCALE, HAIR_NORMAL_STRENGTH = 0.71, 0.3
+# basic_skin deferred writers (materialgraph/global/basic_skin/): 9AAD640B (basic_skin.materialgraph, shared by
+# skin_emissive's 567FE897 apart from the self-lit term) and 0E6CC87B (basic_skin_02.materialgraph, Qwark).
+#   F      = sat(1.001 - sat(N.V))^P_exp                   (N: interpolated vertex normal, sign by front face)
+#   albedo = sat(_c.rgb * lerp(P_alb, (0.745404, 0.644480, 0.603827), F))      (MRT1 is UNORM)
+#   basic_skin: F0 = grey min(P_cap, lerp(P_spec _g.G, sat(P_sfres P_spec _g.G), F))
+#               gloss = sqrt(sat(lerp(P_gloss _g.R, sat(P_gfres P_gloss _g.R), F)))
+#   basic_skin_02: P_spec -> P_spec2 P_spec, P_gloss -> P_gloss2 P_gloss (keys 0x73ED1C50 / 0x0B065E94, graph
+#               default 1) and F0 is the grey term times lerp(P_alb, tint, F) _c.rgb (before the UNORM clamp).
+# Table 1 dwords: basic_skin 1 cap, 2 gloss Fresnel, 3 spec Fresnel, 4 exponent, 5 albedo, 6 gloss, 7 spec;
+# basic_skin_02 0 exponent, 1 gloss Fresnel, 2 albedo, 3 gloss2, 4 cap, 5 gloss, 6 spec, 7 spec Fresnel, 8 spec2.
+# The forward shader F0CD85FF additionally blends a second normal (slot 0x7DF1B1FC) at UV0 * 0xB7ABB64A with
+# weight 0x59011FBD * _g.B (basic_skin only; not read for basic_skin_02).
+SKIN_KEYS = dict(cap=0x03168D4E, gloss_fresnel=0xAB221207, spec_fresnel=0xE6185DBC, exponent=0xA81E0932,
+                 albedo=0xF38FFA75, gloss=0xF503794A, spec=0xC2473357)
+SKIN_QWARK_KEYS = dict(gloss2=0x0B065E94, spec2=0x73ED1C50)
+SKIN_DEFAULTS = dict(cap=0.5, gloss_fresnel=0.5, spec_fresnel=1.4, exponent=0.5, albedo=1.2, gloss=0.5, spec=0.2,
+                     gloss2=1.0, spec2=1.0)
+SKIN_DETAIL_SLOT, SKIN_DETAIL_BLEND_KEY, SKIN_DETAIL_UV_KEY = 0x49A7866B7DF1B1FC, 0x59011FBD, 0xB7ABB64A
+SKIN_FRESNEL_TINT = (0.745404183864593505859375, 0.644479691982269287109375, 0.60382735729217529296875)
 # mo_gbl_color_tint_01 writer BE8C3EE0 (Animation/pipeline/Research/Materials/ColorTint01/COLOR_TINT_DECODE.md)
 TINT_KEYS = dict(spec_tint=0x6B591974, mask_b=0x8ED5C5E8, colour_a=0xA815C29F, colour_b=0x311C9325, power_a=0x9E7A020A,
                  weight_b=0x482ECFEB, weight_a=0xD1279E51, power_b=0x077353B0)
@@ -111,10 +130,18 @@ GRAPH_RULES = (
     # Cached SPIR-V E08357DC; Materials/ZaBasicNormalGloss/ZA_BASIC_NORMAL_GLOSS_DECODE.md.
     ('required/materials/za_basic_normal_gloss.',
      dict(g_mode='grey', self_lit_key=None, za_fresnel_key=0x4D385B45)),
+    # Writers 9AAD640B / 567FE897 and 0E6CC87B (see SKIN_KEYS); the other graphs of the folder keep the prefix reading.
+    ('materialgraph/global/basic_skin/basic_skin.', dict(g_mode='grey_skin', self_lit_key=None, skin=1)),
+    ('materialgraph/global/basic_skin/skin_emissive.', dict(g_mode='grey_skin', skin=1)),
+    ('materialgraph/global/basic_skin/basic_skin_02.', dict(g_mode='grey_skin', self_lit_key=None, skin=2)),
     ('materialgraph/global/basic_skin/', dict(g_mode='grey_skin')),
     # Writer 5EBDECA4 (no self-lit) is embedded only by these four (CorpusMismatchScan/writer_join.json).
     *((f'required/materials/basic_normal_gloss{suffix}.', dict(g_mode='grey', self_lit_key=None))
-      for suffix in ('', '_detail', '_monitor_dep', '_aniso')),
+      for suffix in ('', '_detail', '_monitor_dep')),
+    # The _aniso graph (hero_shared_hair: Skidd McMarx's eyebrows and goatee, the shared hero hair) embeds the same
+    # writer 5EBDECA4, plus its own pair 0170A892 (forward) / 48EAC24B (normal prepass) whose first act is a kill
+    # when the _c.a sample is below an interpolated cutoff (fade dither aside): hair cards are alpha-cut.
+    ('required/materials/basic_normal_gloss_aniso.', dict(g_mode='grey', self_lit_key=None, alpha_cut=True)),
     # Other basic_normal_gloss* graphs (emissive, fresnel, ...) have undecoded writers: grey _g by name
     # only (as before 2026-10-08), self-lit key from the graph's own table.
     # Six independently traced writers; Materials/BasicNormalGlossVariants/BASIC_NORMAL_GLOSS_VARIANTS_DECODE.md.
@@ -602,6 +629,18 @@ def material_texture_paths(archive, material_path: str) -> dict:
         result['fresnel_tint'] = dict(colour=vec3(MUSHROOM_FRESNEL_COLOUR_KEY, fallback['colour']),
             exponent=value(MUSHROOM_FRESNEL_EXPONENT_KEY, fallback['exponent']), writer='F69ADC40',
             keys=dict(colour=MUSHROOM_FRESNEL_COLOUR_KEY, exponent=MUSHROOM_FRESNEL_EXPONENT_KEY, self_lit=MUSHROOM_SELF_LIT_KEY))
+    if rule.get('skin'):
+        skin_kind = rule['skin']
+        skin = {name: value(key, SKIN_DEFAULTS[name]) for name, key in SKIN_KEYS.items()}
+        if skin_kind == 2:
+            skin.update({name: value(key, SKIN_DEFAULTS[name]) for name, key in SKIN_QWARK_KEYS.items()})
+        else:
+            detail = texture_slots(data, MATERIAL_SLOT_SECTION).get(SKIN_DETAIL_SLOT)
+            if detail:
+                result['_bng_detail'] = detail
+                result['skin_detail'] = dict(uv_scale=value(SKIN_DETAIL_UV_KEY, 10.0), blend=value(SKIN_DETAIL_BLEND_KEY, 0.5))
+        result['skin'] = dict(skin, kind=skin_kind, writer='0E6CC87B' if skin_kind == 2 else '9AAD640B',
+                              tint=list(SKIN_FRESNEL_TINT))
     if rule.get('parallax_outputs'):
         result['parallax_normal'] = True
         # api5 is a separate height texture, sometimes also named _c; use C/G/N slot identities.
@@ -1349,7 +1388,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             paths = {}
         entry.update(k=paths.get('k', 0.0), g_mode=paths.get('g_mode', 'colored'), self_lit=paths.get('self_lit', 'c_alpha'),
                      spec=paths.get('spec', 1.0), gloss=paths.get('gloss', 1.0))
-        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'bright_center', 'parallax', 'parallax_normal', 'hair', 'fresnel_tint'):
+        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'bright_center', 'parallax', 'parallax_normal', 'hair', 'skin', 'skin_detail', 'fresnel_tint'):
             if paths.get(key):
                 entry[key] = paths[key]
         if paths.get('foliage'):
@@ -1358,7 +1397,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             entry['alpha_cut'] = float(paths['alpha_cut'])
         if 'za_fresnel_power' in paths:
             entry['za_fresnel_power'] = paths['za_fresnel_power']
-        for role in (*ROLES, *(('_parallax_height',) if paths.get('parallax') else ()), *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ()), *(('_cma',) if paths.get('leaf_colour') else ())):
+        for role in (*ROLES, *(('_parallax_height',) if paths.get('parallax') else ()), *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') or paths.get('skin_detail') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ()), *(('_cma',) if paths.get('leaf_colour') else ())):
             path = paths.get(role)
             if not path:
                 continue
