@@ -108,17 +108,28 @@ class OnDemandPreviewTests(unittest.TestCase):
         panel.material_paths,panel.preview_paths={},set()
         def entries(archive,materials,done,cache,previews=False):
             calls.append(([m['path'] for m in materials],previews));return {m['path']:dict(path=m['path']) for m in materials}
-        # A pinned preview, a ready native material (no preview) and one without a native
-        # translation (the generic world-position adapter may apply).
-        paths={'other.material':True,terrain_preview.MATERIAL:True,'generic.material':False}
+        # A pinned preview, a ready native material (no preview), one without a native translation
+        # (the generic world-position adapter may apply), one the adapter finds nothing for and one
+        # whose analysis fails (reloaded, so its error is reported on the entry).
+        paths={'other.material':True,terrain_preview.MATERIAL:True,'generic.material':False,
+               'none.material':False,'broken.material':False}
+        analysed=[]
+        def preview(archive,path):
+            analysed.append(path)
+            if path=='broken.material':raise ValueError('source changed')
+            return None if path=='none.material' else {'status':'experimental'}
         with patch.object(scene,'material_entries',side_effect=entries), patch('threading.Thread',Thread), \
-             patch('rc2016.levels.panel.ThreadPoolExecutor',Pool):
+             patch('rc2016.levels.panel.ThreadPoolExecutor',Pool), \
+             patch('rc2016.viewer.experimental_materials.prepare_preview',side_effect=preview):
             panel._prepare_previews(paths)
             self.assertEqual(calls,[])   # disabled: no analysis
             panel.experimental_var.value=True
             panel._prepare_previews(paths);panel._prepare_previews(paths)
-        self.assertEqual(calls,[(['generic.material',terrain_preview.MATERIAL],True)])
-        self.assertEqual(posted,[('preview_materials',{p:dict(path=p) for p in ('generic.material',terrain_preview.MATERIAL)})])
+        # Pinned previews first; materials without a preview are not reloaded or posted.
+        order=[terrain_preview.MATERIAL,'broken.material','generic.material']
+        self.assertEqual(calls,[([p],True) for p in order])
+        self.assertEqual(analysed,[terrain_preview.MATERIAL,'broken.material','generic.material','none.material'])
+        self.assertEqual(posted,[('preview_materials',{p:dict(path=p)}) for p in order])
 
     def test_replace_materials_requeues_posted_and_queued_entries(self):
         view=object.__new__(LevelViewport)

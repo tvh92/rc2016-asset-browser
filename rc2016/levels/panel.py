@@ -124,7 +124,6 @@ def restore_native_pixels(archive, entries, posted):
 # Worker threads for model geometry and materials. Archive reads keep per-thread handles; NumPy, zlib
 # and file reads release the GIL, so a few workers overlap decoding with I/O.
 LOAD_WORKERS = max(2, min(6, (os.cpu_count() or 2) - 1))
-PREVIEW_CHUNK = 8   # materials per experimental-preview batch posted to the view
 
 
 def ordered_results(pool, items, function, window, cancel=None):
@@ -635,19 +634,25 @@ class LevelPanel:
         materials in when done ('preview_materials')."""
         if not (self.experimental_var.get() and self.material_previews_var.get()):
             return
-        from rc2016.viewer.experimental_materials import has_preview
-        todo = sorted(p for p, ready in paths.items() if p not in self.preview_paths and has_preview(p, ready))
+        from rc2016.viewer.experimental_materials import has_preview, prepare_preview, preview_priority
+        todo = sorted((p for p, ready in paths.items() if p not in self.preview_paths and has_preview(p, ready)),
+                      key=lambda p: (not preview_priority(p), p))
         if not todo or self.relay is None:
             return
         self.preview_paths.update(todo)
         relay, cancel, root = self.relay, self.cancel, str(self.source_root() or "")
 
-        def chunk(paths):
+        def one(path):
             if cancel.is_set():
                 return
             try:
-                entries = level_scene.material_entries(self._archive(root), [dict(path=p) for p in paths],
-                                                       frozenset(), {}, previews=True)
+                archive = self._archive(root)
+                try:
+                    if not prepare_preview(archive, path):
+                        return   # no preview: the loaded entry would not change, so skip its reload and re-upload
+                except Exception:
+                    pass         # material_entries reports the failure on the entry
+                entries = level_scene.material_entries(archive, [dict(path=path)], frozenset(), {}, previews=True)
             except Exception as exc:
                 relay.put(("error", "material previews", f"{type(exc).__name__}: {exc}"))
                 return
@@ -655,10 +660,11 @@ class LevelPanel:
                 relay.put(("preview_materials", entries))
 
         def work():
-            # Several threads, so the compile processes analyse different graphs at once; each chunk
-            # is swapped in when ready instead of after the whole batch.
+            # Several threads, so the compile processes analyse different graphs at once; each preview
+            # is swapped in when ready instead of after the whole batch. Most candidates have none,
+            # and are decided by the analysis alone (cached on the archive for the ones that have one).
             with ThreadPoolExecutor(max_workers=LOAD_WORKERS, thread_name_prefix="material-previews") as pool:
-                list(pool.map(chunk, [todo[i:i + PREVIEW_CHUNK] for i in range(0, len(todo), PREVIEW_CHUNK)]))
+                list(pool.map(one, todo))
         threading.Thread(target=work, daemon=True, name="material-previews").start()
 
     def _ground_controls_changed(self, event=None):

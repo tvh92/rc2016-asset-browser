@@ -129,6 +129,13 @@ def has_preview(path, native_ready=False):
     return path.replace('\\','/').lower() in (MATERIAL, terrain_preview.MATERIAL) or not native_ready
 
 
+def preview_priority(path):
+    """Whether ``path`` has a pinned (not generic) preview. Pinned ones are cheap to prepare, so a
+    level prepares them first and the visible terrain layers need not wait for the generic analysis."""
+    from rc2016.shaders import terrain_preview
+    return path.replace('\\','/').lower() in (MATERIAL, terrain_preview.MATERIAL)
+
+
 def world_position_preview(archive, path):
     """Generic experimental receipt for a material that is not ready natively and
     whose unresolved inputs are reconstructed position or proven squared colour
