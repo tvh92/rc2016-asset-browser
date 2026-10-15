@@ -5,16 +5,34 @@ AO_UNIT, SHADOW_UNIT = 16, 17
 # Scene content changes (models, instances, materials) arrive many times a second during a load; each
 # shadow refresh redraws the whole unculled level, so content-driven refreshes wait this long apart.
 SHADOW_REFRESH_SECONDS = 2.0
+# Visual calibration, not decoded data, used only by the Level atmosphere lighting: the sky (ambient) diffuse term
+# is scaled by this factor where the key light is cast-shadowed and would otherwise reach the surface. The
+# atmosphere's RGB96 sun is about 12 % of horizontal-ground light, so without it shadows keep most of the lit
+# value (lit/shadow 1.1 to 1.4 on grass), where grass in cast shadow in one in-game Novalis screenshot sits near
+# 1/10 of its sunlit display luminance. At 0.05 the viewer reaches about 1/9 on grass; the floor that remains
+# (about 0.014 display luminance, 0.011 in the game) is specular, self-lit and fog, which this leaves alone.
+# Sunlit pixels are untouched. Part of the game's depth is probably occlusion of the sky by the caster itself
+# (trees, buildings), which this models only as a constant.
+SHADOW_AMBIENT = 0.05
+ATMOSPHERE_LIGHTING = 'Level atmosphere'
+
+
+def shadowed_ambient_factor(shadow, ndl, ambient=SHADOW_AMBIENT):
+    """CPU mirror of sceneShadowedAmbient: 1 for a lit surface (shadow 1) or one facing away from the key
+    light (ndl 0), ambient for a surface the key light would reach but the shadow map blocks (shadow 0)."""
+    reach = min(max(ndl * 4.0, 0.0), 1.0)
+    return 1.0 - (1.0 - ambient) * (1.0 - shadow) * reach
+
 # AO is screen space, so it is valid for one camera. It is rendered once the camera has rested
 # this long and reused until the camera or scene changes; frames in between draw without AO.
 AO_SETTLE_SECONDS = 0.15
 SCENE_UNIFORMS = ('uSceneEnabled','uSceneAOEnabled','uSceneShadowEnabled','uSceneAO','uSceneShadow',
-                  'uSceneSize','uSceneShadowSize','uSceneShadowMatrix','uSceneLightCount','uSceneLightPos','uSceneLightColour')
+                  'uSceneSize','uSceneShadowSize','uSceneShadowMatrix','uSceneLightCount','uSceneLightPos','uSceneLightColour','uSceneShadowAmbient')
 HELPERS = '''
 uniform bool uSceneEnabled,uSceneAOEnabled,uSceneShadowEnabled;
 uniform sampler2D uSceneAO; uniform sampler2DShadow uSceneShadow;
 uniform vec2 uSceneSize,uSceneShadowSize; uniform mat4 uSceneShadowMatrix;
-uniform int uSceneLightCount; uniform vec4 uSceneLightPos[32]; uniform vec3 uSceneLightColour[32];
+uniform int uSceneLightCount; uniform vec4 uSceneLightPos[32]; uniform vec3 uSceneLightColour[32]; uniform float uSceneShadowAmbient;
 float sceneAO(){return uSceneEnabled&&uSceneAOEnabled?texture2D(uSceneAO,gl_FragCoord.xy/uSceneSize).r:1.0;}
 // Fragment540 nine weighted linear Less comparisons. Allocation is viewer defined.
 float sceneShadow(vec3 p){
@@ -29,6 +47,8 @@ float sceneShadow(vec3 p){
  float total=0.0;for(int y=0;y<3;y++)for(int x=0;x<3;x++)total+=wx[x]*wy[y]*shadow2D(uSceneShadow,vec3(base+vec2(dx[x],dy[y]),q.z)).r;
  return total*0.0069444444961845874786376953125;
 }
+// Visual calibration (see SHADOW_AMBIENT): scales the sky diffuse where the key light is cast-shadowed; 1 when lit.
+float sceneShadowedAmbient(float shadow,float ndl){return 1.0-(1.0-uSceneShadowAmbient)*(1.0-shadow)*clamp(ndl*4.0,0.0,1.0);}
 float sceneSpecularOcclusion(vec3 N,vec3 V,float a){
  float A=sceneAO(),nv=clamp(dot(N,V),0.0,1.0),t=nv*nv+(1.0-nv*nv)*A*A*A;return mix(t,A,a);
 }
@@ -149,6 +169,7 @@ class SceneEffects:
         sh.glUniform1i(u['uSceneAOEnabled'],int(ready and view.scene_ao and self.ao_valid and bool(self.ao_texture)))
         sh.glUniform1i(u['uSceneShadowEnabled'],int(ready and view.scene_shadows and self.view_shadow_matrix is not None))
         sh.glUniform1i(u['uSceneAO'],AO_UNIT);sh.glUniform1i(u['uSceneShadow'],SHADOW_UNIT)
+        sh.glUniform1f(u.get('uSceneShadowAmbient',-1),SHADOW_AMBIENT if view.lighting==ATMOSPHERE_LIGHTING else 1.0)
         self.uniform2(u['uSceneSize'],*self.size);self.uniform2(u['uSceneShadowSize'],self.shadow_size,self.shadow_size)
         for unit,texture in ((AO_UNIT,self.ao_texture),(SHADOW_UNIT,self.shadow_depth)):
             sh.glActiveTexture(0x84C0+unit);gl.glBindTexture(0x0DE1,texture)

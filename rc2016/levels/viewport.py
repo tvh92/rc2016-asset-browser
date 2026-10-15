@@ -21,6 +21,7 @@ from rc2016.viewer.viewport import ModelViewport
 BASIS = (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
 MOVE_KEYS = {"w": (1, 0, 0), "s": (-1, 0, 0), "d": (0, 1, 0), "a": (0, -1, 0), "e": (0, 0, 1), "q": (0, 0, -1)}
 FOV_DEGREES = 60.0
+SHADOW_SLOPE_BIAS = 2.0   # glPolygonOffset factor of the key-shadow depth pass: the viewer map has texels of about a unit, so a constant offset alone leaves acne on sloped ground
 
 
 def to_presentation(point):
@@ -1306,7 +1307,7 @@ class LevelViewport(ModelViewport):
         glass = []
         if mode != "Wireframe":
             gl.glPolygonMode(self.GL_FRONT_AND_BACK, self.GL_FILL)
-            gl.glEnable(self.GL_POLYGON_OFFSET_FILL); gl.glPolygonOffset(0.0 if shadow else 1.0, 1.0)
+            gl.glEnable(self.GL_POLYGON_OFFSET_FILL); gl.glPolygonOffset(SHADOW_SLOPE_BIAS if shadow else 1.0, 1.0)
             sh.glUniform3f(u["uColor"], 0.72, 0.74, 0.78)
             current = None
             for item in self._draw_list:
