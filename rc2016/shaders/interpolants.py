@@ -190,12 +190,19 @@ def _squared_stream(ir, channel):
     Memoise each node by only the flags it depends on and skip inactive select
     arms. This preserves DAG.replace folding while admitting bounded larger
     flag sets without rewalking the entire vertex program for each assignment.
+    The flags are numbered once per DAG and the memo is kept on it, so the channels of one
+    vertex program (which share most of their expressions) fold each shared node once.
     """
     from rc2016.shaders.ir import OPS
     flags = sorted(j for j in ir.reachable([channel]) if ir.nodes[j].get('kind') == 'runtime_flag')
     if len(flags) > MAX_FLAGS:
         return None
-    flag_bits={f:1<<k for k,f in enumerate(flags)};dependencies={};memo={}
+    state = ir.__dict__.get('_squared_fold')
+    if state is None or any(f not in state['flag_bits'] for f in flags):   # first use, or a flag added since
+        every = [j for j, n in enumerate(ir.nodes) if n.get('kind') == 'runtime_flag']
+        state = ir.__dict__['_squared_fold'] = dict(flag_bits={f: 1 << k for k, f in enumerate(every)},
+                                                    dependencies={}, memo={}, shift=len(every))
+    flag_bits, dependencies, memo, shift = state['flag_bits'], state['dependencies'], state['memo'], state['shift']
     def mask(i):
         if i not in dependencies:
             result=flag_bits.get(i,0)
@@ -203,7 +210,7 @@ def _squared_stream(ir, channel):
             dependencies[i]=result
         return dependencies[i]
     mask(channel)
-    nodes=ir.nodes;shift=len(flags);get=memo.get   # memo key: node index and its flag assignment in one int
+    nodes=ir.nodes;get=memo.get   # memo key: node index and its flag assignment in one int
     def fold(i,bits):
         key=(i<<shift)|(bits & dependencies[i])
         value=memo.get(key)
@@ -217,12 +224,16 @@ def _squared_stream(ir, channel):
         else:
             replaced=[]
             for j in args:   # a memoised argument needs no call
+                if j not in dependencies:mask(j)
                 v=get((j<<shift)|(bits & dependencies[j]))
                 replaced.append(fold(j,bits) if v is None else v)
             value=ir.op(op,*replaced) if op in OPS else ir.node(op,replaced,**{k:v for k,v in n.items() if k not in ('op','args')})
         memo[key]=value;return value
     sources=set()
-    for bits in range(1 << len(flags)):
+    for assignment in range(1 << len(flags)):
+        bits=0
+        for k,f in enumerate(flags):
+            if assignment>>k & 1:bits|=flag_bits[f]
         n=ir.nodes[fold(channel,bits)]
         if n['op']=='mul' and n['args'][0]==n['args'][1]:
             v=ir.nodes[n['args'][0]]
