@@ -129,3 +129,20 @@ class SelectionTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class GlCallOrderTests(unittest.TestCase):
+    def test_queued_uploads_run_before_a_later_call(self):
+        from rc2016.levels.viewport import LevelViewport
+        order = []
+        view = object.__new__(LevelViewport)
+        view._make_current = lambda: True
+        view._ext = object()
+        view._error = None
+        view._models = {}
+        view._draw_list = None
+        view._schedule_draw = lambda: None
+        view._pending = [(order.append, ('model',))]
+        view._gl_call(order.append, 'actors')
+        self.assertEqual(order, ['model', 'actors'])
+        self.assertEqual(view._pending, [])

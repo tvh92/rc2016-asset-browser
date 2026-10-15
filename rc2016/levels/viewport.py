@@ -387,6 +387,10 @@ class LevelViewport(ModelViewport):
         if not self._make_current() or self._ext is None and not self._load_ext():
             self._pending.append((function, args))   # the context appears on the first <Configure>
             return
+        if self._pending:             # uploads queued before the context existed go first, so actors find their models
+            pending, self._pending = self._pending, []
+            for queued, queued_args in pending:
+                queued(*queued_args)
         function(*args)
         if self._error and self._models:
             self._error = None
