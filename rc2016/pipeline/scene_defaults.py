@@ -757,11 +757,25 @@ def expected_render_percentage(region_receipt_text: Optional[str]) -> Optional[i
     return value
 
 
-def audit_scene(scene: Any = None, check_gpu: bool = True) -> Dict[str, Any]:
+def _lighting_file_differs(recorded: Dict[str, Any], selected: Optional[Dict[str, Any]] = None) -> bool:
+    """Compare a scene record with the current selected file; an explicit HDRI override is part of the selection."""
+    current = load_shared_lighting(selected.get("config_path") if selected else None)
+    keys = _LIGHTING_KEYS + ("hdri_path",)
+    if selected is None:
+        return any(recorded.get(key) != current.get(key) for key in keys)
+    return (not selected.get("config_path") or selected.get("config_path") != current.get("config_path") or
+            selected.get("config_sha256") != current.get("config_sha256") or
+            any(recorded.get(key) != selected.get(key) for key in keys + ("config_path", "config_sha256")))
+
+
+def audit_scene(scene: Any = None, check_gpu: bool = True,
+                selected_lighting: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Return a read-only snapshot of relevant defaults and camera state.
 
     ``check_gpu=False`` skips the process-level OptiX device preferences (not saved in
     the .blend) for a process that never renders; the saved Cycles settings are still checked.
+    ``selected_lighting`` is the settings loaded by an intentional ``--lighting-config`` (and optional
+    ``--hdri`` override). Without it, drift is checked against this checkout's default shared file.
     """
     import bpy  # type: ignore
 
@@ -898,13 +912,11 @@ def audit_scene(scene: Any = None, check_gpu: bool = True) -> Dict[str, Any]:
             if not valid:result["mismatches"].append("lighting.game_probe")
         else:
             # Shared review lighting: compare with what the scene recorded (else the shared file).
-            result["mismatches"].extend(m for m in check_shared_lighting(scene)
+            result["mismatches"].extend(m for m in check_shared_lighting(scene, selected_lighting)
                                         if m not in result["mismatches"])
             recorded = _recorded_lighting(scene)
-            if recorded is not None:
-                current = load_shared_lighting()
-                if any(recorded.get(k) != current.get(k) for k in _LIGHTING_KEYS + ("hdri_path",)):
-                    result["mismatches"].append("lighting.differs_from_current_shared_file")
+            if recorded is not None and _lighting_file_differs(recorded, selected_lighting):
+                result["mismatches"].append("lighting.differs_from_current_shared_file")
     except (AttributeError, IndexError, KeyError, StopIteration):
         result["mismatches"].append("lighting.hdri")
     return result

@@ -566,7 +566,7 @@ def build(job):
                 space=area.spaces.active;space.lock_camera=True
                 space.region_3d.view_perspective='CAMERA'
     bpy.context.view_layer.update()
-    assert not audit_scene(scene)['mismatches'],audit_scene(scene)['mismatches']
+    assert not audit_scene(scene, selected_lighting=job.get('shared_lighting'))['mismatches'],audit_scene(scene, selected_lighting=job.get('shared_lighting'))['mismatches']
     embed('Structural baseline.json',structural_snapshot(scene))
     if not (job.get('game_lighting') or job.get('veldin_look')):
         pack_scene_images_except_shared_hdri(scene)
@@ -728,7 +728,7 @@ def validate(job):
     scene=bpy.context.scene;rows=job['model']['skeleton'];rig=bpy.data.objects.get('Source animation rig')
     baseline=json.loads(bpy.data.texts['Structural baseline.json'].as_string())
     assert structural_snapshot(scene)==baseline,'Scene changed on save/reopen'
-    audit=audit_scene(scene,check_gpu=False)
+    audit=audit_scene(scene,check_gpu=False,selected_lighting=job.get('shared_lighting'))
     assert not audit['mismatches'],audit['mismatches']
     assert scene['source_model_sha256']==job['model']['model_sha256']
     assert scene.get('presentation_basis')=='game_y_up_to_blender_z_up'
@@ -1061,7 +1061,7 @@ def validate(job):
     else:result['rest_max_matrix_error']=None
     assert structural_snapshot(scene)==baseline,'Controls changed scene structure'
     result['scene_preservation_passed']=True
-    assert not audit_scene(scene,check_gpu=False)['mismatches']
+    assert not audit_scene(scene,check_gpu=False,selected_lighting=job.get('shared_lighting'))['mismatches']
     result['matrix_tolerance']=threshold
     result['all_clips_require_user_visual_inspection']=[e['name'] for e in job['clips']]
     dump(job['validation_report'],result)
