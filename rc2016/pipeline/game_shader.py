@@ -1503,7 +1503,9 @@ def apply_viewer_graph_rule(mat, source):
         raw_albedo = P.comb(r, g_reticle, bl)
         albedo_max = P.v('MAXIMUM', raw_albedo, 0.0); albedo_max.node.label = 'Victor reticle UNORM lower clamp'
         albedo = P.v('MINIMUM', albedo_max, 1.0); albedo.node.label = 'Victor reticle UNORM upper clamp'
-        q = P.tex(source, P.comb(1.0, 8.0 - 8.0 * phase), 'Victor reticle API8 source sample; t=0')
+        phase_offset = P.m('MULTIPLY', 8.0, phase, label='Victor reticle API8 phase offset = 8*CB2[0]')
+        api_v = P.m('SUBTRACT', 8.0, phase_offset, label='Victor reticle API8 v = 8 - phase offset')
+        q = P.tex(source, P.comb(1.0, api_v), 'Victor reticle API8 source sample; t=0')
         sample = P.sep(q.outputs['Color'])[0]
         log_arg = P.m('ADD', P.m('MULTIPLY', sample, gain), 1.0, label='Victor reticle emission argument = 1 + API8.R*gain')
         log2x = P.m('LOGARITHM', log_arg, 2.0, label='Victor reticle source log2')

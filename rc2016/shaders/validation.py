@@ -787,6 +787,8 @@ def _validate_viewer_rule_material(source, material):
         emission_upstream = _viewer_upstream(brdf.inputs[1])
         emission_labels = {node.label: node for node in emission_upstream}
         for label, operation in (("Victor reticle emission argument = 1 + API8.R*gain", "ADD"),
+                                 ("Victor reticle API8 phase offset = 8*CB2[0]", "MULTIPLY"),
+                                 ("Victor reticle API8 v = 8 - phase offset", "SUBTRACT"),
                                  ("Victor reticle source log2", "LOGARITHM"),
                                  ("Victor reticle source 0.20000000298*log2", "MULTIPLY"),
                                  ("Victor reticle source exponent 5*payload", "MULTIPLY"),
