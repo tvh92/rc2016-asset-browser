@@ -756,7 +756,7 @@ def apply_deferred_family(mat, pre, family):
 
 
 GLASS_GROUP_NAME = "RC PS4 character_glass forward"
-GLASS_GROUP_VERSION = 4
+GLASS_GROUP_VERSION = 5
 
 
 def _glass_value(pre, key):
@@ -794,7 +794,7 @@ def _captured_ambient_radiance():
 def build_character_glass_group(force=False):
     """Native 34D5B21C front-end: Fresnel-curve alpha, tinted reflection, faint lit body colour.
 
-    out = Transparent(1 - alpha*A) + alpha * (Diffuse(B*(1 + k*F*T*E)) + GGX(tint, rough))
+    out = Transparent(1 - alpha*A) + alpha * (Diffuse(B*(1 + k*F*T*E)) + F90 * Schlick-GGX(F0 = tint, rough))
     alpha = (1.001-N.V)^P8 * (P10 + sat(P11 + sat(4*(1-N.V)^P13)))   (instance fade 0, attr0.w 1)
     F = (1.001-N.V)^P12,  T = sat(4*sqrt(1-N.V)).  A = "Attenuate background": 0 = additive
     (SRC_ALPHA, ONE), 1 = alpha-over (SRC_ALPHA, ONE_MINUS_SRC_ALPHA); set from the material's flags
@@ -850,10 +850,25 @@ def build_character_glass_group(force=False):
     L.new(p["Body colour B"], body.inputs[0]); L.new(ke.outputs[0], body.inputs[1])
     diff = N.new("ShaderNodeBsdfDiffuse"); diff.name = diff.label = "Glass body X*L"
     L.new(body.outputs[0], diff.inputs["Color"])
-    gloss = N.new("ShaderNodeBsdfGlossy"); gloss.name = gloss.label = "Glass tinted reflection R"
-    gloss.distribution = "GGX"
-    L.new(p["Reflection tint"], gloss.inputs["Color"]); L.new(p["Roughness"], gloss.inputs["Roughness"])
-    lit = N.new("ShaderNodeAddShader"); L.new(diff.outputs[0], lit.inputs[0]); L.new(gloss.outputs[0], lit.inputs[1])
+    # Game lobe F = F0 + (F90 - F0)(1 - V.H)^5 with F0 = tint and F90 = sat(60 F0): F90 * Schlick(F0 / F90 -> 1), as
+    # the deferred group does (the per-channel F90 is collapsed to its maximum).
+    fsep = N.new("ShaderNodeSeparateColor"); L.new(p["Reflection tint"], fsep.inputs[0])
+    fm1 = _math(N, "MAXIMUM"); L.new(fsep.outputs[0], fm1.inputs[0]); L.new(fsep.outputs[1], fm1.inputs[1])
+    fm2 = _math(N, "MAXIMUM"); L.new(fm1.outputs[0], fm2.inputs[0]); L.new(fsep.outputs[2], fm2.inputs[1])
+    f90 = _math(N, "MULTIPLY", None, 60.0, "F90 = saturate(60*F0)", clamp=True); L.new(fm2.outputs[0], f90.inputs[0])
+    f90i = _math(N, "MAXIMUM", None, 1e-4, "max(F90, eps)"); L.new(f90.outputs[0], f90i.inputs[0])
+    f90r = _math(N, "DIVIDE", 1.0, None, "1 / F90"); L.new(f90i.outputs[0], f90r.inputs[1])
+    f0n = N.new("ShaderNodeVectorMath"); f0n.operation = "SCALE"; f0n.label = "F0 / F90"
+    L.new(p["Reflection tint"], f0n.inputs[0]); L.new(f90r.outputs[0], f0n.inputs["Scale"])
+    gloss = N.new("ShaderNodeBsdfPrincipled"); gloss.name = gloss.label = "Glass tinted reflection R"
+    gloss.distribution = "GGX"; gloss.inputs["Metallic"].default_value = 1.0
+    if "Specular Tint" in gloss.inputs:
+        gloss.inputs["Specular Tint"].default_value = (1, 1, 1, 1)
+    L.new(f0n.outputs[0], gloss.inputs["Base Color"]); L.new(p["Roughness"], gloss.inputs["Roughness"])
+    nothing = N.new("ShaderNodeEmission"); nothing.name = nothing.label = "Zero shader"; nothing.inputs["Strength"].default_value = 0.0
+    weighted_r = N.new("ShaderNodeMixShader"); weighted_r.name = weighted_r.label = "Reflection weight = F90"
+    L.new(f90.outputs[0], weighted_r.inputs[0]); L.new(nothing.outputs[0], weighted_r.inputs[1]); L.new(gloss.outputs[0], weighted_r.inputs[2])
+    lit = N.new("ShaderNodeAddShader"); L.new(diff.outputs[0], lit.inputs[0]); L.new(weighted_r.outputs[0], lit.inputs[1])
     weighted = N.new("ShaderNodeMixShader"); weighted.name = weighted.label = "SRC_ALPHA weight"
     L.new(alpha.outputs[0], weighted.inputs[0]); L.new(lit.outputs[0], weighted.inputs[2])
     att = _math(N, "MULTIPLY", label="alpha * A"); L.new(alpha.outputs[0], att.inputs[0])
@@ -938,7 +953,8 @@ def apply_character_glass(mat, pre, material_path):
     mat["rc_shader"] = "%s v%d" % (GLASS_GROUP_NAME, GLASS_GROUP_VERSION)
     mat["rc_shader_frontend"] = "native forward pixel shader 0x34D5B21C (straight-line slices)"
     mat["rc_shader_frontend_limitation"] = ("Blend %s from material flags 0x%08X; back faces %s; instance fade 0, " % (blend, flags, "shown" if two_sided else "culled") +
-                                            "attr0.w 1; engine reflections as a tinted GGX lobe; E constant; no fog")
+                                            "attr0.w 1; light-loop specular as a Schlick-GGX lobe (F0 = tint, F90 = sat(60 F0) collapsed to its maximum channel, " +
+                                            "constants shared with 4DF1D438, not traced in 34D5B21C); probe/SSR reflection not separate; E constant; no fog")
     mat["game_equivalence"] = False
     return True
 
@@ -1093,7 +1109,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 7
+VIEWER_RULE_FRONTEND_VERSION = 8
 
 
 def _viewer_rule_images(nt):
@@ -1193,6 +1209,131 @@ def _viewer_rule_bright_glow(mat, rule):
             % p['amplitude']]
 
 
+GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn')
+
+
+def _viewer_rule_glass(mat, rule, key, img):
+    """Forward glass writers basic_glass 4FC5703F, character_glass_02 4DF1D438 and jn_glass E7118623
+    (gl_shading.GLASS_FRAGMENT uKind 6, 7, 8). alpha comes from the rim, the lit part is a diffuse
+    term plus the writers' specular lobe (F0, F90 = sat(60 F0), Schlick), the blend from the flags word.
+    """
+    nt = mat.node_tree; P = _ViewerNodes(nt)
+    f = rule['terms'][key]; p = f['params']; blend = f.get('blend')
+    geo = P.geo(); Ng = P.v('NORMALIZE', geo.outputs['Normal']); Vv = P.v('NORMALIZE', geo.outputs['Incoming'])
+    limits = []
+    normal = Ng
+    n_img = img('_n') if key == 'glass_cg02' else None
+    if n_img is not None:   # N' = tangent-space _n (xy = 2t - 1, z = sqrt(1 - x^2 - y^2)); strength and fade taken as 1 and 0
+        u, vb, _ = P.uv_split()
+        su, sv = P.const('glass normal u', p['normal_u']), P.const('glass normal v', p['normal_v'])
+        vec = P.comb(P.m('MULTIPLY', u, su), P.m('SUBTRACT', 1.0, P.m('MULTIPLY', P.m('SUBTRACT', 1.0, vb), sv)))
+        x, y = P.rg(P.tex(n_img, vec, 'glass normal map').outputs['Color'])
+        z = P.m('SQRT', P.m('MAXIMUM', P.m('SUBTRACT', 1.0, P.dot2(x, y)), 0.0))
+        normal = P.v('NORMALIZE', P.tangent_normal(x, y, z, 'glass normal N\''))
+        limits.append('normal map strength CB0[95] taken as 1 and the instance fade as 0')
+    elif key == 'glass_cg02':
+        limits.append('no _n texture bound: geometric normal')
+    ndv = P.sat(P.v('DOT_PRODUCT', normal, Vv))
+    om = P.m('SUBTRACT', 1.0, ndv)
+    luma_v = (0.2126, 0.7152, 0.0722)
+
+    def tint_k(tint, scale=None):   # sat(scale * sat(T / luma(T)))
+        luma = P.m('MAXIMUM', P.v('DOT_PRODUCT', tint, luma_v), 1e-6)
+        k = P.vsat(P.v('SCALE', tint, P.m('DIVIDE', 1.0, luma)))
+        return P.vsat(P.v('SCALE', k, scale)) if scale is not None else k
+
+    def spec_lobe(f0, gloss):   # F90 * Schlick-GGX(F0 / F90 -> 1) with F90 = sat(60 F0) collapsed to its maximum channel
+        r, g, b = P.sep(f0)
+        f90 = P.m('MULTIPLY', P.m('MAXIMUM', P.m('MAXIMUM', r, g), b), 60.0, clamp=True)
+        base = P.v('SCALE', f0, P.m('DIVIDE', 1.0, P.m('MAXIMUM', f90, 1e-4)))
+        rough = P.m('POWER', 2.0, P.m('MULTIPLY', P.m('SQRT', P.sat(gloss)), -2.75))
+        bsdf = P.N.new('ShaderNodeBsdfPrincipled'); bsdf.name = bsdf.label = 'VR glass specular'; bsdf.distribution = 'GGX'
+        bsdf.inputs['Metallic'].default_value = 1.0
+        if 'Specular Tint' in bsdf.inputs:
+            bsdf.inputs['Specular Tint'].default_value = (1, 1, 1, 1)
+        P.L.new(base, bsdf.inputs['Base Color']); P.L.new(rough, bsdf.inputs['Roughness'])
+        return bsdf.outputs[0], f90
+
+    def zero():
+        z = P.N.new('ShaderNodeEmission'); z.name = 'VR glass zero shader'; z.inputs['Strength'].default_value = 0.0
+        return z.outputs[0]
+
+    def scaled(shader, weight):   # weight * shader
+        m = P.N.new('ShaderNodeMixShader'); m.name = 'VR glass weight'
+        P.L.new(weight, m.inputs[0]); P.L.new(zero(), m.inputs[1]); P.L.new(shader, m.inputs[2])
+        return m.outputs[0]
+
+    def add(a, b, name):
+        n = P.N.new('ShaderNodeAddShader'); n.name = n.label = name
+        P.L.new(a, n.inputs[0]); P.L.new(b, n.inputs[1])
+        return n.outputs[0]
+
+    def diffuse(colour):
+        d = P.N.new('ShaderNodeBsdfDiffuse'); d.name = 'VR glass diffuse'
+        P.L.new(colour, d.inputs['Color'])
+        return d.outputs[0]
+
+    if key in ('glass_basic', 'glass_jn'):
+        rim = P.sat(P.m('MULTIPLY', P.m('POWER', om, P.const('glass rim exp', p['rim_exp'])), 4.0))
+        alpha = P.sat(P.m('ADD', P.const('glass rim bias', p['rim_bias']), rim))
+        f0 = P.v('SCALE', tint_k(P.const3('glass tint', p['tint'])),
+                 P.m('ADD', P.const('glass f0 base', p['f0_base']), P.m('POWER', rim, 10.0)))
+        lobe, f90 = spec_lobe(f0, P.const('glass gloss', p['gloss']))
+        if key == 'glass_basic':
+            lit = add(diffuse(P.const3('glass body', p['body'])), scaled(lobe, f90), 'VR glass lit')
+        else:   # rgb = C + w * specular: the emission is C, unlit
+            em = P.N.new('ShaderNodeEmission'); em.name = 'VR glass colour'
+            P.L.new(P.const3('glass colour', p['colour']), em.inputs['Color'])
+            lit = add(em.outputs[0], scaled(lobe, P.m('MULTIPLY', f90, P.const('glass weight', p['weight']))), 'VR glass lit')
+    else:   # character_glass_02
+        rim = P.sat(P.m('MULTIPLY', P.m('POWER', om, P.const('glass alpha exp', p['alpha_exp'])), 4.0))
+        alpha = P.sat(P.m('ADD', P.const('glass alpha floor', p['alpha_floor']), rim))
+        e = P.N.new('ShaderNodeCombineXYZ'); e.name = e.label = 'glass env E (captured ambient)'
+        for i, value in enumerate(_captured_ambient_radiance()):
+            e.inputs[i].default_value = float(value)
+        env = P.m('MULTIPLY', P.m('MULTIPLY', P.const('glass env scale', p['env_scale']),
+                                  P.m('POWER', P.m('SUBTRACT', 1.001, ndv), P.const('glass env exp', p['env_exp']))),
+                  P.sat(P.m('MULTIPLY', P.m('SQRT', om), 4.0)))
+        body = P.const3('glass body', p['body'])
+        X = P.v('MULTIPLY', body, P.v('MULTIPLY_ADD', e.outputs[0], env, (1.0, 1.0, 1.0)))
+        edge = P.m('POWER', P.m('MAXIMUM', P.m('SUBTRACT', 1.001, ndv), 1e-6), P.const('glass rim exp', p['rim_exp']))
+        rimc = P.v('ADD', P.v('SCALE', P.v('SCALE', P.v('ADD', P.const3('glass rim colour', p['rim_colour']), X), edge),
+                              P.const('glass rim mult', p['rim_mult'])), X)
+        cap = P.const('glass rim cap', p['rim_cap'])
+        Q = P.v('MINIMUM', P.v('MAXIMUM', rimc, 0.0), P.comb(cap, cap, cap))
+        lobe, f90 = spec_lobe(tint_k(P.const3('glass tint', p['tint']), P.const('glass tint scale', p['tint_scale'])),
+                              P.const('glass gloss', p['gloss']))
+        lit = add(diffuse(Q), scaled(lobe, f90), 'VR glass lit')
+    if blend == 'opaque':
+        shader = lit
+    else:
+        clear = P.N.new('ShaderNodeBsdfTransparent'); clear.name = 'VR glass background'
+        weighted = P.N.new('ShaderNodeMixShader'); weighted.name = 'VR glass alpha weight'
+        P.L.new(alpha, weighted.inputs[0])
+        P.L.new(zero() if blend == 'additive' else clear.outputs[0], weighted.inputs[1])
+        P.L.new(lit, weighted.inputs[2])
+        shader = weighted.outputs[0]
+        if blend == 'additive':   # SRC_ALPHA, ONE: background + alpha * lit
+            shader = add(clear.outputs[0], shader, 'VR glass blend additive')
+        else:                      # SRC_ALPHA, ONE_MINUS_SRC_ALPHA: Mix(alpha; background, lit)
+            weighted.label = 'VR glass blend alpha_over'
+    if not f.get('two_sided'):
+        culled = P.N.new('ShaderNodeBsdfTransparent'); culled.name = 'VR culled back face'
+        cull = P.N.new('ShaderNodeMixShader'); cull.name = cull.label = 'VR cull back faces'
+        P.L.new(geo.outputs['Backfacing'], cull.inputs[0]); P.L.new(shader, cull.inputs[1])
+        P.L.new(culled.outputs[0], cull.inputs[2]); shader = cull.outputs[0]
+    out = P.N.new('ShaderNodeOutputMaterial'); out.is_active_output = True
+    P.L.new(shader, out.inputs['Surface'])
+    mat.use_backface_culling = not f.get('two_sided')
+    if hasattr(mat, 'surface_render_method'):
+        mat.surface_render_method = 'DITHERED' if blend == 'opaque' else 'BLENDED'
+    return limits + ['Forward glass writer %s (blend %s from the flags word): the engine light list, shadows, probes, SSR and fog '
+                     '(t = 1) are replaced by Cycles lighting; Schlick F uses the Principled metallic model with the per-channel '
+                     'F90 = sat(60 F0) collapsed to its maximum; instance fade b = 0, attr0.w = 1, geometric AA 0; the instance '
+                     'flag word (0x61 captured: diffuse and specular terms on) and the second program of the graph (table 1) are '
+                     'not selected' % (f.get('writer', key), blend)]
+
+
 def apply_viewer_graph_rule(mat, source):
     """The asset viewer's per-graph reading on the shared deferred BRDF, for graphs without a
     registered family (pipeline materials.viewer_graph_rule; viewer gl_shading.py Shaded mode).
@@ -1231,7 +1372,8 @@ def apply_viewer_graph_rule(mat, source):
     if screen and c is None or not screen and terms.get('screen'):
         return False
     glow_shell = 'bright_glow' in ported and 'bright_glow' in terms   # 93695188 samples no texture
-    if c is None and not (arch and g is not None) and not facing and not glow_shell:
+    glass = next((k for k in GLASS_VIEWER_KINDS if k in ported and k in terms), None)   # forward glass writers sample no _c
+    if c is None and not (arch and g is not None) and not facing and not glow_shell and not glass:
         return False
     for node in list(nt.nodes):   # keep every source image node (provenance and coverage reports)
         if node.type != 'TEX_IMAGE':
@@ -1242,6 +1384,10 @@ def apply_viewer_graph_rule(mat, source):
     if screen:
         limits += _viewer_rule_screen(mat, rule, img)
         _finish_viewer_rule(mat, rule, 'forward screen 8716DC7A (t=0, unlit, %s)' % terms['screen'].get('blend'), limits)
+        return True
+    if glass:
+        limits += _viewer_rule_glass(mat, rule, glass, img)
+        _finish_viewer_rule(mat, rule, 'forward glass %s (%s)' % (terms[glass].get('writer', glass), terms[glass].get('blend')), limits)
         return True
     if glow_shell:
         limits += _viewer_rule_bright_glow(mat, rule)

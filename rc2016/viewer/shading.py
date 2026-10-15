@@ -673,12 +673,26 @@ void main() {
 #   uA = colour C, gain; uB = low colour Clo, sharpness S; uC = dist_k, dist0, blink weight w, amplitude.
 #   t = |1.001 - N.V|^(0.2 (1 - S)); x = (1 - dist_k (|eye - p| - dist0)) w gain (1 - t); alpha = sat(x);
 #   rgb = 7 amp (Clo + (C - Clo) x^2). Amplitude is CB0[115] (labelled presentation value, as facing_glow).
+# Glass writers that share the engine light loop (uKind 1 and 6 to 8): the specular lobe is GGX with Schlick
+# Fresnel F = F0 + (sat(60 F0) - F0)(1 - V.H)^5 and the Smith-Schlick visibility k = (0.353553 (alpha + 1))^2
+# (glassSpec; constants read from 4FC5703F and 4DF1D438 and present at the same positions in 34D5B21C); the
+# viewer rig replaces the light list, shadows, probes and fog (t = 1), and tone mapping precedes the blend.
+# uKind 6, basic_glass 4FC5703F (decode: NoRuleDecodes/basic_glass): uA = tint.rgb, rim bias P3; uB = body.rgb, gloss;
+#   uC = P8, rim exponent P9. rim = sat(4 (1 - N.V)^P9), alpha = sat(P3 + rim), F0 = sat(T / luma(T)) (P8 + rim^10),
+#   rgb = body * L + specular. Instance fade b = 0, attr0.w = 1, flags 0x61 (diffuse and specular terms on).
+# uKind 7, character_glass_02 4DF1D438: uA = body.rgb, gloss; uB = tint.rgb, tint scale; uC = env k, env exponent,
+#   alpha floor, alpha exponent; uD = rim colour.rgb, rim exponent; uE = rim multiplier, rim cap, normal U, normal V.
+#   X = B (1 + k P E S), P = (1.001 - N.V)^e, S = sat(4 sqrt(1 - N.V)); Q = clamp(m (C + X) (1.001 - sat(N'.V))^r + X, 0, cap);
+#   alpha = sat(sat(floor + sat(4 (1 - N.V)^x))); rgb = Q * L + specular with F0 = sat(scale sat(T / luma(T))).
+#   N' is the _n normal map (xy = 2t - 1, strength CB0[95] and fade taken as 1 and 0).
+# uKind 8, jn_glass E7118623: uA = tint.rgb, rim bias P3; uB = colour C.rgb, weight w; uC = P8, rim exponent P9, gloss.
+#   alpha = sat(P3 + rim); rgb = C + w * specular, F0 = sat(T / luma(T)) (P8 + rim^10); no body term in this table.
 GLASS_FRAGMENT = """
 #version 120
 uniform sampler2D uScreenNoiseA; uniform sampler2D uScreenNoiseB;
 uniform bool uScreenSrgbN; uniform bool uScreenSrgbA; uniform bool uScreenSrgbB;
 uniform int uKind;
-uniform vec4 uA; uniform vec4 uB; uniform vec4 uC; uniform vec4 uD;
+uniform vec4 uA; uniform vec4 uB; uniform vec4 uC; uniform vec4 uD; uniform vec4 uE;
 uniform sampler2D uTexN; uniform bool uHasN;
 uniform sampler2D uTexP; uniform bool uHasP; uniform bool uSrgbP;
 varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
@@ -697,6 +711,19 @@ vec3 ggx(vec3 N, vec3 V, vec3 L, vec3 F0, vec3 F90, float a) {
     vec3 F = F0 + (F90 - F0) * pow(1.0 - max(dot(V, H), 0.0), 5.0);
     return D * G * F / max(4.0 * NdL * NdV, 1e-4) * NdL;
 }
+// Light-loop lobe of the glass writers: alpha is GGX alpha, F90 = sat(60 F0), k = (0.353553 (alpha + 1))^2.
+vec3 ggxGlass(vec3 N, vec3 V, vec3 L, vec3 F0, vec3 F90, float a) {
+    vec3 H = normalize(L + V);
+    float NdL = max(dot(N, L), 0.0), NdV = max(dot(N, V), 1e-4), NdH = max(dot(N, H), 0.0);
+    float a2 = a * a, d = NdH * NdH * (a2 - 1.0) + 1.0, kk = 0.125 * (a + 1.0) * (a + 1.0);
+    float DV = a2 / (PI * d * d * (NdV * (1.0 - kk) + kk) * (NdL * (1.0 - kk) + kk));
+    vec3 F = F0 + (F90 - F0) * pow(1.0 - max(dot(V, H), 0.0), 5.0);
+    return F * (0.25 * DV * NdL);
+}
+vec3 glassSpec(vec3 N, vec3 V, vec3 L1, vec3 L2, vec3 C1, vec3 C2, vec3 F0, float a, vec3 ambient) {
+    vec3 F90 = clamp(60.0 * F0, 0.0, 1.0);
+    return ggxGlass(N, V, L1, F0, F90, a) * C1 + ggxGlass(N, V, L2, F0, F90, a) * C2 + envSpecular(N, V, F0, F90, a, ambient);
+}
 void main() {
     vec3 N = normalize(vNrm) * (gl_FrontFacing ? 1.0 : -1.0);
     vec3 V = normalize(-vPos);
@@ -705,7 +732,36 @@ void main() {
     vec3 L1 = rigKey(), L2 = rigFill();
     vec3 C1 = keyColour(), C2 = fillColour();
     vec3 color; float alpha;
-    if (uKind == 3) { // 8716DC7A, time=0; cutoff=0, vertex alpha=fog fade=1
+    if (uKind == 6 || uKind == 8) { // basic_glass 4FC5703F / jn_glass E7118623
+        float rim = sat(4.0 * pow(om, uC.y));
+        alpha = sat(uA.w + rim);
+        float luma = max(dot(vec3(0.2126, 0.7152, 0.0722), uA.rgb), 1e-6);
+        vec3 F0 = clamp(uA.rgb / luma, 0.0, 1.0) * (uC.x + pow(rim, 10.0));
+        float gloss = uKind == 6 ? uB.w : uC.z;
+        float a = pow(2.0, -5.5 * sqrt(sat(gloss)));
+        vec3 ambient = ambientLight(N);
+        vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
+        vec3 S = glassSpec(N, V, L1, L2, C1, C2, F0, a, ambient);
+        color = uKind == 6 ? uB.rgb * Ld + S : uB.rgb + uB.w * S;
+    } else if (uKind == 7) { // character_glass_02 4DF1D438
+        if (uHasN) {
+            vec3 dp1 = dFdx(vPos), dp2 = dFdy(vPos); vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
+            vec3 p2 = cross(dp2, N), p1 = cross(N, dp1);
+            vec3 T = normalize(p2 * du1.x + p1 * du2.x), B = normalize(-(p2 * du1.y + p1 * du2.y));
+            vec2 xy = texture2D(uTexN, vUV * vec2(uE.z, uE.w)).rg * 2.0 - 1.0;
+            N = normalize(T * xy.x + B * xy.y + N * sqrt(max(1.0 - dot(xy, xy), 0.0)));
+            ndv = sat(dot(N, V)); om = max(1.0 - ndv, 1e-6);
+        }
+        alpha = sat(uC.z + sat(4.0 * pow(om, uC.w)));
+        vec3 ambient = ambientLight(N);
+        vec3 X = uA.rgb * (1.0 + uC.x * pow(1.001 - ndv, uC.y) * ambient * sat(4.0 * sqrt(om)));   // E = viewer sky
+        vec3 Q = clamp(uE.x * (uD.rgb + X) * pow(max(1.001 - ndv, 1e-6), uD.w) + X, 0.0, uE.y);
+        float luma = max(dot(vec3(0.2126, 0.7152, 0.0722), uB.rgb), 1e-6);
+        vec3 F0 = clamp(uB.w * clamp(uB.rgb / luma, 0.0, 1.0), 0.0, 1.0);
+        float a = pow(2.0, -5.5 * sqrt(sat(uA.w)));
+        vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
+        color = Q * Ld + glassSpec(N, V, L1, L2, C1, C2, F0, a, ambient);
+    } else if (uKind == 3) { // 8716DC7A, time=0; cutoff=0, vertex alpha=fog fade=1
         vec2 uv = floor(vUV * uC.z) / uC.z;
         float h = uHasN ? texture2D(uTexN, uv).r : 0.0;
         if (uScreenSrgbN) h = screenLinear(h);
@@ -769,8 +825,7 @@ void main() {
         float a = pow(2.0, -5.5 * sqrt(sat(uA.w)));
         vec3 X = uA.rgb * (1.0 + uC.y * pow(1.001 - ndv, uD.x) * ambient * sat(4.0 * sqrt(om)));   // E = viewer sky
         vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
-        vec3 one = vec3(1.0);   // R carries no Fresnel: alpha holds the rim
-        vec3 R = tint * (ggx(N, V, L1, one, one, a) * C1 + ggx(N, V, L2, one, one, a) * C2 + envSpecular(N, V, one, one, a, ambient));
+        vec3 R = glassSpec(N, V, L1, L2, C1, C2, tint, a, ambient);   // F0 = tint, F90 = sat(60 tint), as 4DF1D438
         color = R + X * Ld;
     }
     gl_FragColor = vec4(display(color), alpha);
@@ -797,7 +852,8 @@ FRAGMENT=_re.sub(r'gl_FragColor\s*=\s*([^;]+);',r'sceneOutput(\1);',FRAGMENT)
 FRAGMENT=FRAGMENT.replace('vec3 N = normalize(vNrm);','vec3 N = normalize(vNrm); sceneCaptureNormal=N;',1)
 FRAGMENT = FRAGMENT.replace("// @lighting\n", LIGHTING+_SCENE_OUTPUT)
 GLASS_FRAGMENT = GLASS_FRAGMENT.replace("// @lighting\n", LIGHTING)
-GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4, "bright_glow": 5}
+GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4, "bright_glow": 5,
+               "glass_basic": 6, "glass_cg02": 7, "glass_jn": 8}
 
 
 def glass_uniforms(forward):
@@ -812,6 +868,15 @@ def glass_uniforms(forward):
     if forward["kind"] == "water":
         return (4, (*p["body"], p["opacity"]), (p["f0"], p["normal_strength"], p["gloss"], 0.0),
                 tuple(p["uv_a"]), tuple(p["uv_b"]))
+    if forward["kind"] == "glass_basic":
+        return (6, (*p["tint"], p["rim_bias"]), (*p["body"], p["gloss"]), (p["f0_base"], p["rim_exp"], 0.0, 0.0), (0.0,) * 4, (0.0,) * 4)
+    if forward["kind"] == "glass_jn":
+        return (8, (*p["tint"], p["rim_bias"]), (*p["colour"], p["weight"]), (p["f0_base"], p["rim_exp"], p["gloss"], 0.0),
+                (0.0,) * 4, (0.0,) * 4)
+    if forward["kind"] == "glass_cg02":
+        return (7, (*p["body"], p["gloss"]), (*p["tint"], p["tint_scale"]),
+                (p["env_scale"], p["env_exp"], p["alpha_floor"], p["alpha_exp"]), (*p["rim_colour"], p["rim_exp"]),
+                (p["rim_mult"], p["rim_cap"], p["normal_u"], p["normal_v"]))
     if forward["kind"] == "glass_patterned":
         return (2, (p["tiling"], p["normal_strength"], p["f0"], p["gloss"]),
                 (p["pick_u"], p["rim_bias"], p["rim_exp"], 0.0), (0.0,) * 4, (0.0,) * 4)
@@ -837,7 +902,7 @@ OPAQUE_UNIFORMS = (
     "uTexTintDetail", "uHasTintDetail", "uSrgbTintDetail", "uTexH", "uHasH", "uArchSequence", "uTexSequence", "uHasSequence", "uArchColour", "uArchP", "uArchPhase",
     "uFacingGlow", "uFacingGlowP", "uFacingGlowQ", "uBrightCentre", "uBrightEdge", "uBrightColour", "uBrightP",
     "uSceneGeometry", *LIGHTING_UNIFORMS)
-GLASS_UNIFORMS = ("uSkin", "uBoneTex", "uBoneWidth", "uKind", "uA", "uB", "uC", "uD",
+GLASS_UNIFORMS = ("uSkin", "uBoneTex", "uBoneWidth", "uKind", "uA", "uB", "uC", "uD", "uE",
                   "uTexN", "uHasN", "uTexP", "uHasP", "uSrgbP",
                   "uScreenNoiseA", "uScreenNoiseB", "uScreenSrgbN", "uScreenSrgbA", "uScreenSrgbB", *LIGHTING_UNIFORMS)
 

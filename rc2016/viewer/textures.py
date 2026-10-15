@@ -124,14 +124,31 @@ GRAPH_RULES = (
          ('body', 0x7C456482, 3), ('gloss', 0x24F4CA4C, 1), ('tint', 0x4B4DAB19, 3), ('tint_scale', 0xEF9CE5DD, 1),
          ('alpha_exp', 0x2B68D24C, 1), ('env_scale', 0x80C092EE, 1), ('alpha_bias', 0x4E5B65FC, 1),
          ('rim_bias', 0x42170E5E, 1), ('env_exp', 0xACE4D867, 1), ('rim_exp', 0xECE213A3, 1)))),
-    # PROVISIONAL (review only, not game-matched). Writer 4DF1D438 is confirmed for veh_micron_ship_glass only;
-    # the other 10 materials are assumed. Alpha constants are grounded (module_10182). Colour is an approximation:
-    # the rim colour, rim multiplier/pow/cap, the env sample and fog are not in the kernel yet.
-    # Decode: Animation/pipeline/Research/Materials/NoRuleDecodes/character_glass_02/decode.md.
+    # character_glass_02: writer 4DF1D438 (table-0 key set, rim colour/multiplier/exponent/cap present). Captured on
+    # veh_micron_ship_glass (flags 0x00200839); module 10182 supplies the flag gates (0x20 diffuse x L, 0x40 specular A).
+    # The normal map is the _n slot (fs_img2) at (U * attr0.x, V * attr0.y). Table 1 (7445DF75, no rim keys) is not selected.
+    # Decode: Animation/pipeline/Research/Materials/NoRuleDecodes/character_glass_02/decode.md; flag gates re-read here.
     ('materialgraph/global/basic_glass/character_glass_02.',
-     dict(forward='character_glass', constants=dict(alpha_exp=0.0, alpha_bias=0.0), params=(
-         ('body', 0x7C456482, 3), ('gloss', 0x24F4CA4C, 1), ('tint', 0x4B4DAB19, 3), ('tint_scale', 0xEF9CE5DD, 1),
-         ('env_scale', 0x80C092EE, 1), ('rim_bias', 0x42170E5E, 1), ('env_exp', 0xACE4D867, 1), ('rim_exp', 0xECE213A3, 1)))),
+     dict(forward='glass_cg02', writer='4DF1D438', slots={'_n': 0x49A7866B7AE34E7A}, params=(
+         ('rim_colour', 0xC483F1CB, 3), ('gloss', 0x24F4CA4C, 1), ('body', 0x7C456482, 3), ('tint_scale', 0xEF9CE5DD, 1),
+         ('tint', 0x4B4DAB19, 3), ('normal_v', 0xAD4069BA, 1), ('env_scale', 0x80C092EE, 1), ('normal_u', 0x34493800, 1),
+         ('rim_exp', 0xB7BAC19F, 1), ('rim_mult', 0xAAC47D17, 1), ('rim_cap', 0x8ECB2AE3, 1),
+         ('alpha_floor', 0x42170E5E, 1), ('env_exp', 0xACE4D867, 1), ('alpha_exp', 0xECE213A3, 1)))),
+    # basic_glass writer 4FC5703F (table 0), captured on pri_amb_hallway_light_glass_01 (event 5540, 268 fragments matched,
+    # median colour error 0.03%). alpha = sat(P3 + rim), rim = sat(4 (1 - N.V)^P9); F0 = sat(T / luma(T)) (P8 + rim^10).
+    # Table 1 (81FA6EFC, alpha sat(attr0.w), no rim keys) is the sibling program; no draw binds it, so it is not selected.
+    # Decode: Animation/pipeline/Research/Materials/NoRuleDecodes/basic_glass/decode.md (passes 4 to 6).
+    ('materialgraph/global/basic_glass/basic_glass.',
+     dict(forward='glass_basic', writer='4FC5703F', params=(
+         ('tint', 0x4B4DAB19, 3), ('rim_bias', 0x42170E5E, 1), ('body', 0x7C456482, 3), ('gloss', 0x24F4CA4C, 1),
+         ('f0_base', 0x62835AF9, 1), ('rim_exp', 0xECE213A3, 1)))),
+    # jn_glass writer E7118623 (table 0), decoded from the native program against 4FC5703F in this repository: same alpha
+    # sat(sat(P3 + rim) attr0.w) without the instance fade, same F0 = sat(T / luma(T)) (P8 + rim^10) and 60-F0 Fresnel, final
+    # colour C + w X (C = 0x7F058428, w = 0xEBF9478B). Table 1 (3168242A) is not selected.
+    ('materialgraph/global/basic_glass/jn_glass.',
+     dict(forward='glass_jn', writer='E7118623', params=(
+         ('tint', 0x4B4DAB19, 3), ('rim_bias', 0x42170E5E, 1), ('colour', 0x7F058428, 3), ('weight', 0xEBF9478B, 1),
+         ('gloss', 0x24F4CA4C, 1), ('f0_base', 0x62835AF9, 1), ('rim_exp', 0xECE213A3, 1)))),
     # Other models/enm_blarg_saucer/evidence/GLASS_DECODE.md (FEEC00CE). The graph binds two textures,
     # by slot hash: the colour-pick palette (api5) and Patterns_cma in the _n slot (api6). The
     # material's _c/_g use slots this graph does not have, so the writer never reads them.
@@ -741,7 +758,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
             # t = |1.001 - N.V|^e with e = 0.2 (1 - S); w = sat(1 + (1 - B)(0.5 sin - 0.5)) at sin = 0.
             params['exponent'] = 0.2 * (1.0 - params['sharp'])
             params['weight'] = min(1.0, max(0.0, 1.0 - 0.5 * (1.0 - params['steady'])))
-        result['forward'] = dict(kind=rule['forward'], params=params, **blend_state(material_flags(data)))
+        result['forward'] = dict(kind=rule['forward'], params=params, **({'writer': rule['writer']} if rule.get('writer') else {}),
+                                 **blend_state(material_flags(data)))
     if rule.get('facing_glow'):
         # No texture, parameter, vertex colour or instance input: albedo is 1.0 and the glow is
         # f = pow(sat(N.V) - bias, exponent), a = a_scale*f + a_offset,
