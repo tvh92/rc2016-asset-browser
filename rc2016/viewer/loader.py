@@ -345,10 +345,15 @@ class SourcePreviewLoader:
         try:
             from rc2016.viewer.animation import AnimationLibrary, model_animsets
             animsets=model_animsets(self.archive,output_root,decoded['_archive_path']) if output_root else []
-            cached['animation']=AnimationLibrary(self.archive,cached['data'],animsets)
-            decoded['animsets']=list(cached['animation'].animset_data)
-            if not output_root:decoded['animation_note']="Set an output root: animation sets are found through the scan's reference index there."
-            elif not animsets:decoded['animation_note']='No animation set found for this model.'
+            library=AnimationLibrary(self.archive,cached['data'],animsets)
+            # The browser also offers the real-time cutscene shots whose joints cover the whole model (the only
+            # motion some NPCs have); exports opt in through ExportOptions instead.
+            if cached['purpose']=='view':library=library.with_cinematic(self.archive)
+            cached['animation']=library
+            decoded['animsets']=list(library.animset_data)
+            if not library.clips:
+                if not output_root:decoded['animation_note']="Set an output root: animation sets are found through the scan's reference index there."
+                else:decoded['animation_note']='No animation set or cutscene clip found for this model.'
         except Exception as error:  # the model still displays without clips
             cached['animation']=None;decoded['animation_note']=f'Animations unavailable: {error}'
 
@@ -382,7 +387,7 @@ class SourcePreviewLoader:
         else:
             decoded.update(textures={},texture_list=[],material_rules={})
         decoded['_archive_path']=source_path;decoded['animation_note']='';decoded['animsets']=[]
-        return dict(decoded=decoded,data=data,animation=None,animation_built=False,build_lock=threading.Lock(),
+        return dict(decoded=decoded,data=data,purpose=purpose,animation=None,animation_built=False,build_lock=threading.Lock(),
                     vertices=sum(len(m['positions']) for m in decoded['meshes']))
 
     def _load(self, source_root, model_id, source_path, lod, look, output_root, defer_animation=False, purpose='view'):

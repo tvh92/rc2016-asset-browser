@@ -168,5 +168,30 @@ class OptionsTests(unittest.TestCase):
         self.assertEqual(ExportOptions(cinematic_only=True, file_suffix='_cutscenes').key()['file_suffix'], '_cutscenes')
 
 
+class BrowserLoaderTests(unittest.TestCase):
+    """The browser's clip library offers cutscene shots; the export load does not unless asked to."""
+
+    def build(self, purpose):
+        from rc2016.viewer.loader import SourcePreviewLoader
+        loader = SourcePreviewLoader.__new__(SourcePreviewLoader)
+        loader.archive = archive()
+        decoded = dict(joint_count=2, animation_note='', animsets=[], _archive_path='character/npc/npc_test/npc_test.model')
+        cached = dict(decoded=decoded, data=model(JOINTS), purpose=purpose, animation=None, animation_built=False)
+        loader._build_animation_locked(cached, None)
+        return cached, decoded
+
+    def test_view_library_lists_the_cutscene_shots_without_an_animset(self):
+        cached, decoded = self.build('view')
+        self.assertEqual(cached['animation'].labels(), ['nov_test_rt_shot1_npc_Test', 'nov_test_rt_shot2_npc_Test',
+                                                       'nov_test_rt_shot3_npc_Test'])
+        self.assertEqual(decoded['animsets'], ['cinematic/nov_test/nov_test_rt.cinematic2'])
+        self.assertEqual(decoded['animation_note'], '')
+
+    def test_export_library_stays_animset_only(self):
+        cached, decoded = self.build('export')
+        self.assertEqual(cached['animation'].clips, [])
+        self.assertIn('output root', decoded['animation_note'])
+
+
 if __name__ == '__main__':
     unittest.main()
