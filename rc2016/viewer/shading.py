@@ -673,6 +673,13 @@ void main() {
 #   uA = colour C, gain; uB = low colour Clo, sharpness S; uC = dist_k, dist0, blink weight w, amplitude.
 #   t = |1.001 - N.V|^(0.2 (1 - S)); x = (1 - dist_k (|eye - p| - dist0)) w gain (1 - t); alpha = sat(x);
 #   rgb = 7 amp (Clo + (C - Clo) x^2). Amplitude is CB0[115] (labelled presentation value, as facing_glow).
+# uKind 6, eye_cornea A36A97CB (hero_eye_cornea; _n slot hemisphere_flatter_n, _pick slot shared_eye_lens_c; alpha-over, back faces culled):
+#   uA = fade start, fade end, power near, power far; uB = reflect base, reflect weight, highlight-normal scale, env-normal scale;
+#   uC.x = highlight k (key 0xF8828985). Three normals from the dome map (xy scale 0.555 for Fresnel, uB.z for the highlight
+#   lobe, uB.w for the environment), linear z. F = sat(base + (1.001 - sat(N.V))^4); lobe = 4 sat(r.H)^p (1 - fade) with r the
+#   mirror of V about the highlight normal, H = normalize(0.49 V + 0.51 L), p lerped power near->far by sat(0.08 |p|), fade =
+#   sat((|p| - start) / (end - start)); alpha = sat(lobe + F + 0.06); rgb = env(r_env) (weight + (1.001 - N.V)^4) +
+#   (lens.r + 1) lobe (4 - 3 k). L, the engine light term (1), instance terms and the environment roughness are labelled limits.
 GLASS_FRAGMENT = """
 #version 120
 uniform sampler2D uScreenNoiseA; uniform sampler2D uScreenNoiseB;
@@ -697,6 +704,9 @@ vec3 ggx(vec3 N, vec3 V, vec3 L, vec3 F0, vec3 F90, float a) {
     vec3 F = F0 + (F90 - F0) * pow(1.0 - max(dot(V, H), 0.0), 5.0);
     return D * G * F / max(4.0 * NdL * NdV, 1e-4) * NdL;
 }
+vec3 corneaNormal(vec3 N, vec3 T, vec3 B, float scale, vec2 xy) {   // A36A97CB: linear z, T/B from derivatives (as glass_patterned)
+    return normalize(T * scale * xy.x - B * scale * xy.y + N * (1.0 - dot(xy, xy)));
+}
 void main() {
     vec3 N = normalize(vNrm) * (gl_FrontFacing ? 1.0 : -1.0);
     vec3 V = normalize(-vPos);
@@ -705,7 +715,28 @@ void main() {
     vec3 L1 = rigKey(), L2 = rigFill();
     vec3 C1 = keyColour(), C2 = fillColour();
     vec3 color; float alpha;
-    if (uKind == 3) { // 8716DC7A, time=0; cutoff=0, vertex alpha=fog fade=1
+    if (uKind == 6) { // A36A97CB eye cornea over the eye sphere (see the uKind 6 comment)
+        vec3 dp1 = dFdx(vPos), dp2 = dFdy(vPos); vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
+        vec3 p2 = cross(dp2, N), p1 = cross(N, dp1);
+        vec3 T = p2 * du1.x + p1 * du2.x, B = p2 * du1.y + p1 * du2.y;
+        float tb = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-20));
+        vec2 nm = uHasN ? texture2D(uTexN, vUV).rg * 2.0 - 1.0 : vec2(0.0);
+        vec3 Nf = corneaNormal(N, T, B, tb, 0.555 * nm);
+        vec3 Nh = corneaNormal(N, T, B, tb, uB.z * nm);
+        vec3 Ne = corneaNormal(N, T, B, tb, uB.w * nm);
+        float F4 = pow(abs(1.00100004673 - sat(dot(Nf, V))), 4.0);
+        float dist = length(vPos);
+        float power = uA.z + sat(0.08 * dist) * (uA.w - uA.z);
+        float fade = sat((dist - uA.x) / (uA.y - uA.x));
+        vec3 H = normalize(0.49 * V + 0.51 * L1);
+        float lobe = 4.0 * pow(sat(dot(reflect(-V, Nh), H)), power) * (1.0 - fade);
+        alpha = sat(lobe + sat(uB.x + F4) + 0.06);
+        float lens = uHasP ? texture2D(uTexP, vUV).r : 0.0;
+        if (uSrgbP) lens = linear(vec3(lens)).r;
+        float a = pow(2.0, -5.5);   // presentation roughness of the environment reflection (probe/SSR cone not decoded)
+        color = envSpecular(Ne, V, vec3(1.0), vec3(1.0), a, ambientLight(Ne)) * (uB.y + F4)
+              + (lens + 1.0) * lobe * (4.0 - 3.0 * uC.x);
+    } else if (uKind == 3) { // 8716DC7A, time=0; cutoff=0, vertex alpha=fog fade=1
         vec2 uv = floor(vUV * uC.z) / uC.z;
         float h = uHasN ? texture2D(uTexN, uv).r : 0.0;
         if (uScreenSrgbN) h = screenLinear(h);
@@ -797,7 +828,7 @@ FRAGMENT=_re.sub(r'gl_FragColor\s*=\s*([^;]+);',r'sceneOutput(\1);',FRAGMENT)
 FRAGMENT=FRAGMENT.replace('vec3 N = normalize(vNrm);','vec3 N = normalize(vNrm); sceneCaptureNormal=N;',1)
 FRAGMENT = FRAGMENT.replace("// @lighting\n", LIGHTING+_SCENE_OUTPUT)
 GLASS_FRAGMENT = GLASS_FRAGMENT.replace("// @lighting\n", LIGHTING)
-GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4, "bright_glow": 5}
+GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4, "bright_glow": 5, "eye_cornea": 6}
 
 
 def glass_uniforms(forward):
@@ -809,6 +840,10 @@ def glass_uniforms(forward):
     if forward["kind"] == "bright_glow":
         return (5, (*p["colour"], p["gain"]), (*p["colour_lo"], p["sharp"]),
                 (p["dist_k"], p["dist0"], p["weight"], p["amplitude"]), (0.0,) * 4)
+    if forward["kind"] == "eye_cornea":
+        return (6, (p["fade_start"], p["fade_end"], p["power_near"], p["power_far"]),
+                (p["reflect_base"], p["reflect_weight"], p["highlight_normal"], p["env_normal"]),
+                (p["highlight_k"], 0.0, 0.0, 0.0), (0.0,) * 4)
     if forward["kind"] == "water":
         return (4, (*p["body"], p["opacity"]), (p["f0"], p["normal_strength"], p["gloss"], 0.0),
                 tuple(p["uv_a"]), tuple(p["uv_b"]))

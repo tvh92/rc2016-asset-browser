@@ -450,6 +450,12 @@ def _viewer_expected_constants(rule):
         e.update({"bright glow colour": p["colour"], "bright glow colour lo": p["colour_lo"], "bright glow dist_k": p["dist_k"],
                   "bright glow dist0": p["dist0"], "bright glow gain": p["gain"], "bright glow weight": p["weight"],
                   "bright glow exponent": p["exponent"], "bright glow amplitude": p["amplitude"]})
+    if "eye_cornea" in ported:
+        p = terms["eye_cornea"]["params"]
+        e.update({"cornea fresnel normal scale": p["fresnel_normal_scale"], "cornea env normal scale": p["env_normal"],
+                  "cornea fresnel bias": p["fresnel_bias"], "cornea fresnel power": p["fresnel_power"],
+                  "cornea reflect base": p["reflect_base"], "cornea alpha bias": p["alpha_bias"],
+                  "cornea reflect weight": p["reflect_weight"]})
     if "screen" in ported:
         p = terms["screen"]["params"]
         e.update({"screen grid": p["grid"], "screen alpha base": p["alpha_base"], "screen mask strength": p["mask_strength"],
@@ -527,6 +533,10 @@ def _viewer_required(rule, has_n):
     if "bright_glow" in ported:
         names += ["bright glow colour", "bright glow colour lo", "bright glow dist_k", "bright glow dist0", "bright glow gain",
                   "bright glow weight", "bright glow exponent", "bright glow amplitude"]
+    if "eye_cornea" in ported:
+        names += ["cornea fresnel normal scale", "cornea env normal scale", "cornea fresnel bias", "cornea fresnel power",
+                  "cornea reflect base", "cornea alpha bias", "cornea reflect weight"]
+        req("_n")
     if "screen" in ported:
         names += ["screen alpha base", "screen mask strength", "screen colour A", "screen colour B", "screen intensity A",
                   "screen intensity B"] + (["screen grid"] if tex.get("_n") else [])
@@ -593,6 +603,19 @@ def _validate_viewer_rule_material(source, material):
         assert rule["terms"]["screen"].get("two_sided") or "VR cull back faces" in names, "Screen back faces are not culled"
         constants = _viewer_check_constants_and_images(source, material, rule, upstream, has_n)
         return dict(status="passed_viewer_graph_rule_frontend", terms=ported, blend=blend, constants=constants,
+                    limitation=material.get("rc_shader_frontend_limitation"))
+    if "eye_cornea" in ported:   # Surface = Cull(Mix(alpha, Transparent, Glossy(weight)))
+        upstream = _viewer_upstream(output.inputs["Surface"])
+        names = {node.name for node in upstream}
+        forward = rule["terms"]["eye_cornea"]
+        assert {"VR cornea glossy", "VR cornea blend %s" % forward.get("blend")} <= names, "Cornea glossy/blend is not the output"
+        assert forward.get("blend") == "alpha_over", "Cornea source blend is not alpha-over"
+        assert forward.get("two_sided") or "VR cull back faces" in names, "Cornea back faces are not culled"
+        assert material.use_backface_culling == (not forward.get("two_sided")), "Cornea material back-face culling differs from the flags word"
+        if hasattr(material, "surface_render_method"):
+            assert material.surface_render_method == "BLENDED", "Cornea material is not blended"
+        constants = _viewer_check_constants_and_images(source, material, rule, upstream, has_n)
+        return dict(status="passed_viewer_graph_rule_frontend", terms=ported, blend="alpha_over", constants=constants,
                     limitation=material.get("rc_shader_frontend_limitation"))
     if "bright_glow" in ported:   # Surface = Cull(Add(Transparent, Emission(Clo + (C - Clo) x^2, 7 amp sat(x))))
         upstream = _viewer_upstream(output.inputs["Surface"])

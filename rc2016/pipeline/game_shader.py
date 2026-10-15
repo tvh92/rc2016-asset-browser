@@ -1193,6 +1193,52 @@ def _viewer_rule_bright_glow(mat, rule):
             % p['amplitude']]
 
 
+def _viewer_rule_eye_cornea(mat, rule, img):
+    """Eye cornea, forward colour pass A36A97CB (gl_shading.GLASS_FRAGMENT uKind 6), alpha-over, back faces culled.
+
+    Built: F = sat(base + (1.001 - sat(N.V))^4) with the dome normal at xy scale 0.555, alpha = sat(F + 0.06), and a
+    white Glossy BSDF (environment normal scale) weighted by (weight + (1.001 - N.V)^4). Surface = Cull(Mix(alpha,
+    Transparent, Glossy)). The highlight lobe 4 sat(r.H)^p (1 - fade), which needs the key-light direction, and the lens
+    texture term are viewer-only: the scene lights and HDRI lighting give Cycles its own highlight.
+    """
+    nt = mat.node_tree; P = _ViewerNodes(nt)
+    f = rule['terms']['eye_cornea']; p = f['params']
+    n = img('_n')
+    geo = P.geo(); V = geo.outputs['Incoming']
+    def dome(name, scale):
+        x, y = P.rg(n.outputs['Color'], P.const('cornea ' + name, scale)) if n is not None else (0.0, 0.0)
+        return P.tangent_normal(x, y, P.m('SUBTRACT', 1.0, P.dot2(x, y)), 'VR cornea %s map' % name)
+    fresnel_n = dome('fresnel normal scale', p['fresnel_normal_scale'])
+    env_n = dome('env normal scale', p['env_normal'])
+    ndv = P.sat(P.v('DOT_PRODUCT', P.v('NORMALIZE', fresnel_n), P.v('NORMALIZE', V)))
+    f4 = P.m('POWER', P.m('ABSOLUTE', P.m('SUBTRACT', P.const('cornea fresnel bias', p['fresnel_bias']), ndv)), P.const('cornea fresnel power', p['fresnel_power']))
+    fr = P.sat(P.m('ADD', P.const('cornea reflect base', p['reflect_base']), f4))
+    alpha = P.sat(P.m('ADD', fr, P.const('cornea alpha bias', p['alpha_bias'])))
+    weight = P.m('ADD', P.const('cornea reflect weight', p['reflect_weight']), f4)
+    gl = P.N.new('ShaderNodeBsdfGlossy'); gl.name = gl.label = 'VR cornea glossy'
+    gl.distribution = 'GGX'
+    P.L.new(P.comb(weight, weight, weight), gl.inputs['Color'])
+    P.L.new(env_n, gl.inputs['Normal'])
+    gl.inputs['Roughness'].default_value = 2.0 ** -2.75   # presentation roughness (gloss 1), as the BRDF's 2^(-2.75 gloss)
+    clear = P.N.new('ShaderNodeBsdfTransparent'); clear.name = 'VR cornea background'
+    shader = P.N.new('ShaderNodeMixShader'); shader.name = shader.label = 'VR cornea blend %s' % f.get('blend')
+    P.L.new(alpha, shader.inputs[0]); P.L.new(clear.outputs[0], shader.inputs[1]); P.L.new(gl.outputs[0], shader.inputs[2])
+    if not f.get('two_sided'):
+        culled = P.N.new('ShaderNodeBsdfTransparent'); culled.name = 'VR culled back face'
+        cull = P.N.new('ShaderNodeMixShader'); cull.name = cull.label = 'VR cull back faces'
+        P.L.new(geo.outputs['Backfacing'], cull.inputs[0]); P.L.new(shader.outputs[0], cull.inputs[1])
+        P.L.new(culled.outputs[0], cull.inputs[2]); shader = cull
+    out = P.N.new('ShaderNodeOutputMaterial'); out.is_active_output = True
+    P.L.new(shader.outputs[0], out.inputs['Surface'])
+    mat.use_backface_culling = not f.get('two_sided')
+    if hasattr(mat, 'surface_render_method'):
+        mat.surface_render_method = 'BLENDED'
+    return ['Forward eye cornea A36A97CB (alpha-over): Fresnel alpha and the dome-normal reflection weight are decoded; the '
+            'key-light highlight lobe and lens-texture term are viewer-only, and the Glossy BSDF (presentation roughness %.3g) '
+            'replaces the engine light loop, reflection probes and screen-space reflections; CB0 normal strength, instance '
+            'floats and fog fade are frozen (1, 0, 1)' % (2.0 ** -2.75)]
+
+
 def apply_viewer_graph_rule(mat, source):
     """The asset viewer's per-graph reading on the shared deferred BRDF, for graphs without a
     registered family (pipeline materials.viewer_graph_rule; viewer gl_shading.py Shaded mode).
@@ -1231,7 +1277,8 @@ def apply_viewer_graph_rule(mat, source):
     if screen and c is None or not screen and terms.get('screen'):
         return False
     glow_shell = 'bright_glow' in ported and 'bright_glow' in terms   # 93695188 samples no texture
-    if c is None and not (arch and g is not None) and not facing and not glow_shell:
+    eye_cornea = 'eye_cornea' in ported and 'eye_cornea' in terms   # A36A97CB samples _n only
+    if c is None and not (arch and g is not None) and not facing and not glow_shell and not eye_cornea:
         return False
     for node in list(nt.nodes):   # keep every source image node (provenance and coverage reports)
         if node.type != 'TEX_IMAGE':
@@ -1242,6 +1289,10 @@ def apply_viewer_graph_rule(mat, source):
     if screen:
         limits += _viewer_rule_screen(mat, rule, img)
         _finish_viewer_rule(mat, rule, 'forward screen 8716DC7A (t=0, unlit, %s)' % terms['screen'].get('blend'), limits)
+        return True
+    if eye_cornea:
+        limits += _viewer_rule_eye_cornea(mat, rule, img)
+        _finish_viewer_rule(mat, rule, 'forward eye cornea A36A97CB (alpha-over, back faces culled)', limits)
         return True
     if glow_shell:
         limits += _viewer_rule_bright_glow(mat, rule)

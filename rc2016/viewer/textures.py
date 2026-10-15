@@ -69,6 +69,14 @@ SPECULAR_SCALE_KEY, GLOSS_SCALE_KEY = 0x62835AF9, 0x24F4CA4C
 BRIGHT_GLOW_PRESENTATION = dict(amplitude=0.5, amplitude_input='CB0 dword 115', captured_amplitude=0.01,
                                 presentation=True, writer='93695188',
                                 frozen_inputs=dict(sin=0.0, cutoff=0.0, alpha=1.0, fog_fade=1.0))
+# Eye cornea forward colour pass A36A97CB (hero_eye_cornea): literals read from the instruction words.
+# Fresnel/normal scales and the highlight lobe; the light loop, probes, screen-space reflections, fog and
+# the per-instance terms (CB0 dword 95 normal strength, instance floats at byte 8/12, flag bits) are not decoded.
+EYE_CORNEA_CONSTANTS = dict(fresnel_normal_scale=0.555, fresnel_bias=1.00100004673, fresnel_power=4.0,
+                            half_vector_view_weight=0.49, distance_k=0.08, alpha_bias=0.06, highlight_gain=4.0,
+                            highlight_gain_slope=3.0, writer='A36A97CB',
+                            frozen_inputs=dict(normal_strength=1.0, instance_fade=0.0, instance_alpha=1.0, light_term=1.0,
+                                               fog_fade=1.0))
 # Decoded writers that do not read _g as coloured F0 + gloss alpha (first matching prefix wins).
 # g_mode 'grey': F0 = grey spec*_g.G, gloss = sqrt(sat(gloss*_g.R)); 'grey_skin': the basic_skin
 # front-end (F0 cap 0.5). self_lit 'g_blue' takes the mask from _g.B instead of _c.a.
@@ -219,6 +227,14 @@ GRAPH_RULES = (
      dict(self_lit_key=None, forward='bright_glow', constants=BRIGHT_GLOW_PRESENTATION, params=(
          ('colour', 0x4E6E03FF, 3), ('colour_lo', 0x68538B05, 3), ('dist_k', 0xD76F8651, 1), ('gain', 0x5DE2C7F0, 1),
          ('dist0', 0xCF085666, 1), ('steady', 0x01B78BF6, 1), ('sharp', 0x60DC3D2F, 1), ('rate', 0xB162C569, 1)))),
+    # Forward colour pass A36A97CB (flags 0x3A: alpha-over, back faces culled); the cornea over the eye sphere.
+    # Slots: hemisphere_flatter_n (_n) and shared_eye_lens_c (_pick, red channel). Constants buffer dwords 0-8.
+    ('materialgraph/character/hero/hero_eye_cornea/hero_eye_cornea.',
+     dict(self_lit_key=None, forward='eye_cornea', constants=EYE_CORNEA_CONSTANTS,
+          slots={'_n': 0x49A7866B7AE34E7A, '_pick': 0x49A7866BABDAD780}, params=(
+         ('fade_end', 0x8CE80F85, 1), ('power_far', 0xB0624EB0, 1), ('reflect_base', 0xAF7D5E6B, 1),
+         ('power_near', 0x621FAA21, 1), ('fade_start', 0xDBAD0A10, 1), ('reflect_weight', 0x223DC13C, 1),
+         ('env_normal', 0x3F13004B, 1), ('highlight_k', 0xF8828985, 1), ('highlight_normal', 0xE14A15D1, 1)))),
 )
 # Leaf cut-out (alpha test). The deferred foliage writers kill a fragment when its coverage, `_c`
 # alpha (basic_foliage FE32FE79/B01E7CB2; the tree graphs' 0476D929/6F0C1A0C), is below the
