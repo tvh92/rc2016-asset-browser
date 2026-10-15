@@ -190,6 +190,7 @@ uniform float uAlphaCut; // leaf cut-out: discard when _c.a < threshold (0 = off
 // Novalis tree leaf colour, rp_nov pass-0 writer 0476D929. uLeafP = (E, S, mapped-normal Fresnel, unused);
 // palette U is a frozen preview input (textures.LEAF_PALETTE_U_PLACEHOLDER).
 uniform bool uLeafColour; uniform vec4 uLeafP; uniform vec3 uLeafPalette; // uLeafPalette = cmb ramp sample
+uniform bool uFlatSurface; uniform vec3 uFlatColour; uniform vec4 uFlatSpec; // constant albedo, F0 and gloss (basic_emissive 452EDC8C, goo floor 4A73CC38)
 uniform bool uFresnelTint; uniform vec3 uFresnelC; uniform float uFresnelE; // Novalis glow mushroom F69ADC40 albedo tint
 uniform sampler2D uTexCma; uniform bool uHasCma; uniform bool uSrgbCma;
 uniform bool uZaFresnel; uniform float uZaFresnelPower; // za_basic_normal_gloss geometry-normal rim suppression
@@ -403,6 +404,7 @@ void main() {
     vec3 albedo = (uMode >= 1 && uHasC) ? (uSrgbC ? linear(c.rgb) : c.rgb) : linear(uColor);
 
     if (uMode >= 1 && uFacingGlow) albedo = vec3(1.0); // 0CD2AAFB: no albedo input, v76-v78 = 1
+    if (uMode == 2 && uFlatSurface) albedo = uFlatColour; // MRT1 rgb is a material constant, not _c
     if (uMode == 2 && uPuddles && uHasPuddleAtlas) {
         vec3 g=texture2D(uTexG,vUV).rgb;if(uSrgbG)g=linear(g);
         vec3 color=puddleShade(normalize(vNrm),V,albedo,g.rg);
@@ -498,7 +500,7 @@ void main() {
     // A5343A0C: rim from the interpolated geometry normal, before the tangent map. 14B1CC68: _m.G * K.
     if (uBngKind == 7) bngRimB = pow(abs(1.00100004673 - clamp(dot(N, V), 0.0, 1.0)), uBngP.y);
     vec4 bngM = uHasH ? texture2D(uTexH, vUV) : vec4(0.0);
-    if (uBngKind == 9) bngSelfLit = bngM.g * uK;
+    if (uBngKind == 9 || uBngKind == 10) bngSelfLit = bngM.g * uK;
     if (uMode == 2 && uHasN && !uArchSequence && !uVehicle) {
         vec3 dp1 = dFdx(vPos), dp2 = dFdy(vPos); vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
         vec3 p2 = cross(dp2, N), p1 = cross(N, dp1);
@@ -535,9 +537,9 @@ void main() {
             bngRimA = pow(abs(rim), uBngP.x);
             bngRimB = pow(abs(rim), uBngP.y);
         }
-        if ((uBngKind == 2 || uBngKind == 3 || uBngKind == 6) && uHasBngDetail) {
+        if ((uBngKind == 2 || uBngKind == 3 || uBngKind == 6 || uBngKind == 10) && uHasBngDetail) {
             // F3DCD431/F087BE8D/F8161C61: detail xy masked by _g.a^2 (emissive/specfresnel), _g.B (fresnel).
-            float mask = uBngKind == 3 ? bngGl.b : bngG.a * bngG.a;
+            float mask = uBngKind == 3 ? bngGl.b : uBngKind == 10 ? bngM.r : bngG.a * bngG.a;   // E680AA40: _m.R
             vec2 drg = (texture2D(uTexBngDetail, vUV * uBngDetail.xy).rg * 2.0 - 1.0) * mask;
             float dz = 1.0 - dot(drg, drg);
             rg = rg * dz + drg * z * uBngDetail.z;
@@ -606,7 +608,7 @@ void main() {
     if (uMode == 2) {
         vec4 g = uHasG ? texture2D(uTexG, materialUV) : vec4(0.0);
         vec3 gl = uSrgbG ? linear(g.rgb) : g.rgb;
-        if (uHasG || uVehicle || uBrightCentre) {
+        if (uHasG || uVehicle || uBrightCentre || uFlatSurface) {
             vec3 F0; float gloss;
             if (uGMode == 1) {          // skin writer: F0 = grey min(cap 0.5, G), gloss = sqrt(sat(R)) (graph defaults, F term at 0)
                 F0 = vec3(min(0.5, gl.g)); gloss = sqrt(clamp(gl.r, 0.0, 1.0));
@@ -625,6 +627,7 @@ void main() {
             }
             if (uVehicle) { F0 = vec3(0.0, 0.0999755859375, 0.0999755859375); gloss = 0.948681201424; } // packed rel 860, AA=1
             if (uBrightCentre) { F0 = vec3(uBrightP.z); gloss = sqrt(clamp(uBrightP.w, 0.0, 1.0)); }
+            if (uFlatSurface) { F0 = vec3(uFlatSpec.x); gloss = sqrt(clamp(uFlatSpec.y, 0.0, 1.0)); }
             if (uTintVariant >= 3) gloss = sqrt(clamp(uGlossScale * gl.r * 2.0 * tintDetailMask, 0.0, 1.0));
             if (uRockBlend) { F0 = vec3(uSpecScale*rockG.g); gloss = sqrt(clamp(uGlossScale*rockG.r, 0.0, 1.0)); }
             if (uTwoColorMetal) gloss = sqrt(clamp(uGlossScale * gl.r * (1.0 - metalRim), 0.0, 1.0));
@@ -640,9 +643,10 @@ void main() {
             color += albedo * uK * glowMask * (uGlowP.y + p);
         } else if (uGlowKind == 2) { // CA81B14F rel 684-700; attr3.w magnitude frozen to 1
             color += albedo * (uK * albedo.r * glowMask * uGlowP.w);
-        } else if (uBngKind == 1 || uBngKind == 2 || uBngKind == 4 || uBngKind == 6 || uBngKind == 9) color += albedo * bngSelfLit;
+        } else if (uBngKind == 1 || uBngKind == 2 || uBngKind == 4 || uBngKind == 6 || uBngKind == 9 || uBngKind == 10) color += albedo * bngSelfLit;
         else if (uArchSequence) color += albedo * archSelfLit;
         else if (uBrightCentre) color += albedo * brightSelfLit;
+        else if (uFlatSurface) color += albedo * uK;
         else if (uHasC) color += albedo * (uSelfLitG ? gl.b : c.a) * uK;
         if (uFacingGlow) { // 0CD2AAFB rel 12552-12672 (instance flag bit 5 clear: v8 = v9 = 1)
             float f = pow(max(clamp(dot(N, V), 0.0, 1.0) - uFacingGlowQ.x, 0.0), uFacingGlowP.y);
@@ -716,6 +720,20 @@ void main() {
         if (uSrgbP) na = screenLinear(na);
         if (uScreenSrgbB) nb = screenLinear(nb);
         color = (1.0 + mix(uB.w, uA.w, h)) * (1.0 - (1.0-na)*(1.0-nb)*(1.0-tint));
+    } else if (uKind == 6) { // prisoner number forward colour (8CEC816B / 37C85F4C), time 0, fog fade and vertex alpha 1
+        // uA = distort, b scale, vignette w, alpha-channel flag; uB.w = amplitude (CB0[115], presentation value); uC = Kc; uD = Ko.
+        float b5 = uHasP ? texture2D(uTexP, vUV).b : 0.0;                                   // API5 at (u, v)
+        float b6 = uHasN ? texture2D(uTexN, vec2(vUV.x, 2.0 * vUV.y)).b : 0.0;              // API6 at (u, 2v)
+        float b7 = texture2D(uScreenNoiseB, vec2(vUV.x, 10.0 * vUV.y)).b;                   // API7 at (u, 10v)
+        if (uSrgbP) b5 = screenLinear(b5);
+        if (uScreenSrgbN) b6 = screenLinear(b6);
+        if (uScreenSrgbB) b7 = screenLinear(b7);
+        vec4 s8 = texture2D(uScreenNoiseA, vUV + uA.x * (b5 + b6));                          // API8, distorted
+        if (uScreenSrgbA) s8.rgb = vec3(screenLinear(s8.r), screenLinear(s8.g), screenLinear(s8.b));
+        float tt = (1.0 - uA.y * b7) * s8.r * (uA.w > 0.5 ? s8.a : s8.g);
+        float gv = sat((1.0 - length(vec2(vUV.x - 0.5, 2.0 * vUV.y - 1.0)) - uA.z) / (1.0 - uA.z));
+        color = 3.5 * uB.w * tt * (2.0 * uC.rgb * gv + uD.rgb);
+        alpha = 1.0;
     } else if (uKind == 5) { // 93695188 forward colour; sin frozen at 0; cutoff 0, alpha 1, fog_fade 1
         float t = pow(abs(1.00100004673 - ndv), 0.2 * (1.0 - uB.w));
         float x = (1.0 - uC.x * (length(vPos) - uC.y)) * uC.z * uA.w * (1.0 - t);
@@ -797,7 +815,7 @@ FRAGMENT=_re.sub(r'gl_FragColor\s*=\s*([^;]+);',r'sceneOutput(\1);',FRAGMENT)
 FRAGMENT=FRAGMENT.replace('vec3 N = normalize(vNrm);','vec3 N = normalize(vNrm); sceneCaptureNormal=N;',1)
 FRAGMENT = FRAGMENT.replace("// @lighting\n", LIGHTING+_SCENE_OUTPUT)
 GLASS_FRAGMENT = GLASS_FRAGMENT.replace("// @lighting\n", LIGHTING)
-GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4, "bright_glow": 5}
+GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4, "bright_glow": 5, "number_display": 6}
 
 
 def glass_uniforms(forward):
@@ -806,6 +824,9 @@ def glass_uniforms(forward):
     if forward["kind"] == "screen":
         return (3, (*p["colour_a"], p["intensity_a"]), (*p["colour_b"], p["intensity_b"]),
                 (p["alpha_base"], p["mask_strength"], p["grid"], 0.0), (0.0,) * 4)
+    if forward["kind"] == "number_display":
+        return (6, (p["distort"], p["b_scale"], p["vignette_w"], 1.0 if p["alpha_channel"] else 0.0), (0.0, 0.0, 0.0, p["amplitude"]),
+                (*p["kc"], 0.0), (*p["ko"], 0.0))
     if forward["kind"] == "bright_glow":
         return (5, (*p["colour"], p["gain"]), (*p["colour_lo"], p["sharp"]),
                 (p["dist_k"], p["dist0"], p["weight"], p["amplitude"]), (0.0,) * 4)
@@ -827,7 +848,7 @@ OPAQUE_UNIFORMS = (
     "uTwoColorMetal", "uMetalDiffuseA", "uMetalDiffuseB", "uMetalSpecA", "uMetalSpecB", "uMetalP",
     "uParallax", "uParallaxNormal", "uHasParallaxHeight", "uTexParallaxHeight", "uParallaxP",
     "uFoliage", "uAlphaCut", "uLeafColour", "uLeafP", "uLeafPalette", "uTexCma", "uHasCma", "uSrgbCma",
-    "uFresnelTint", "uFresnelC", "uFresnelE",
+    "uFresnelTint", "uFresnelC", "uFresnelE", "uFlatSurface", "uFlatColour", "uFlatSpec",
     "uZaFresnel", "uZaFresnelPower",
     "uGlowKind", "uGlowColour", "uGlowP", "uTexGlowParallax", "uHasGlowParallax", "uSrgbGlowParallax", "uSrgbGlowMask",
     "uVehicle", "uTexVehicleP2", "uHasVehicleP2", "uSrgbVehicleP2", "uVehicleA", "uVehicleB", "uVehicleP",

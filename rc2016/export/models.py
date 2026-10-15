@@ -251,6 +251,14 @@ def material_maps(archive, material, cache, map_cache=None):
                             f"emission, so the constant is the head-on value at the presentation amplitude {glow['amplitude']:g} "
                             f"({glow['amplitude_input']}, captured {glow['captured_amplitude']:g}); it falls to "
                             f"{facing_glow_rgb(glow, 0.0)[0]:.3f} red at grazing angles; blink timing not decoded")
+    elif paths.get('flat_surface'):
+        flat = paths['flat_surface']
+        out['base_factor'] = [float(x) for x in flat['colour']]
+        k = float(paths.get('k', 0.0) or 0.0)
+        if k > 0.0:
+            out['emissive_factor'] = [min(1.0, float(x) * k) for x in flat['colour']]
+        out['notes'].append(f"constant colour of writer {flat['writer']} (no base colour texture)"
+                            + ('; preview floor of a time- and noise-driven shader' if flat.get('floor') else ''))
     elif c_tex is None and g_tex is None:
         out['base_factor'] = [0.8, 0.8, 0.8]
         out['notes'].append('no base colour texture: the colour comes from a compiled shader this exporter does not run; white-grey placeholder')

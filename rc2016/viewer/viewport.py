@@ -727,7 +727,7 @@ class ModelViewport(_TkFrame):
         """One material's texture_preview entry with its textures uploaded: {role: (GL id, sRGB)} + parameters.
 
         ``by_path`` maps texture path -> (GL id, sRGB) or None and is shared across materials."""
-        uploaded = {key: entry[key] for key in ("k", "g_mode", "self_lit", "spec", "gloss", "pick", "tint", "spec_tint", "forward", "arch_sequence", "vehicle", "facing_glow", "bright_center") if key in entry}
+        uploaded = {key: entry[key] for key in ("k", "g_mode", "self_lit", "spec", "gloss", "pick", "tint", "spec_tint", "forward", "arch_sequence", "vehicle", "facing_glow", "bright_center", "flat_surface") if key in entry}
         if "two_color_metal" in entry:
             uploaded["two_color_metal"] = entry["two_color_metal"]
         if "puddles" in entry:
@@ -1315,6 +1315,10 @@ class ModelViewport(_TkFrame):
         sh.glUniform1i(u["uFresnelTint"], 1 if fresnel else 0)
         sh.glUniform3f(u["uFresnelC"], *(float(x) for x in fresnel.get("colour", (1.0, 1.0, 1.0))))
         sh.glUniform1f(u["uFresnelE"], float(fresnel.get("exponent", 1.0)))
+        flat = entry.get("flat_surface") or {}   # constant albedo, F0 and gloss: no texture input
+        sh.glUniform1i(u["uFlatSurface"], 1 if flat and level == 2 else 0)
+        sh.glUniform3f(u["uFlatColour"], *(float(x) for x in flat.get("colour", (1.0, 1.0, 1.0))))
+        sh.glUniform4f(u["uFlatSpec"], float(flat.get("f0", 0.0)), float(flat.get("gloss", 0.0)), 0.0, 0.0)
         pom = entry.get('parallax') or {}
         supported = getattr(sh, 'supports_parallax', True)
         valid = parallax_preview_parameters_valid(pom)
@@ -1471,7 +1475,7 @@ class ModelViewport(_TkFrame):
                 sh.glUniform1i(u[has], 1 if texture else 0)
                 if srgb:
                     sh.glUniform1i(u[srgb], 1 if texture and texture[1] else 0)
-            if forward.get('kind') == 'screen':
+            if forward.get('kind') in ('screen', 'number_display'):
                 self._apply_screen_forward(u, entry)
             kind, *vectors = glass_uniforms(forward)
             sh.glUniform1i(u["uKind"], kind)

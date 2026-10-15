@@ -69,6 +69,23 @@ SPECULAR_SCALE_KEY, GLOSS_SCALE_KEY = 0x62835AF9, 0x24F4CA4C
 BRIGHT_GLOW_PRESENTATION = dict(amplitude=0.5, amplitude_input='CB0 dword 115', captured_amplitude=0.01,
                                 presentation=True, writer='93695188',
                                 frozen_inputs=dict(sin=0.0, cutoff=0.0, alpha=1.0, fog_fade=1.0))
+# Prisoner number forward colour programs (Shiv 8CEC816B, Qwark 37C85F4C), time 0, fog fade 1, vertex alpha 1:
+#   rgb = 3.5 amp T (2 Kc G + Ko), T = (1 - bscale B7) R8 X8, G = sat((1 - |(u - .5, 2v - 1)| - w) / (1 - w)),
+#   X8 = G8 (Shiv) or A8 (Qwark), sample 8 at uv + distort (B5 + B6); B5/B6/B7 are the B channels of API5/6/7 at
+#   (u, v), (u, 2v), (u, 10v). amp = CB0 dword 115 (labelled presentation value, as facing_glow), w = 0.5 + 0.1 CB0[107]
+#   with CB0[107] frozen at 0. The 5th texture sample (API9 at (u, 2v)) adds s3_weight * sample and is not modelled.
+NUMBER_DISPLAY_SLOTS = {'_pick': 0x49A7866B4AC18E9F, '_n': 0x49A7866B5DBA9ADC, '_g': 0x49A7866B39DBF715, '_c': 0x49A7866B0056CBD0}
+_NUMBER_DISPLAY_COMMON = dict(kc=(1.1130030155181885, 1.7709393501281738, 0.06296715140342712),
+    ko=(0.4010990858078003, 1.524936556816101, 0.34239083528518677), amplitude=0.5, amplitude_input='CB0 dword 115',
+    captured_amplitude=0.01, presentation=True, vignette_w=0.5, time=0.0, time_input='CB0 dword 99',
+    frozen_inputs=dict(cb0_107=0.0, fog_fade=1.0, alpha=1.0, cutoff='discard predicate not translated'))
+NUMBER_DISPLAY_SHIV = dict(_NUMBER_DISPLAY_COMMON, variant='shiv', writer='8CEC816B', distort=0.01, b_scale=0.1, s3_weight=0.05, alpha_channel=False)
+NUMBER_DISPLAY_QWARK = dict(_NUMBER_DISPLAY_COMMON, variant='qwark', writer='37C85F4C', distort=0.005, b_scale=0.2, s3_weight=0.1, alpha_channel=True)
+# basic_emissive writer 452EDC8C (pass 0 record 4, CB2 layout 7F058428@0..2, 06F19114@3, 62835AF9@4, 4069EA80@5):
+# MRT1 rgb = CB2[0..2], MRT2 rgb = CB2[4], gloss = sqrt(sat(CB2[5])), emission K = CB2[3]. The pass-1 variant E921A79B
+# (no texture, record 17) writes F0 0.1 and a fixed gloss instead. enm_blarg_green_goo writer 4A73CC38 (pass 1 record 4,
+# 41-dword CB2): the albedo floor sat(0x34392B3C) (all noise masks 0), MRT2 F0 = 0x17DE448C, gloss = sqrt(sat(0x24F4CA4C)).
+FLAT_SURFACE_GOO = dict(colour_key=0x34392B3C, f0_key=0x17DE448C, gloss_key=GLOSS_SCALE_KEY)
 # Decoded writers that do not read _g as coloured F0 + gloss alpha (first matching prefix wins).
 # g_mode 'grey': F0 = grey spec*_g.G, gloss = sqrt(sat(gloss*_g.R)); 'grey_skin': the basic_skin
 # front-end (F0 cap 0.5). self_lit 'g_blue' takes the mask from _g.B instead of _c.a.
@@ -104,6 +121,23 @@ GRAPH_RULES = (
     # samples of 8 and 9 (slot 0x45A52060) are not composed.
     ('required/materials/basic_normal_coloredgloss_emissive_fresnel.', dict(self_lit_key=0x06F19114, bng=7)),
     ('required/materials/basic_normal_coloredgloss_fresnel_detail.', dict(self_lit_key=None, bng=8)),
+    # Deferred writer E680AA40 (pass 0 record 4): albedo _c, F0 = P * _g.rgb, gloss = sqrt(sat(Q _g.a^2)), self-lit =
+    # K * _m.G (K = 0x06F19114, _m = slot 0x6A016FF9), detail normal at E3BD962E * UV0 masked by _m.R, strength 0x49AFC3A0.
+    ('required/materials/basic_normal_coloredgloss_detail_emissive.', dict(self_lit_key=0x06F19114, bng=10)),
+    # basic_emissive deferred writer 452EDC8C (pass 0 record 4): albedo = key 0x7F058428 (no texture), grey F0 = P,
+    # gloss = sqrt(sat(key 0x4069EA80)), self-lit = albedo * K (key 0x06F19114). The graph's one texture is a default normal.
+    ('materialgraph/global/basic_emissive/basic_emissive.',
+     dict(self_lit_key=0x06F19114, flat_surface='emissive')),
+    # PREVIEW floor, not a full decode: writer 4A73CC38 (pass 1 record 4) is a time-, noise- and depth-driven lava
+    # shader. With every noise mask at 0 its albedo is sat(key 0x34392B3C); that floor is shown (FLAT_SURFACE_GOO).
+    ('materialgraph/environment/nebula/ambient/neb_amb_lava_fissure_blast_01/enm_blarg_green_goo.',
+     dict(self_lit_key=None, flat_surface='goo_floor')),
+    # Prisoner number displays: the deferred writer (11408DE9) outputs zero, the colour comes from the forward program
+    # (8CEC816B Shiv, 37C85F4C Qwark). Slots by API: 5 = 4AC18E9F, 6 = 5DBA9ADC, 7 = 39DBF715, 8 = 0056CBD0.
+    ('materialgraph/character/enemy/enm_shiv_prisoner_number/enm_shiv_prisoner_number.',
+     dict(self_lit_key=None, forward='number_display', slots=NUMBER_DISPLAY_SLOTS, params=(), constants=NUMBER_DISPLAY_SHIV)),
+    ('materialgraph/character/npc/npc_qwark_prisoner_number/npc_qwark_prisoner_number.',
+     dict(self_lit_key=None, forward='number_display', slots=NUMBER_DISPLAY_SLOTS, params=(), constants=NUMBER_DISPLAY_QWARK)),
     ('required/materials/basic_normla_gloss_fresnel_detail_emissive.', dict(self_lit='h_green', self_lit_key=0x66EFA55B, bng=9)),
     ('materialgraph/global/basic_incandescence/', dict(g_mode='grey', self_lit='g_blue', self_lit_key=0x5FD56522)),
     # Other models/enm_blarg_saucer/evidence/COLORPICK_DECODE.md (writer 66744D01)
@@ -546,8 +580,10 @@ def material_texture_paths(archive, material_path: str) -> dict:
         # Bind by serialized slot identity: suffixes do not identify normal/detail or mo_black_h.
         material_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
         bindings = {'_c': 0x49A7866BABDAD780, '_g': 0x49A7866B1576D848, '_n': 0x49A7866B7AE34E7A}
-        if kind in (2, 3, 6):
+        if kind in (2, 3, 6, 10):
             bindings['_bng_detail'] = 0x49A7866B45A52060
+        if kind == 10:   # E680AA40: _m slot 0x6A016FF9, R masks the detail normal, G is the self-lit mask
+            bindings['_h'] = 0x49A7866B6A016FF9
         if kind == 9:   # _m mask: R gates the rim, G is the self-lit mask
             bindings['_h'] = 0x49A7866BA6C3B1D5
         for role, slot in bindings.items():
@@ -573,6 +609,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
             detail = (value(0x34493800, 1.0), value(0xAD4069BA, 1.0), value(0x49AFC3A0, 0.75))
         if kind == 6:
             detail = (value(0x34493800, 1.0), value(0xAD4069BA, 1.0), value(0x49AFC3A0, 0.75))
+        if kind == 10:   # E680AA40: uv scale E3BD962E on both axes, strength 49AFC3A0 (graph default 0.75)
+            detail = (value(0xE3BD962E, 1.0), value(0xE3BD962E, 1.0), value(0x49AFC3A0, 0.75))
         result['bng'] = dict(kind=kind, colour=colour, params=params, detail=detail)
     if rule.get('pick') and result.get('_pick'):
         scale, blend, u = rule['pick']
@@ -586,7 +624,7 @@ def material_texture_paths(archive, material_path: str) -> dict:
                               power_a=value(k['power_a'], 1.0), power_b=value(k['power_b'], 1.0),
                               weight_a=value(k['weight_a'], 0.0), weight_b=value(k['weight_b'], 0.0),
                               mask_b=value(k['mask_b'], 0.0))
-    elif rule.get('bng') != 9:   # the 14B1CC68 rim/self-lit mask uses the _h role
+    elif rule.get('bng') not in (9, 10):   # the 14B1CC68 / E680AA40 _m mask uses the _h role
         result.pop('_h', None)
     if rule.get('tint_variant'):
         # Exact source slots: default detail-colour and palette names are ambiguous.
@@ -741,7 +779,26 @@ def material_texture_paths(archive, material_path: str) -> dict:
             # t = |1.001 - N.V|^e with e = 0.2 (1 - S); w = sat(1 + (1 - B)(0.5 sin - 0.5)) at sin = 0.
             params['exponent'] = 0.2 * (1.0 - params['sharp'])
             params['weight'] = min(1.0, max(0.0, 1.0 - 0.5 * (1.0 - params['steady'])))
+        if rule['forward'] == 'number_display':
+            for role in rule['slots']:   # the writer reads only these four slots; a stale suffix guess is dropped
+                if role not in result or not (material_slots.get(rule['slots'][role]) or slots.get(rule['slots'][role])):
+                    result.pop(role, None)
+            result.pop('_h', None)
         result['forward'] = dict(kind=rule['forward'], params=params, **blend_state(material_flags(data)))
+    if rule.get('flat_surface'):
+        # No _c/_g texture: the writer's colour, F0 and gloss are material constants (FLAT_SURFACE_GOO, basic_emissive).
+        for role in ('_c', '_g', '_n', '_h', '_pick'):
+            result.pop(role, None)
+        if rule['flat_surface'] == 'emissive':
+            flat = dict(colour=vec3(0x7F058428, (1.0, 1.0, 1.0)), f0=value(SPECULAR_SCALE_KEY, 1.0),
+                        gloss=value(0x4069EA80, 1.0), writer='452EDC8C', keys=dict(colour=0x7F058428, f0=SPECULAR_SCALE_KEY, gloss=0x4069EA80))
+        else:
+            goo = FLAT_SURFACE_GOO
+            flat = dict(colour=[min(1.0, max(0.0, x)) for x in vec3(goo['colour_key'], (0.0, 0.38132601976394653, 0.0))],
+                        f0=value(goo['f0_key'], 0.1), gloss=value(goo['gloss_key'], 0.9), writer='4A73CC38', floor=True,
+                        keys=dict(colour=goo['colour_key'], f0=goo['f0_key'], gloss=goo['gloss_key']))
+        result['flat_surface'] = flat
+        result['spec'] = result['gloss'] = 1.0
     if rule.get('facing_glow'):
         # No texture, parameter, vertex colour or instance input: albedo is 1.0 and the glow is
         # f = pow(sat(N.V) - bias, exponent), a = a_scale*f + a_offset,

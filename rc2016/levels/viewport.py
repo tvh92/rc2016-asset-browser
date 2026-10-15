@@ -1372,7 +1372,7 @@ class LevelViewport(ModelViewport):
                 sh.glUniform1i(u[has], 1 if texture else 0)
                 if srgb:
                     sh.glUniform1i(u[srgb], 1 if texture and texture[1] else 0)
-            if forward.get('kind') == 'screen':
+            if forward.get('kind') in ('screen', 'number_display'):
                 self._apply_screen_forward(u, entry)
             kind, *vectors = glass_uniforms(forward)
             sh.glUniform1i(u["uKind"], kind)
