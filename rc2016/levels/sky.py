@@ -75,6 +75,18 @@ def sun_colour(atmosphere_data):
     return tuple(candidate['surface_irradiance_rgb_candidate'])
 
 
+def fog_profile(atmosphere_data):
+    """Authored fog profile of an atmosphere ({'heights', 'densities'}, ``rc2016.levels.fog.read_profile``), or None."""
+    from rc2016.formats.container import read_container
+    from rc2016.levels.fog import read_profile
+    from rc2016.pipeline.lighting import ATMOSPHERE_HEADER
+    root = read_container(atmosphere_data, 0, {})
+    for section in root['sections']:
+        if int(section['label_hash'], 16) == ATMOSPHERE_HEADER:
+            return read_profile(atmosphere_data[section['offset']:section['offset'] + section['size']])
+    return None
+
+
 def dome_constants(material_data, graph_data):
     """Constant-buffer dwords 0-22 of a dome material: instance values over graph table-0 defaults."""
     from rc2016.formats.materials import extract_material_parameters
@@ -166,7 +178,7 @@ def clear_sky_profile(archive, texture_path):
 
 def level_sky(archive, zone_paths, profile=True):
     """The sky of a level, from its zone list: {'atmosphere', 'sun_ray', 'domes', 'unsupported',
-    'sun_rgb', 'clear_sky', 'reflection', 'notes'}, or None when no atmosphere zone names an atmosphere.
+    'sun_rgb', 'clear_sky', 'fog' (authored height-fog profile or None), 'reflection', 'notes'}, or None when no atmosphere zone names an atmosphere.
 
     Each dome: {'model', 'geometry' (model_geometry), 'spans': [(first triangle, count)], 'material',
     'constants' (23 floats), 'dome_texture', 'noise_texture', 'stars'}. Textures come from the graph's
@@ -184,7 +196,7 @@ def level_sky(archive, zone_paths, profile=True):
     atmosphere = atmospheres.pop()
     data = asset_bytes(archive, atmosphere)
     result = dict(atmosphere=atmosphere, sun_ray=sun_ray(data), sun_rgb=sun_colour(data), domes=[], unsupported=[],
-                  notes=[], clear_sky=None, reflection=None)
+                  notes=[], clear_sky=None, reflection=None, fog=fog_profile(data))
     for model in [r['path'] for r in references(data) if r['path'].endswith('.model')]:
         geometry = model_geometry(archive, model)
         slots = {}

@@ -592,11 +592,13 @@ class LevelViewport(ModelViewport):
         self._schedule_draw()
 
     def _fog_values(self):
-        """Distance haze: on only for the Level atmosphere lighting (rc2016.levels.fog, a visual approximation)."""
-        from rc2016.levels.fog import fog_state
+        """Height fog uniforms: on only for the Level atmosphere lighting (rc2016.levels.fog; partly inferred constants).
+        No profile, no clear sky, another lighting or Haze off all mean no fog."""
+        from rc2016.levels.fog import fog_state, uniform_values
         enabled = getattr(self, "fog_enabled", True) and getattr(self, "lighting_enabled", True)
         hdri = self.__dict__.get("_environment_lighting") == self.lighting and bool(self.__dict__.get("_environment"))
-        return fog_state(getattr(self, "_sky", None), self.lighting if hdri else None, enabled)
+        # The eye is in the Z-up presentation basis, whose Z is the game's native Y (the fog's height axis).
+        return uniform_values(fog_state(getattr(self, "_sky", None), self.lighting if hdri else None, self._eye[2], enabled))
 
     def set_fog(self, enabled):
         """Switch the Level atmosphere distance haze on or off (it only applies to that lighting)."""

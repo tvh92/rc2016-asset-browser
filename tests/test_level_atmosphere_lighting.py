@@ -35,6 +35,31 @@ def settle(view):
         view.pending.pop(0)()
 
 
+class FogValuesTests(unittest.TestCase):
+    """_fog_values always yields the full uniform tuple; a missing profile, sky or lighting means no fog."""
+    PROFILE = dict(heights=(-100.0, -52.0, 386.0, 926.0, 400.0), densities=(1.0, 0.1, 0.002, 0.0, 0.0))
+
+    def values(self, sky, lighting='Level atmosphere', **extra):
+        view = level_view(sky, _eye=(0.0, 0.0, 75.0), **extra)
+        view.lighting = lighting
+        view._environment, view._environment_lighting = {'x': 1}, lighting
+        return view._fog_values()
+
+    def test_missing_profile_or_sky_is_no_fog_not_none(self):
+        clear = [(0.4, 0.7, 0.9)]
+        for sky in (None, {}, dict(clear_sky=clear), dict(clear_sky=clear, fog=None), dict(fog=self.PROFILE)):
+            values = self.values(sky)
+            self.assertEqual(len(values), 7)
+            self.assertEqual(values[0], 0)
+
+    def test_other_lightings_and_haze_off_are_no_fog(self):
+        sky = dict(clear_sky=[(0.4, 0.7, 0.9)], fog=self.PROFILE)
+        self.assertEqual(self.values(sky)[0], 1)
+        self.assertEqual(self.values(sky, 'Shared HDRI')[0], 0)
+        self.assertEqual(self.values(sky, fog_enabled=False)[0], 0)
+        self.assertEqual(len(ModelViewport._fog_values(None)), 7)
+
+
 class SelectionTests(unittest.TestCase):
     def test_level_viewport_offers_the_source_and_model_viewport_does_not(self):
         self.assertIn('Level atmosphere', LevelViewport.LIGHTINGS)

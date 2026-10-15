@@ -95,7 +95,7 @@ vec3 display(vec3 color) {
 }
 """
 LIGHTING += "\n#ifdef RC_SCENE_EFFECTS\n" + SCENE_HELPERS + "\n#else\nfloat sceneAO(){return 1.0;}\nfloat sceneShadow(vec3 p){return 1.0;}\nfloat sceneSpecularOcclusion(vec3 N,vec3 V,float a){return 1.0;}\n#endif\n"
-LIGHTING_UNIFORMS = (*SCENE_UNIFORMS, "uLighting", "uLightingEnabled", "uLightFrame", "uViewToWorld", "uSH", "uEnvTex", "uSunDir", "uSunColour", "uTonemap", "uExposure", "uFogDensity", "uFogColour")
+LIGHTING_UNIFORMS = (*SCENE_UNIFORMS, "uLighting", "uLightingEnabled", "uLightFrame", "uViewToWorld", "uSH", "uEnvTex", "uSunDir", "uSunColour", "uTonemap", "uExposure", "uFogOn", "uFogColour", "uFogA", "uFogB", "uFogAlpha", "uFogBeta", "uFogMisc")
 
 # Attribute locations for the two 4-wide skin influence sets. NVIDIA aliases the
 # built-ins to fixed slots (0 vertex, 2 normal, 3 colour, 4 secondary colour,
@@ -940,12 +940,33 @@ void sceneOutput(vec4 color){
 }
 """
 FOG = """
-// Approximate distance haze of the Level atmosphere lighting (rc2016.levels.fog; a viewer approximation,
-// not decoded game data). Density 0 is no fog. Applied to the lit colour before exposure and tonemap,
-// the same units as the sky dome.
-uniform float uFogDensity; uniform vec3 uFogColour;
+// Level atmosphere height fog (rc2016.levels.fog): the game's analytic fog, per fragment. The ramps
+// (a, b, alpha, beta) and the start distance are camera-relative per-frame values; uFogOn 0 is no fog.
+// uViewToWorld turns the view-space position into a camera-relative offset in the Z-up presentation
+// basis, whose Z is the game's native Y, the height the profile is a function of. Applied to the lit
+// colour before exposure and tonemap, the same units as the sky dome.
+uniform int uFogOn; uniform vec3 uFogColour;
+uniform vec4 uFogA; uniform vec4 uFogB; uniform vec4 uFogAlpha; uniform vec4 uFogBeta;
+uniform vec4 uFogMisc;   // horizontal-ray c88, c89, exponent, start distance
+float fogTransmittance() {
+    vec3 rel = uViewToWorld * vPos;
+    float dist = length(rel);
+    float dy = rel.z;
+    float tau;
+    if (abs(dy) < 0.05) {
+        tau = uFogMisc.x * dist + uFogMisc.y;   // near-horizontal: constant density, avoids a 1/dy blow-up in float
+    } else {
+        float hs = uFogMisc.w * dy / dist;
+        vec4 ramp_s = clamp(uFogA * hs + uFogB, 0.0, 1.0);
+        vec4 ramp_e = clamp(uFogA * dy + uFogB, 0.0, 1.0);
+        vec4 part = uFogAlpha * (ramp_e * ramp_e - ramp_s * ramp_s) + uFogBeta * (ramp_e - ramp_s);
+        tau = dist / dy * (part.x + part.y + part.z + part.w);
+    }
+    if (tau > 0.0) tau = pow(tau, uFogMisc.z);
+    return clamp(exp2(-tau), 0.0, 1.0);
+}
 vec3 displayFog(vec3 color) {
-    color = mix(uFogColour, color, exp(-uFogDensity * length(vPos)));
+    if (uFogOn != 0) color = mix(uFogColour, color, fogTransmittance());
     return display(color);
 }
 """
