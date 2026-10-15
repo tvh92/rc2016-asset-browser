@@ -662,6 +662,10 @@ void main() {
 # uKind 4, water PREVIEW (pok_uniq_water family; textures.WATER_PRESENTATION), not a decode:
 #   uA = body colour, opacity; uB = F0, normal strength, gloss; uC/uD = tile A/B UV scale.xy, offset.zw
 #   applied to native world (x, z). Tiles: _n slot (water_tile_01n) and _pick slot (water_tile_02n).
+# uKind 5, bright_glow 93695188 (hero_bright_center_light_glow_variable; no texture, additive, back faces culled):
+#   uA = colour C, gain; uB = low colour Clo, sharpness S; uC = dist_k, dist0, blink weight w, amplitude.
+#   t = |1.001 - N.V|^(0.2 (1 - S)); x = (1 - dist_k (|eye - p| - dist0)) w gain (1 - t); alpha = sat(x);
+#   rgb = 7 amp (Clo + (C - Clo) x^2). Amplitude is CB0[115] (labelled presentation value, as facing_glow).
 GLASS_FRAGMENT = """
 #version 120
 uniform sampler2D uScreenNoiseA; uniform sampler2D uScreenNoiseB;
@@ -705,6 +709,11 @@ void main() {
         if (uSrgbP) na = screenLinear(na);
         if (uScreenSrgbB) nb = screenLinear(nb);
         color = (1.0 + mix(uB.w, uA.w, h)) * (1.0 - (1.0-na)*(1.0-nb)*(1.0-tint));
+    } else if (uKind == 5) { // 93695188 forward colour; sin frozen at 0; cutoff 0, alpha 1, fog_fade 1
+        float t = pow(abs(1.00100004673 - ndv), 0.2 * (1.0 - uB.w));
+        float x = (1.0 - uC.x * (length(vPos) - uC.y)) * uC.z * uA.w * (1.0 - t);
+        alpha = sat(x);
+        color = uC.w * 7.0 * (uB.rgb + (uA.rgb - uB.rgb) * x * x);
     } else if (uKind == 4) {
         vec2 xz = vTintWorldPos.xz;
         vec2 d = vec2(0.0);
@@ -781,7 +790,7 @@ FRAGMENT=_re.sub(r'gl_FragColor\s*=\s*([^;]+);',r'sceneOutput(\1);',FRAGMENT)
 FRAGMENT=FRAGMENT.replace('vec3 N = normalize(vNrm);','vec3 N = normalize(vNrm); sceneCaptureNormal=N;',1)
 FRAGMENT = FRAGMENT.replace("// @lighting\n", LIGHTING+_SCENE_OUTPUT)
 GLASS_FRAGMENT = GLASS_FRAGMENT.replace("// @lighting\n", LIGHTING)
-GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4}
+GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4, "bright_glow": 5}
 
 
 def glass_uniforms(forward):
@@ -790,6 +799,9 @@ def glass_uniforms(forward):
     if forward["kind"] == "screen":
         return (3, (*p["colour_a"], p["intensity_a"]), (*p["colour_b"], p["intensity_b"]),
                 (p["alpha_base"], p["mask_strength"], p["grid"], 0.0), (0.0,) * 4)
+    if forward["kind"] == "bright_glow":
+        return (5, (*p["colour"], p["gain"]), (*p["colour_lo"], p["sharp"]),
+                (p["dist_k"], p["dist0"], p["weight"], p["amplitude"]), (0.0,) * 4)
     if forward["kind"] == "water":
         return (4, (*p["body"], p["opacity"]), (p["f0"], p["normal_strength"], p["gloss"], 0.0),
                 tuple(p["uv_a"]), tuple(p["uv_b"]))

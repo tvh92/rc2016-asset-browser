@@ -431,7 +431,7 @@ def classify_absent_texture(path, refs, material_data, graph_datas):
 # Viewer reading keys that change the result beyond the generic _g/self-lit front-end
 # ('screen' is the viewer's forward 'screen' entry; 'bng'/'bng_detail' the basic_normal_gloss variants).
 VIEWER_RULE_EXTRAS=('pick','tint','spec_tint','arch_sequence','vehicle','glow','two_color_metal','puddles',
-    'foliage','za_fresnel_power','screen','rock_blend','bng','bng_detail','facing_glow','bright_center','parallax','alpha_cut','leaf_colour')
+    'foliage','za_fresnel_power','screen','rock_blend','bng','bng_detail','facing_glow','bright_center','parallax','alpha_cut','leaf_colour','bright_glow')
 # Terms rc_game_shader.apply_viewer_graph_rule builds (same GLSL math as gl_shading.FRAGMENT/GLASS_FRAGMENT).
 VIEWER_RULE_BUILT=frozenset(VIEWER_RULE_EXTRAS)-{'parallax'}
 # Extra source images each term samples (texture_preview.material_texture_paths roles).
@@ -458,9 +458,9 @@ def final_shader_status(build_status, rule, bound_paths, shader_translation, pro
     from rc2016.formats.links import EXACT, rule_coverage
     # The arch-sequence writer never samples _c.
     anchor=rule.get('textures',{}).get('_g' if 'arch_sequence' in rule.get('ported',()) else '_c')
-    # The facing-glow writer (Qwark bulb) samples no texture at all.
+    # The facing-glow writer (Qwark bulb) and the glow shell (93695188) sample no texture at all.
     viewer_ready=(build_status.startswith('color_only_preview') and rule.get('applies') and
-                  (anchor in bound_paths or 'facing_glow' in rule.get('ported',())))
+                  (anchor in bound_paths or 'facing_glow' in rule.get('ported',()) or 'bright_glow' in rule.get('ported',())))
     translated=(shader_translation.get('status')=='ready' and not profile and
         not any(p.get('family') in ('skin_emissive','basic_skin','character_glass') for p in shader_preflights))
     exact=rule_coverage(list(graph_paths))[0]==EXACT
@@ -514,14 +514,15 @@ def viewer_graph_rule(archive, material_path, bound_paths=None):
     if not paths:
         return dict(applies=False,reason='material asset did not resolve to one entry')
     forward=paths.get('forward') or {}
-    if forward and forward.get('kind')!='screen':
+    if forward and forward.get('kind') not in ('screen','bright_glow'):
         return dict(applies=False,reason='forward (glass/VFX) graph; handled by its own front-ends')
     try:
         _viewer_constant_samples(archive,paths)
     except Exception as exc:
         return dict(applies=False,reason='viewer constant sample unavailable: %s'%exc)
     bng=paths.get('bng') or {}
-    present=[key for key in VIEWER_RULE_EXTRAS if (forward if key=='screen' else
+    present=[key for key in VIEWER_RULE_EXTRAS if (forward.get('kind')=='screen' and forward if key=='screen' else
+        forward.get('kind')=='bright_glow' if key=='bright_glow' else
         paths.get('_bng_detail') and bng.get('kind') in (2,3,6) if key=='bng_detail' else
         bng.get('kind') in (1,3,4,6,7,8,9) if key=='bng' else key in paths if key=='za_fresnel_power' else paths.get(key))]
     roles={'_c','_g','_n'}|{role for key in present for role in VIEWER_TERM_ROLES.get(key,())}
@@ -538,7 +539,8 @@ def viewer_graph_rule(archive, material_path, bound_paths=None):
         unported.append(key)
     terms={key:paths[key] for key in ('pick','tint','spec_tint','arch_sequence','vehicle','glow','two_color_metal',
         'puddles','za_fresnel_power','rock_blend','bng','facing_glow','bright_center','parallax','alpha_cut','leaf_colour') if key in paths and key in present+['bng']}
-    if forward:terms['screen']=forward
+    if forward.get('kind')=='screen':terms['screen']=forward
+    if forward.get('kind')=='bright_glow':terms['bright_glow']=forward
     linear_z=bool(bng) or any(key in present for key in VIEWER_LINEAR_Z_TERMS) or bool((paths.get('tint') or {}).get('variant')) or bool((paths.get('leaf_colour') or {}).get('mapped_fresnel'))
     rule=dict(applies=True,schema='rcps4-viewer-graph-rule-v2',
         source='rc2016/viewer/textures.py material_texture_paths',
