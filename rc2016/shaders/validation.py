@@ -502,7 +502,7 @@ def _viewer_required(rule, has_n):
             req("_rock_mask", "_rock_c2", "_rock_g2", *(("_rock_n2",) if has_n else ()))
     if "bng" in ported:
         kind = int(terms["bng"]["kind"])
-        names += ["bng colour"] if kind == 1 or (kind == 4 and lit) else [] if kind == 4 else ["bng P0", "bng P1"] if kind == 7 else             (["bng P0", "bng P1"] + (["bng P2"] if kind == 6 else []) if has_n else [])
+        names += ["bng colour"] if kind == 1 or (kind == 4 and lit) else [] if kind == 4 else ["bng P0", "bng P1"] if kind == 7 else (["bng P0", "bng P1"] + (["bng P2"] if kind == 6 else []) if has_n else [])
         if kind == 9:
             req("_h")
     if "bng_detail" in ported and has_n:

@@ -104,12 +104,14 @@ class TexturePreviewTests(unittest.TestCase):
         self.assertEqual(uploaded['forward'], e['forward'])
         self.assertEqual(uploaded['_c'], (17, False))
 
-    def test_stale_self_lit_colored_writer_keeps_own_key_and_hero_unruled(self):
+    def test_stale_self_lit_keys_are_ignored_by_coloured_and_bright_centre_writers(self):
         from unittest.mock import patch
-        graphs = ('required/materials/basic_normal_coloredgloss_emissive.materialgraph',
-                  'materialgraph/character/hero/hero_bright_center_light/hero_bright_center_light_variable.materialgraph')
-        for graph in graphs:
-            self.assertEqual(tp._graph_rule([graph]), {})  # no speculative new rule
+        coloured = 'required/materials/basic_normal_coloredgloss_emissive.materialgraph'
+        bright = 'materialgraph/character/hero/hero_bright_center_light/hero_bright_center_light_variable.materialgraph'
+        self.assertEqual(tp._graph_rule([coloured]), {})  # no speculative new rule
+        self.assertEqual(tp._graph_rule([bright]),   # exact decoded D14A48D7 rule, own self-lit key
+                         dict(self_lit='bright_center', self_lit_key=0xB7305C21, bright_center=True))
+        for graph in (coloured, bright):
             mat = dat1([graph], lambda at: [])
             archive = FakeArchive({'m/a.material': ('material', mat), graph: ('materialgraph', dat1([], lambda at: []))})
             own = 0x06F19114 if 'coloredgloss' in graph else 0xB7305C21
@@ -120,7 +122,17 @@ class TexturePreviewTests(unittest.TestCase):
                         return_value=([[dict(key_hash=own)]], {own: 1.})),
                   patch('rc2016.formats.materials.extract_material_parameters', return_value=params)):
                 got = tp.material_texture_paths(archive, 'm/a.material')
-            self.assertEqual(got['k'], 3. if own == 0x06F19114 else 0.)
+            # Only the graph's own key counts: the material's stale 0x66EFA55B / 0xF8C61683 rows are dropped.
+            self.assertEqual(got['k'], 3. if own == 0x06F19114 else 1.)
+            self.assertEqual('bright_center' in got, own == 0xB7305C21)
+            if own == 0xB7305C21:   # graph defaults: steady 0.15, intensity 5, power 0.9, F0 0.2, G 0.35
+                bc = got['bright_center']
+                self.assertEqual((got['spec'], got['gloss']), (1.0, 1.0))
+                self.assertEqual(bc['edge'], [0.0, 0.0, 0.0])
+                self.assertEqual(bc['centre'], [x * 5.0 for x in (1.0, 0.5271151, 0.462077)])
+                self.assertAlmostEqual(bc['exponent'], 0.02)
+                self.assertAlmostEqual(bc['weight'], 0.575)
+                self.assertEqual((bc['f0'], bc['gloss_sq'], bc['writer']), (0.2, 0.35, 'D14A48D7'))
 
     def test_foliage_exact_grey_slots_defaults_and_stale_keys(self):
         from unittest.mock import patch

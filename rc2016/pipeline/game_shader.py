@@ -1460,7 +1460,9 @@ def apply_viewer_graph_rule(mat, source):
         if kind_terms and kind == 6 and rim_b is not None:
             albedo = P.v('SCALE', albedo, P.m('SUBTRACT', 1.0, rim_b))
         if kind_terms and kind in (7, 8, 9) and rim_b is not None:
-            rim_mask = 1.0 if kind == 7 else (c.outputs['Alpha'] if c is not None else 0.0) if kind == 8 else                 (P.sep(img('_h').outputs['Color'])[0] if img('_h') else 0.0)
+            rim_mask = (1.0 if kind == 7 else
+                        (c.outputs['Alpha'] if c is not None else 0.0) if kind == 8 else
+                        (P.sep(img('_h').outputs['Color'])[0] if img('_h') else 0.0))
             albedo = P.v('SCALE', albedo, P.m('ADD', 1.0, P.m('MULTIPLY', P.m('MULTIPLY', bng_p(0), rim_mask), rim_b)))
         if bright:   # D14A48D7: t = (1.001 - sat(N.V))^e with the mapped normal
             t = P.m('POWER', P.m('ABSOLUTE', P.m('SUBTRACT', 1.00100004673, P.sat(P.v('DOT_PRODUCT', final_n, V)))),
