@@ -74,15 +74,31 @@ def clip_directory(data, joints=None):
             source = 'crc32_string_in_file' if name else None
         rows.append(dict(offset=container['offset'], declared_size=container['declared_size'], name=name,
                          name_source=source, name_hash=metadata['name_hash'], joint_hashes=hashes,
-                         frames=metadata['original_frame_count'], fps=metadata['sample_rate_fps']))
+                         frames=metadata['original_frame_count'], fps=metadata['sample_rate_fps'],
+                         format_version=metadata['format_version'], duration_seconds=metadata['duration_seconds']))
     return rows
 
 
-def cinematic_sources(archive, rows):
+SHOT_NAME = re.compile(r'^(?P<cutscene>.+?_rt)_shot(?P<shot>\d+)_', re.I)
+
+
+def shot_label(clip_name, asset_path):
+    """(cutscene, shot number or None) for a cutscene clip.
+
+    Clip names look like ``<cutscene>_rt_shot<N>_<performer>``; the cutscene falls back to the asset's
+    file stem and the shot to None when the name does not follow that pattern.
+    """
+    match = SHOT_NAME.match(clip_name or '')
+    stem = asset_path.rsplit('/', 1)[-1].rsplit('.', 1)[0]
+    return (match.group('cutscene'), int(match.group('shot'))) if match else (stem, None)
+
+
+def cinematic_sources(archive, rows, include_unnamed=False):
     """Cutscene assets holding named clips that cover every joint of ``rows``, in archive order.
 
     Returns (sources, errors): each source is {asset_id, path, clips} with clip_directory rows.
-    A static model (no joints) matches nothing.
+    A static model (no joints) matches nothing. With ``include_unnamed`` the clips whose name hash matches
+    no string of their file are listed too (name None); the pipeline never uses those.
     """
     joints = {r['hash'] for r in rows}
     if not joints:
@@ -92,7 +108,7 @@ def cinematic_sources(archive, rows):
                       and any(o.get('available') for o in e['occurrences'])), key=lambda e: e['order'])
     for entry in entries:
         try:
-            clips = [c for c in clip_directory(archive.asset_data(entry['id']), joints) if c['name']]
+            clips = [c for c in clip_directory(archive.asset_data(entry['id']), joints) if c['name'] or include_unnamed]
         except Exception as exc:
             errors.append(dict(asset_id=entry['id'], path=entry['path'], reason=str(exc)))
             continue

@@ -14,6 +14,7 @@ inverse-bind-compatible rule, else ``segment_scale_compensation_bit0``.
 """
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 import tempfile
 
@@ -110,9 +111,38 @@ class AnimationLibrary:
                 for container in containers:
                     self.clips.append(dict(animset=animset, offset=container['offset'], name=container['name']))
 
+    def with_cinematic(self, archive, replace=False, sources=None):
+        """Copy of this library that also offers the real-time cutscene shots covering the whole model.
+
+        The shots come from ``animation_sources.cinematic_sources`` (clips named by an exact CRC32 match,
+        joints covering every model joint); pass its result as ``sources`` to avoid scanning twice. With
+        ``replace`` the copy holds only those shots. The original library is left unchanged. Cutscene
+        clips carry ``source='cinematic2'`` and decode through the same path as animset clips.
+        """
+        from rc2016.formats.animation_sources import CINEMATIC_SOURCE, cinematic_sources
+        other = copy.copy(self)
+        other.clips = [] if replace else list(self.clips)
+        other.animset_data = {} if replace else dict(self.animset_data)
+        if sources is None:
+            sources, _errors = cinematic_sources(archive, self.rows) if self.rows else ([], [])
+        for source in sources:
+            clips = [c for c in source['clips'] if c['name']]
+            if not clips:
+                continue
+            other.animset_data[source['path']] = archive.asset_data(source['asset_id'])
+            other.clips.extend(dict(animset=source['path'], offset=c['offset'], name=c['name'], source=CINEMATIC_SOURCE)
+                               for c in clips)
+        return other
+
     def labels(self):
         several = len(self.animset_data) > 1
-        return [(f"{Path(c['animset']).stem}: " if several else '') + c['name'] for c in self.clips]
+        plain = [c['name'] for c in self.clips if c.get('source') == 'cinematic2']
+        labels = []
+        for c in self.clips:
+            # Cutscene shot names already carry their cutscene; prefix only when two shots share a name.
+            prefix = several and not (c.get('source') == 'cinematic2' and plain.count(c['name']) == 1)
+            labels.append((f"{Path(c['animset']).stem}: " if prefix else '') + c['name'])
+        return labels
 
     def pose(self, index):
         """Per-frame skin matrices (joints x 4 x 4, preview basis) for clip ``index``."""
