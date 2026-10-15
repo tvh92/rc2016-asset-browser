@@ -14,6 +14,14 @@ def rotation(q):
                      [2*(x*z-y*w),2*(y*z+x*w),1-2*(x*x+y*y)]])
 
 
+# Profile-selectable third reading of joint-record bit 0: the parent's scale is divided out between the
+# rotation and the joint's own scale (local basis R * diag(S / parent S)), where the default SSC0 rule
+# divides it out in front of the rotation (diag(1 / parent S) * R * S). The two differ only for
+# non-uniform parent scale. A model profile must name it; no model selects it by default.
+AFTER_ROTATION = 'segment_scale_compensation_bit0_after_rotation'
+INVERSE_BIND_TOLERANCE = .002
+
+
 def worlds(rows, sampled=(), inheritance='full'):
     # For the bit-zero candidate, the compensation changes only the local
     # linear basis. Leaving m[:3,3] untouched is intentional: this is
@@ -30,9 +38,29 @@ def worlds(rows, sampled=(), inheritance='full'):
             if inheritance == 'segment_scale_compensation_bit0' and r['flags'] & 1:
                 scale = by_hash.get(rows[parent]['hash'],rows[parent])['scale']
                 m[:3,:3] = np.diag([1/x if x else 0 for x in scale]) @ m[:3,:3]
+            elif inheritance == AFTER_ROTATION and r['flags'] & 1:
+                scale = by_hash.get(rows[parent]['hash'],rows[parent])['scale']
+                m[:3,:3] = rotation(q) @ np.diag([(1/p if p else 0)*x for p,x in zip(scale,s['scale'])])
             m = result[parent] @ m
         result.append(m)
     return result
+
+
+def inverse_bind_error(rows, inverses, rule):
+    """Largest absolute difference between the inverse of each rest world under ``rule`` and the stored
+    inverse bind (None when a rest world is singular)."""
+    try:
+        return max(float(np.max(np.abs(np.linalg.inv(m)-inv))) for m,inv in zip(worlds(rows,inheritance=rule),inverses))
+    except np.linalg.LinAlgError:
+        return None
+
+
+def check_profile_inheritance(rows, inverses, rule):
+    """The measured inverse-bind error of the profile-only rule, or ValueError when it does not fit."""
+    error = inverse_bind_error(rows, inverses, rule) if rows and len(inverses) == len(rows) else None
+    if error is None or error >= INVERSE_BIND_TOLERANCE:
+        raise ValueError('Profile inheritance rule does not fit the model inverse binds: '+rule)
+    return error
 
 
 def inspect_model(path, override=None):
@@ -72,11 +100,8 @@ def inspect_model(path, override=None):
             inverses.append(m)
         if inverses:
             for rule in ('full','segment_scale_compensation_bit0'):
-                try:
-                    errors[rule] = max(float(np.max(np.abs(np.linalg.inv(m)-inv))) for m,inv in zip(worlds(rows,inheritance=rule),inverses))
-                except np.linalg.LinAlgError:
-                    errors[rule] = None
-    candidates = [rule for rule,error in errors.items() if error is not None and error < .002]
+                errors[rule] = inverse_bind_error(rows, inverses, rule)
+    candidates = [rule for rule,error in errors.items() if error is not None and error < INVERSE_BIND_TOLERANCE]
     profile = dict(schema='ps4-model-profile-v1',model_sha256=sha(data),
         coordinate_units='Unchanged source numeric units; physical unit scale is not encoded by the supported fields',
         source_to_blender_units=1.0, inheritance_candidates=candidates,
@@ -89,8 +114,10 @@ def inspect_model(path, override=None):
     if override:
         if override.get('model_sha256') != sha(data):
             raise ValueError('Profile hash does not match selected source model')
-        if override.get('inheritance') not in (None,'full','segment_scale_compensation_bit0'):
+        if override.get('inheritance') not in (None,'full','segment_scale_compensation_bit0',AFTER_ROTATION):
             raise ValueError('Unsupported profile inheritance rule')
+        if override.get('inheritance') == AFTER_ROTATION:
+            errors[AFTER_ROTATION] = check_profile_inheritance(rows, inverses, AFTER_ROTATION)
         if override.get('source_to_blender_units',1) != 1:
             raise ValueError('This adapter preserves source numeric units; profile unit conversion is not implemented')
         profile.update(override)
