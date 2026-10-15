@@ -14,6 +14,8 @@ import hashlib
 import math
 import struct
 import threading
+import hashlib
+import math
 
 from rc2016.formats.archive import asset_data, asset_references, decompress, lz4_block
 from rc2016.formats.index import references
@@ -36,7 +38,7 @@ SRGB_FORMATS = {29, 72, 75, 78, 91, 93, 99}   # decoded to linear in the shader
 MIN_PREVIEW_SIZE = 512   # ~0.25 s per 1024² texture to untile
 
 
-ROLES = ('_c', '_g', '_n', '_pick', '_h')   # base colour, specular + gloss, tangent normal, colour-pick palette, tint mask
+ROLES = ('_c', '_g', '_n', '_pick', '_h', '_reticle')   # base colour, specular + gloss, tangent normal, colour-pick palette, tint mask, Victor API8 source
 PICK_SUFFIX = '_colorpick_c'
 # Novalis tree leaf (rp_nov_plant_tree_foliage_transparent, writer 0476D929). Slot hashes are read from the
 # material slot tables of the Novalis tree leaf materials; the cma/cmb roles are the names of the bound
@@ -100,6 +102,8 @@ SPECULAR_SCALE_KEY, GLOSS_SCALE_KEY = 0x62835AF9, 0x24F4CA4C
 BRIGHT_GLOW_PRESENTATION = dict(amplitude=0.5, amplitude_input='CB0 dword 115', captured_amplitude=0.01,
                                 presentation=True, writer='93695188',
                                 frozen_inputs=dict(sin=0.0, cutoff=0.0, alpha=1.0, fog_fade=1.0))
+# CB0[115] is engine-owned and absent from the material archive; use the established labelled preview convention.
+VICTOR_RETICLE_PRESENTATION_AMPLITUDE = 0.5
 # Eye cornea forward colour pass A36A97CB (hero_eye_cornea): literals read from the instruction words.
 # Fresnel/normal scales and the highlight lobe; the light loop, probes, screen-space reflections, fog and
 # the per-instance terms (CB0 dword 95 normal strength, instance floats at byte 8/12, flag bits) are not decoded.
@@ -190,6 +194,18 @@ GRAPH_RULES = (
      dict(self_lit_key=None, forward='number_display', slots=NUMBER_DISPLAY_SLOTS, params=(), constants=NUMBER_DISPLAY_SHIV)),
     ('materialgraph/character/npc/npc_qwark_prisoner_number/npc_qwark_prisoner_number.',
      dict(self_lit_key=None, forward='number_display', slots=NUMBER_DISPLAY_SLOTS, params=(), constants=NUMBER_DISPLAY_QWARK)),
+    # Exact decoded graph e4bcaf55...; pass 0 writer EB9C8254. This is a bounded additive preview,
+    # not a runtime-equivalent translation: CB0[115] is an explicitly labelled presentation amplitude,
+    # CB0[99] is frozen at t=0, and only the source R/G/B albedo and alpha-derived emission are represented.
+    ('materialgraph/visualeffect/character/enemy/enm_victor_reticle/enm_victor_reticle.',
+     dict(graph_sha256='e4bcaf552be55cbc14b5081b6695a600084ae162889455b87eadc6c0103d79ea',
+          self_lit_key=None, forward='victor_reticle', writer='EB9C8254',
+            slots={'_reticle': 0x628AD5A840ED6C83},
+          params=(('uv_phase', 0x76C88A95, 1), ('texture_gain', 0xFD5FF119, 1), ('ring_tint', 0xCC2FE3CC, 1)),
+            # CB0[115] remains engine-owned and is not inferred from the asset record.
+            constants={'amplitude': VICTOR_RETICLE_PRESENTATION_AMPLITUDE, 'amplitude_input': 'CB0[115]', 'presentation': True,
+                       'time': 0.0, 'time_input': 'CB0[99]', 'f0': [0.0, 0.0999755859375, 0.0999755859375],
+                       'gloss': 0.0, 'frozen_inputs': {'fog_fade': 1.0, 'vertex_alpha': 1.0}})),
     ('required/materials/basic_normla_gloss_fresnel_detail_emissive.', dict(self_lit='h_green', self_lit_key=0x66EFA55B, bng=9)),
     ('materialgraph/global/basic_incandescence/', dict(g_mode='grey', self_lit='g_blue', self_lit_key=0x5FD56522)),
     # Other models/enm_blarg_saucer/evidence/COLORPICK_DECODE.md (writer 66744D01)
@@ -598,6 +614,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
         return list(values) if width == 12 else values[0]
 
     rule = _graph_rule(graphs, graph_hashes)
+    if rule.get('graph_sha256') and not any(graph_hashes.get(g.replace('\\', '/').lower()) == rule['graph_sha256'] for g in graphs):
+        rule = {}
     if rule.get('flat_surface') == 'basic_flat_color':
         graph_path = next((g.replace('\\', '/').lower() for g in graphs
                            if g.replace('\\', '/').lower().startswith('materialgraph/global/basic_flat_color/basic_flat_color.')
@@ -922,6 +940,18 @@ def material_texture_paths(archive, material_path: str) -> dict:
             path = material_slots.get(slot) or slots.get(slot)
             if path:
                 result[role] = path
+        if rule['forward'] == 'victor_reticle':
+            # An explicitly present malformed instance value is unsupported, never silently replaced by a graph default.
+            for name, key, size in rule['params']:
+                row = rows.get(key)
+                if row is None: continue
+                if size != 1 or int(row.get('size', 0)) != 4:
+                    raise ValueError('Victor reticle parameter %s has unsupported explicit type/width' % name)
+                try: decoded = struct.unpack('<f', bytes.fromhex(row['raw_hex']))[0]
+                except (ValueError, KeyError, struct.error) as exc:
+                    raise ValueError('Victor reticle parameter %s has malformed explicit value' % name) from exc
+                if not math.isfinite(decoded):
+                    raise ValueError('Victor reticle parameter %s is non-finite' % name)
         params = {name: vec3(key, (0.0, 0.0, 0.0)) if size == 3 else value(key, 0.0) for name, key, size in rule['params']}
         params.update(rule.get('constants', {}))  # graph constants, not read from the material
         if rule['forward'] == 'water':
@@ -938,6 +968,15 @@ def material_texture_paths(archive, material_path: str) -> dict:
         result['forward'] = dict(kind=rule['forward'], params=params,
                                  **({'writer': rule['writer']} if rule.get('writer') else {}),
                                  **blend_state(material_flags(data)))
+        if rule['forward'] == 'victor_reticle':
+            # EB9C8254 is a deferred material writer (ALBEDO/F0/gloss/self-lit), not a forward coverage shader.
+            if not all(math.isfinite(float(params[k])) for k in ('uv_phase', 'texture_gain', 'ring_tint', 'amplitude')):
+                raise ValueError('Victor reticle has non-finite explicit material/presentation parameters')
+            if params['amplitude'] < 0.0 or params['texture_gain'] < 0.0:
+                raise ValueError('Victor reticle bounded preview does not preserve negative amplitude or emission gain')
+            result['_reticle'] = result.pop('_reticle', None) or result.get('_c')
+            result.pop('_c', None)
+            result['forward']['deferred_material'] = True
     if rule.get('flat_surface'):
         # No _c/_g texture: the writer's colour, F0 and gloss are material constants (FLAT_SURFACE_GOO, basic_emissive).
         for role in ('_c', '_g', '_n', '_h', '_pick'):

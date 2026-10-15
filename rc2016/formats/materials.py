@@ -431,12 +431,12 @@ def classify_absent_texture(path, refs, material_data, graph_datas):
 # Viewer reading keys that change the result beyond the generic _g/self-lit front-end
 # ('screen' is the viewer's forward 'screen' entry; 'bng'/'bng_detail' the basic_normal_gloss variants).
 VIEWER_RULE_EXTRAS=('pick','tint','spec_tint','arch_sequence','vehicle','glow','two_color_metal','puddles',
-    'foliage','za_fresnel_power','screen','rock_blend','bng','bng_detail','facing_glow','bright_center','parallax','alpha_cut','leaf_colour','bright_glow','fresnel_tint','number_display','flat_surface','eye_cornea','hair','skin','skin_detail','glass_basic','glass_cg02','glass_jn')
+    'foliage','za_fresnel_power','screen','rock_blend','bng','bng_detail','facing_glow','bright_center','parallax','alpha_cut','leaf_colour','bright_glow','fresnel_tint','number_display','victor_reticle','flat_surface','eye_cornea','hair','skin','skin_detail','glass_basic','glass_cg02','glass_jn')
 # Terms rc_game_shader.apply_viewer_graph_rule builds (same GLSL math as gl_shading.FRAGMENT/GLASS_FRAGMENT).
 VIEWER_RULE_BUILT=frozenset(VIEWER_RULE_EXTRAS)-{'parallax'}
 # Extra source images each term samples (texture_preview.material_texture_paths roles).
 VIEWER_TERM_ROLES=dict(pick=('_pick',),tint=('_h','_tint_detail','_tint_palette','_pick'),arch_sequence=('_h','_sequence','_pick'),
-    vehicle=('_pick','_vehicle_p2','_h'),glow=('_h','_glow_parallax'),puddles=('_puddle_noise','_puddle_ripple'),
+    vehicle=('_pick','_vehicle_p2','_h'),glow=('_h','_glow_parallax'),puddles=('_puddle_noise','_puddle_ripple'),victor_reticle=('_reticle',),
     screen=('_screen_timeline','_c','_n','_pick','_g'),rock_blend=('_rock_mask','_rock_c2','_rock_g2','_rock_n2'),bng=('_h',),bng_detail=('_bng_detail',),number_display=('_c','_n','_pick','_g'),parallax=('_parallax_height',),leaf_colour=('_cma','_cmb'),eye_cornea=('_n',),skin_detail=('_bng_detail',))
 # Writers whose tangent normal z is 1-x*x-y*y (gl_shading.FRAGMENT), not sqrt(1-x*x-y*y).
 VIEWER_LINEAR_Z_TERMS=('bng','foliage','za_fresnel_power','glow','two_color_metal','rock_blend','parallax','hair','skin')
@@ -457,7 +457,9 @@ def final_shader_status(build_status, rule, bound_paths, shader_translation, pro
     """
     from rc2016.formats.links import EXACT, rule_coverage
     # The arch-sequence writer never samples _c.
-    anchor=rule.get('textures',{}).get('_g' if 'arch_sequence' in rule.get('ported',()) else '_c')
+    reticle_ready=(rule.get('applies') and 'victor_reticle' in rule.get('ported',()) and
+                   bool(rule.get('terms',{}).get('victor_reticle')))
+    anchor=rule.get('textures',{}).get('_reticle' if reticle_ready else '_g' if 'arch_sequence' in rule.get('ported',()) else '_c')
     # The facing-glow writer (Qwark bulb) and the glow shell (93695188) sample no texture at all.
     glass_ready=rule.get('applies') and any(key in rule.get('ported',()) for key in ('glass_basic','glass_cg02','glass_jn'))
     flat=rule.get('terms',{}).get('flat_surface') or {}
@@ -466,7 +468,7 @@ def final_shader_status(build_status, rule, bound_paths, shader_translation, pro
         rule.get('graph_identity')==dict(path='materialgraph/global/basic_flat_color/basic_flat_color.materialgraph',
             sha256='6d9bcad5a9dab38dd5988195cc9e87514c08a90c6b8fa899c2d21f3e42c14f95') and
         rule_coverage(list(graph_paths))[0]==EXACT)
-    viewer_ready=((build_status.startswith('color_only_preview') or glass_ready or flat_ready) and rule.get('applies') and
+    viewer_ready=((build_status.startswith('color_only_preview') or glass_ready or flat_ready or reticle_ready) and rule.get('applies') and
                   (anchor in bound_paths or any(key in rule.get('ported',()) for key in
                    ('facing_glow','bright_glow','eye_cornea','flat_surface','number_display','glass_basic','glass_cg02','glass_jn'))))
     translated=(shader_translation.get('status')=='ready' and not profile and
@@ -524,7 +526,7 @@ def viewer_graph_rule(archive, material_path, bound_paths=None):
     if paths.get('unsupported_flat_surface'):
         return dict(applies=False,reason='basic_flat_color instance rejected: '+paths['unsupported_flat_surface'])
     forward=paths.get('forward') or {}
-    if forward and forward.get('kind') not in ('screen','bright_glow','number_display','eye_cornea','glass_basic','glass_cg02','glass_jn'):
+    if forward and forward.get('kind') not in ('screen','bright_glow','number_display','victor_reticle','eye_cornea','glass_basic','glass_cg02','glass_jn'):
         return dict(applies=False,reason='forward (glass/VFX) graph; handled by its own front-ends')
     try:
         _viewer_constant_samples(archive,paths)
@@ -532,7 +534,7 @@ def viewer_graph_rule(archive, material_path, bound_paths=None):
         return dict(applies=False,reason='viewer constant sample unavailable: %s'%exc)
     bng=paths.get('bng') or {}
     present=[key for key in VIEWER_RULE_EXTRAS if (forward.get('kind')=='screen' and forward if key=='screen' else
-        forward.get('kind')=='bright_glow' if key=='bright_glow' else forward.get('kind')=='number_display' if key=='number_display' else forward.get('kind')=='eye_cornea' if key=='eye_cornea' else
+        forward.get('kind')=='bright_glow' if key=='bright_glow' else forward.get('kind')=='number_display' if key=='number_display' else forward.get('kind')=='victor_reticle' if key=='victor_reticle' else forward.get('kind')=='eye_cornea' if key=='eye_cornea' else
         forward.get('kind')==key if key in ('glass_basic','glass_cg02','glass_jn') else
         paths.get('_bng_detail') and bng.get('kind') in (2,3,6,10) if key=='bng_detail' else
         bng.get('kind') in (1,3,4,6,7,8,9,10) if key=='bng' else key in paths if key=='za_fresnel_power' else paths.get(key))]
@@ -553,6 +555,7 @@ def viewer_graph_rule(archive, material_path, bound_paths=None):
     if forward.get('kind')=='screen':terms['screen']=forward
     if forward.get('kind')=='bright_glow':terms['bright_glow']=forward
     if forward.get('kind')=='number_display':terms['number_display']=forward
+    if forward.get('kind')=='victor_reticle':terms['victor_reticle']=forward
     if forward.get('kind')=='eye_cornea':terms['eye_cornea']=forward
     if forward.get('kind') in ('glass_basic','glass_cg02','glass_jn'):terms[forward['kind']]=forward
     linear_z=bool(bng) or any(key in present for key in VIEWER_LINEAR_Z_TERMS) or bool((paths.get('tint') or {}).get('variant')) or bool((paths.get('leaf_colour') or {}).get('mapped_fresnel'))

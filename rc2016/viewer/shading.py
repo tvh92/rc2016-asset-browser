@@ -189,6 +189,7 @@ TINT_DETAIL_TEXTURE_UNIT = 9   # ColorTintVariants; sole new sampler for prompt0
 PARALLAX_HEIGHT_TEXTURE_UNIT = 12   # separate source height-alpha slot
 TINT_MASK_TEXTURE_UNIT = 5   # _h tint mask (mo_gbl_color_tint_01)
 LEAF_CMA_TEXTURE_UNIT = 7   # Novalis tree leaf cma (rp_nov_plant_tree_foliage_transparent); the only free unit
+RETICLE_TEXTURE_UNIT = 14  # Victor reticle deferred self-lit API8 source, separate from base colour
 # Bones live in a 1-row RGBA32F texture (4 texels = one row-major matrix):
 # a uniform array runs out of vertex constants near 200 joints (Clank has 150,
 # bucketed to 256 it failed with NVIDIA C6020).
@@ -265,6 +266,7 @@ uniform float uAlphaCut; // leaf cut-out: discard when _c.a < threshold (0 = off
 uniform bool uLeafColour; uniform vec4 uLeafP; uniform vec3 uLeafPalette; // uLeafPalette = cmb ramp sample
 uniform bool uFlatSurface; uniform vec3 uFlatColour; uniform vec4 uFlatSpec; // constant surfaces: basic_emissive 452EDC8C, goo floor 4A73CC38, basic_flat_color D169A814
 uniform bool uBasicFlatColor; uniform float uBasicFlatEmissionScale; // D169A814: independent CB2 colour * scale additive output
+uniform bool uVictorReticle; uniform sampler2D uTexReticle; uniform bool uHasReticle; uniform vec4 uReticleP; uniform vec3 uReticleF0;
 uniform bool uFresnelTint; uniform vec3 uFresnelC; uniform float uFresnelE; // Novalis glow mushroom F69ADC40 albedo tint
 // Hair_NewSpec_01 forward pass 94CE8CCE: uHairA = constant albedo, uHairB = F0 colour (x _g.G), uHairP = (rim exponent E,
 // gloss scale, diffuse sigma (unused by the Lambert viewer diffuse), normal strength).
@@ -482,6 +484,13 @@ void main() {
     vec4 c = uHasC ? texture2D(uTexC, materialUV) : vec4(uColor, 0.0);
     if (uHasC && c.a < uAlphaCut) discard;
     vec3 albedo = (uMode >= 1 && uHasC) ? (uSrgbC ? linear(c.rgb) : c.rgb) : linear(uColor);
+    if (uMode == 2 && uVictorReticle) {
+        // EB9C8254 lowered deferred outputs: UNORM albedo, constant F0/gloss, and separate self-lit scalar.
+        float d = length(vUV - vec2(0.5)), b = 1.0 - d, e = abs(b), ring = uReticleP.z;
+        vec3 sourceAlbedo = 2.0 * uReticleP.w * vec3(e, e + ring * (pow(e, 10.0) - e),
+            b*b + ring * (pow(e, 20.0) - b*b));
+        albedo = clamp(sourceAlbedo, 0.0, 1.0); // MRT1 is normalized albedo.
+    }
 
     if (uMode >= 1 && uFacingGlow) albedo = vec3(1.0); // 0CD2AAFB: no albedo input, v76-v78 = 1
     if (uMode == 2 && uFlatSurface) albedo = uBasicFlatColor ? vec3(0.0) : uFlatColour; // D169A814 has no diffuse albedo term
@@ -715,7 +724,7 @@ void main() {
     if (uMode == 2) {
         vec4 g = uHasG ? texture2D(uTexG, materialUV) : vec4(0.0);
         vec3 gl = uSrgbG ? linear(g.rgb) : g.rgb;
-        if (uHasG || uVehicle || uBrightCentre || uFlatSurface) {
+        if (uHasG || uVehicle || uBrightCentre || uFlatSurface || uVictorReticle) {
             vec3 F0; float gloss;
             if (uGMode == 1 && uSkinKind == 1) { // 9AAD640B MRT2: grey F0 and gloss, each lerped to its Fresnel form by F
                 float sp = uSkinB.z * gl.g, gp = uSkinB.y * gl.r;
@@ -744,6 +753,7 @@ void main() {
             if (uVehicle) { F0 = vec3(0.0, 0.0999755859375, 0.0999755859375); gloss = 0.948681201424; } // packed rel 860, AA=1
             if (uBrightCentre) { F0 = vec3(uBrightP.z); gloss = sqrt(clamp(uBrightP.w, 0.0, 1.0)); }
             if (uFlatSurface) { F0 = vec3(uFlatSpec.x); gloss = sqrt(clamp(uFlatSpec.y, 0.0, 1.0)); }
+            if (uVictorReticle) { F0 = uReticleF0; gloss = 0.0; }
             if (uTintVariant >= 3) gloss = sqrt(clamp(uGlossScale * gl.r * 2.0 * tintDetailMask, 0.0, 1.0));
             if (uRockBlend) { F0 = vec3(uSpecScale*rockG.g); gloss = sqrt(clamp(uGlossScale*rockG.r, 0.0, 1.0)); }
             if (uTwoColorMetal) gloss = sqrt(clamp(uGlossScale * gl.r * (1.0 - metalRim), 0.0, 1.0));
@@ -753,7 +763,11 @@ void main() {
             // Two-color T multiplies the accumulated specular lighting after GGX/F90.
             color += metalSpecTint * deferredSpecular(N, V, F0, gloss);
         }
-        if (uGlowKind == 1) { // %7398-7440: mask and offset parallax R, K=0x06F19114
+        if (uVictorReticle) {
+            float sampleR = uHasReticle ? texture2D(uTexReticle, vec2(1.0, 8.0 - 8.0 * uReticleP.x)).r : 0.0;
+            float selfLit = exp2(5.0 * (0.20000000298023224 * log2(1.0 + sampleR * uReticleP.y))) - 1.0;
+            color += albedo * selfLit; // source deferred self-lit is separate from albedo and presentation amplitude.
+        } else if (uGlowKind == 1) { // %7398-7440: mask and offset parallax R, K=0x06F19114
             float p = uHasGlowParallax ? texture2D(uTexGlowParallax, glowParallaxUV).r : 0.0;
             if (uSrgbGlowParallax) p = linear(vec3(p)).r;
             color += albedo * uK * glowMask * (uGlowP.y + p);
@@ -1096,7 +1110,7 @@ OPAQUE_UNIFORMS = (
     "uTwoColorMetal", "uMetalDiffuseA", "uMetalDiffuseB", "uMetalSpecA", "uMetalSpecB", "uMetalP",
     "uParallax", "uParallaxNormal", "uHasParallaxHeight", "uTexParallaxHeight", "uParallaxP",
     "uFoliage", "uAlphaCut", "uLeafColour", "uLeafP", "uLeafPalette", "uTexCma", "uHasCma", "uSrgbCma",
-    "uFresnelTint", "uFresnelC", "uFresnelE", "uFlatSurface", "uFlatColour", "uFlatSpec", "uBasicFlatColor", "uBasicFlatEmissionScale",
+    "uFresnelTint", "uFresnelC", "uFresnelE", "uFlatSurface", "uFlatColour", "uFlatSpec", "uBasicFlatColor", "uBasicFlatEmissionScale", "uVictorReticle", "uTexReticle", "uHasReticle", "uReticleP", "uReticleF0",
     "uHair", "uHairA", "uHairB", "uHairP",
     "uSkinKind", "uSkinA", "uSkinB", "uSkinC",
     "uZaFresnel", "uZaFresnelPower",

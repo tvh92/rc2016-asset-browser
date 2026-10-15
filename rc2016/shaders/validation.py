@@ -740,6 +740,41 @@ def _validate_viewer_rule_material(source, material):
             _viewer_upstream(*brdf.inputs, *emission.inputs), has_n)
         return dict(status="passed_viewer_graph_rule_frontend", terms=ported, constants=constants,
                     limitation=material.get("rc_shader_frontend_limitation"))
+    if "victor_reticle" in ported:
+        term = rule["terms"]["victor_reticle"]; params = term["params"]
+        composite = _from_node(output.inputs["Surface"])
+        assert composite and composite.type == "ADD_SHADER" and composite.name == "VR Victor reticle additive composite", \
+            "Victor reticle material flags are not represented by the additive composite"
+        clear = _from_node(composite.inputs[0]); brdf = _from_node(composite.inputs[1])
+        assert clear and clear.type == "BSDF_TRANSPARENT" and clear.name == "VR Victor reticle additive base", \
+            "Victor reticle additive composite has no transparent base"
+        assert brdf and brdf.type == "GROUP" and brdf.node_tree and brdf.node_tree.name == DEFERRED_GROUP, \
+            "Victor reticle does not use the shared deferred BRDF"
+        assert brdf.inputs[0].is_linked and brdf.inputs[1].is_linked and brdf.inputs[2].is_linked and brdf.inputs[3].is_linked, \
+            "Victor reticle albedo/F0/gloss/self-lit terms are not connected to the shared BRDF"
+        assert abs(float(brdf.inputs[7].default_value) - 1.0) < 1e-7, "Victor reticle emission must use its source scalar directly"
+        upstream = _viewer_upstream(*brdf.inputs)
+        names = {node.name for node in upstream}
+        assert "VR Victor reticle API8 source sample; t=0" in names, "Victor reticle deferred emission does not sample API8"
+        assert "VR Victor reticle EB9C8254 F0" in names and "VR Victor reticle EB9C8254 gloss" in names, \
+            "Victor reticle MRT2 F0/gloss values are not in the BRDF"
+        amplitude = next((node for node in upstream if node.name == "VR Victor reticle CB0[115] presentation amplitude"), None)
+        assert amplitude and abs(float(amplitude.outputs[0].default_value) - float(params["amplitude"])) < 1e-6, \
+            "Victor reticle amplitude is missing or differs from its labelled preview input"
+        f0_node = next((node for node in upstream if node.name == "VR Victor reticle EB9C8254 F0"), None)
+        assert f0_node and tuple(float(f0_node.inputs[i].default_value) for i in range(3)) == tuple(params["f0"]), \
+            "Victor reticle F0 differs from the lowered source output"
+        tex_path = (rule.get("textures", {}).get("_reticle") or "").lower()
+        assert tex_path and tex_path in sources and any(node.type == "TEX_IMAGE" and str(node.get("source_texture_path", "")).lower() == tex_path for node in upstream), \
+            "Victor reticle API8 source texture path is not bound to the material"
+        assert term.get("blend") == "additive" and not term.get("two_sided"), "Victor reticle material flags differ from source"
+        assert material.use_backface_culling and material.get("blend_state", "").startswith("additive"), \
+            "Victor reticle one-sided/additive material state is missing"
+        if hasattr(material, "surface_render_method"):
+            assert material.surface_render_method == "BLENDED", "Victor reticle material is not configured for the additive layer"
+        return dict(status="passed_viewer_graph_rule_frontend", terms=ported, blend="additive", source_texture=tex_path,
+                    amplitude=float(params["amplitude"]), f0=list(params["f0"]), gloss=float(params["gloss"]),
+                    constants="connected shared BRDF, source API8 self-lit, geometry normal", limitation=material.get("rc_shader_frontend_limitation"))
     brdf = _from_node(output.inputs["Surface"])
     facing = "facing_glow" in ported
     extra = ()

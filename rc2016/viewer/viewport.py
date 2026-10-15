@@ -24,7 +24,7 @@ RIG_TO_WORLD = ((1.0, 0.0, 0.0), (0.0, 0.0, -1.0), (0.0, 1.0, 0.0))
 # texture_preview entry roles uploaded as 2D GL textures, deduplicated by texture path. Other textures
 # in an entry (tint palette, screen timeline, puddle and RockBlend sources) are only sampled on the CPU.
 GL_TEXTURE_ROLES = ("_c", "_g", "_n", "_pick", "_h", "_sequence", "_tint_detail", "_bng_detail", "_vehicle_p2",
-                    "_glow_parallax", "_puddle_atlas", "_parallax_height", "_cma")
+                    "_glow_parallax", "_puddle_atlas", "_parallax_height", "_cma", "_reticle")
 
 
 # GL_TEXTURE_ROLES sampled as ordinary surface textures by UV. Palettes and sequences (_pick,
@@ -197,7 +197,9 @@ def split_forward(batches, textures):
     """(opaque, forward) batch lists; forward batches have a texture_preview 'forward' entry (glass)."""
     opaque, forward = [], []
     for batch in batches:
-        (forward if ((textures or {}).get(batch[0]) or {}).get("forward") else opaque).append(batch)
+        entry = (textures or {}).get(batch[0]) or {}
+        rule = entry.get("forward") or {}
+        (forward if rule and not rule.get('deferred_material') else opaque).append(batch)
     return opaque, forward
 
 
@@ -1332,7 +1334,13 @@ class ModelViewport(_TkFrame):
                                       (TINT_DETAIL_TEXTURE_UNIT,'uTexTintDetail')):
                         sh.glUniform1i(u[name], unit)
                 self._apply_material(u, entry, level)
+                reticle = entry.get('forward') if entry.get('forward', {}).get('kind') == 'victor_reticle' else None
+                if reticle and reticle.get('blend') == 'additive':
+                    gl.glEnable(self.GL_BLEND); gl.glBlendFunc(self.GL_SRC_ALPHA, self.GL_ONE)
+                    gl.glDepthMask(0); gl.glEnable(self.GL_CULL_FACE)
                 self._draw_range(index_array, first, count)
+                if reticle and reticle.get('blend') == 'additive':
+                    gl.glDepthMask(1); gl.glDisable(self.GL_BLEND); gl.glDisable(self.GL_CULL_FACE)
             program, u = base_program, base_u
             sh.glUseProgram(program)
             if glass:
@@ -1362,7 +1370,7 @@ class ModelViewport(_TkFrame):
 
     def _apply_material(self, u, entry, level):
         """Bind one material's textures and set its uniforms on the current opaque program."""
-        from rc2016.viewer.shading import TINT_DETAIL_TEXTURE_UNIT, PICK_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, ARCH_SEQUENCE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT, GLOW_PARALLAX_TEXTURE_UNIT, PARALLAX_HEIGHT_TEXTURE_UNIT, LEAF_CMA_TEXTURE_UNIT
+        from rc2016.viewer.shading import TINT_DETAIL_TEXTURE_UNIT, PICK_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, ARCH_SEQUENCE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT, GLOW_PARALLAX_TEXTURE_UNIT, PARALLAX_HEIGHT_TEXTURE_UNIT, LEAF_CMA_TEXTURE_UNIT, RETICLE_TEXTURE_UNIT
         gl, sh = self._gl, self._shading
         translation, textures, _experimental = self._selected_surface(entry, level)
         if translation:
@@ -1411,6 +1419,17 @@ class ModelViewport(_TkFrame):
         sh.glUniform4f(u["uFlatSpec"], float(flat.get("f0", 0.0)), float(flat.get("gloss", 0.0)), 0.0, 0.0)
         sh.glUniform1i(u["uBasicFlatColor"], 1 if flat.get("model") == "basic_flat_color" and level == 2 else 0)
         sh.glUniform1f(u["uBasicFlatEmissionScale"], float(flat.get("emission_scale", 0.0)))
+        reticle = (entry.get('forward') or {}) if (entry.get('forward') or {}).get('kind') == 'victor_reticle' else {}
+        reticle_texture = entry.get('_reticle')
+        sh.glActiveTexture(self.GL_TEXTURE0 + RETICLE_TEXTURE_UNIT)
+        gl.glBindTexture(self.GL_TEXTURE_2D, reticle_texture[0] if reticle_texture else 0)
+        sh.glUniform1i(u['uTexReticle'], RETICLE_TEXTURE_UNIT)
+        sh.glUniform1i(u['uHasReticle'], int(bool(reticle_texture)))
+        sh.glUniform1i(u['uVictorReticle'], int(bool(reticle) and level == 2))
+        rp = reticle.get('params') or {}
+        sh.glUniform4f(u['uReticleP'], float(rp.get('uv_phase', 0.0)), float(rp.get('texture_gain', 0.0)),
+                       float(rp.get('ring_tint', 0.0)), float(rp.get('amplitude', 0.0)))
+        sh.glUniform3f(u['uReticleF0'], 0.0, 0.0999755859375, 0.0999755859375)
         skin = entry.get("skin") or {}   # basic_skin writers: no extra texture besides the optional detail normal
         sh.glUniform1i(u["uSkinKind"], int(skin.get("kind", 0)))
         sh.glUniform4f(u["uSkinA"], float(skin.get("cap", 0.5)), float(skin.get("gloss_fresnel", 0.5)), float(skin.get("spec_fresnel", 1.0)), float(skin.get("exponent", 1.0)))
@@ -1573,7 +1592,7 @@ class ModelViewport(_TkFrame):
                 sh.glUniform1i(u[has], 1 if texture else 0)
                 if srgb:
                     sh.glUniform1i(u[srgb], 1 if texture and texture[1] else 0)
-            if forward.get('kind') in ('screen', 'number_display'):
+            if forward.get('kind') in ('screen', 'number_display', 'victor_reticle'):
                 self._apply_screen_forward(u, entry)
             kind, *vectors = glass_uniforms(forward)
             sh.glUniform1i(u["uKind"], kind)

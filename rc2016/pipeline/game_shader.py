@@ -1437,11 +1437,12 @@ def apply_viewer_graph_rule(mat, source):
     glow_shell = 'bright_glow' in ported and 'bright_glow' in terms   # 93695188 samples no texture
     eye_cornea = 'eye_cornea' in ported and 'eye_cornea' in terms   # A36A97CB samples _n only
     number = 'number_display' in ported and 'number_display' in terms   # 8CEC816B / 37C85F4C sample the four number slots
-    flat = terms.get('flat_surface') if 'flat_surface' in ported else None   # constant writer terms; per-writer source composition below
+    reticle = 'victor_reticle' in ported and 'victor_reticle' in terms # EB9C8254 source pass 0, exact graph identity
+    flat = terms.get('flat_surface') if 'flat_surface' in ported else None   # constant albedo, F0 and gloss, no texture
     if number and not all(img(role) is not None for role in ('_c', '_n', '_pick', '_g')):
         return False
     glass = next((k for k in GLASS_VIEWER_KINDS if k in ported and k in terms), None)   # forward glass writers sample no _c
-    if c is None and not (arch and g is not None) and not facing and not glow_shell and not eye_cornea and not number and not flat and not glass:
+    if c is None and not (arch and g is not None) and not facing and not glow_shell and not eye_cornea and not number and not reticle and not flat and not glass:
         return False
     for node in list(nt.nodes):   # keep every source image node (provenance and coverage reports)
         if node.type != 'TEX_IMAGE':
@@ -1481,6 +1482,26 @@ def apply_viewer_graph_rule(mat, source):
     geo = P.geo(); V = geo.outputs['Incoming']; Ng = geo.outputs['Normal']
     view_terms = []
     albedo = c.outputs['Color'] if c is not None else (0.0, 0.0, 0.0)
+    reticle_emission = None
+    if reticle:
+        f = terms['victor_reticle']; p = f['params']; source = img('_reticle')
+        if source is None:
+            return False
+        u, v, _ = P.uv_split()
+        du, dv = P.m('SUBTRACT', u, 0.5), P.m('SUBTRACT', v, 0.5)
+        d = P.v('LENGTH', P.comb(du, dv)); b = P.m('SUBTRACT', 1.0, d); e = P.m('ABSOLUTE', b)
+        ring = float(p['ring_tint']); amp = P.const('Victor reticle CB0[115] presentation amplitude', p['amplitude'])
+        r = P.m('MULTIPLY', P.m('MULTIPLY', 2.0, amp), e)
+        g = P.m('MULTIPLY', P.m('MULTIPLY', 2.0, amp), P.m('MULTIPLY_ADD', ring, P.m('SUBTRACT', P.m('POWER', e, 10.0), e), e))
+        b2 = P.m('MULTIPLY', b, b)
+        bl = P.m('MULTIPLY', P.m('MULTIPLY', 2.0, amp), P.m('MULTIPLY_ADD', ring, P.m('SUBTRACT', P.m('POWER', e, 20.0), b2), b2))
+        albedo = P.vsat(P.comb(r, g, bl))
+        q = P.tex(source, P.comb(1.0, 8.0 - 8.0 * float(p['uv_phase'])), 'Victor reticle API8 source sample; t=0')
+        sample = P.sep(q.outputs['Color'])[0]
+        log2x = P.m('LOGARITHM', P.m('ADD', P.m('MULTIPLY', sample, float(p['texture_gain'])), 1.0), 2.0)
+        reticle_emission = P.m('SUBTRACT', P.m('POWER', 2.0, P.m('MULTIPLY', 5.0, P.m('MULTIPLY', 0.20000000298023224, log2x))), 1.0)
+        view_terms.append('Victor reticle deferred material')
+        limits.append('Victor reticle EB9C8254: pass-0 bounded writer only; UV/time frozen at t=0; amplitude %.4g is explicit CB0[115] presentation input; geometry normal substitutes for unavailable tangent normal; pass selection and additive composite are unresolved' % float(p['amplitude']))
     leaf = terms.get('leaf_colour') if on('leaf_colour') else None
     def leaf_albedo(albedo, selected_normal):
         ndv = P.sat(P.v('DOT_PRODUCT', P.v('NORMALIZE', selected_normal), P.v('NORMALIZE', V)))
@@ -1848,6 +1869,11 @@ def apply_viewer_graph_rule(mat, source):
         if bright:   # D14A48D7: grey constant F0, gloss = sqrt(sat(G))
             fs = P.const('bright centre F0', bright['f0']); f0 = P.comb(fs, fs, fs)
             gloss_in = P.m('SQRT', P.sat(P.const('bright centre gloss', bright['gloss_sq']))); spec = gloss_scale = 1.0
+    if reticle:
+        f = terms['victor_reticle']['params']
+        f0 = P.const3('Victor reticle EB9C8254 F0', f['f0'])
+        gloss_in = P.const('Victor reticle EB9C8254 gloss', f['gloss'])
+        spec = gloss_scale = 1.0
         if hair and g is not None:
             # 94CE8CCE: F0 = B * _g.G, gloss argument sat(0.71 * _g.R * w), w = 1 - sat(|1.001 - N.V|^E) on the geometry normal.
             ndv_h = P.sat(P.v('DOT_PRODUCT', P.v('NORMALIZE', Ng), P.v('NORMALIZE', V)))
@@ -1883,6 +1909,8 @@ def apply_viewer_graph_rule(mat, source):
             self_mask = arch_self; k = 5.0 * float(arch['intensity'])   # K = 5 * intensity
         elif bright_self is not None:
             self_mask = bright_self   # K from material key 0xB7305C21
+    if reticle_emission is not None:
+        self_mask = reticle_emission; k = 1.0
     # Wire the BRDF.
     L.new(albedo, grp.inputs[0]) if isinstance(albedo, bpy.types.NodeSocket) else setattr(grp.inputs[0], 'default_value', (*albedo, 1.0))
     if f0 is None:
@@ -1944,7 +1972,19 @@ def apply_viewer_graph_rule(mat, source):
     if view_terms:
         limits.append('view-dependent terms (%s) use the Cycles Incoming vector, which is the camera direction only for camera rays'
                       % ', '.join(view_terms))
-    _finish_viewer_rule(mat, rule, 'asset viewer per-graph reading (%s _g, self-lit %s, K %.6g)' % (mode, how, k), limits)
+    if reticle:
+        # Source flags 0x9 are additive and one-sided: preserve the complete deferred BRDF and its
+        # self-lit term, then place that closure over transparency for the material composite.
+        link = out.inputs['Surface'].links[0]
+        surface = link.from_socket; L.remove(link)
+        clear = nt.nodes.new('ShaderNodeBsdfTransparent'); clear.name = clear.label = 'VR Victor reticle additive base'
+        add = nt.nodes.new('ShaderNodeAddShader'); add.name = add.label = 'VR Victor reticle additive composite'
+        L.new(clear.outputs[0], add.inputs[0]); L.new(surface, add.inputs[1]); L.new(add.outputs[0], out.inputs['Surface'])
+        mat.use_backface_culling = True
+        mat['blend_state'] = 'additive (source material flags 0x9); bounded deferred BRDF composite'
+        if hasattr(mat, 'surface_render_method'): mat.surface_render_method = 'BLENDED'
+        elif hasattr(mat, 'blend_method'): mat.blend_method = 'BLEND'
+    _finish_viewer_rule(mat, rule, ('asset viewer per-graph reading (%s _g, self-lit %s, K %.6g)' % (mode, how, k)) + ('; Victor reticle shared deferred BRDF' if reticle else ''), limits)
     return True
 
 
@@ -2076,3 +2116,4 @@ def game_light_to_blender_strength(game_rgb):
     """Game light colours are irradiance/pi (the BRDF omits 1/pi): Blender = pi * game."""
     peak = max(game_rgb) or 1.0
     return [v / peak for v in game_rgb], math.pi * peak
+
