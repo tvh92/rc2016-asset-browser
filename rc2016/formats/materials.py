@@ -457,8 +457,13 @@ def final_shader_status(build_status, rule, bound_paths, shader_translation, pro
     """
     from rc2016.formats.links import EXACT, rule_coverage
     # The arch-sequence writer never samples _c.
+    reticle_term=rule.get('terms',{}).get('victor_reticle') or {}
+    reticle_path='materialgraph/visualeffect/character/enemy/enm_victor_reticle/enm_victor_reticle.materialgraph'
     reticle_ready=(rule.get('applies') and 'victor_reticle' in rule.get('ported',()) and
-                   bool(rule.get('terms',{}).get('victor_reticle')))
+                   reticle_term.get('writer')=='EB9C8254' and reticle_term.get('graph_path')==reticle_path and
+                   reticle_term.get('graph_sha256')=='e4bcaf552be55cbc14b5081b6695a600084ae162889455b87eadc6c0103d79ea' and
+                   reticle_term.get('graph_path') in graph_paths and bool(rule.get('textures',{}).get('_reticle')) and
+                   bool(bound_paths) and rule.get('textures',{}).get('_reticle') in bound_paths)
     anchor=rule.get('textures',{}).get('_reticle' if reticle_ready else '_g' if 'arch_sequence' in rule.get('ported',()) else '_c')
     # The facing-glow writer (Qwark bulb) and the glow shell (93695188) sample no texture at all.
     glass_ready=rule.get('applies') and any(key in rule.get('ported',()) for key in ('glass_basic','glass_cg02','glass_jn'))
@@ -545,6 +550,8 @@ def viewer_graph_rule(archive, material_path, bound_paths=None):
     for key in present:
         missing=[textures[role] for role in VIEWER_TERM_ROLES.get(key,()) if textures.get(role) and bound_paths is not None
                  and textures[role].lower() not in bound]
+        if key == 'victor_reticle' and not textures.get('_reticle'):
+            missing.append('required API8 source texture slot 0x628AD5A840ED6C83 is unbound')
         if key == 'parallax':reasons[key]='multi-step height-alpha view-ray UV march and seven height shadows are not built in Blender; unshifted C/G/N only'
         elif key not in VIEWER_RULE_BUILT:reasons[key]='not built in the Blender front-end'
         elif missing:reasons[key]='sampled source texture is not a bound material texture: '+', '.join(missing)

@@ -189,7 +189,7 @@ TINT_DETAIL_TEXTURE_UNIT = 9   # ColorTintVariants; sole new sampler for prompt0
 PARALLAX_HEIGHT_TEXTURE_UNIT = 12   # separate source height-alpha slot
 TINT_MASK_TEXTURE_UNIT = 5   # _h tint mask (mo_gbl_color_tint_01)
 LEAF_CMA_TEXTURE_UNIT = 7   # Novalis tree leaf cma (rp_nov_plant_tree_foliage_transparent); the only free unit
-RETICLE_TEXTURE_UNIT = 14  # Victor reticle deferred self-lit API8 source, separate from base colour
+RETICLE_TEXTURE_UNIT = 0  # Victor reticle reuses the unbound _c sampler; its bounded rule has no _c read
 # Bones live in a 1-row RGBA32F texture (4 texels = one row-major matrix):
 # a uniform array runs out of vertex constants near 200 joints (Clank has 150,
 # bucketed to 256 it failed with NVIDIA C6020).

@@ -52,7 +52,9 @@ def extract(archive, rows=()):
 
 class VictorReticleRuleTests(unittest.TestCase):
     def test_exact_graph_prefix_and_hash_are_both_required(self):
-        self.assertEqual(tp._graph_rule([GRAPH])['forward'], 'victor_reticle')
+        self.assertEqual(tp._graph_rule([GRAPH]), {})
+        self.assertEqual(tp._graph_rule([GRAPH], {GRAPH: GRAPH_SHA})['forward'], 'victor_reticle')
+        self.assertEqual(tp._graph_rule([GRAPH], {GRAPH: '0' * 64}), {})
         self.assertEqual(rule_coverage([GRAPH])[0], EXACT)
         self.assertEqual(tp._graph_rule([GRAPH.replace('.materialgraph', '_extra.materialgraph')]), {})
         archive = archive_for()
@@ -92,6 +94,19 @@ class VictorReticleRuleTests(unittest.TestCase):
         self.assertEqual(final_shader_status('unsupported', missing, set(), {'status': 'unsupported'}, None, [], [GRAPH]),
                          'unsupported')
 
+    def test_final_route_requires_exact_graph_writer_and_bound_api8(self):
+        valid = dict(applies=True, ported=['victor_reticle'],
+            terms={'victor_reticle': {'writer': 'EB9C8254', 'graph_path': GRAPH,
+                'graph_sha256': GRAPH_SHA}}, textures={'_reticle': TRIGGER})
+        args = ('unsupported', valid, {TRIGGER}, {'status': 'unsupported'}, None, [])
+        self.assertEqual(final_shader_status(*args, [GRAPH]), 'viewer_graph_rule_frontend')
+        for field, value in (('graph_path', GRAPH.replace('.materialgraph', '_other.materialgraph')),
+                             ('graph_sha256', '0' * 64), ('writer', '11408DE9')):
+            rejected = dict(valid)
+            rejected['terms'] = {'victor_reticle': dict(valid['terms']['victor_reticle'], **{field: value})}
+            self.assertEqual(final_shader_status(args[0], rejected, *args[2:], [GRAPH]), 'unsupported')
+        self.assertEqual(final_shader_status(*args[:1], valid, set(), *args[3:], [GRAPH]), 'unsupported')
+
     def test_malformed_nonfinite_and_unsupported_explicit_values_fail_closed(self):
         cases = ([f32(GAIN_KEY, math.nan)], [f32(GAIN_KEY, math.inf)],
                  [f32(GAIN_KEY, 4.0, size=8)], [f32(GAIN_KEY, 4.0, raw='not-hex')])
@@ -103,24 +118,10 @@ class VictorReticleRuleTests(unittest.TestCase):
                       self.assertRaises(ValueError)):
                     extract(archive, rows)
 
-    def test_source_equation_vectors_and_deferred_contract(self):
-        # Independently evaluated writer output; A is the explicitly labelled preview input.
-        def albedo(u, v, amp=0.5, ring=0.0):
-            d = math.hypot(u - 0.5, v - 0.5); b = 1.0 - d; e = abs(b)
-            return tuple(min(1.0, max(0.0, x)) for x in (
-                2 * amp * e,
-                2 * amp * (e + ring * (e**10 - e)),
-                2 * amp * (b**2 + ring * (e**20 - b**2))))
-        self.assertEqual(albedo(.5, .5), (1.0, 1.0, 1.0))
-        self.assertEqual(albedo(1.5, .5), (0.0, 0.0, 0.0))
-        self.assertEqual(albedo(1.0, .5), (0.5, 0.5, 0.25))
-        ring_vector = albedo(.75, .5, ring=.25)
-        self.assertAlmostEqual(ring_vector[0], .75, places=7)
-        self.assertAlmostEqual(ring_vector[1], .5765783786773682, places=7)
-        self.assertAlmostEqual(ring_vector[2], .4226678029847335, places=7)
+    def test_source_equation_contract_metadata(self):
         encoded = math.exp2(5 * (0.20000000298023224 * math.log2(1 + 0.5 * 4.0))) - 1
         self.assertAlmostEqual(encoded, 2.0, places=6)
-        terms = tp._graph_rule([GRAPH])['constants']
+        terms = tp._graph_rule([GRAPH], {GRAPH: GRAPH_SHA})['constants']
         self.assertEqual(terms['f0'], [0.0, 0.0999755859375, 0.0999755859375])
         self.assertEqual(terms['gloss'], 0.0)
 

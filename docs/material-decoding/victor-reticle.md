@@ -2,7 +2,7 @@
 
 The material graph `materialgraph/visualeffect/character/enemy/enm_victor_reticle/enm_victor_reticle.materialgraph` has SHA-256 `e4bcaf552be55cbc14b5081b6695a600084ae162889455b87eadc6c0103d79ea`. The bounded rule is guarded by that graph identity and ports writer `EB9C8254` (`0xeb9c8254`). Both compiled copies of that writer lower without unresolved output nodes. The graph's unsupported loop and exec-masked alternatives are outside this rule.
 
-The writer samples API8 through slot `0x628AD5A840ED6C83`, whose default is `textures/visualeffect/trigger/trigger_linear_01_c.texture` (512×1 RGBA8 UNORM, non-sRGB). Material records include a similarly named `_c` texture, but the writer's API8 slot determines this sample. `CB2[1]` has material instance key `0xFD5FF119` and value 4.0. `CB2[0]` is frozen at 0, so the sample coordinates are `(1, 8)` at preview time 0. The ring tint is `CB2[2]` (default 0).
+The writer samples API8 through slot `0x628AD5A840ED6C83`, whose default is `textures/visualeffect/trigger/trigger_linear_01_c.texture` (512×1 RGBA8 UNORM, non-sRGB). Material records include a similarly named `_c` texture, but the writer's API8 slot determines this sample. `CB2[1]` has material instance key `0xFD5FF119` and value 4.0. `CB2[0]` is the material UV phase (instance key `0x76C88A95`, current/default value 0), so the source coordinates are `(1, 8)` for this material. Separately, engine time `CB0[99]` is frozen at 0 in the preview. The ring tint is `CB2[2]` (instance key `0xCC2FE3CC`, default 0).
 
 With UV0 `(u,v)`, `d = length((u,v) - (0.5,0.5))`, `b = 1-d`, and `e = abs(b)`, the writer's MRT1 albedo is:
 

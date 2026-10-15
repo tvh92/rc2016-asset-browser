@@ -501,6 +501,12 @@ def _viewer_expected_constants(rule):
         p = terms["number_display"]["params"]
         e.update({"number distort": p["distort"], "number b scale": p["b_scale"], "number vignette w": p["vignette_w"],
                   "number kc": p["kc"], "number ko": p["ko"], "number amplitude": p["amplitude"]})
+    if "victor_reticle" in ported:
+        p = terms["victor_reticle"]["params"]
+        e.update({"Victor reticle CB2[0] material UV phase": p["uv_phase"],
+                  "Victor reticle CB2[1] API8 gain": p["texture_gain"],
+                  "Victor reticle CB2[2] ring tint": p["ring_tint"],
+                  "Victor reticle CB0[115] presentation amplitude": p["amplitude"]})
     return {"VR " + name: value for name, value in e.items()}
 
 
@@ -605,6 +611,10 @@ def _viewer_required(rule, has_n):
     if "number_display" in ported:
         names += ["number distort", "number b scale", "number vignette w", "number kc", "number ko", "number amplitude"]
         req("_c", "_n", "_pick", "_g")
+    if "victor_reticle" in ported:
+        names += ["Victor reticle CB2[0] material UV phase", "Victor reticle CB2[1] API8 gain",
+                  "Victor reticle CB2[2] ring tint", "Victor reticle CB0[115] presentation amplitude"]
+        req("_reticle")
     return ["VR " + name for name in names], roles
 
 
@@ -742,6 +752,10 @@ def _validate_viewer_rule_material(source, material):
                     limitation=material.get("rc_shader_frontend_limitation"))
     if "victor_reticle" in ported:
         term = rule["terms"]["victor_reticle"]; params = term["params"]
+        assert term.get("writer") == "EB9C8254", "Victor reticle writer identity differs from the bounded source rule"
+        assert term.get("graph_path") == "materialgraph/visualeffect/character/enemy/enm_victor_reticle/enm_victor_reticle.materialgraph" and \
+            term.get("graph_sha256") == "e4bcaf552be55cbc14b5081b6695a600084ae162889455b87eadc6c0103d79ea", \
+            "Victor reticle graph identity differs from the bounded source rule"
         composite = _from_node(output.inputs["Surface"])
         assert composite and composite.type == "ADD_SHADER" and composite.name == "VR Victor reticle additive composite", \
             "Victor reticle material flags are not represented by the additive composite"
@@ -772,9 +786,12 @@ def _validate_viewer_rule_material(source, material):
             "Victor reticle one-sided/additive material state is missing"
         if hasattr(material, "surface_render_method"):
             assert material.surface_render_method == "BLENDED", "Victor reticle material is not configured for the additive layer"
+        assert params.get("time") == 0.0 and params.get("time_input") == "CB0[99]", \
+            "Victor reticle preview must document its frozen engine time input"
+        constants = _viewer_check_constants_and_images(source, material, rule, upstream, has_n)
         return dict(status="passed_viewer_graph_rule_frontend", terms=ported, blend="additive", source_texture=tex_path,
                     amplitude=float(params["amplitude"]), f0=list(params["f0"]), gloss=float(params["gloss"]),
-                    constants="connected shared BRDF, source API8 self-lit, geometry normal", limitation=material.get("rc_shader_frontend_limitation"))
+                    constants=constants, limitation=material.get("rc_shader_frontend_limitation"))
     brdf = _from_node(output.inputs["Surface"])
     facing = "facing_glow" in ported
     extra = ()

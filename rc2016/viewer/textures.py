@@ -38,7 +38,7 @@ SRGB_FORMATS = {29, 72, 75, 78, 91, 93, 99}   # decoded to linear in the shader
 MIN_PREVIEW_SIZE = 512   # ~0.25 s per 1024² texture to untile
 
 
-ROLES = ('_c', '_g', '_n', '_pick', '_h', '_reticle')   # base colour, specular + gloss, tangent normal, colour-pick palette, tint mask, Victor API8 source
+ROLES = ('_c', '_g', '_n', '_pick', '_h')   # base colour, specular + gloss, tangent normal, colour-pick palette, tint mask
 PICK_SUFFIX = '_colorpick_c'
 # Novalis tree leaf (rp_nov_plant_tree_foliage_transparent, writer 0476D929). Slot hashes are read from the
 # material slot tables of the Novalis tree leaf materials; the cma/cmb roles are the names of the bound
@@ -422,14 +422,20 @@ def fur_shell_grey_reading(material_path, graphs, data):
 
 
 def _graph_rule(graphs, graph_hashes=None):
+    hashes = {str(path).replace('\\', '/').lower(): value for path, value in (graph_hashes or {}).items()}
     for prefix, rule in GRAPH_RULES:
         for graph in graphs:
-            if not graph.startswith(prefix):
+            normalized = str(graph).replace('\\', '/').lower()
+            if not normalized.startswith(prefix):
                 continue
-            required = rule.get('_graph_sha256')
-            if required and (graph_hashes or {}).get(graph.lower()) != required:
+            required = rule.get('_graph_sha256') or rule.get('graph_sha256')
+            if required and hashes.get(normalized) != required:
                 continue
-            return {key: value for key, value in rule.items() if key != '_graph_sha256'}
+            selected = {key: value for key, value in rule.items() if key not in ('_graph_sha256', 'graph_sha256')}
+            if required:
+                selected['graph_path'] = normalized
+                selected['graph_sha256'] = required
+            return selected
     return {}
 
 
@@ -614,8 +620,10 @@ def material_texture_paths(archive, material_path: str) -> dict:
         return list(values) if width == 12 else values[0]
 
     rule = _graph_rule(graphs, graph_hashes)
-    if rule.get('graph_sha256') and not any(graph_hashes.get(g.replace('\\', '/').lower()) == rule['graph_sha256'] for g in graphs):
-        rule = {}
+    if rule.get('graph_sha256'):
+        exact_path = rule.get('graph_path')
+        if not exact_path or graph_hashes.get(exact_path) != rule['graph_sha256']:
+            rule = {}
     if rule.get('flat_surface') == 'basic_flat_color':
         graph_path = next((g.replace('\\', '/').lower() for g in graphs
                            if g.replace('\\', '/').lower().startswith('materialgraph/global/basic_flat_color/basic_flat_color.')
@@ -967,6 +975,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
             result.pop('_h', None)
         result['forward'] = dict(kind=rule['forward'], params=params,
                                  **({'writer': rule['writer']} if rule.get('writer') else {}),
+                                 **({'graph_path': rule['graph_path'], 'graph_sha256': rule['graph_sha256']}
+                                    if rule.get('graph_path') and rule.get('graph_sha256') else {}),
                                  **blend_state(material_flags(data)))
         if rule['forward'] == 'victor_reticle':
             # EB9C8254 is a deferred material writer (ALBEDO/F0/gloss/self-lit), not a forward coverage shader.
@@ -974,7 +984,10 @@ def material_texture_paths(archive, material_path: str) -> dict:
                 raise ValueError('Victor reticle has non-finite explicit material/presentation parameters')
             if params['amplitude'] < 0.0 or params['texture_gain'] < 0.0:
                 raise ValueError('Victor reticle bounded preview does not preserve negative amplitude or emission gain')
-            result['_reticle'] = result.pop('_reticle', None) or result.get('_c')
+            # This slot is the writer's API8 source. Do not substitute the material's
+            # unrelated base-colour slot when the API8 binding is absent.
+            if not result.get('_reticle'):
+                result.pop('_reticle', None)
             result.pop('_c', None)
             result['forward']['deferred_material'] = True
     if rule.get('flat_surface'):
@@ -1520,11 +1533,15 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             entry['alpha_cut'] = float(paths['alpha_cut'])
         if 'za_fresnel_power' in paths:
             entry['za_fresnel_power'] = paths['za_fresnel_power']
-        for role in (*ROLES, *(('_parallax_height',) if paths.get('parallax') else ()), *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') or paths.get('skin_detail') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ()), *(('_cma',) if paths.get('leaf_colour') else ())):
+        for role in (*ROLES, *(('_reticle',) if paths.get('forward', {}).get('kind') == 'victor_reticle' and paths.get('_reticle') else ()), *(('_parallax_height',) if paths.get('parallax') else ()), *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') or paths.get('skin_detail') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ()), *(('_cma',) if paths.get('leaf_colour') else ())):
             path = paths.get(role)
             if not path:
                 continue
-            entry[role] = _cached_texture(archive, cache, path)
+            loaded = _cached_texture(archive, cache, path)
+            if role == '_reticle' and loaded is None:
+                entry.pop(role, None)
+            else:
+                entry[role] = loaded
         if paths.get('tint', {}).get('variant'):
             entry['tint'] = dict(entry['tint'])
             for role in ('_tint_detail', '_tint_palette'):
