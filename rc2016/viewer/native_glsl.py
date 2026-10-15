@@ -230,13 +230,21 @@ TRANSLATION_DISK_CACHE_VERSION = 1
 TRANSLATION_DISK_CACHE_BYTES = 256 * 1024 ** 2
 
 
+# Shader modules the translation never imports (census, validation and node checks only read its
+# results), so editing them keeps the cache. tests/test_translation_cache.py checks the list
+# against the import closure of rc2016.shaders.bindings.
+TRANSLATION_CODE_EXCLUDED = frozenset({'census.py', 'instance_transform.py', 'nodes.py', 'validation.py'})
+
+
 def _translation_code_sha256():
-    """The translator's own sources: any change to them invalidates every cached translation."""
+    """The sources that produce a cached translation (``prepare_translation`` and the material
+    parameters it reads): any change to them invalidates every cached translation. This module
+    is not among them; its storage format is versioned by TRANSLATION_DISK_CACHE_VERSION."""
     from pathlib import Path
     package = Path(__file__).resolve().parents[1]
-    files = sorted((package / 'shaders').glob('*.py')) + [
+    files = sorted(f for f in (package / 'shaders').glob('*.py') if f.name not in TRANSLATION_CODE_EXCLUDED) + [
         package / 'formats' / 'materials.py', package / 'formats' / 'container.py', package / 'common.py',
-        package / 'viewer' / 'native_glsl.py', package.parent / 'third_party' / 'opengnm' / 'gcn_types.h']
+        package / 'pipeline' / 'render_state.py', package.parent / 'third_party' / 'opengnm' / 'gcn_types.h']
     try:
         return hashlib.sha256(b''.join(f.name.encode() + f.read_bytes() for f in files)).hexdigest()
     except OSError:   # frozen executable without sources: no disk cache

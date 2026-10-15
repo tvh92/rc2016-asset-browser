@@ -118,6 +118,11 @@ def graph_stream_evidence(data,program=None):
     return set(normal_attributes),dict(stream_channels)
 
 
+def _prefetch_stream_evidence(data):
+    try:graph_stream_evidence(data)
+    except Exception:pass   # the caller's own graph_stream_evidence call computes and reports it
+
+
 def pass_contracts(data):
     """Partition raw layout rows by source counts, including empty passes.
 
@@ -489,7 +494,12 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False,
     if len(graph_datas)!=1:
         result['diagnostics'].append('Translation requires one unambiguous source graph');return result
     if static_vector and not world_position:raise ValueError('Static vector inputs require experimental binding')
-    data=bytes(graph_datas[0]);graph=compiled(data,allow_independent_samplers=world_position)
+    data=bytes(graph_datas[0])
+    if world_position and _POOL_WORKERS>1:
+        # The stream analysis and the compile are independent and each takes seconds on a large graph:
+        # start the analysis in a second worker process, then wait for it below (_once serialises them).
+        threading.Thread(target=_prefetch_stream_evidence,args=(data,),daemon=True,name='stream-evidence').start()
+    graph=compiled(data,allow_independent_samplers=world_position)
     normal_attributes=set();stream_channels={}
     if world_position:
         normal_attributes,stream_channels=graph_stream_evidence(data)

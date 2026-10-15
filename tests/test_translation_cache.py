@@ -107,5 +107,41 @@ class TranslationDiskCacheTests(unittest.TestCase):
         self.assertEqual(calls, [([b'graph'], b'material', True)])
 
 
+class TranslationCodeKeyTests(unittest.TestCase):
+    def test_excluded_modules_are_not_imported_by_the_translator(self):
+        """A module outside the code hash must not be reachable from prepare_translation."""
+        import ast
+        from rc2016.viewer.native_glsl import TRANSLATION_CODE_EXCLUDED
+        root = Path(__file__).resolve().parents[1]
+        shaders = root / 'rc2016' / 'shaders'
+        seen, stack = set(), ['bindings']
+        while stack:
+            name = stack.pop()
+            if name in seen:
+                continue
+            seen.add(name)
+            for node in ast.walk(ast.parse((shaders / f'{name}.py').read_text(encoding='utf-8'))):
+                if isinstance(node, ast.ImportFrom) and node.module == 'rc2016.shaders':
+                    stack.extend(a.name for a in node.names if (shaders / f'{a.name}.py').exists())
+                elif isinstance(node, ast.ImportFrom) and (node.module or '').startswith('rc2016.shaders.'):
+                    stack.append(node.module.split('.')[2])
+                elif isinstance(node, ast.Import):
+                    stack.extend(a.name.split('.')[2] for a in node.names if a.name.startswith('rc2016.shaders.'))
+        self.assertIn('translator', seen)
+        self.assertEqual({f'{n}.py' for n in seen} & TRANSLATION_CODE_EXCLUDED, set())
+        for name in TRANSLATION_CODE_EXCLUDED:
+            self.assertTrue((shaders / name).exists(), name)
+
+    def test_hash_ignores_the_excluded_modules_and_native_glsl(self):
+        from rc2016.viewer import native_glsl
+        self.assertIsNotNone(native_glsl._TRANSLATION_CODE_SHA256)
+        sources = Path(native_glsl.__file__).resolve().parents[1]
+        with patch.object(Path, 'read_bytes', autospec=True,
+                          side_effect=lambda self: (_ for _ in ()).throw(AssertionError(self.name))
+                          if self.name in native_glsl.TRANSLATION_CODE_EXCLUDED | {'native_glsl.py'} else b'x'):
+            self.assertEqual(len(native_glsl._translation_code_sha256()), 64)
+        self.assertTrue((sources / 'shaders' / 'translator.py').exists())
+
+
 if __name__ == '__main__':
     unittest.main()
