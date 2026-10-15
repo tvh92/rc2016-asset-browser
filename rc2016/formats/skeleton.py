@@ -1,6 +1,8 @@
 """Validated model SQT layout plus per-model inverse-bind/inheritance evidence."""
+import json
 import math
 import struct
+from pathlib import Path
 import numpy as np
 from rc2016.formats.container import read_container
 from rc2016.formats.animation_transforms import model_skeleton
@@ -61,6 +63,23 @@ def check_profile_inheritance(rows, inverses, rule):
     if error is None or error >= INVERSE_BIND_TOLERANCE:
         raise ValueError('Profile inheritance rule does not fit the model inverse binds: '+rule)
     return error
+
+
+SSC0 = 'segment_scale_compensation_bit0'
+PROFILE_FOLDER = Path(__file__).resolve().parents[1] / 'pipeline' / 'model_profiles'
+
+
+def bundled_profile(model_sha256):
+    """The hash-bound model profile shipped for this exact source model, or None."""
+    path = PROFILE_FOLDER / (model_sha256 + '.json')
+    return json.loads(path.read_text(encoding='utf-8')) if path.is_file() else None
+
+
+def inheritance_rule(profile):
+    """The rule a preview that has no per-clip candidate comparison applies: the profile's, else the single
+    inverse-bind-compatible one, else the pipeline default (SSC0)."""
+    candidates = profile['inheritance_candidates']
+    return profile.get('inheritance') or (candidates[0] if len(candidates) == 1 else SSC0)
 
 
 def inspect_model(path, override=None):
