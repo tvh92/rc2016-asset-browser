@@ -1,0 +1,13 @@
+{
+  "schema": "ps4-model-profile-v1",
+  "model_sha256": "1fbed4a7ad498c57885b3765a61a0601c1bf691d1fa0c73f893abfef65d01388",
+  "coordinate_units": "Unchanged source numeric units; no mesh position correction.",
+  "source_to_blender_units": 1.0,
+  "inheritance": "full",
+  "profile_evidence": {
+    "basis": "The real-time cutscene shots (nov_mayor_rt_shot2 to shot7) diverge under the two rules. Under the default segment_scale_compensation_bit0 (SSC0) rule, shots 5 and 6 collapse into shattered geometry in the Blender bake. Under full inheritance the same samples give coherent poses (knee bend, head angle, arm placement) in shots 4 to 7; shots 2 and 3 are nearly unchanged.",
+    "consistency": "Visual review of renders from the cached samples, one frame per shot. Pixel-level difference between the two rules is largest in shots 4 to 7.",
+    "runtime_engine_semantics_verified": false,
+    "scope": "Selects the full inheritance rule for this exact source model (npc_mayor). Not a capture-verified in-game claim; the cane grip was not verified at close range."
+  }
+}
