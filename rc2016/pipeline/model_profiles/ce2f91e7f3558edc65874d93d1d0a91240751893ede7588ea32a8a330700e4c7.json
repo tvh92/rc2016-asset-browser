@@ -1,0 +1,12 @@
+{
+  "schema": "ps4-model-profile-v1",
+  "model_sha256": "ce2f91e7f3558edc65874d93d1d0a91240751893ede7588ea32a8a330700e4c7",
+  "coordinate_units": "Unchanged source numeric units; no mesh position correction.",
+  "source_to_blender_units": 1.0,
+  "inheritance": "full",
+  "profile_evidence": {
+    "basis": "Chosen by the project owner after comparing Blender builds of Shiv's real-time cutscene shots under the default segment_scale_compensation_bit0 (SSC0) rule and under full inheritance. Numerically SSC0 is the better-conditioned rule for these shots (worst joint basis condition number 7.2 against 51.7 for full on vel_qwark_rt shots 20 to 22), so this is a visual preference, not a measured fit.",
+    "runtime_engine_semantics_verified": false,
+    "scope": "Selects the full inheritance rule for this exact source model (npc_shiv). Not a capture-verified in-game claim."
+  }
+}
