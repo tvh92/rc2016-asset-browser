@@ -247,7 +247,7 @@ Animation (matrix error tolerance `1e-4`, `rc2016/pipeline/bulk_checks.py`):
 
 Scene defaults come from `rc2016/pipeline/scene_defaults.py` (`apply_new_scene_defaults`, `audit_scene`): 3840 x 2560 at 100%, PNG RGBA at 100% compression, transparent film, adaptive sampling with denoising, 96 samples (32 viewport preview), adaptive threshold 0.04, 5 total bounces (2 diffuse, 2 glossy, 4 transmission, 6 transparent, 0 volume), Light Tree, Persistent Data.
 
-New scene builds use the reference orientation (`CAMERA_EULER_DEGREES`), a 50 mm perspective lens and `frame_camera_zoom` to fill 1/1.10 of the frame on the longer screen axis. `fit_render_region` enables Crop to Render Region and fits the visible evaluated mesh with 10% padding on the longer screen axis and 7% on the shorter. Camera rotation stays fixed while the camera moves to fit and centre the model. Mesh-less diagnostic rigs retain the full frame and the joint-fitted camera, with the fallback recorded in the embedded Render Region receipt.
+New scene builds use the reference orientation (`CAMERA_EULER_DEGREES`), a 50 mm perspective lens and `frame_camera_zoom` to fill 1/1.10 of the frame on the longer screen axis. `fit_render_region` enables Crop to Render Region and fits the visible evaluated mesh with 10% padding on the longer screen axis and 7% on the shorter, raised to at least 25% horizontally so the crop leaves space beside the model. Camera rotation stays fixed while the camera moves to fit and centre the model. Mesh-less diagnostic rigs retain the full frame and the joint-fitted camera, with the fallback recorded in the embedded Render Region receipt.
 
 ## Cache reuse and the implementation hash
 
