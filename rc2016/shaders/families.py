@@ -85,7 +85,7 @@ FAMILY_REGISTRY = {
         "limitations": [
             "Blend and cull come from each material's flags word (.material section 0xE1275683; rc2016.pipeline.render_state): flags & 3 = 1 additive, 2 alpha-over; bit 2 set = two-sided (back faces shown, no cull). The Blarg visor (0x0020003A) is alpha-over. No capture of a character_glass draw exists, so two-sided character glass is taken from the decoded flag rule, not a draw.",
             "Per-instance fade (instance buffer) and interpolant attr0.w are taken as 0 and 1; the flag-gated dissolve/alpha-test block is not modelled.",
-            "Light-loop specular and probe/SSR reflection are represented by a Cycles GGX lobe tinted by the decoded reflection tint; their inner engine equations are not traced.",
+            "Light-loop specular is a Schlick-GGX lobe with F0 = the decoded reflection tint and F90 = sat(60 F0) (the engine constants 60 and 0.353553 sit at the same positions in 34D5B21C as in the captured 4DF1D438, whose light loop is read in full); the 34D5B21C accumulation itself is not traced, and probe/SSR reflection is not a separate term.",
             "The env-probe colour E in the body term is a constant (captured ambient radiance when available).",
             "Fog is not applied in the material.",
         ],

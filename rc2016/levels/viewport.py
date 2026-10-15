@@ -1376,7 +1376,7 @@ class LevelViewport(ModelViewport):
                 self._apply_screen_forward(u, entry)
             kind, *vectors = glass_uniforms(forward)
             sh.glUniform1i(u["uKind"], kind)
-            for name, vector in zip(("uA", "uB", "uC", "uD"), vectors):
+            for name, vector in zip(("uA", "uB", "uC", "uD", "uE"), vectors):
                 sh.glUniform4f(u[name], *(float(x) for x in vector))
             self._draw_span(model, span, groups)
         gl.glDepthMask(1); gl.glDisable(self.GL_BLEND); gl.glDisable(self.GL_CULL_FACE)

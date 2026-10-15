@@ -383,6 +383,15 @@ def _viewer_upstream(*sockets):
     return list(seen.values())
 
 
+# Source-rule parameters each forward glass writer front-end (game_shader._viewer_rule_glass) builds as 'VR glass <name>'.
+GLASS_CONSTANTS = {
+    "glass_basic": ("tint", "rim bias", "body", "gloss", "f0 base", "rim exp"),
+    "glass_jn": ("tint", "rim bias", "colour", "weight", "gloss", "f0 base", "rim exp"),
+    "glass_cg02": ("rim colour", "gloss", "body", "tint scale", "tint", "env scale", "rim exp", "rim mult", "rim cap",
+                   "alpha floor", "env exp", "alpha exp"),
+}
+
+
 def _viewer_expected_constants(rule):
     """'VR <name>' constant -> value, derived from the source rule alone (rc_game_shader._ViewerNodes)."""
     terms, ported = rule.get("terms") or {}, set(rule.get("ported") or ())
@@ -469,6 +478,12 @@ def _viewer_expected_constants(rule):
                   "cornea fresnel bias": p["fresnel_bias"], "cornea fresnel power": p["fresnel_power"],
                   "cornea reflect base": p["reflect_base"], "cornea alpha bias": p["alpha_bias"],
                   "cornea reflect weight": p["reflect_weight"]})
+    for key in ("glass_basic", "glass_cg02", "glass_jn"):
+        if key in ported:
+            p = terms[key]["params"]
+            e.update({"glass " + name: p[name.replace(" ", "_")] for name in GLASS_CONSTANTS[key]})
+            if key == "glass_cg02" and (rule.get("textures") or {}).get("_n"):
+                e.update({"glass normal u": p["normal_u"], "glass normal v": p["normal_v"]})
     if "screen" in ported:
         p = terms["screen"]["params"]
         e.update({"screen grid": p["grid"], "screen alpha base": p["alpha_base"], "screen mask strength": p["mask_strength"],
@@ -568,6 +583,11 @@ def _viewer_required(rule, has_n):
         names += ["cornea fresnel normal scale", "cornea env normal scale", "cornea fresnel bias", "cornea fresnel power",
                   "cornea reflect base", "cornea alpha bias", "cornea reflect weight"]
         req("_n")
+    for key in ("glass_basic", "glass_cg02", "glass_jn"):
+        if key in ported:
+            names += ["glass " + name for name in GLASS_CONSTANTS[key]]
+            if key == "glass_cg02" and tex.get("_n"):
+                names += ["glass normal u", "glass normal v"]; req("_n")
     if "screen" in ported:
         names += ["screen alpha base", "screen mask strength", "screen colour A", "screen colour B", "screen intensity A",
                   "screen intensity B"] + (["screen grid"] if tex.get("_n") else [])
@@ -662,6 +682,23 @@ def _validate_viewer_rule_material(source, material):
         assert two_sided or "VR cull back faces" in names, "Number display back faces are not culled"
         constants = _viewer_check_constants_and_images(source, material, rule, upstream, has_n)
         return dict(status="passed_viewer_graph_rule_frontend", terms=ported, blend="opaque", constants=constants,
+                    limitation=material.get("rc_shader_frontend_limitation"))
+    glass = next((key for key in ("glass_basic", "glass_cg02", "glass_jn") if key in ported), None)
+    if glass:   # Surface = Cull(blend(alpha; lit = diffuse/emission + F90 * Schlick-GGX))
+        upstream = _viewer_upstream(output.inputs["Surface"])
+        names = {node.name for node in upstream}
+        term = rule["terms"][glass]
+        blend, two_sided = term.get("blend"), term.get("two_sided")
+        assert {"VR glass lit", "VR glass specular", "VR glass weight"} <= names, "Glass lit/specular terms are not the output"
+        assert (blend == "opaque" or ("VR glass blend additive" if blend == "additive" else "VR glass alpha weight") in names), \
+            "Glass blend node differs from the flags word"
+        assert blend in ("opaque", "additive", "alpha_over"), "Glass blend is not decoded"
+        assert two_sided or "VR cull back faces" in names, "Glass back faces are not culled"
+        assert material.use_backface_culling == (not two_sided), "Glass material back-face culling differs from the flags word"
+        if hasattr(material, "surface_render_method"):
+            assert material.surface_render_method == ("DITHERED" if blend == "opaque" else "BLENDED"), "Glass render method differs from the blend"
+        constants = _viewer_check_constants_and_images(source, material, rule, upstream, has_n)
+        return dict(status="passed_viewer_graph_rule_frontend", terms=ported, blend=blend, constants=constants,
                     limitation=material.get("rc_shader_frontend_limitation"))
     if "bright_glow" in ported:   # Surface = Cull(Add(Transparent, Emission(Clo + (C - Clo) x^2, 7 amp sat(x))))
         upstream = _viewer_upstream(output.inputs["Surface"])

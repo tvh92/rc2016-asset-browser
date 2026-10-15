@@ -222,17 +222,30 @@ The proof uses viewer lighting, no SSR or fog attenuation, and fixed normal fade
 
 ### Character glass
 
-`character_glass` (character visors, and glass graphs that share the shader) is decoded from its native forward pixel shader `34D5B21C`, which has no cached SPIR-V. `apply_character_glass` builds group "RC PS4 character_glass forward" (`GLASS_GROUP_VERSION` 3):
+`character_glass` (character visors, and glass graphs that share the shader) is decoded from its native forward pixel shader `34D5B21C`, which has no cached SPIR-V. `apply_character_glass` builds group "RC PS4 character_glass forward" (`GLASS_GROUP_VERSION` 5):
 
 ```
-out   = Transparent(1 - alpha·A) + alpha · (Diffuse(B·(1 + k·F·T·E)) + GGX(tint, rough))
+out   = Transparent(1 - alpha·A) + alpha · (Diffuse(B·(1 + k·F·T·E)) + F90 · Schlick-GGX(F0 = tint, rough))
 alpha = (1.001 - N·V)^P8 · (P10 + sat(P11 + sat(4·(1 - N·V)^P13)))
-F     = (1.001 - N·V)^P12,   T = sat(4·sqrt(1 - N·V))
+F     = (1.001 - N·V)^P12,   T = sat(4·sqrt(1 - N·V)),   F90 = sat(60·F0)
 ```
 
 - A = 0 for additive blend (SRC_ALPHA, ONE) and 1 for alpha-over (SRC_ALPHA, ONE_MINUS_SRC_ALPHA); it is taken from the material flags word (`character_glass_blend`), and the call fails if the flags are not a one-sided additive or alpha-over word.
 - E is the captured Veldin ambient radiance `c0` from `assets/game_view/rc_game_view.json`, or black if the file is unavailable.
+- The lobe has the game's Fresnel `F = F0 + (sat(60·F0) - F0)(1 - V·H)^5` with F0 = the decoded reflection tint. The constants 60 and 0.353553 (the visibility term below) are in the engine light loop that `34D5B21C` shares with the captured `4DF1D438` and `4FC5703F`; the `34D5B21C` accumulation itself is not traced, and the Blender front-end collapses the per-channel F90 to its maximum.
 - The additive blend was confirmed on a captured `character_glass_02` draw. Hash-bound profiles for other glass recipes take precedence where they exist.
+
+### Forward glass writers
+
+`basic_glass`, `character_glass_02` and `jn_glass` have exact viewer rules (`textures.py` `GRAPH_RULES`, forward kinds `glass_basic`, `glass_cg02`, `glass_jn`; `GLASS_FRAGMENT` `uKind` 8 to 10) and a Blender front-end built through the viewer-rule route (`game_shader._viewer_rule_glass`, status `viewer_graph_rule_frontend`, reopen-validated by `validation._validate_viewer_rule_material`). They replace the former `thin_glass_approximation`. All three use the engine light-loop lobe `F = F0 + (sat(60·F0) - F0)(1 - V·H)^5`, `k = (0.353553·(alpha + 1))^2`, GGX alpha `2^(-5.5·sqrt(gloss))`; the blend and culling come from the flags word.
+
+| Graph (writer) | Decoded terms |
+| --- | --- |
+| `basic_glass` (`4FC5703F`, table 0) | `rim = sat(4·(1 - N·V)^P9)`, `alpha = sat(P3 + rim)`, `F0 = sat(T / luma(T))·(P8 + rim^10)`, `rgb = body·L + specular`. Keys: tint `4B4DAB19`, P3 `42170E5E`, body `7C456482`, gloss `24F4CA4C`, P8 `62835AF9`, P9 `ECE213A3`. Alpha and colour were matched on a captured draw (268 fragments). |
+| `character_glass_02` (`4DF1D438`) | `alpha = sat(sat(floor + sat(4·(1 - N·V)^x)))`; `X = B·(1 + k·P·E·S)`; `Q = clamp(m·(C + X)·(1.001 - sat(N'·V))^r + X, 0, cap)`; `rgb = Q·L + specular`, `F0 = sat(scale·sat(T / luma(T)))`; `N'` is the `_n` slot (`0x49A7866B7AE34E7A`) at `(U·u, V·v)`. The flag words gate `L` (0x20) and the specular term (0x40); the captured word `0x2261` has both. |
+| `jn_glass` (`E7118623`, table 0) | Read from the native program against `4FC5703F`: the same alpha `sat(P3 + rim)` with `attr0.w` and no instance fade, the same `F0` and lobe, and a final `rgb = C + w·X` with `C` = `7F058428` and `w` = `EBF9478B`. No body term in this table. |
+
+Limitations, kept visible in the rule and in `rc_shader_frontend_limitation`: the light list, shadows, probes, SSR and fog (`t` = 1, `F` omitted) are the viewer rig or Cycles lighting; the instance fade `b` is 0, `attr0.w` is 1 and the geometric-AA gloss term is 0; the instance flag word (which gates the diffuse and specular terms) is the captured one; the normal-map strength `CB0[95]` and fade of `character_glass_02` are taken as 1 and 0; the second program of each graph (table 1: `81FA6EFC`, `7445DF75`, `3168242A`, with no rim keys) is not selected, since no draw binds it, and the `basic_glass` table-1 alpha is `sat(attr0.w)`. In `jn_glass`, the composite `X` multiplied by `w` is taken as the `basic_glass` form: its prefix is the same code, but the fog-volume and probe tail was only read structurally.
 
 ## Render state
 
