@@ -95,7 +95,7 @@ vec3 display(vec3 color) {
 }
 """
 LIGHTING += "\n#ifdef RC_SCENE_EFFECTS\n" + SCENE_HELPERS + "\n#else\nfloat sceneAO(){return 1.0;}\nfloat sceneShadow(vec3 p){return 1.0;}\nfloat sceneSpecularOcclusion(vec3 N,vec3 V,float a){return 1.0;}\n#endif\n"
-LIGHTING_UNIFORMS = (*SCENE_UNIFORMS, "uLighting", "uLightingEnabled", "uLightFrame", "uViewToWorld", "uSH", "uEnvTex", "uSunDir", "uSunColour", "uTonemap", "uExposure")
+LIGHTING_UNIFORMS = (*SCENE_UNIFORMS, "uLighting", "uLightingEnabled", "uLightFrame", "uViewToWorld", "uSH", "uEnvTex", "uSunDir", "uSunColour", "uTonemap", "uExposure", "uFogDensity", "uFogColour")
 
 # Attribute locations for the two 4-wide skin influence sets. NVIDIA aliases the
 # built-ins to fixed slots (0 vertex, 2 normal, 3 colour, 4 secondary colour,
@@ -414,7 +414,7 @@ void main() {
     if (uMode == 2 && uPuddles && uHasPuddleAtlas) {
         vec3 g=texture2D(uTexG,vUV).rgb;if(uSrgbG)g=linear(g);
         vec3 color=puddleShade(normalize(vNrm),V,albedo,g.rg);
-        gl_FragColor=vec4(display(color),1.0);return;
+        gl_FragColor=vec4(displayFog(color),1.0);return;
     }
     if (uMode == 2 && uHasC && uHasP && !uVehicle && !uTint) {
         // blarg_saucer_colorpick writer: albedo + blend*a*albedo*(scale*a*pick - 1); the f16 G-buffer
@@ -696,7 +696,7 @@ void main() {
             color += uFacingGlowP.x * vec3(2.0 * a * (1.0 + a), uFacingGlowQ.y * f * (1.0 + a), 0.0);
         }
     }
-    gl_FragColor = vec4(display(color), 1.0);
+    gl_FragColor = vec4(displayFog(color), 1.0);
 }
 """
 
@@ -919,7 +919,7 @@ void main() {
         vec3 R = glassSpec(N, V, L1, L2, C1, C2, tint, a, ambient);   // F0 = tint, F90 = sat(60 tint), as 4DF1D438
         color = R + X * Ld;
     }
-    gl_FragColor = vec4(display(color), alpha);
+    gl_FragColor = vec4(displayFog(color), alpha);
 }
 """
 # Scene geometry uses the same material evaluation/discard path as the displayed surface.
@@ -939,10 +939,20 @@ void sceneOutput(vec4 color){
 #endif
 }
 """
+FOG = """
+// Approximate distance haze of the Level atmosphere lighting (rc2016.levels.fog; a viewer approximation,
+// not decoded game data). Density 0 is no fog. Applied to the lit colour before exposure and tonemap,
+// the same units as the sky dome.
+uniform float uFogDensity; uniform vec3 uFogColour;
+vec3 displayFog(vec3 color) {
+    color = mix(uFogColour, color, exp(-uFogDensity * length(vPos)));
+    return display(color);
+}
+"""
 FRAGMENT=_re.sub(r'gl_FragColor\s*=\s*([^;]+);',r'sceneOutput(\1);',FRAGMENT)
 FRAGMENT=FRAGMENT.replace('vec3 N = normalize(vNrm);','vec3 N = normalize(vNrm); sceneCaptureNormal=N;',1)
-FRAGMENT = FRAGMENT.replace("// @lighting\n", LIGHTING+_SCENE_OUTPUT)
-GLASS_FRAGMENT = GLASS_FRAGMENT.replace("// @lighting\n", LIGHTING)
+FRAGMENT = FRAGMENT.replace("// @lighting\n", LIGHTING+FOG+_SCENE_OUTPUT)
+GLASS_FRAGMENT = GLASS_FRAGMENT.replace("// @lighting\n", LIGHTING+FOG)
 GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4, "bright_glow": 5,
                "eye_cornea": 6, "number_display": 7, "glass_basic": 8, "glass_cg02": 9, "glass_jn": 10}
 

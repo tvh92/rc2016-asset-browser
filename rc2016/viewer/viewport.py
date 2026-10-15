@@ -611,6 +611,7 @@ class ModelViewport(_TkFrame):
                          view_to_world=(ctypes.c_float * 9)(*column_major3(view_to_world)),
                          rig=(ctypes.c_float * 9)(*column_major3(rig)), unit=ENVIRONMENT_TEXTURE_UNIT,
                          texture=self._environment_texture if hdri else 0)
+            state['fog_density'], state['fog_colour'] = self._fog_values()
             if hdri:
                 strength = self._environment["strength"]
                 coefficients = [float(x) * strength for x in self._environment["sh"].reshape(-1)]
@@ -619,6 +620,10 @@ class ModelViewport(_TkFrame):
                              sun_colour=tuple(float(x) * strength for x in self._environment["sun"]))
             self._frame_lighting = state
         return state
+
+    def _fog_values(self):
+        """(density, RGB) of the distance haze: none in the model viewer (the level viewer overrides this)."""
+        return 0.0, (0.0, 0.0, 0.0)
 
     def _apply_lighting(self, u):
         """Lighting and tonemap uniforms for the program in use (every opaque and glass program)."""
@@ -632,6 +637,8 @@ class ModelViewport(_TkFrame):
         sh.glUniform1i(u["uLighting"], 1 if state["hdri"] else 0)
         sh.glUniform1i(u["uTonemap"], state["tonemap"])
         sh.glUniform1f(u["uExposure"], state["exposure"])
+        sh.glUniform1f(u["uFogDensity"], state["fog_density"])
+        sh.glUniform3f(u["uFogColour"], *state["fog_colour"])
         sh.glUniformMatrix3fv(u["uViewToWorld"], 1, 0, state["view_to_world"])
         sh.glUniformMatrix3fv(u["uLightFrame"], 1, 0, state["rig"])
         sh.glUniform1i(u["uEnvTex"], state["unit"])

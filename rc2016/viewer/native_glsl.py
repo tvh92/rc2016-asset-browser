@@ -171,7 +171,7 @@ def fragment_source(translation, srgb=None, *, experimental=False):
     source += '    vec3 N = normalize(vNrm) * (gl_FrontFacing ? 1.0 : -1.0); sceneCaptureNormal=N;\n'
     source += '    vec3 V = normalize(-vPos);\n' + surface['body'] + '\n'
     source += '    vec3 color = deferredDiffuse(N, albedo) + deferredSpecular(N, V, F0, gloss);\n'
-    source += '    sceneOutput(vec4(display(color + albedo * emission), 1.0));\n}\n'
+    source += '    sceneOutput(vec4(displayFog(color + albedo * emission), 1.0));\n}\n'
     surface['source'] = source
     # Includes current shared shader helpers, so lighting edits invalidate programs.
     surface['key'] += (hashlib.sha256(source.encode()).hexdigest(),)

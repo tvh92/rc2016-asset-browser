@@ -591,6 +591,19 @@ class LevelViewport(ModelViewport):
             self.set_lighting()
         self._schedule_draw()
 
+    def _fog_values(self):
+        """Distance haze: on only for the Level atmosphere lighting (rc2016.levels.fog, a visual approximation)."""
+        from rc2016.levels.fog import fog_state
+        enabled = getattr(self, "fog_enabled", True) and getattr(self, "lighting_enabled", True)
+        hdri = self.__dict__.get("_environment_lighting") == self.lighting and bool(self.__dict__.get("_environment"))
+        return fog_state(getattr(self, "_sky", None), self.lighting if hdri else None, enabled)
+
+    def set_fog(self, enabled):
+        """Switch the Level atmosphere distance haze on or off (it only applies to that lighting)."""
+        self.fog_enabled = bool(enabled)
+        self._frame_lighting = None
+        self._schedule_draw()
+
     def _reset_level_environment(self):
         """Forget the Level atmosphere maps, which belong to the sky they were built from."""
         if self.__dict__.get("_environment_lighting") == "Level atmosphere" and not self._environment_loading:

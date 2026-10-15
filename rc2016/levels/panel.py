@@ -436,6 +436,9 @@ class LevelPanel:
         scene_options=ttk.Frame(light);scene_options.grid(row=1,column=0,columnspan=2,sticky='w',pady=(2,0))
         for text,var,name in (("AO",self.scene_ao_var,"ao"),("Shadows",self.scene_shadows_var,"shadows"),("Authored lights",self.scene_authored_var,"authored")):
             ttk.Checkbutton(scene_options,text=text,variable=var,command=lambda v=var,n=name:self.view.set_scene_effects(**{n:v.get()})).pack(side="left",padx=(0,5))
+        self.fog_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(scene_options, text="Haze", variable=self.fog_var,
+                        command=lambda: self.view.set_fog(self.fog_var.get())).pack(side="left", padx=(0, 5))
         self.scene_note=ttk.Label(light,text='Scene preview; game caster/probe allocation is unverified.',foreground='gray',wraplength=240)
         self.scene_note.grid(row=2,column=0,columnspan=2,sticky="w")
         self.lighting_note = ttk.Label(light, text="", foreground="gray", wraplength=240)
