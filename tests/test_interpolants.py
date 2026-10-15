@@ -131,6 +131,18 @@ class RotatedStreamAttributeTests(unittest.TestCase):
         flag = self.flag(8)
         self.assertEqual(self.check([ir.op('select', flag, a, b) for a, b in zip(other, self.rotate(self.stream(1)))]), {})
 
+    def test_a_channel_without_a_stream_follows_the_first_value_seen(self):
+        # The streams are a set, where semantic 0 and False coincide: whichever came first stays.
+        one = self.ir.const(1.)
+        rotated = self.rotate(self.stream(0))
+        self.assertEqual(self.check([rotated[0], one, one]), {1: 0})
+        self.assertEqual(self.check([one, rotated[1], rotated[2]]), {})
+
+    def test_a_second_stream_or_an_unreadable_channel_rejects(self):
+        rotated, other = self.rotate(self.stream(1)), self.rotate(self.stream(2), 64)
+        self.assertEqual(self.check([rotated[0], other[1], rotated[2]]), {})
+        self.assertEqual(self.check([rotated[0], rotated[1], self.ir.node('unsupported', [], reason='x', offset=1)]), {})
+
     def test_mixed_streams_reject(self):
         ir = self.ir
         mixed = [ir.op('add', a, b) for a, b in zip(self.rotate(self.stream(1)), self.rotate(self.stream(2), 64))]

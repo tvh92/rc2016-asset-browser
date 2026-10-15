@@ -203,17 +203,22 @@ def _squared_stream(ir, channel):
             dependencies[i]=result
         return dependencies[i]
     mask(channel)
+    nodes=ir.nodes;shift=len(flags);get=memo.get   # memo key: node index and its flag assignment in one int
     def fold(i,bits):
-        key=(i,bits & dependencies[i])
-        if key in memo:return memo[key]
-        n=ir.nodes[i];op=n['op'];args=n.get('args',[])
+        key=(i<<shift)|(bits & dependencies[i])
+        value=memo.get(key)
+        if value is not None:return value
+        n=nodes[i];op=n['op'];args=n.get('args',[])
         if i in flag_bits:
             value=ir.const(float(bool(bits & flag_bits[i])))
         elif op=='select':
             condition=fold(args[0],bits);known=ir.value(condition)
             value=fold(args[1] if known else args[2],bits) if known is not None else ir.op(op,condition,fold(args[1],bits),fold(args[2],bits))
         else:
-            replaced=[fold(j,bits) for j in args]
+            replaced=[]
+            for j in args:   # a memoised argument needs no call
+                v=get((j<<shift)|(bits & dependencies[j]))
+                replaced.append(fold(j,bits) if v is None else v)
             value=ir.op(op,*replaced) if op in OPS else ir.node(op,replaced,**{k:v for k,v in n.items() if k not in ('op','args')})
         memo[key]=value;return value
     sources=set()
@@ -305,7 +310,16 @@ def squared_stream_evidence(data):
             rows=[r for r in scoped if any(e['semantic']==semantic for e in r.get('exports',[]))]
             if not rows:continue
             for channel in range(4):
-                sources={source(row,e['slot'],channel) for row in rows for e in row.get('exports',[]) if e['semantic']==semantic}
+                # Accepted only when every exporter gives the same non-None source: stop at the
+                # first None or second distinct source (the set never shrinks).
+                sources=set()
+                for row in rows:
+                    for e in row.get('exports',[]):
+                        if e['semantic']!=semantic:continue
+                        sources.add(source(row,e['slot'],channel))
+                        if None in sources or len(sources)>1:break
+                    else:continue
+                    break
                 if len(sources)==1 and None not in sources:found[(index,channel)]=sources.pop()
         key=ps['header_offset']
         if key in by_header and by_header[key]!=found:raise ValueError('Conflicting pixel semantic headers')
@@ -643,21 +657,30 @@ def rotated_stream_attributes(data):
         rows = [r for r in vertex if any(e['semantic'] in semantics for e in r.get('exports', []))]
         if not rows or any(r.get('layout') != 'verified' for r in rows):
             continue
-        streams = set()
+        # The attribute is accepted only when every channel gives the same integer stream. The set
+        # never shrinks, so the first None, a second distinct value, or a False seen first (it then
+        # stays the set's element, whatever follows) decides the rejection: stop analysing it.
+        streams, rejected = set(), False
         for row in rows:
             key = row['header_offset']
             if key not in compiled:
                 compiled[key] = vertex_exports(row)
             exports, _ = compiled[key]
             if exports is None:
-                streams.add(None); break
+                rejected = True; break
             params, ir = exports
             for slot in [e['slot'] for e in row['exports'] if e['semantic'] in semantics]:
                 channels = params.get(slot)
                 if not channels or len(channels) < 3 or any(c is None for c in channels[:3]):
-                    streams.add(None); continue
+                    rejected = True; break
                 for c in channels[:3]:
-                    streams.add(_stream_terms(ir, linear_form(ir, c, SYMBOLIC_TERMS), 1))
-        if len(streams) == 1 and isinstance(next(iter(streams)), int) and next(iter(streams)) is not False:
+                    term = _stream_terms(ir, linear_form(ir, c, SYMBOLIC_TERMS), 1)
+                    first = not streams
+                    streams.add(term)
+                    if term is None or len(streams) > 1 or (first and term is False):
+                        rejected = True; break
+                if rejected: break
+            if rejected: break
+        if not rejected and len(streams) == 1 and isinstance(next(iter(streams)), int) and next(iter(streams)) is not False:
             found[index] = streams.pop()
     return found
