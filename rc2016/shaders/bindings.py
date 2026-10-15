@@ -8,10 +8,11 @@ import json
 import math
 import struct
 import threading
+from collections import OrderedDict
 from functools import lru_cache
 
 from rc2016.shaders.ir import DAG, bits
-from rc2016.shaders.translator import compile_graph, lower_deferred, sections
+from rc2016.shaders.translator import compile_graph, lower_deferred, sampler_mode_hits, sections
 from rc2016.shaders.families import graph_parameter_tables
 
 PORTABLE_OPS={'const','texture','input','add','sub','mul','div','neg','abs','min',
@@ -68,9 +69,48 @@ def _compile_independent_samplers(data):
     return compile_graph(data,allow_independent_samplers=True)
 
 
-@lru_cache(maxsize=64)
-def _compiled(data,allow_independent_samplers=False):
-    return _pooled(_compile_independent_samplers if allow_independent_samplers else compile_graph,data)
+def _compile_strict_counted(data):
+    """(graph, whether the sampler mode never mattered): the second part is what lets one compile
+    serve both modes. Module-level so a worker process can run it."""
+    before=sampler_mode_hits()
+    graph=compile_graph(data)
+    return graph,sampler_mode_hits()==before
+
+
+def _compile_independent_counted(data):
+    before=sampler_mode_hits()
+    graph=_compile_independent_samplers(data)
+    return graph,sampler_mode_hits()==before
+
+
+class _CompiledGraphs:
+    """Compiled graphs per (graph bytes, sampler mode), least recently used first out. A graph that
+    compiles the same in both modes is stored for both: the world-position previews and the strict
+    native translation of one material would otherwise compile it twice."""
+    def __init__(self,maxsize=64):
+        self.maxsize=maxsize;self.graphs=OrderedDict();self.lock=threading.Lock()
+
+    def _store(self,key,graph):
+        self.graphs[key]=graph;self.graphs.move_to_end(key)
+        while len(self.graphs)>self.maxsize:self.graphs.popitem(last=False)
+
+    def __call__(self,data,allow_independent_samplers=False):
+        mode=bool(allow_independent_samplers);key=(data,mode)
+        with self.lock:
+            graph=self.graphs.get(key)
+            if graph is not None:
+                self.graphs.move_to_end(key);return graph
+        graph,same=_pooled(_compile_independent_counted if mode else _compile_strict_counted,data)
+        with self.lock:
+            self._store(key,graph)
+            if same and isinstance(graph,dict) and 'programs' in graph:self._store((data,not mode),graph)
+        return graph
+
+    def cache_clear(self):
+        with self.lock:self.graphs.clear()
+
+
+_compiled=_CompiledGraphs()
 
 
 _GRAPH_LOCKS={}
@@ -89,9 +129,7 @@ def _once(kind,data,function):
 
 def compiled(data,allow_independent_samplers=False):
     """Compile once per graph and descriptor mode; strict and preview caches are separate."""
-    if allow_independent_samplers:
-        return _once('compiled_independent_samplers',bytes(data),lambda d:_compiled(d,True))
-    return _once('compiled',bytes(data),_compiled)
+    return _once('compiled',bytes(data),lambda d:_compiled(d,bool(allow_independent_samplers)))
 
 
 def stream_evidence(data):

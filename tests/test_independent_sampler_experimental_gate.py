@@ -32,6 +32,25 @@ class IndependentSamplerExperimentalGateTests(unittest.TestCase):
         finally:
             bindings._compiled.cache_clear()
 
+    def test_one_compile_serves_both_modes_unless_the_mode_mattered(self):
+        hits = [0]
+        seen = []
+
+        def compile_graph(blob, allow_independent_samplers=False):
+            seen.append((blob, allow_independent_samplers))
+            hits[0] += blob.startswith(b"mismatch")   # the sampler mode changed this compile
+            return {"programs": [], "mode": allow_independent_samplers}
+        bindings._compiled.cache_clear()
+        try:
+            with patch.object(bindings, "_pooled", side_effect=lambda fn, blob: fn(blob)),                  patch.object(bindings, "compile_graph", side_effect=compile_graph),                  patch.object(bindings, "sampler_mode_hits", side_effect=lambda: hits[0]):
+                self.assertEqual(bindings.compiled(b"plain")["mode"], False)
+                self.assertEqual(bindings.compiled(b"plain", allow_independent_samplers=True)["mode"], False)
+                self.assertEqual(bindings.compiled(b"mismatch", allow_independent_samplers=True)["mode"], True)
+                self.assertEqual(bindings.compiled(b"mismatch")["mode"], False)
+            self.assertEqual(seen, [(b"plain", False), (b"mismatch", True), (b"mismatch", False)])
+        finally:
+            bindings._compiled.cache_clear()
+
     def test_blocked_receipt_keeps_proven_descriptor_candidate_without_claiming_ready(self):
         sample = dict(api=17, sampler_api=3, offset=2328, resource_table=True, sampler_table=True)
         source = dict(index=17, pass_index=1, resource_mask=(1 << 17))

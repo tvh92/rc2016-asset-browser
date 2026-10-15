@@ -19,6 +19,7 @@ from pathlib import Path
 import re
 import struct
 import sys
+import threading
 
 from rc2016.shaders.ir import DAG, bits, from_bits
 
@@ -204,6 +205,17 @@ def ps_input_registers(addr,ena,vgpr_count=None):
     return layout
 
 
+_SAMPLER_MODE=threading.local()
+# json.dumps with these options builds a new encoder per call; this is the same encoder, built once.
+_DIGEST_ENCODER=json.JSONEncoder(sort_keys=True,separators=(',',':'))
+
+
+def sampler_mode_hits():
+    """How often this thread's compilers have reached a texture/sampler API mismatch. A compile
+    that leaves it unchanged gave the same result with and without ``allow_independent_samplers``."""
+    return getattr(_SAMPLER_MODE,'hits',0)
+
+
 class Compiler:
     def __init__(self,code,usage_slots,ps_input_addr=None,ps_input_ena=None,vgpr_count=None,*,allow_independent_samplers=False):
         self.code=code;self.ir=DAG();self.v=Registers();self.s=Registers();self.descriptors={};self.exports={}
@@ -223,6 +235,13 @@ class Compiler:
             if slot['reg']<16:
                 width=8 if slot['kind']==0 else 4 if slot['kind'] in (1,2) else 2
                 for j in range(width):self.descriptors[slot['reg']+j]=dict(slot,word=j)
+
+    def sampler_apis_differ(self,resource,sampler):
+        """Whether an indirect texture and its sampler name different APIs: the only place
+        ``allow_independent_samplers`` changes a compile, so it is counted (see ``sampler_mode_hits``)."""
+        differ=resource['api']!=sampler['api']
+        if differ:_SAMPLER_MODE.hits=getattr(_SAMPLER_MODE,'hits',0)+1
+        return differ
 
     def unknown(self,reason,*args,**meta):
         return self.ir.node('unsupported',args,reason=reason,offset=self.current,**meta)
@@ -245,13 +264,16 @@ class Compiler:
         return self.pred_memo[value]
 
     def _predicate(self,value):
-        if self.ir.value(value) is not None or self.ir.nodes[value]['op'] not in PREDICATE_OPS:return value
+        nodes=self.ir.nodes
+        if nodes[value]['op']=='const' or nodes[value]['op'] not in PREDICATE_OPS:return value
         atoms=set();pending=[value];seen=set()
         while pending:
             i=pending.pop()
-            if i in seen or self.ir.value(i) is not None:continue
+            if i in seen:continue
+            n=nodes[i]
+            if n['op']=='const':continue
             seen.add(i)
-            if self.ir.nodes[i]['op'] in PREDICATE_OPS:pending.extend(self.ir.nodes[i]['args'])
+            if n['op'] in PREDICATE_OPS:pending.extend(n['args'])
             else:atoms.add(i)
         if len(atoms)>MAX_PREDICATE_ATOMS:return value
         atoms=sorted(atoms);size=1<<len(atoms);full=(1<<size)-1
@@ -663,14 +685,18 @@ class Compiler:
                 n=self.ir.nodes[i]
                 record={k:v for k,v in n.items() if k!='args'}
                 record['args']=[digest(j) for j in n.get('args',[])]
-                memo[i]=hashlib.sha256(json.dumps(record,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+                memo[i]=hashlib.sha256(_DIGEST_ENCODER.encode(record).encode()).hexdigest()
             return memo[i]
+        texts=self.ir.__dict__.setdefault('_buffer_expression_texts',{})
         def text(i,left):
+            key=(i,left)
+            if key in texts:return texts[key]
             n=self.ir.nodes[i]
-            if n['op']=='const':return str(n['value'])
-            if n['op']=='input':return n['name']
-            if left==0:return 'expr:'+digest(i)[:16]
-            return n['op']+'('+', '.join(text(j,left-1) for j in n.get('args',[]))+')'
+            if n['op']=='const':result=str(n['value'])
+            elif n['op']=='input':result=n['name']
+            elif left==0:result='expr:'+digest(i)[:16]
+            else:result=n['op']+'('+', '.join(text(j,left-1) for j in n.get('args',[]))+')'
+            texts[key]=result;return result
         return text(root,depth),digest(root)
 
     def buffer_load(self,i,name):
@@ -769,7 +795,7 @@ class Compiler:
                 elif (resource['table_slot'][:2]!=(0x13,0) or sampler.get('table_slot',())[:2]!=(0x15,0)
                         or resource['table_slot'][3]!=16 or sampler['table_slot'][3]!=16):
                     api=None;reason='Unsupported indirect texture/sampler table origin'
-                elif resource['api']!=sampler['api'] and not self.allow_independent_samplers:
+                elif self.sampler_apis_differ(resource,sampler) and not self.allow_independent_samplers:
                     api=None;reason='Indirect texture/sampler APIs differ'
                 else:
                     api=resource['api'];proof=dict(resource_table=True,sampler_table=True,sampler_api=sampler['api'])
