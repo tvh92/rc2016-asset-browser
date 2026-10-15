@@ -63,3 +63,55 @@ class ClearSkyProfileTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ClearSkyHdrTests(unittest.TestCase):
+    def test_unclamped_values_above_one_do_not_count_as_clear_sky(self):
+        import numpy as np
+        size = 64
+        blue, glow = np.array([0.1, 0.2, 0.4]), np.array([0.9, 1.6, 2.4])   # HDR haze-tinted cloud, blue dominant
+        up = np.tile(blue, (size, size, 1)); up[:32] = glow
+        side = np.tile(blue, (size, size, 1))
+        profile = sky._profile_from_faces([side, side, up, side, side, side])
+        for colour in profile:
+            np.testing.assert_allclose(colour, blue, atol=1e-6)
+
+    def test_clear_sky_profile_decodes_the_probe_in_hdr(self):
+        import numpy as np
+        faces = [np.full((8, 8, 3), 0.4, np.float32) * np.array([0.25, 0.5, 1.0], np.float32) for _ in range(6)]
+        with mock.patch('rc2016.levels.probe_lighting.probe_faces', return_value=(faces, {})) as probe:
+            profile = sky.clear_sky_profile(object(), 'x.texture')
+        probe.assert_called_once()
+        np.testing.assert_allclose(profile[0], [0.1, 0.2, 0.4], atol=1e-6)
+
+
+class DomeFogTests(unittest.TestCase):
+    PROFILE = dict(heights=(-100.0, -52.0, 386.0, 926.0, 400.0), densities=(1.0, 0.1, 0.002, 0.0, 0.0))   # Novalis
+
+    def ramps(self, cam_y):
+        from rc2016.levels.fog import build_ramps
+        return build_ramps(self.PROFILE, cam_y)
+
+    def test_transmittance_rises_with_elevation_and_is_a_fraction(self):
+        ramps = self.ramps(100.0)
+        values = [sky.dome_fog_transmittance(sky_sin, ramps) for sky_sin in (0.05, 0.1, 0.2, 0.4, 0.8, 1.0)]
+        self.assertTrue(all(0.0 < v <= 1.0 for v in values))
+        self.assertEqual(values, sorted(values))
+        self.assertLess(values[0], 0.8)       # the horizon is hazed
+        self.assertGreater(values[-1], 0.95)  # the zenith is nearly clear
+
+    def test_distance_beyond_a_few_thousand_units_no_longer_matters(self):
+        from rc2016.levels.fog import fog_T
+        ramps = self.ramps(150.0)
+        near = fog_T((3000 * 0.866, 3000 * 0.5, 0.0), (0.0, 0.0, 0.0), ramps)
+        self.assertAlmostEqual(near, sky.dome_fog_transmittance(0.5, ramps), places=3)
+
+    def test_glsl_constants_match_the_python_reference(self):
+        import re
+        from rc2016.viewer import shading
+        source = shading.SKY_FRAGMENT
+        for name, value in (('SKY_FOG_DISTANCE', sky.DOME_FOG_DISTANCE), ('SKY_FOG_BRIGHTNESS', sky.DOME_FOG_BRIGHTNESS),
+                            ('SKY_EXPOSURE', sky.SKY_EXPOSURE)):
+            found = re.search(rf'const float {name} = ([0-9.]+);', source)
+            self.assertIsNotNone(found, name)
+            self.assertEqual(float(found.group(1)), value, name)

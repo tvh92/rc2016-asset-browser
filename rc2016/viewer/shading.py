@@ -281,9 +281,9 @@ vec3 deferredDiffuse(vec3 N, vec3 albedo) {
     return albedo * (max(dot(N, rigKey()), 0.0) * keyColour()
         + max(dot(N, rigFill()), 0.0) * fillColour() + ambientLight(N)) / PI * diffuseScale();
 #else
-    sceneCaptureNormal=N;float A=sceneAO();
-    vec3 D=(max(dot(N,rigKey()),0.0)*keyColour()*sceneShadow(vPos)
-        +max(dot(N,rigFill()),0.0)*fillColour()*(0.5+0.5*A)+ambientLight(N)*A)/PI*diffuseScale();
+    sceneCaptureNormal=N;float A=sceneAO();float NdK=max(dot(N,rigKey()),0.0),Sh=sceneShadow(vPos);
+    vec3 D=(NdK*keyColour()*Sh
+        +max(dot(N,rigFill()),0.0)*fillColour()*(0.5+0.5*A)+ambientLight(N)*A*sceneShadowedAmbient(Sh,NdK))/PI*diffuseScale();
 #ifdef RC_SCENE_EFFECTS
     if(uSceneEnabled)for(int i=0;i<32;i++)if(i<uSceneLightCount){
         vec3 delta=uSceneLightPos[i].xyz-vPos;float d=length(delta);
@@ -1099,7 +1099,10 @@ void main() { vDir = gl_Vertex.xyz; vUV = gl_MultiTexCoord0.xy; gl_Position = ft
 # uSkyMode 0: clear sky, colour by elevation from the profile (uProfile, uProfileStep degrees per bin).
 # uSkyMode 1: port of the Rk_Sky_Dome cloud fragment shader 0x8d3c81d0. uP[0..5] hold its constant
 # dwords 0-22; uSunRay is the atmosphere's sun ray (native). Engine inputs use presentation values:
-# time 0, alpha multiplier 1, alpha-test threshold 0, no fog. The stars term (dword 22) is not ported.
+# time 0, alpha multiplier 1, alpha-test threshold 0. The stars term (dword 22) is not ported. The shader
+# ends in mix(fogColour, lit, T) with T a vertex output (undecoded: the dome's vertex shader is not in the
+# cache). Inferred, not decoded: T is the level's height fog (uFog*, rc2016.levels.fog) of a point
+# SKY_FOG_DISTANCE along the view ray from the camera, i.e. the dome at infinity.
 SKY_FRAGMENT = """
 #version 120
 const float PI = 3.14159265;
@@ -1110,6 +1113,44 @@ uniform int uSkyMode;
 uniform vec3 uProfile[15]; uniform float uProfileStep;
 uniform sampler2D uDome; uniform sampler2D uNoise; uniform bool uDomeSrgb; uniform bool uNoiseSrgb;
 uniform vec4 uP[6]; uniform vec3 uSunRay;
+uniform int uFogOn; uniform vec3 uFogColour;
+uniform vec4 uFogA; uniform vec4 uFogB; uniform vec4 uFogAlpha; uniform vec4 uFogBeta;
+uniform vec4 uFogMisc;   // as in FOG: horizontal-ray c88, c89, exponent, start distance
+const float SKY_FOG_DISTANCE = 10000.0;   // beyond about 3000 units the result no longer changes (Novalis)
+const float SKY_FOG_BRIGHTNESS = 2.5;     // visual calibration (see above): sky fog colour = this x the horizon colour
+// The FOG transmittance of the point SKY_FOG_DISTANCE away along the native direction dir (y is height).
+float skyFogTransmittance(vec3 dir) {
+    float dist = SKY_FOG_DISTANCE, dy = dist * dir.y, tau;
+    if (abs(dy) < 0.05) {
+        tau = uFogMisc.x * dist + uFogMisc.y;
+    } else {
+        float hs = uFogMisc.w * dy / dist;
+        vec4 ramp_s = clamp(uFogA * hs + uFogB, 0.0, 1.0);
+        vec4 ramp_e = clamp(uFogA * dy + uFogB, 0.0, 1.0);
+        vec4 part = uFogAlpha * (ramp_e * ramp_e - ramp_s * ramp_s) + uFogBeta * (ramp_e - ramp_s);
+        tau = dist / dy * (part.x + part.y + part.z + part.w);
+    }
+    if (tau > 0.0) tau = pow(tau, uFogMisc.z);
+    return clamp(exp2(-tau), 0.0, 1.0);
+}
+// Sky-only display transform (visual calibration, not decoded; docs/levels.md "Sky"): Khronos PBR Neutral
+// (as display() with uTonemap 1) at SKY_EXPOSURE. Against one in-game Novalis frame the captured clear sky
+// (probe units) came out 0.8 to 0.85 of the displayed linear value in every channel, which a near-linear curve
+// reproduces and the ACES fit (brighter and paler in the mid-tones) does not.
+const float SKY_EXPOSURE = 0.9;
+vec3 skyDisplay(vec3 color) {
+    color *= uExposure * SKY_EXPOSURE;
+    float x = min(color.r, min(color.g, color.b));
+    color -= x < 0.08 ? x - 6.25 * x * x : 0.04;
+    float peak = max(color.r, max(color.g, color.b));
+    if (peak >= 0.76) {
+        float newPeak = 1.0 - 0.0576 / (peak - 0.52);
+        color *= newPeak / peak;
+        color = mix(color, vec3(newPeak), 1.0 - 1.0 / (0.15 * (peak - newPeak) + 1.0));
+    }
+    color = clamp(color, 0.0, 1.0);
+    return vec3(srgbEncode(color.r), srgbEncode(color.g), srgbEncode(color.b));
+}
 float P(int i) { return uP[i / 4][i - 4 * (i / 4)]; }
 vec4 fetch(sampler2D s, vec2 uv, bool srgb) { vec4 c = texture2D(s, uv); return srgb ? vec4(linear(c.rgb), c.a) : c; }
 void main() {
@@ -1117,7 +1158,7 @@ void main() {
     if (uSkyMode == 0) {
         float x = clamp(degrees(asin(clamp(dir.y, -1.0, 1.0))) / uProfileStep - 0.5, 0.0, 14.0);
         int i = int(floor(x)), j = i < 14 ? i + 1 : 14;
-        gl_FragColor = vec4(display(mix(uProfile[i], uProfile[j], x - float(i))), 1.0);
+        gl_FragColor = vec4(skyDisplay(mix(uProfile[i], uProfile[j], x - float(i))), 1.0);
         return;
     }
     float t = 0.0;
@@ -1133,7 +1174,8 @@ void main() {
     vec3 rgb = k * (A * ((1.0 - a) * P(16) * r) + C * (P(18) * b) + B * (P(19) * pow(c, P(14)) * (r * (1.0 - a) + b)));
     float coverage = clamp(P(13) * (P(20) * (1.0 - a) * g + a), 0.0, 1.0);
     if (coverage + 1e-7 <= 0.0) discard;   // alpha test against the (presentation) threshold 0
-    gl_FragColor = vec4(display(rgb), coverage);
+    if (uFogOn != 0) rgb = mix(uFogColour * SKY_FOG_BRIGHTNESS, rgb, skyFogTransmittance(dir));
+    gl_FragColor = vec4(skyDisplay(rgb), coverage);
 }
 """.replace("// @lighting\n", LIGHTING)
 SKY_UNIFORMS = (*LIGHTING_UNIFORMS, "uSkyMode", "uProfile", "uProfileStep", "uDome", "uNoise", "uDomeSrgb",

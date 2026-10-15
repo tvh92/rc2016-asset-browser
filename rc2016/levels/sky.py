@@ -2,7 +2,7 @@
 
 A level's atmosphere zone names one `.atmosphere` asset; the asset lists its sky models first
 (docs/levels.md, "Skybox"). Dome materials on the `Rk_Sky_Dome` graph are drawn with a port of its
-cloud fragment shader 0x8d3c81d0 (`SKY_FRAGMENT` in viewport.py); other sky graphs (`_flat` nebula
+cloud fragment shader 0x8d3c81d0 (`SKY_FRAGMENT` in rc2016/viewer/shading.py); other sky graphs (`_flat` nebula
 domes, `rk_sky_matte` planets) are reported, not drawn. The clear sky behind the clouds comes from
 the atmosphere scattering tables, which are not decoded; `clear_sky_profile` instead samples the
 clear-sky pixels of the reflection capture the atmosphere zone references.
@@ -10,7 +10,7 @@ clear-sky pixels of the reflection capture the atmosphere zone references.
 from __future__ import annotations
 
 import hashlib
-import io
+import math
 import re
 import struct
 
@@ -33,6 +33,16 @@ DOME_SLOTS = (0x49A7866BA1EFA69D, 0x49A7866BA80406E7)
 PRESENTATION = dict(time=0.0, alpha_multiplier=1.0, alpha_test_threshold=0.0, fog_factor=1.0)
 PROFILE_STEP = 6.0          # degrees per clear-sky profile bin, 0-90
 PROFILE_MIN_SKY = 0.1       # fraction of clear-sky pixels a bin needs to count
+# A blue-dominant probe pixel brighter than this (largest channel, probe units) is not taken as clear sky:
+# bright blue pixels near the horizon are haze-tinted cloud and horizon glow, which would lift the median of
+# the low bins. Chosen when the probe was still decoded clamped to 1; kept as a deliberate cap now that it is
+# decoded in HDR (above 24 degrees it removes under 1% of the blue pixels, so those bins are unchanged).
+CLEAR_SKY_MAX = 0.98
+# Dome fog and display, mirrored in SKY_FRAGMENT (rc2016/viewer/shading.py; tests keep the values in step).
+# Inferred or calibrated, not decoded; docs/levels.md ("Sky in the level viewer").
+DOME_FOG_DISTANCE = 10000.0   # the dome is treated as a point this far from the camera along the view ray
+DOME_FOG_BRIGHTNESS = 2.5     # dome fog colour = this x the fog (horizon) colour; fitted to the Novalis probe
+SKY_EXPOSURE = 0.9            # sky-only exposure before the Khronos Neutral curve; fitted to one in-game frame
 ATMOSPHERE_PATH = re.compile(rb'([\x20-\x7e]+\.atmosphere)\x00')
 REFLECTION_PATH = re.compile(rb'([\x20-\x7e]*volumereflections[\x20-\x7e]+\.texture)\x00')
 
@@ -112,9 +122,19 @@ def dome_constants(material_data, graph_data):
     return [values[d] for d in range(DOME_DWORDS)]
 
 
+def dome_fog_transmittance(sin_elevation, ramps):
+    """Fog transmittance T applied to the cloud dome in direction ``sin_elevation`` (sine of the elevation):
+    the level's height fog (``rc2016.levels.fog.fog_T`` with the ramps of ``build_ramps`` for the camera's
+    height) of the point DOME_FOG_DISTANCE along that ray. CPU reference of ``skyFogTransmittance`` in
+    SKY_FRAGMENT. The dome's own vertex shader (the source of the game's T) is not decoded."""
+    from rc2016.levels.fog import fog_T
+    cos_elevation = math.sqrt(max(0.0, 1.0 - sin_elevation * sin_elevation))
+    return fog_T((DOME_FOG_DISTANCE * cos_elevation, DOME_FOG_DISTANCE * sin_elevation, 0.0), (0.0, 0.0, 0.0), ramps)
+
+
 def _profile_from_faces(faces, step=PROFILE_STEP, min_sky=PROFILE_MIN_SKY):
     """Clear-sky colour per elevation bin from six cube faces (float arrays HxWx3, D3D order +X -X +Y -Y +Z -Z,
-    rows top-down). A pixel is clear sky when blue dominates (b > 1.25 r, b > g) and it is not clipped;
+    rows top-down). A pixel is clear sky when blue dominates (b > 1.25 r, b > g) and no channel exceeds CLEAR_SKY_MAX;
     each bin is the per-channel median of its clear-sky pixels. Bins with too few such pixels (terrain,
     cloud banks) take the nearest valid bin above them. Returns a list of RGB per bin, or None."""
     import numpy as np
@@ -130,7 +150,7 @@ def _profile_from_faces(faces, step=PROFILE_STEP, min_sky=PROFILE_MIN_SKY):
         elevations.append(np.degrees(np.arctan2(y, lateral)).ravel())
         colours.append(face.reshape(-1, 3))
     elevation, colour = np.concatenate(elevations), np.concatenate(colours)
-    sky = (colour[:, 2] > 1.25 * colour[:, 0]) & (colour[:, 2] > colour[:, 1]) & (colour.max(axis=1) < 0.98)
+    sky = (colour[:, 2] > 1.25 * colour[:, 0]) & (colour[:, 2] > colour[:, 1]) & (colour.max(axis=1) < CLEAR_SKY_MAX)
     bins = int(round(90.0 / step))
     profile = [None] * bins
     for i in range(bins):
@@ -152,27 +172,11 @@ def _profile_from_faces(faces, step=PROFILE_STEP, min_sky=PROFILE_MIN_SKY):
 def clear_sky_profile(archive, texture_path):
     """Clear-sky colour by elevation from a reflection-capture cube (BC6H, six 512x512 faces).
 
-    Needs Pillow and NumPy; Pillow decodes BC6H clamped to [0, 1], which keeps clear sky (well below 1)
-    and only clips clouds and the sun, which the selection drops anyway."""
-    from PIL import Image
-    import numpy as np
-    from rc2016.formats.texture import dds_bytes, parse_header, ps4_deswizzle_top, top_mip_size
-    ids = [i for i in archive.resolve(texture_path) if archive.entries[i]['type'] == 'texture']
-    if len(ids) != 1:
-        raise ValueError(f'{texture_path}: expected one texture, found {len(ids)}')
-    info = parse_header(decompress(archive.bytes(ids[0])[0])[0])
-    width, height, fmt = info['sd_width'], info['sd_height'], info['format']
-    if fmt != 95 or width != height:
-        raise ValueError(f'{texture_path}: not a square BC6H cube (format {fmt}, {width}x{height})')
-    surface = top_mip_size(width, height, fmt)
-    payload = info['built_payload']
-    if len(payload) < 6 * surface:
-        raise ValueError(f'{texture_path}: fewer than six faces')
-    faces = []
-    for index in range(6):
-        linear = ps4_deswizzle_top(payload[index * surface:(index + 1) * surface], width, height, fmt)
-        image = Image.open(io.BytesIO(dds_bytes(width, height, fmt, linear))).convert('RGB')
-        faces.append(np.asarray(image, dtype=np.float32) / 255.0)
+    The cube is decoded in HDR (``rc2016.levels.probe_lighting.probe_faces``, ``rc2016.formats.bc6h``), so
+    the profile is in the probe's linear units and nothing is clamped; a block in a BC6H mode the decoder
+    lacks falls back to Pillow's value clamped to 1. Needs NumPy (and Pillow for that fallback)."""
+    from rc2016.levels.probe_lighting import probe_faces
+    faces, _info = probe_faces(archive, texture_path)
     return _profile_from_faces(faces)
 
 
