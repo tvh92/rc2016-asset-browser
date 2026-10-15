@@ -6,7 +6,7 @@ from rc2016.formats.container import inspect, read_container
 from rc2016.formats.animation_samples import decode_clip
 from rc2016.formats.animation_transforms import sample_transforms
 from rc2016.common import dump, read, sha, write, zip_json
-from rc2016.formats.skeleton import worlds
+from rc2016.formats.skeleton import AFTER_ROTATION, worlds
 from rc2016.formats.animation_sources import crc32
 import numpy as np
 
@@ -43,6 +43,7 @@ def worlds_batch(rows, frames, inheritance='full'):
     R[..., 0, 0], R[..., 0, 1], R[..., 0, 2] = 1 - 2*(y*y + z*z), 2*(x*y - z*w), 2*(x*z + y*w)
     R[..., 1, 0], R[..., 1, 1], R[..., 1, 2] = 2*(x*y + z*w), 1 - 2*(x*x + z*z), 2*(y*z - x*w)
     R[..., 2, 0], R[..., 2, 1], R[..., 2, 2] = 2*(x*z - y*w), 2*(y*z + x*w), 1 - 2*(x*x + y*y)
+    unscaled = R.copy() if inheritance == AFTER_ROTATION else None
     R *= S[:, :, None, :]   # R @ diag(S)
     ssc = inheritance == 'segment_scale_compensation_bit0'
     out = np.empty((n, count, 4, 4))
@@ -55,6 +56,10 @@ def worlds_batch(rows, frames, inheritance='full'):
                 ps = S[:, parent]
                 inv = np.divide(1.0, ps, out=np.zeros_like(ps), where=ps != 0)
                 m[:, :3, :3] *= inv[:, :, None]   # diag(1/parent scale) @ basis
+            elif unscaled is not None and r['flags'] & 1:
+                ps = S[:, parent]
+                inv = np.divide(1.0, ps, out=np.zeros_like(ps), where=ps != 0)
+                m[:, :3, :3] = unscaled[:, j] * (S[:, j] * inv)[:, None, :]   # R @ diag(S / parent scale)
             m = out[:, parent] @ m
         out[:, j] = m
     return out
