@@ -753,6 +753,9 @@ class ModelViewport(_TkFrame):
             uploaded["leaf_colour"] = dict(entry["leaf_colour"])
         if "fresnel_tint" in entry:
             uploaded["fresnel_tint"] = dict(entry["fresnel_tint"])
+        for key in ("skin", "skin_detail"):
+            if key in entry:
+                uploaded[key] = dict(entry[key])
         for role in GL_TEXTURE_ROLES:
             texture = entry.get(role)
             if not texture:
@@ -1315,6 +1318,12 @@ class ModelViewport(_TkFrame):
         sh.glUniform1i(u["uFresnelTint"], 1 if fresnel else 0)
         sh.glUniform3f(u["uFresnelC"], *(float(x) for x in fresnel.get("colour", (1.0, 1.0, 1.0))))
         sh.glUniform1f(u["uFresnelE"], float(fresnel.get("exponent", 1.0)))
+        skin = entry.get("skin") or {}   # basic_skin writers: no extra texture besides the optional detail normal
+        sh.glUniform1i(u["uSkinKind"], int(skin.get("kind", 0)))
+        sh.glUniform4f(u["uSkinA"], float(skin.get("cap", 0.5)), float(skin.get("gloss_fresnel", 0.5)), float(skin.get("spec_fresnel", 1.0)), float(skin.get("exponent", 1.0)))
+        sh.glUniform4f(u["uSkinB"], float(skin.get("albedo", 1.0)), float(skin.get("gloss", 1.0)), float(skin.get("spec", 1.0)), float(skin.get("gloss2", 1.0)))
+        skin_detail = entry.get("skin_detail") or {}
+        sh.glUniform4f(u["uSkinC"], float(skin.get("spec2", 1.0)), float(skin_detail.get("uv_scale", 0.0)), float(skin_detail.get("blend", 0.0)), 0.0)
         pom = entry.get('parallax') or {}
         supported = getattr(sh, 'supports_parallax', True)
         valid = parallax_preview_parameters_valid(pom)

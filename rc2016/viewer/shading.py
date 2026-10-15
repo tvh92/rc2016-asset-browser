@@ -191,6 +191,9 @@ uniform float uAlphaCut; // leaf cut-out: discard when _c.a < threshold (0 = off
 // palette U is a frozen preview input (textures.LEAF_PALETTE_U_PLACEHOLDER).
 uniform bool uLeafColour; uniform vec4 uLeafP; uniform vec3 uLeafPalette; // uLeafPalette = cmb ramp sample
 uniform bool uFresnelTint; uniform vec3 uFresnelC; uniform float uFresnelE; // Novalis glow mushroom F69ADC40 albedo tint
+// basic_skin deferred writers 9AAD640B (uSkinKind 1) / 0E6CC87B (2): uSkinA = (cap, gloss Fresnel, spec Fresnel, exponent),
+// uSkinB = (albedo, gloss, spec, gloss2), uSkinC = (spec2, detail UV scale, detail blend, unused).
+uniform int uSkinKind; uniform vec4 uSkinA; uniform vec4 uSkinB; uniform vec4 uSkinC;
 uniform sampler2D uTexCma; uniform bool uHasCma; uniform bool uSrgbCma;
 uniform bool uZaFresnel; uniform float uZaFresnelPower; // za_basic_normal_gloss geometry-normal rim suppression
 uniform bool uSelfLitG;       // self-lit mask from _g.B instead of _c.a
@@ -509,6 +512,7 @@ void main() {
         float z = sqrt(max(0.0, 1.0 - dot(rg, rg)));
         if (uTwoColorMetal) z = 1.0 - dot(rg, rg); // 1012E99D: source fade 2, not a square root
         if (uBngKind > 0) z = 1.0 - dot(rg, rg);
+        if (uSkinKind > 0) z = 1.0 - dot(rg, rg); // forward skin shaders F0CD85FF/BED06840: z = 1 - x*x - y*y
         if (uGlowKind > 0) z = 1.0 - dot(rg, rg); // 2685144F / CA81B14F normal z weight
         if (uGlowKind == 1) { // geometry TBN, before the normal map; close-range fade s=2
             float face = gl_FrontFacing ? 1.0 : -1.0;
@@ -543,6 +547,13 @@ void main() {
             rg = rg * dz + drg * z * uBngDetail.z;
             z *= dz;
         }
+        if (uSkinKind == 1 && uHasBngDetail && uSkinC.y > 0.0) {
+            // F0CD85FF: w = blend * _g.B; N = (x1 z2 + w z1 x2, y1 z2 + w z1 y2, z1 z2), second map at UV0 * scale.
+            vec2 drg = texture2D(uTexBngDetail, vUV * uSkinC.y).rg * 2.0 - 1.0;
+            float dz = 1.0 - dot(drg, drg);
+            rg = rg * dz + drg * z * (uSkinC.z * bngGl.b);
+            z *= dz;
+        }
         if (uRockBlend) {
             vec2 r2 = texture3D(uRockTex, vec3(fract(materialUV)*uRockScale1.zw, 0.875)).rg*2.0-1.0;
             vec3 n2 = normalize(T*scale*r2.x - B*scale*r2.y + N*(1.0-dot(r2,r2)));
@@ -569,6 +580,15 @@ void main() {
         float ndv = clamp(dot(normalize(vNrm), V), 0.0, 1.0);
         float fresnel = pow(1.00100004673 - ndv, uFresnelE);
         albedo = vec3(mix(uFresnelC.r, albedo.r, fresnel), mix(uFresnelC.g, albedo.g, fresnel), uFresnelC.b);
+    }
+    float skinF = 0.0;
+    vec3 skinTinted = vec3(1.0);
+    if (uMode == 2 && uSkinKind > 0) {
+        // 9AAD640B / 0E6CC87B MRT1: F = (1.001 - sat(N.V))^P; albedo = sat(_c * mix(P_alb, tint, F)); N is the vertex normal.
+        float ndv = clamp((gl_FrontFacing ? 1.0 : -1.0) * dot(normalize(vNrm), V), 0.0, 1.0);
+        skinF = clamp(pow(abs(1.00100004673 - ndv), uSkinA.w), 0.0, 1.0);
+        skinTinted = albedo * mix(vec3(uSkinB.x), vec3(0.745404183864593505859375, 0.644479691982269287109375, 0.60382735729217529296875), skinF);
+        albedo = clamp(skinTinted, 0.0, 1.0);
     }
     vec3 metalSpecTint = vec3(1.0);
     float metalRim = 0.0;
@@ -608,7 +628,15 @@ void main() {
         vec3 gl = uSrgbG ? linear(g.rgb) : g.rgb;
         if (uHasG || uVehicle || uBrightCentre) {
             vec3 F0; float gloss;
-            if (uGMode == 1) {          // skin writer: F0 = grey min(cap 0.5, G), gloss = sqrt(sat(R)) (graph defaults, F term at 0)
+            if (uGMode == 1 && uSkinKind == 1) { // 9AAD640B MRT2: grey F0 and gloss, each lerped to its Fresnel form by F
+                float sp = uSkinB.z * gl.g, gp = uSkinB.y * gl.r;
+                F0 = vec3(min(uSkinA.x, mix(sp, clamp(uSkinA.z * sp, 0.0, 1.0), skinF)));
+                gloss = sqrt(clamp(mix(gp, clamp(uSkinA.y * gp, 0.0, 1.0), skinF), 0.0, 1.0));
+            } else if (uGMode == 1 && uSkinKind == 2) { // 0E6CC87B MRT2: the grey term times the unclamped tinted albedo
+                float sp = uSkinC.x * uSkinB.z * gl.g, gp = uSkinB.w * uSkinB.y * gl.r;
+                F0 = clamp(min(uSkinA.x, mix(sp, clamp(uSkinA.z * sp, 0.0, 1.0), skinF)) * skinTinted, 0.0, 1.0);
+                gloss = sqrt(clamp(mix(gp, clamp(uSkinA.y * gp, 0.0, 1.0), skinF), 0.0, 1.0));
+            } else if (uGMode == 1) {   // skin writer: F0 = grey min(cap 0.5, G), gloss = sqrt(sat(R)) (graph defaults, F term at 0)
                 F0 = vec3(min(0.5, gl.g)); gloss = sqrt(clamp(gl.r, 0.0, 1.0));
             } else if (uGMode == 2) {   // basic_normal_gloss, incandescence, saucer colour pick
                 F0 = vec3(uSpecScale * gl.g); gloss = sqrt(clamp(uGlossScale * gl.r, 0.0, 1.0));
@@ -827,7 +855,7 @@ OPAQUE_UNIFORMS = (
     "uTwoColorMetal", "uMetalDiffuseA", "uMetalDiffuseB", "uMetalSpecA", "uMetalSpecB", "uMetalP",
     "uParallax", "uParallaxNormal", "uHasParallaxHeight", "uTexParallaxHeight", "uParallaxP",
     "uFoliage", "uAlphaCut", "uLeafColour", "uLeafP", "uLeafPalette", "uTexCma", "uHasCma", "uSrgbCma",
-    "uFresnelTint", "uFresnelC", "uFresnelE",
+    "uFresnelTint", "uFresnelC", "uFresnelE", "uSkinKind", "uSkinA", "uSkinB", "uSkinC",
     "uZaFresnel", "uZaFresnelPower",
     "uGlowKind", "uGlowColour", "uGlowP", "uTexGlowParallax", "uHasGlowParallax", "uSrgbGlowParallax", "uSrgbGlowMask",
     "uVehicle", "uTexVehicleP2", "uHasVehicleP2", "uSrgbVehicleP2", "uVehicleA", "uVehicleB", "uVehicleP",

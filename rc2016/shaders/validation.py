@@ -391,6 +391,16 @@ def _viewer_expected_constants(rule):
         l = terms["leaf_colour"]; e.update({"leaf exponent":l["exponent"], "leaf scale":l["scale"], "leaf palette":l["palette_rgb"]})
     if "fresnel_tint" in ported:
         f = terms["fresnel_tint"]; e.update({"mushroom fresnel exponent": f["exponent"], "mushroom fresnel colour": f["colour"]})
+    if "skin" in ported:
+        s = terms["skin"]
+        e.update({"skin fresnel exponent": s["exponent"], "skin albedo scale": s["albedo"], "skin fresnel tint": s["tint"],
+                  "skin specular cap": s["cap"], "skin spec scale": s["spec"], "skin gloss scale": s["gloss"],
+                  "skin spec fresnel": s["spec_fresnel"], "skin gloss fresnel": s["gloss_fresnel"]})
+        if int(s["kind"]) == 2:
+            e.update({"skin spec2": s["spec2"], "skin gloss2": s["gloss2"]})
+    if "skin_detail" in ported:
+        d = terms["skin_detail"]
+        e.update({"skin detail uv scale": d["uv_scale"], "skin detail uv scale v": d["uv_scale"], "skin detail blend": d["blend"]})
     if "pick" in ported:
         p = terms["pick"]; e.update({"pick scale": p["scale"], "pick blend": p["blend"], "pick u": p["u"]})
     if "tint" in ported:
@@ -468,6 +478,14 @@ def _viewer_required(rule, has_n):
         names += ["leaf exponent", "leaf scale", "leaf palette"]; req("_cma")
     if "fresnel_tint" in ported:
         names += ["mushroom fresnel exponent", "mushroom fresnel colour"]; req("_c")
+    if "skin" in ported:
+        names += ["skin fresnel exponent", "skin albedo scale", "skin fresnel tint"]
+        if tex.get("_g"):
+            names += ["skin specular cap", "skin spec scale", "skin gloss scale", "skin spec fresnel", "skin gloss fresnel"]
+            if int(terms["skin"]["kind"]) == 2:
+                names += ["skin spec2", "skin gloss2"]
+    if "skin_detail" in ported and has_n:
+        names += ["skin detail uv scale", "skin detail uv scale v", "skin detail blend"]; req("_bng_detail")
     if "pick" in ported and "vehicle" not in ported and "tint" not in ported:
         names += ["pick u", "pick scale", "pick blend"]; req("_pick")
     if "tint" in ported:
