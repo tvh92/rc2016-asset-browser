@@ -1093,7 +1093,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 6
+VIEWER_RULE_FRONTEND_VERSION = 7
 
 
 def _viewer_rule_images(nt):
@@ -1277,6 +1277,18 @@ def apply_viewer_graph_rule(mat, source):
         view_terms.append('leaf colour')
         limits.append('leaf_colour: palette U is frozen at 0.5; pass-0 geometry-normal Novalis / mapped-normal global overlay; '
                       'runtime pass selection and native sampler state unproven; global normal fade is frozen to s=2')
+    fresnel = terms.get('fresnel_tint') if on('fresnel_tint') else None
+    if fresnel:
+        # Glow mushroom F69ADC40 (MRT1 rg): F = (1.001 - sat(N.V))^E, albedo.rg = mix(C.rg, _c.rg, F), albedo.b = C.b.
+        # The viewer and this front-end use the geometry normal for both writer Fresnel terms.
+        ndv = P.sat(P.v('DOT_PRODUCT', P.v('NORMALIZE', Ng), P.v('NORMALIZE', V)))
+        f = P.m('POWER', P.m('SUBTRACT', 1.00100004673, ndv), P.const('mushroom fresnel exponent', fresnel['exponent']))
+        cr, cg, cb = P.sep(P.const3('mushroom fresnel colour', fresnel['colour']))
+        ar, ag, ab = P.sep(albedo)
+        albedo = P.comb(P.lerp(cr, ar, f), P.lerp(cg, ag, f), cb)
+        view_terms.append('glow mushroom Fresnel tint')
+        limits.append('fresnel_tint: writer F(N.V) uses the geometry normal for both of its Fresnel terms (the second is '
+                      'sign-folded and unnormalised in the game); MRT2 gloss alpha is the generic grey-gloss reading')
     if facing:   # no albedo input: v76-v78 stay 1.0
         albedo = P.const3('facing glow albedo', facing['albedo'])
     g_rgb = g.outputs['Color'] if g is not None else None

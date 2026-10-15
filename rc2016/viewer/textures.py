@@ -48,6 +48,12 @@ LEAF_EXPONENT_KEY, LEAF_SCALE_KEY, LEAF_PALETTE_Y_KEY = 0x9BCD75AC, 0xAAC47D17, 
 # PLACEHOLDER: palette U. The writer multiplies GPU record floats at offsets 112 and 120 (transform block,
 # instance/report.md); the CPU producer-to-zone linkage is unproven, so U is fixed at 0.5.
 LEAF_PALETTE_U_PLACEHOLDER = 0.5
+# Novalis giant glow mushroom writer, deferred pass ('nov_plant_mushroom_glow_fresnel_01' graph, pixel program
+# 0xF69ADC40). MRT1 RGB (albedo) = mix(C.rg, _c.rg, F) with F = (1.001 - N.V)^E, B = C.b; MRT1 alpha is the
+# self-lit term 0.2 log2(K _g.B + 1). C = CB2[0..2] (vec3 key), E = CB2[3], K = CB2[4]. Graph defaults: C
+# (0.381, 0.687, 1), E 0.25, K 2. The writer's second Fresnel (sign-folded, unnormalised) is taken as the same F.
+MUSHROOM_FRESNEL_COLOUR_KEY, MUSHROOM_FRESNEL_EXPONENT_KEY, MUSHROOM_SELF_LIT_KEY = 0x3DA84DFD, 0x764792E8, 0xA71C1591
+MUSHROOM_FRESNEL_PRESENTATION = dict(colour=(0.38132601976394653, 0.68668532371521, 1.0), exponent=0.25, self_lit=2.0)
 # mo_gbl_color_tint_01 writer BE8C3EE0 (Animation/pipeline/Research/Materials/ColorTint01/COLOR_TINT_DECODE.md)
 TINT_KEYS = dict(spec_tint=0x6B591974, mask_b=0x8ED5C5E8, colour_a=0xA815C29F, colour_b=0x311C9325, power_a=0x9E7A020A,
                  weight_b=0x482ECFEB, weight_a=0xD1279E51, power_b=0x077353B0)
@@ -177,6 +183,10 @@ GRAPH_RULES = (
      dict(alpha_cut=True, leaf_colour='novalis')),
     ('materialgraph/environment/global/plant/gbl_plant_tree_foliage_transparent_01/gbl_plant_tree_foliage_transparent_01.',
      dict(alpha_cut=True, leaf_colour='global')),
+    # Novalis giant glow mushroom writer (no forward pass; opaque flags 0x230): Fresnel albedo tint and
+    # self-lit mask _g.B. The second MRT2 gloss channel is not decoded; grey F0 (MRT2 RGB = _g.G) is shared.
+    ('materialgraph/environment/novalis/plant/nov_plant_mushroom_glow_fresnel_01/rp_nov_plant_mushroom_glow_fresnel_01.',
+     dict(g_mode='grey', self_lit='g_blue', self_lit_key=MUSHROOM_SELF_LIT_KEY, fresnel_tint=True)),
     # Cached forward 8716DC7A at t=0; Materials/StaleSelfLitKeys/STALE_SELF_LIT_KEYS_DECODE.md.
     ('materialgraph/environment/nebula/ambient/neb_amb_screen_01/mo_neb_amb_screen_01.',
      dict(self_lit_key=None, screen=True)),
@@ -505,6 +515,12 @@ def material_texture_paths(archive, material_path: str) -> dict:
                 palette_uv=(LEAF_PALETTE_U_PLACEHOLDER,palette_y),writer='CDD7CD94' if global_leaf else '0476D929',
                 keys=dict(exponent=LEAF_EXPONENT_KEY) if global_leaf else dict(exponent=LEAF_EXPONENT_KEY,scale=LEAF_SCALE_KEY,palette_y=LEAF_PALETTE_Y_KEY),
                 mapped_fresnel=global_leaf,placeholder_u=True)
+    if rule.get('fresnel_tint'):
+        # Graph writer reads only _c and _g (API7 and API5); the Fresnel tint needs no extra texture.
+        fallback = MUSHROOM_FRESNEL_PRESENTATION
+        result['fresnel_tint'] = dict(colour=vec3(MUSHROOM_FRESNEL_COLOUR_KEY, fallback['colour']),
+            exponent=value(MUSHROOM_FRESNEL_EXPONENT_KEY, fallback['exponent']), writer='F69ADC40',
+            keys=dict(colour=MUSHROOM_FRESNEL_COLOUR_KEY, exponent=MUSHROOM_FRESNEL_EXPONENT_KEY, self_lit=MUSHROOM_SELF_LIT_KEY))
     if rule.get('parallax_outputs'):
         result['parallax_normal'] = True
         # api5 is a separate height texture, sometimes also named _c; use C/G/N slot identities.

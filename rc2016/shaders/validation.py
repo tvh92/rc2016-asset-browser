@@ -389,6 +389,8 @@ def _viewer_expected_constants(rule):
     e = {}
     if "leaf_colour" in ported:
         l = terms["leaf_colour"]; e.update({"leaf exponent":l["exponent"], "leaf scale":l["scale"], "leaf palette":l["palette_rgb"]})
+    if "fresnel_tint" in ported:
+        f = terms["fresnel_tint"]; e.update({"mushroom fresnel exponent": f["exponent"], "mushroom fresnel colour": f["colour"]})
     if "pick" in ported:
         p = terms["pick"]; e.update({"pick scale": p["scale"], "pick blend": p["blend"], "pick u": p["u"]})
     if "tint" in ported:
@@ -464,6 +466,8 @@ def _viewer_required(rule, has_n):
     req = lambda *rs: roles.extend(r for r in rs if tex.get(r))
     if "leaf_colour" in ported:
         names += ["leaf exponent", "leaf scale", "leaf palette"]; req("_cma")
+    if "fresnel_tint" in ported:
+        names += ["mushroom fresnel exponent", "mushroom fresnel colour"]; req("_c")
     if "pick" in ported and "vehicle" not in ported and "tint" not in ported:
         names += ["pick u", "pick scale", "pick blend"]; req("_pick")
     if "tint" in ported:

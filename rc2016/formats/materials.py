@@ -431,7 +431,7 @@ def classify_absent_texture(path, refs, material_data, graph_datas):
 # Viewer reading keys that change the result beyond the generic _g/self-lit front-end
 # ('screen' is the viewer's forward 'screen' entry; 'bng'/'bng_detail' the basic_normal_gloss variants).
 VIEWER_RULE_EXTRAS=('pick','tint','spec_tint','arch_sequence','vehicle','glow','two_color_metal','puddles',
-    'foliage','za_fresnel_power','screen','rock_blend','bng','bng_detail','facing_glow','bright_center','parallax','alpha_cut','leaf_colour','bright_glow')
+    'foliage','za_fresnel_power','screen','rock_blend','bng','bng_detail','facing_glow','bright_center','parallax','alpha_cut','leaf_colour','bright_glow','fresnel_tint')
 # Terms rc_game_shader.apply_viewer_graph_rule builds (same GLSL math as gl_shading.FRAGMENT/GLASS_FRAGMENT).
 VIEWER_RULE_BUILT=frozenset(VIEWER_RULE_EXTRAS)-{'parallax'}
 # Extra source images each term samples (texture_preview.material_texture_paths roles).
@@ -538,7 +538,7 @@ def viewer_graph_rule(archive, material_path, bound_paths=None):
         else:ported.append(key);continue
         unported.append(key)
     terms={key:paths[key] for key in ('pick','tint','spec_tint','arch_sequence','vehicle','glow','two_color_metal',
-        'puddles','za_fresnel_power','rock_blend','bng','facing_glow','bright_center','parallax','alpha_cut','leaf_colour') if key in paths and key in present+['bng']}
+        'puddles','za_fresnel_power','rock_blend','bng','facing_glow','bright_center','parallax','alpha_cut','leaf_colour','fresnel_tint') if key in paths and key in present+['bng']}
     if forward.get('kind')=='screen':terms['screen']=forward
     if forward.get('kind')=='bright_glow':terms['bright_glow']=forward
     linear_z=bool(bng) or any(key in present for key in VIEWER_LINEAR_Z_TERMS) or bool((paths.get('tint') or {}).get('variant')) or bool((paths.get('leaf_colour') or {}).get('mapped_fresnel'))

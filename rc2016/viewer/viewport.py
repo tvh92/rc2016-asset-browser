@@ -751,6 +751,8 @@ class ModelViewport(_TkFrame):
             uploaded["bng"] = entry["bng"]
         if "leaf_colour" in entry:
             uploaded["leaf_colour"] = dict(entry["leaf_colour"])
+        if "fresnel_tint" in entry:
+            uploaded["fresnel_tint"] = dict(entry["fresnel_tint"])
         for role in GL_TEXTURE_ROLES:
             texture = entry.get(role)
             if not texture:
@@ -1309,6 +1311,10 @@ class ModelViewport(_TkFrame):
         sh.glUniform1i(u["uLeafColour"], 1 if cma and leaf.get("palette_rgb") else 0)
         sh.glUniform4f(u["uLeafP"], float(leaf.get("exponent", 1.0)), float(leaf.get("scale", 1.0)), 1.0 if leaf.get("mapped_fresnel") else 0.0, 0.0)
         sh.glUniform3f(u["uLeafPalette"], *(float(x) for x in leaf.get("palette_rgb", (1.0, 1.0, 1.0))))
+        fresnel = entry.get("fresnel_tint") or {}   # no texture or palette input, so model and level viewers both apply it
+        sh.glUniform1i(u["uFresnelTint"], 1 if fresnel else 0)
+        sh.glUniform3f(u["uFresnelC"], *(float(x) for x in fresnel.get("colour", (1.0, 1.0, 1.0))))
+        sh.glUniform1f(u["uFresnelE"], float(fresnel.get("exponent", 1.0)))
         pom = entry.get('parallax') or {}
         supported = getattr(sh, 'supports_parallax', True)
         valid = parallax_preview_parameters_valid(pom)

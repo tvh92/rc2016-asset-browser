@@ -190,6 +190,7 @@ uniform float uAlphaCut; // leaf cut-out: discard when _c.a < threshold (0 = off
 // Novalis tree leaf colour, rp_nov pass-0 writer 0476D929. uLeafP = (E, S, mapped-normal Fresnel, unused);
 // palette U is a frozen preview input (textures.LEAF_PALETTE_U_PLACEHOLDER).
 uniform bool uLeafColour; uniform vec4 uLeafP; uniform vec3 uLeafPalette; // uLeafPalette = cmb ramp sample
+uniform bool uFresnelTint; uniform vec3 uFresnelC; uniform float uFresnelE; // Novalis glow mushroom F69ADC40 albedo tint
 uniform sampler2D uTexCma; uniform bool uHasCma; uniform bool uSrgbCma;
 uniform bool uZaFresnel; uniform float uZaFresnelPower; // za_basic_normal_gloss geometry-normal rim suppression
 uniform bool uSelfLitG;       // self-lit mask from _g.B instead of _c.a
@@ -563,6 +564,12 @@ void main() {
         vec3 cmb = uLeafPalette;
         albedo = clamp(mix(2.0 * cmb * leaf, 1.0 - 2.0 * (1.0 - cmb) * (1.0 - leaf), step(0.5, cmb)), 0.0, 1.0);
     }
+    if (uMode == 2 && uFresnelTint) {
+        // Novalis glow mushroom, pixel program F69ADC40: F = (1.001 - sat(N.V))^E; MRT1 rg = mix(C.rg, _c.rg, F), b = C.b.
+        float ndv = clamp(dot(normalize(vNrm), V), 0.0, 1.0);
+        float fresnel = pow(1.00100004673 - ndv, uFresnelE);
+        albedo = vec3(mix(uFresnelC.r, albedo.r, fresnel), mix(uFresnelC.g, albedo.g, fresnel), uFresnelC.b);
+    }
     vec3 metalSpecTint = vec3(1.0);
     float metalRim = 0.0;
     if (uMode == 2 && uTwoColorMetal) {
@@ -820,6 +827,7 @@ OPAQUE_UNIFORMS = (
     "uTwoColorMetal", "uMetalDiffuseA", "uMetalDiffuseB", "uMetalSpecA", "uMetalSpecB", "uMetalP",
     "uParallax", "uParallaxNormal", "uHasParallaxHeight", "uTexParallaxHeight", "uParallaxP",
     "uFoliage", "uAlphaCut", "uLeafColour", "uLeafP", "uLeafPalette", "uTexCma", "uHasCma", "uSrgbCma",
+    "uFresnelTint", "uFresnelC", "uFresnelE",
     "uZaFresnel", "uZaFresnelPower",
     "uGlowKind", "uGlowColour", "uGlowP", "uTexGlowParallax", "uHasGlowParallax", "uSrgbGlowParallax", "uSrgbGlowMask",
     "uVehicle", "uTexVehicleP2", "uHasVehicleP2", "uSrgbVehicleP2", "uVehicleA", "uVehicleB", "uVehicleP",
