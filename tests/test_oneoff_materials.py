@@ -4,10 +4,11 @@ writer (bng kind 10) and the Shiv/Qwark prisoner number forward displays.
 Synthetic data only: no archive, no GPU, no Blender.
 """
 import struct
+import hashlib
 import unittest
 from unittest.mock import patch
 
-from rc2016.formats.materials import viewer_graph_rule
+from rc2016.formats.materials import final_shader_status, shader_build_status, viewer_graph_rule
 from rc2016.shaders import validation
 from rc2016.viewer import textures as tp
 from rc2016.viewer.shading import FRAGMENT, GLASS_FRAGMENT, GLASS_KINDS, glass_uniforms
@@ -18,6 +19,7 @@ GOO = 'materialgraph/environment/nebula/ambient/neb_amb_lava_fissure_blast_01/en
 DETAIL = 'required/materials/basic_normal_coloredgloss_detail_emissive.materialgraph'
 SHIV = 'materialgraph/character/enemy/enm_shiv_prisoner_number/enm_shiv_prisoner_number.materialgraph'
 QWARK = 'materialgraph/character/npc/npc_qwark_prisoner_number/npc_qwark_prisoner_number.materialgraph'
+BASIC_FLAT = 'materialgraph/global/basic_flat_color/basic_flat_color.materialgraph'
 
 
 def row(key, values):
@@ -47,6 +49,9 @@ class RuleMatchTests(unittest.TestCase):
         self.assertEqual(tp._graph_rule([SHIV])['constants']['variant'], 'shiv')
         self.assertEqual(tp._graph_rule([QWARK])['constants']['variant'], 'qwark')
         self.assertEqual(tp._graph_rule([EMISSIVE.replace('basic_emissive.', 'basic_emissive_foliage.')]), {})
+        self.assertEqual(tp._graph_rule([BASIC_FLAT]), {})  # hash is mandatory, even for the exact path
+        self.assertEqual(tp._graph_rule([BASIC_FLAT], {BASIC_FLAT: tp.BASIC_FLAT_COLOR_SHA256})['flat_surface'], 'basic_flat_color')
+        self.assertEqual(tp._graph_rule([BASIC_FLAT], {BASIC_FLAT: '0' * 64}), {})
 
 
 class FlatSurfaceTests(unittest.TestCase):
@@ -71,8 +76,93 @@ class FlatSurfaceTests(unittest.TestCase):
         self.assertEqual(got['k'], 0.0)
 
     def test_glsl_branches(self):
-        for text in ('uFlatSurface) albedo = uFlatColour', 'F0 = vec3(uFlatSpec.x)', 'sqrt(clamp(uFlatSpec.y', 'albedo * uK'):
+        for text in ('uBasicFlatColor ? vec3(0.0) : uFlatColour', 'F0 = vec3(uFlatSpec.x)', 'sqrt(clamp(uFlatSpec.y', 'albedo * uK'):
             self.assertIn(text, FRAGMENT)
+
+    def test_basic_flat_color_reads_material_instance_and_emits_independently(self):
+        graph_data = dat1([], lambda at: [])
+        graph_hash = hashlib.sha256(graph_data).hexdigest()
+        mat = dat1([BASIC_FLAT], lambda at: [(tp.MATERIAL_FLAGS_SECTION, flags(0x230))])
+        archive = FakeArchive({'m/x.material': ('material', mat), BASIC_FLAT: ('materialgraph', graph_data)})
+        from rc2016.formats.archive import asset_data
+        graph_hash = hashlib.sha256(asset_data(archive, archive.resolve(BASIC_FLAT)[0])).hexdigest()
+        defaults = {0x7F058428: [0.0, 0.0, 0.0], 0x77591534: 0.0,
+                    0x62835AF9: 0.0, 0x24F4CA4C: 0.0}
+        params = dict(parameters=[row(0x7F058428, (0.25, 0.5, 0.75)), row(0x77591534, 2.0),
+                                 row(0x62835AF9, 0.2), row(0x24F4CA4C, 0.4)], unsupported_parameters=[])
+        rules = (('materialgraph/global/basic_flat_color/basic_flat_color.',
+                  dict(flat_surface='basic_flat_color', _graph_sha256=graph_hash)),)
+        with (patch.object(tp, 'GRAPH_RULES', rules),
+              patch('rc2016.shaders.families.graph_parameter_tables', return_value=([[dict(key_hash=k) for k in defaults]], defaults)),
+              patch('rc2016.formats.materials.extract_material_parameters', return_value=params)):
+            got = tp.material_texture_paths(archive, 'm/x.material')
+            viewer = viewer_graph_rule(archive, 'm/x.material', set())
+        # The synthetic graph bytes are hash-guarded with their own test digest; model the
+        # production identity payload here after testing the selector against the real hash constant above.
+        viewer['graph_identity'] = dict(path=BASIC_FLAT, sha256=tp.BASIC_FLAT_COLOR_SHA256)
+        flat = got['flat_surface']
+        self.assertEqual(flat['writer'], 'D169A814')
+        self.assertEqual(flat['colour'], [0.25, 0.5, 0.75])
+        self.assertEqual(flat['emission_scale'], 2.0)
+        self.assertAlmostEqual(flat['f0'], 0.2)
+        self.assertAlmostEqual(flat['gloss'], 0.4)
+        self.assertAlmostEqual(got['k'], 0.0)
+        self.assertTrue(all(role not in got for role in ('_c', '_g', '_n')))
+        self.assertEqual(viewer['ported'], ['flat_surface'])
+        self.assertEqual(validation._viewer_expected_constants(viewer)['VR flat surface emission scale'], 2.0)
+        names, roles = validation._viewer_required(viewer, False)
+        self.assertIn('VR flat surface albedo zero', names)
+        self.assertIn('VR flat surface emission colour', names)
+        self.assertNotIn('VR flat surface self-lit mask', names)
+        with (patch.object(tp, 'GRAPH_RULES', rules),
+              patch('rc2016.shaders.families.graph_parameter_tables', return_value=([[dict(key_hash=k) for k in defaults]], defaults)),
+              patch('rc2016.formats.materials.extract_material_parameters', return_value=params),
+              patch('rc2016.viewer.native_glsl.selected_translation', return_value=None)):
+            entries = tp.material_textures(archive, [dict(index=3, path='m/x.material')], {}, previews=False)
+        self.assertEqual(entries[3]['flat_surface'], flat)
+        preflight = [dict(family='basic_flat_color', status='supported_partial')]
+        build = shader_build_status(None, 'colored', [], preflight)
+        self.assertEqual(build, 'partial_family_color_only_missing_base_color')
+        self.assertEqual(final_shader_status(build, viewer, set(), dict(status='unsupported'), None, preflight, [BASIC_FLAT]),
+                         'viewer_graph_rule_frontend', viewer)
+        signed = dict(parameters=[row(0x7F058428, (-0.25, 0.5, 0.75)), row(0x77591534, -2.0),
+                                  row(0x62835AF9, -0.2), row(0x24F4CA4C, -0.4)], unsupported_parameters=[])
+        with (patch.object(tp, 'GRAPH_RULES', rules),
+              patch('rc2016.shaders.families.graph_parameter_tables', return_value=([[dict(key_hash=k) for k in defaults]], defaults)),
+              patch('rc2016.formats.materials.extract_material_parameters', return_value=signed)):
+            signed_flat = tp.material_texture_paths(archive, 'm/x.material')['flat_surface']
+        self.assertEqual(signed_flat['colour'], [-0.25, 0.5, 0.75])
+        self.assertEqual(signed_flat['emission_scale'], -2.0)
+        self.assertAlmostEqual(signed_flat['f0'], -0.2)
+        self.assertAlmostEqual(signed_flat['gloss'], -0.4)
+        self.assertIn('uBasicFlatColor ? vec3(0.0) : uFlatColour', FRAGMENT)
+        self.assertIn('if (uBasicFlatColor) color += uFlatColour * uBasicFlatEmissionScale', FRAGMENT)
+
+    def test_basic_flat_color_rejects_malformed_and_nonfinite_overrides(self):
+        graph_data = dat1([], lambda at: [])
+        mat = dat1([BASIC_FLAT], lambda at: [(tp.MATERIAL_FLAGS_SECTION, flags(0x230))])
+        archive = FakeArchive({'m/x.material': ('material', mat), BASIC_FLAT: ('materialgraph', graph_data)})
+        from rc2016.formats.archive import asset_data
+        graph_hash = hashlib.sha256(asset_data(archive, archive.resolve(BASIC_FLAT)[0])).hexdigest()
+        defaults = {0x7F058428: [0.0, 0.0, 0.0], 0x77591534: 0.0, 0x62835AF9: 0.2, 0x24F4CA4C: 0.4}
+        rules = (('materialgraph/global/basic_flat_color/basic_flat_color.',
+                  dict(flat_surface='basic_flat_color', _graph_sha256=graph_hash)),)
+        valid = [row(0x7F058428, (0.25, 0.5, 0.75)), row(0x77591534, 2.0)]
+        bad_rows = [dict(key_hash=0x7F058428, size=12, raw_hex='xyz'),
+                    dict(key_hash=0x77591534, size=2, raw_hex='0000'),
+                    row(0x7F058428, (float('nan'), 0.5, 0.75)),
+                    row(0x77591534, float('inf'))]
+        for bad in bad_rows:
+            with self.subTest(bad=bad):
+                params = dict(parameters=valid, unsupported_parameters=[bad])
+                with (patch.object(tp, 'GRAPH_RULES', rules),
+                      patch('rc2016.shaders.families.graph_parameter_tables', return_value=([[dict(key_hash=k) for k in defaults]], defaults)),
+                      patch('rc2016.formats.materials.extract_material_parameters', return_value=params)):
+                    got = tp.material_texture_paths(archive, 'm/x.material')
+                    viewer = viewer_graph_rule(archive, 'm/x.material', set())
+                self.assertNotIn('flat_surface', got)
+                self.assertIn('unsupported_flat_surface', got)
+                self.assertFalse(viewer.get('applies'))
 
     def test_viewer_rule_ports_the_term(self):
         archive, _ = extract(EMISSIVE, self.DEFAULTS)

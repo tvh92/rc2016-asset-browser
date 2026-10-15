@@ -37,6 +37,7 @@ CSECIA_PULSE_RATE_KEY = 0xAF5BEBBC
 CSECIA_SELF_LIT_K_KEY = 0xF8C61683
 CSECIA_NORMAL_BLEND_KEY = 0x173F37E2
 _CSECIA_DECODE = "Other models/enm_telepathipus_v2/evidence/CSECIA_DECODE.md"
+_BASIC_FLAT_COLOR_DECODE = "docs/material-decoding/BASIC_FLAT_COLOR_D169A814.md"
 _BLARG_SPIRV = "Other models/enm_blarg_space_commando/evidence/spirv/"
 _BLARG_DECODE = "Other models/enm_blarg_space_commando/evidence/DEFERRED_FAMILIES_DECODE.md"
 _STANDARD_LIMITATIONS = [
@@ -63,6 +64,34 @@ _GLASS_DECODE = "Other models/enm_blarg_space_commando/evidence/glass/CHARACTER_
 # Partial recognition is intentional: the cached deferred writer and bounded
 # native forward slices do not establish the entire graph implementation.
 FAMILY_REGISTRY = {
+    ("materialgraph/global/basic_flat_color/basic_flat_color.materialgraph",
+     "6d9bcad5a9dab38dd5988195cc9e87514c08a90c6b8fa899c2d21f3e42c14f95"): {
+        "family": "basic_flat_color",
+        "family_status": "supported_partial",
+        "evidence": "Cached shadPS4 SPIR-V plus native GCN code-identity join; see " + _BASIC_FLAT_COLOR_DECODE + ".",
+        "evidence_sources": [{"path": _BASIC_FLAT_COLOR_DECODE,
+                              "graph_sha256": "6d9bcad5a9dab38dd5988195cc9e87514c08a90c6b8fa899c2d21f3e42c14f95",
+                              "spv_sha256": "2d3feebb7d4547ab635dd34f7e5512f1e6365046b9956777a6c01f78061a200e",
+                              "native_code_sha256": "29685aad5fa90c6106091ff134a3a866015da9bec1093f500951e12cf4b0d90c",
+                              "scope": "Independent additive CB2 colour*K output, zero albedo, grey F0/gloss; runtime lighting/probes/fog/debug and pass selection remain inputs."}],
+        "texture_slots": {},
+        "shader_variants": [
+            {"identity": "0xd169a814", "stage": "PIXEL", "status": "supported_partial",
+             "scope": "Source-bounded output material terms; forward lighting and runtime pass selection are not decoded."},
+            {"identity": "0x11408de9", "stage": "PIXEL", "status": "unresolved_variant", "scope": "Zero albedo/specular targets; normal target is retained."},
+            {"identity": "0x6c8f5a50", "stage": "PIXEL", "status": "unresolved_variant", "scope": "Execution-masked variant."},
+        ],
+        "parameter_semantics": _standard_semantics({
+            0x7F058428: ("source_emission_colour", "float32x3"),
+            0x77591534: ("source_emission_scale", "float32"),
+            0x62835AF9: ("grey_specular_scale", "float32"),
+            0x24F4CA4C: ("gloss_scale", "float32"),
+        }),
+        "limitations": [
+            "The cached SPIR-V program id is joined to the graph's native program id by the local source catalog; the raw SPIR-V is not independently byte-corresponded to native code. The native code SHA is recorded for provenance.",
+            "Only the independent additive color*K, zero albedo, grey F0 and gloss material terms are mirrored. Runtime light/probe/reflection/fog/debug branches and graph pass selection are unresolved; this is not game equivalence.",
+        ],
+    },
     ("materialgraph/global/basic_glass/character_glass.materialgraph",
      "be4eb2847693739c596cad28b11af11a98b261c60aa54ce42f72d60574a62a54"): {
         "family": "character_glass",

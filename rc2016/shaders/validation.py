@@ -491,8 +491,12 @@ def _viewer_expected_constants(rule):
                   "screen intensity A": p["intensity_a"], "screen intensity B": p["intensity_b"]})
     if "flat_surface" in ported:
         f = terms["flat_surface"]
-        e.update({"flat surface colour": f["colour"], "flat surface F0": f["f0"], "flat surface gloss": f["gloss"],
-                  "flat surface self-lit mask": 1.0})
+        e.update({"flat surface F0": f["f0"], "flat surface gloss": f["gloss"]})
+        if f.get("model") == "basic_flat_color":
+            e.update({"flat surface albedo zero": [0.0, 0.0, 0.0], "flat surface emission colour": f["colour"],
+                      "flat surface emission scale": f["emission_scale"]})
+        else:
+            e.update({"flat surface colour": f["colour"], "flat surface self-lit mask": 1.0})
     if "number_display" in ported:
         p = terms["number_display"]["params"]
         e.update({"number distort": p["distort"], "number b scale": p["b_scale"], "number vignette w": p["vignette_w"],
@@ -593,7 +597,11 @@ def _viewer_required(rule, has_n):
                   "screen intensity B"] + (["screen grid"] if tex.get("_n") else [])
         req("_c", "_n", "_pick", "_g")
     if "flat_surface" in ported:
-        names += ["flat surface colour", "flat surface F0", "flat surface gloss"] + (["flat surface self-lit mask"] if lit else [])
+        if terms["flat_surface"].get("model") == "basic_flat_color":
+            names += ["flat surface albedo zero", "flat surface emission colour", "flat surface emission scale",
+                      "flat surface F0", "flat surface gloss"]
+        else:
+            names += ["flat surface colour", "flat surface F0", "flat surface gloss"] + (["flat surface self-lit mask"] if lit else [])
     if "number_display" in ported:
         names += ["number distort", "number b scale", "number vignette w", "number kc", "number ko", "number amplitude"]
         req("_c", "_n", "_pick", "_g")
@@ -714,6 +722,24 @@ def _validate_viewer_rule_material(source, material):
         constants = _viewer_check_constants_and_images(source, material, rule, upstream, has_n)
         return dict(status="passed_viewer_graph_rule_frontend", terms=ported, blend="additive", constants=constants,
                     limitation=material.get("rc_shader_frontend_limitation"))
+    flat = (rule.get("terms") or {}).get("flat_surface") or {}
+    if "flat_surface" in ported and flat.get("model") == "basic_flat_color":
+        surface = _from_node(output.inputs["Surface"])
+        assert surface and surface.type == "ADD_SHADER" and surface.name == "VR basic_flat_color additive source term", \
+            "basic_flat_color source emission is not added beside the BRDF"
+        brdf = _from_node(surface.inputs[0]); emission = _from_node(surface.inputs[1])
+        assert brdf and brdf.type == "GROUP" and brdf.node_tree and brdf.node_tree.name == DEFERRED_GROUP, \
+            "basic_flat_color deferred BRDF is not the first additive input"
+        assert emission and emission.type == "EMISSION" and emission.name == "VR basic_flat_color source emission", \
+            "basic_flat_color source term is not represented by an emission shader"
+        assert {node.name for node in _viewer_upstream(brdf.inputs[0])} == {"VR flat surface albedo zero"}, \
+            "basic_flat_color albedo is not the zero source constant"
+        assert abs(float(brdf.inputs[7].default_value)) < 1e-7 and not brdf.inputs[1].is_linked, \
+            "basic_flat_color additive term was routed through the BRDF self-lit mask"
+        constants = _viewer_check_constants_and_images(source, material, rule,
+            _viewer_upstream(*brdf.inputs, *emission.inputs), has_n)
+        return dict(status="passed_viewer_graph_rule_frontend", terms=ported, constants=constants,
+                    limitation=material.get("rc_shader_frontend_limitation"))
     brdf = _from_node(output.inputs["Surface"])
     facing = "facing_glow" in ported
     extra = ()
@@ -754,6 +780,9 @@ def _validate_viewer_rule_material(source, material):
     if facing:   # 0CD2AAFB has no albedo input
         assert {node.name for node in _viewer_upstream(brdf.inputs[0])} == {"VR facing glow albedo"}, \
             "Facing-glow albedo is not the white source constant"
+    elif "flat_surface" in ported and flat.get("model") == "basic_flat_color":
+        assert {node.name for node in _viewer_upstream(brdf.inputs[0])} == {"VR flat surface albedo zero"}, \
+            "basic_flat_color albedo is not the zero source constant"
     elif "flat_surface" in ported:   # MRT1 rgb is the material constant
         assert {node.name for node in _viewer_upstream(brdf.inputs[0])} == {"VR flat surface colour"}, \
             "Flat-surface albedo is not the source colour constant"

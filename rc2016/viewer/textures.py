@@ -10,6 +10,8 @@ the per-graph rules in GRAPH_RULES. This is a viewing aid, not the game shading.
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
+import math
 import struct
 import threading
 
@@ -123,10 +125,15 @@ NUMBER_DISPLAY_QWARK = dict(_NUMBER_DISPLAY_COMMON, variant='qwark', writer='37C
 # (no texture, record 17) writes F0 0.1 and a fixed gloss instead. enm_blarg_green_goo writer 4A73CC38 (pass 1 record 4,
 # 41-dword CB2): the albedo floor sat(0x34392B3C) (all noise masks 0), MRT2 F0 = 0x17DE448C, gloss = sqrt(sat(0x24F4CA4C)).
 FLAT_SURFACE_GOO = dict(colour_key=0x34392B3C, f0_key=0x17DE448C, gloss_key=GLOSS_SCALE_KEY)
+BASIC_FLAT_COLOR_SHA256 = '6d9bcad5a9dab38dd5988195cc9e87514c08a90c6b8fa899c2d21f3e42c14f95'
 # Decoded writers that do not read _g as coloured F0 + gloss alpha (first matching prefix wins).
 # g_mode 'grey': F0 = grey spec*_g.G, gloss = sqrt(sat(gloss*_g.R)); 'grey_skin': the basic_skin
 # front-end (F0 cap 0.5). self_lit 'g_blue' takes the mask from _g.B instead of _c.a.
 GRAPH_RULES = (
+    # Cached shadPS4 SPIR-V 0xD169A814; exact graph + decoded SHA only. The writer emits zero albedo,
+    # grey F0/gloss and an independent CB2[0..2] * CB2[3] additive colour term.
+    ('materialgraph/global/basic_flat_color/basic_flat_color.',
+     dict(flat_surface='basic_flat_color', _graph_sha256=BASIC_FLAT_COLOR_SHA256)),
     # Cached SPIR-V E08357DC; Materials/ZaBasicNormalGloss/ZA_BASIC_NORMAL_GLOSS_DECODE.md.
     ('required/materials/za_basic_normal_gloss.',
      dict(g_mode='grey', self_lit_key=None, za_fresnel_key=0x4D385B45)),
@@ -398,8 +405,16 @@ def fur_shell_grey_reading(material_path, graphs, data):
     return flags is not None and bool(flags & FUR_SHELL_FLAG)
 
 
-def _graph_rule(graphs):
-    return next((rule for prefix, rule in GRAPH_RULES for g in graphs if g.startswith(prefix)), {})
+def _graph_rule(graphs, graph_hashes=None):
+    for prefix, rule in GRAPH_RULES:
+        for graph in graphs:
+            if not graph.startswith(prefix):
+                continue
+            required = rule.get('_graph_sha256')
+            if required and (graph_hashes or {}).get(graph.lower()) != required:
+                continue
+            return {key: value for key, value in rule.items() if key != '_graph_sha256'}
+    return {}
 
 
 def _role(path):
@@ -502,10 +517,13 @@ def material_texture_paths(archive, material_path: str) -> dict:
     found = [r['path'] for r in asset_references(archive, material_ids[0]) if not r.get('resolution_error')]
     textures = [p for p in found if p.endswith('.texture')]
     graphs = [p for p in found if p.endswith('.materialgraph')]
-    graph_keys, defaults, slots, role_slots = set(), {}, {}, {}
+    graph_keys, defaults, slots, role_slots, graph_hashes = set(), {}, {}, {}, {}
     for graph in graphs:
         ids = [k for k in archive.resolve(graph) if archive.entries[k]['type'] == 'materialgraph']
         if len(ids) == 1:
+            graph_data = asset_data(archive, ids[0])
+            graph_name = archive.entries[ids[0]]['path'].replace('\\', '/').lower()
+            graph_hashes[graph_name] = hashlib.sha256(graph_data).hexdigest()
             graph_textures, graph_slots, keys, graph_defaults, graph_roles = _graph_info(archive, ids[0])
             textures += graph_textures
             slots.update(graph_slots)
@@ -554,7 +572,38 @@ def material_texture_paths(archive, material_path: str) -> dict:
         default = defaults.get(key, fallback)
         return [float(x) for x in default] if isinstance(default, (list, tuple)) and len(default) == 3 else list(fallback)
 
-    rule = _graph_rule(graphs)
+    def strict_flat_value(key, width):
+        """Read a basic_flat_color value without falling back after malformed explicit data."""
+        row = rows.get(key)
+        if row is not None:
+            if row.get('size') != width:
+                raise ValueError('explicit key 0x%08X has width %s, expected %d' % (key, row.get('size'), width))
+            try:
+                raw = bytes.fromhex(row.get('raw_hex', ''))
+            except (TypeError, ValueError):
+                raise ValueError('explicit key 0x%08X has malformed raw bytes' % key)
+            if len(raw) != width:
+                raise ValueError('explicit key 0x%08X has %d raw bytes, expected %d' % (key, len(raw), width))
+            values = struct.unpack('<%df' % (width // 4), raw)
+        else:
+            default = defaults.get(key)
+            if default is None:
+                raise ValueError('key 0x%08X has no material override or graph default' % key)
+            values = tuple(default) if isinstance(default, (list, tuple)) else (default,)
+            if len(values) != width // 4:
+                raise ValueError('graph default for key 0x%08X has the wrong width' % key)
+            values = tuple(float(value) for value in values)
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError('key 0x%08X has nonfinite data' % key)
+        return list(values) if width == 12 else values[0]
+
+    rule = _graph_rule(graphs, graph_hashes)
+    if rule.get('flat_surface') == 'basic_flat_color':
+        graph_path = next((g.replace('\\', '/').lower() for g in graphs
+                           if g.replace('\\', '/').lower().startswith('materialgraph/global/basic_flat_color/basic_flat_color.')
+                           and graph_hashes.get(g.replace('\\', '/').lower()) == BASIC_FLAT_COLOR_SHA256), None)
+        if graph_path:
+            result['graph_identity'] = dict(path=graph_path, sha256=BASIC_FLAT_COLOR_SHA256)
     result['g_mode'] = rule.get('g_mode', 'colored')
     if fur_shell_grey_reading(material_path, graphs, data):
         result['g_mode'] = 'grey'
@@ -813,7 +862,6 @@ def material_texture_paths(archive, material_path: str) -> dict:
                 0x220C9B5C,0x4295546E,0xDA56E3B0,0x42B6B6AE,0xCEF83FBC)
         fallback = (.566,.02,.433,.788,1.5,.015,.477,180.,1.,0.,.02,.9,.4,.1,0.)
         p = [value(k,d) for k,d in zip(keys,fallback)]
-        import math
         if not all(math.isfinite(x) for x in p) or p[6] == p[0] or p[3] == p[2] or p[6] == 1:
             raise ValueError('Undefined GroundPuddles threshold/parameter')
         result.update(k=0., spec=1., gloss=1., self_lit='none')
@@ -894,16 +942,33 @@ def material_texture_paths(archive, material_path: str) -> dict:
         # No _c/_g texture: the writer's colour, F0 and gloss are material constants (FLAT_SURFACE_GOO, basic_emissive).
         for role in ('_c', '_g', '_n', '_h', '_pick'):
             result.pop(role, None)
-        if rule['flat_surface'] == 'emissive':
+        if rule['flat_surface'] == 'basic_flat_color':
+            try:
+                flat = dict(model='basic_flat_color', colour=strict_flat_value(0x7F058428, 12),
+                            emission_scale=strict_flat_value(0x77591534, 4), f0=strict_flat_value(0x62835AF9, 4),
+                            gloss=strict_flat_value(0x24F4CA4C, 4), writer='D169A814',
+                            keys=dict(colour=0x7F058428, emission_scale=0x77591534,
+                                      f0=0x62835AF9, gloss=0x24F4CA4C))
+                flat['signed_inputs'] = (any(value < 0.0 for value in flat['colour']) or flat['emission_scale'] < 0.0
+                                         or flat['f0'] < 0.0 or flat['gloss'] < 0.0)
+            except ValueError as error:
+                result['unsupported_flat_surface'] = str(error)
+                result.pop('graph_identity', None)
+                rule = {}
+                flat = None
+        elif rule['flat_surface'] == 'emissive':
             flat = dict(colour=vec3(0x7F058428, (1.0, 1.0, 1.0)), f0=value(SPECULAR_SCALE_KEY, 1.0),
                         gloss=value(0x4069EA80, 1.0), writer='452EDC8C', keys=dict(colour=0x7F058428, f0=SPECULAR_SCALE_KEY, gloss=0x4069EA80))
-        else:
+        elif rule['flat_surface'] == 'goo_floor':
             goo = FLAT_SURFACE_GOO
             flat = dict(colour=[min(1.0, max(0.0, x)) for x in vec3(goo['colour_key'], (0.0, 0.38132601976394653, 0.0))],
                         f0=value(goo['f0_key'], 0.1), gloss=value(goo['gloss_key'], 0.9), writer='4A73CC38', floor=True,
                         keys=dict(colour=goo['colour_key'], f0=goo['f0_key'], gloss=goo['gloss_key']))
-        result['flat_surface'] = flat
-        result['spec'] = result['gloss'] = 1.0
+        else:
+            flat = None
+        if flat is not None:
+            result['flat_surface'] = flat
+            result['spec'] = result['gloss'] = 1.0
     if rule.get('facing_glow'):
         # No texture, parameter, vertex colour or instance input: albedo is 1.0 and the glow is
         # f = pow(sat(N.V) - bias, exponent), a = a_scale*f + a_offset,
@@ -1407,7 +1472,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             paths = {}
         entry.update(k=paths.get('k', 0.0), g_mode=paths.get('g_mode', 'colored'), self_lit=paths.get('self_lit', 'c_alpha'),
                      spec=paths.get('spec', 1.0), gloss=paths.get('gloss', 1.0))
-        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'bright_center', 'parallax', 'parallax_normal', 'hair', 'skin', 'skin_detail', 'fresnel_tint'):
+        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'bright_center', 'flat_surface', 'parallax', 'parallax_normal', 'hair', 'skin', 'skin_detail', 'fresnel_tint'):
             if paths.get(key):
                 entry[key] = paths[key]
         if paths.get('foliage'):

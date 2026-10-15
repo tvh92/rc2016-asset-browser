@@ -1409,6 +1409,8 @@ class ModelViewport(_TkFrame):
         sh.glUniform1i(u["uFlatSurface"], 1 if flat and level == 2 else 0)
         sh.glUniform3f(u["uFlatColour"], *(float(x) for x in flat.get("colour", (1.0, 1.0, 1.0))))
         sh.glUniform4f(u["uFlatSpec"], float(flat.get("f0", 0.0)), float(flat.get("gloss", 0.0)), 0.0, 0.0)
+        sh.glUniform1i(u["uBasicFlatColor"], 1 if flat.get("model") == "basic_flat_color" and level == 2 else 0)
+        sh.glUniform1f(u["uBasicFlatEmissionScale"], float(flat.get("emission_scale", 0.0)))
         skin = entry.get("skin") or {}   # basic_skin writers: no extra texture besides the optional detail normal
         sh.glUniform1i(u["uSkinKind"], int(skin.get("kind", 0)))
         sh.glUniform4f(u["uSkinA"], float(skin.get("cap", 0.5)), float(skin.get("gloss_fresnel", 0.5)), float(skin.get("spec_fresnel", 1.0)), float(skin.get("exponent", 1.0)))

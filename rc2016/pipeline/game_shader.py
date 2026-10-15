@@ -1437,7 +1437,7 @@ def apply_viewer_graph_rule(mat, source):
     glow_shell = 'bright_glow' in ported and 'bright_glow' in terms   # 93695188 samples no texture
     eye_cornea = 'eye_cornea' in ported and 'eye_cornea' in terms   # A36A97CB samples _n only
     number = 'number_display' in ported and 'number_display' in terms   # 8CEC816B / 37C85F4C sample the four number slots
-    flat = terms.get('flat_surface') if 'flat_surface' in ported else None   # constant albedo, F0 and gloss, no texture
+    flat = terms.get('flat_surface') if 'flat_surface' in ported else None   # constant writer terms; per-writer source composition below
     if number and not all(img(role) is not None for role in ('_c', '_n', '_pick', '_g')):
         return False
     glass = next((k for k in GLASS_VIEWER_KINDS if k in ported and k in terms), None)   # forward glass writers sample no _c
@@ -1535,12 +1535,25 @@ def apply_viewer_graph_rule(mat, source):
                       'ramp/scatter term (_g.A, tint 0xCFCCABE4, skin_ramp, wrap) is not reproduced')
     if facing:   # no albedo input: v76-v78 stay 1.0
         albedo = P.const3('facing glow albedo', facing['albedo'])
-    if flat:   # basic_emissive 452EDC8C / goo floor 4A73CC38: MRT1 rgb, grey MRT2 F0 and gloss are material constants
-        albedo = P.const3('flat surface colour', flat['colour'])
-        view_terms.append('flat surface' + (' (goo noise-mask floor)' if flat.get('floor') else ''))
-        limits.append('flat_surface: writer %s outputs constants for colour, F0 and gloss; its graph normal texture is a default '
-                      'and is not applied' % flat['writer'] + ('; PREVIEW floor: the noise-, time- and depth-driven terms and the '
-                      'CB0[115]-scaled emission are not decoded' if flat.get('floor') else '; the pass-1 variant E921A79B writes F0 0.1'))
+    if flat:
+        if flat.get('model') == 'basic_flat_color':
+            # SPIR-V/native slice D169A814 has no diffuse albedo: only independent CB2 colour * K is added
+            # after the runtime light accumulation. Keep it beside the bounded deferred BRDF preview.
+            albedo = P.const3('flat surface albedo zero', (0.0, 0.0, 0.0))
+            limits.append('basic_flat_color D169A814: source term CB2[0..2] * CB2[3] is added independently of the grey F0/gloss '
+                          'BRDF. The native runtime light/probe/fog/debug branches and pass selection remain unresolved; the '
+                          'viewer substitutes its deferred light model and does not claim game equivalence.')
+            if flat.get('signed_inputs'):
+                limits.append('basic_flat_color signed finite input domain: raw values are retained in the source math nodes, but '
+                              'Cycles emission/BRDF handling of negative radiance or specular parameters has not been validated; '
+                              'the Blender render is unsupported for this domain')
+        else:
+            # basic_emissive 452EDC8C / goo floor 4A73CC38: MRT1 rgb, grey MRT2 F0 and gloss are constants.
+            albedo = P.const3('flat surface colour', flat['colour'])
+            view_terms.append('flat surface' + (' (goo noise-mask floor)' if flat.get('floor') else ''))
+            limits.append('flat_surface: writer %s outputs constants for colour, F0 and gloss; its graph normal texture is a default '
+                          'and is not applied' % flat['writer'] + ('; PREVIEW floor: the noise-, time- and depth-driven terms and the '
+                          'CB0[115]-scaled emission are not decoded' if flat.get('floor') else '; the pass-1 variant E921A79B writes F0 0.1'))
     g_rgb = g.outputs['Color'] if g is not None else None
     gR, gG, gB = P.sep(g_rgb) if g is not None else (0.0, 0.0, 0.0)
     f0 = gloss_in = None          # BRDF F0 colour / gloss input (the group squares gloss and scales it)
@@ -1827,10 +1840,11 @@ def apply_viewer_graph_rule(mat, source):
             f0 = (0.0, 0.0999755859375, 0.0999755859375); gloss_in = 0.948681201424; spec, gloss_scale = 1.0, 1.0
         elif g is not None:
             f0, gloss_in = g_rgb, g.outputs['Alpha']
-        if flat:   # grey F0 = P, gloss = sqrt(sat(Q)); self-lit mask is 1 (albedo * K)
+        if flat:   # grey F0 = P, gloss = sqrt(sat(Q)); basic_flat_color uses independent emission instead
             fs = P.const('flat surface F0', flat['f0']); f0 = P.comb(fs, fs, fs)
             gloss_in = P.m('SQRT', P.sat(P.const('flat surface gloss', flat['gloss']))); spec = gloss_scale = 1.0
-            self_mask = P.const('flat surface self-lit mask', 1.0)
+            if flat.get('model') != 'basic_flat_color':
+                self_mask = P.const('flat surface self-lit mask', 1.0)
         if bright:   # D14A48D7: grey constant F0, gloss = sqrt(sat(G))
             fs = P.const('bright centre F0', bright['f0']); f0 = P.comb(fs, fs, fs)
             gloss_in = P.m('SQRT', P.sat(P.const('bright centre gloss', bright['gloss_sq']))); spec = gloss_scale = 1.0
@@ -1890,6 +1904,14 @@ def apply_viewer_graph_rule(mat, source):
         k = 0.0; how = 'off'
     grp.inputs[7].default_value = k
     L.new(final_n, grp.inputs[4])
+    if flat and flat.get('model') == 'basic_flat_color':
+        emission = nt.nodes.new('ShaderNodeEmission'); emission.name = emission.label = 'VR basic_flat_color source emission'
+        emission.inputs['Strength'].default_value = 1.0
+        emission_colour = P.v('SCALE', P.const3('flat surface emission colour', flat['colour']),
+                               P.const('flat surface emission scale', flat['emission_scale']))
+        L.new(emission_colour, emission.inputs['Color'])
+        add = nt.nodes.new('ShaderNodeAddShader'); add.name = add.label = 'VR basic_flat_color additive source term'; add.location = (650, -150)
+        L.new(grp.outputs[0], add.inputs[0]); L.new(emission.outputs[0], add.inputs[1]); L.new(add.outputs[0], out.inputs['Surface'])
     if facing:   # 0CD2AAFB rel 12552-12672, added after lighting: an emission beside the BRDF
         ndv = P.sat(P.v('DOT_PRODUCT', final_n, V))
         f = P.m('POWER', P.m('MAXIMUM', P.m('SUBTRACT', ndv, P.const('facing glow bias', facing['bias'])), 0.0),

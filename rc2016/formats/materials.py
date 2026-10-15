@@ -460,7 +460,13 @@ def final_shader_status(build_status, rule, bound_paths, shader_translation, pro
     anchor=rule.get('textures',{}).get('_g' if 'arch_sequence' in rule.get('ported',()) else '_c')
     # The facing-glow writer (Qwark bulb) and the glow shell (93695188) sample no texture at all.
     glass_ready=rule.get('applies') and any(key in rule.get('ported',()) for key in ('glass_basic','glass_cg02','glass_jn'))
-    viewer_ready=((build_status.startswith('color_only_preview') or glass_ready) and rule.get('applies') and
+    flat=rule.get('terms',{}).get('flat_surface') or {}
+    flat_ready=(rule.get('applies') and 'flat_surface' in rule.get('ported',()) and
+        flat.get('model')=='basic_flat_color' and flat.get('writer')=='D169A814' and
+        rule.get('graph_identity')==dict(path='materialgraph/global/basic_flat_color/basic_flat_color.materialgraph',
+            sha256='6d9bcad5a9dab38dd5988195cc9e87514c08a90c6b8fa899c2d21f3e42c14f95') and
+        rule_coverage(list(graph_paths))[0]==EXACT)
+    viewer_ready=((build_status.startswith('color_only_preview') or glass_ready or flat_ready) and rule.get('applies') and
                   (anchor in bound_paths or any(key in rule.get('ported',()) for key in
                    ('facing_glow','bright_glow','eye_cornea','flat_surface','number_display','glass_basic','glass_cg02','glass_jn'))))
     translated=(shader_translation.get('status')=='ready' and not profile and
@@ -515,6 +521,8 @@ def viewer_graph_rule(archive, material_path, bound_paths=None):
         return dict(applies=False,reason='viewer reading unavailable: %s'%exc)
     if not paths:
         return dict(applies=False,reason='material asset did not resolve to one entry')
+    if paths.get('unsupported_flat_surface'):
+        return dict(applies=False,reason='basic_flat_color instance rejected: '+paths['unsupported_flat_surface'])
     forward=paths.get('forward') or {}
     if forward and forward.get('kind') not in ('screen','bright_glow','number_display','eye_cornea','glass_basic','glass_cg02','glass_jn'):
         return dict(applies=False,reason='forward (glass/VFX) graph; handled by its own front-ends')
@@ -553,6 +561,7 @@ def viewer_graph_rule(archive, material_path, bound_paths=None):
         g_mode=paths.get('g_mode','colored'),self_lit=paths.get('self_lit','c_alpha'),
         k=float(paths.get('k',0.0) or 0.0),spec=float(paths.get('spec',1.0)),gloss=float(paths.get('gloss',1.0)),
         textures=textures,terms=terms,ported=ported,unported=unported,unported_reasons=reasons,
+        **({'graph_identity': paths['graph_identity']} if paths.get('graph_identity') else {}),
         normal_z='1-x*x-y*y' if linear_z else 'sqrt(1-x*x-y*y)')
     return json.loads(json.dumps(rule))
 

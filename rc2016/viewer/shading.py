@@ -263,7 +263,8 @@ uniform float uAlphaCut; // leaf cut-out: discard when _c.a < threshold (0 = off
 // Novalis tree leaf colour, rp_nov pass-0 writer 0476D929. uLeafP = (E, S, mapped-normal Fresnel, unused);
 // palette U is a frozen preview input (textures.LEAF_PALETTE_U_PLACEHOLDER).
 uniform bool uLeafColour; uniform vec4 uLeafP; uniform vec3 uLeafPalette; // uLeafPalette = cmb ramp sample
-uniform bool uFlatSurface; uniform vec3 uFlatColour; uniform vec4 uFlatSpec; // constant albedo, F0 and gloss (basic_emissive 452EDC8C, goo floor 4A73CC38)
+uniform bool uFlatSurface; uniform vec3 uFlatColour; uniform vec4 uFlatSpec; // constant surfaces: basic_emissive 452EDC8C, goo floor 4A73CC38, basic_flat_color D169A814
+uniform bool uBasicFlatColor; uniform float uBasicFlatEmissionScale; // D169A814: independent CB2 colour * scale additive output
 uniform bool uFresnelTint; uniform vec3 uFresnelC; uniform float uFresnelE; // Novalis glow mushroom F69ADC40 albedo tint
 // Hair_NewSpec_01 forward pass 94CE8CCE: uHairA = constant albedo, uHairB = F0 colour (x _g.G), uHairP = (rim exponent E,
 // gloss scale, diffuse sigma (unused by the Lambert viewer diffuse), normal strength).
@@ -483,7 +484,7 @@ void main() {
     vec3 albedo = (uMode >= 1 && uHasC) ? (uSrgbC ? linear(c.rgb) : c.rgb) : linear(uColor);
 
     if (uMode >= 1 && uFacingGlow) albedo = vec3(1.0); // 0CD2AAFB: no albedo input, v76-v78 = 1
-    if (uMode == 2 && uFlatSurface) albedo = uFlatColour; // MRT1 rgb is a material constant, not _c
+    if (uMode == 2 && uFlatSurface) albedo = uBasicFlatColor ? vec3(0.0) : uFlatColour; // D169A814 has no diffuse albedo term
     if (uMode == 2 && uPuddles && uHasPuddleAtlas) {
         vec3 g=texture2D(uTexG,vUV).rgb;if(uSrgbG)g=linear(g);
         vec3 color=puddleShade(normalize(vNrm),V,albedo,g.rg);
@@ -763,6 +764,7 @@ void main() {
         else if (uBrightCentre) color += albedo * brightSelfLit;
         else if (uFlatSurface) color += albedo * uK;
         else if (uHasC) color += albedo * (uSelfLitG ? gl.b : c.a) * uK;
+        if (uBasicFlatColor) color += uFlatColour * uBasicFlatEmissionScale;
         if (uFacingGlow) { // 0CD2AAFB rel 12552-12672 (instance flag bit 5 clear: v8 = v9 = 1)
             float f = pow(max(clamp(dot(N, V), 0.0, 1.0) - uFacingGlowQ.x, 0.0), uFacingGlowP.y);
             float a = uFacingGlowP.z * f + uFacingGlowP.w;
@@ -1094,7 +1096,7 @@ OPAQUE_UNIFORMS = (
     "uTwoColorMetal", "uMetalDiffuseA", "uMetalDiffuseB", "uMetalSpecA", "uMetalSpecB", "uMetalP",
     "uParallax", "uParallaxNormal", "uHasParallaxHeight", "uTexParallaxHeight", "uParallaxP",
     "uFoliage", "uAlphaCut", "uLeafColour", "uLeafP", "uLeafPalette", "uTexCma", "uHasCma", "uSrgbCma",
-    "uFresnelTint", "uFresnelC", "uFresnelE", "uFlatSurface", "uFlatColour", "uFlatSpec",
+    "uFresnelTint", "uFresnelC", "uFresnelE", "uFlatSurface", "uFlatColour", "uFlatSpec", "uBasicFlatColor", "uBasicFlatEmissionScale",
     "uHair", "uHairA", "uHairB", "uHairP",
     "uSkinKind", "uSkinA", "uSkinB", "uSkinC",
     "uZaFresnel", "uZaFresnelPower",

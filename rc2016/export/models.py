@@ -253,12 +253,27 @@ def material_maps(archive, material, cache, map_cache=None):
                             f"{facing_glow_rgb(glow, 0.0)[0]:.3f} red at grazing angles; blink timing not decoded")
     elif paths.get('flat_surface'):
         flat = paths['flat_surface']
-        out['base_factor'] = [float(x) for x in flat['colour']]
+        if flat.get('model') == 'basic_flat_color':
+            out['base_factor'] = [0.0, 0.0, 0.0]
+            emission = [float(x) * float(flat['emission_scale']) for x in flat['colour']]
+            if all(x >= 0.0 for x in emission):
+                strength = max(emission, default=0.0)
+                out['emissive_factor'] = [x / strength for x in emission] if strength > 1.0 else emission
+                out['emissive_strength'] = strength if strength > 1.0 else 1.0
+                out['flat_source_emission_strength'] = strength
+            else:
+                out['notes'].append('basic_flat_color D169A814 has signed emission; glTF nonnegative emissiveFactor cannot represent '
+                                    'this source term, so it is omitted from this export')
+            out['notes'].append('basic_flat_color D169A814 bounded writer slice: zero base albedo and independent CB2 colour*K emission; '
+                                'runtime light/probe/fog/debug branches and the grey F0/gloss BRDF are not reproduced')
+        else:
+            out['base_factor'] = [float(x) for x in flat['colour']]
         k = float(paths.get('k', 0.0) or 0.0)
-        if k > 0.0:
+        if k > 0.0 and flat.get('model') != 'basic_flat_color':
             out['emissive_factor'] = [min(1.0, float(x) * k) for x in flat['colour']]
-        out['notes'].append(f"constant colour of writer {flat['writer']} (no base colour texture)"
-                            + ('; preview floor of a time- and noise-driven shader' if flat.get('floor') else ''))
+        if flat.get('model') != 'basic_flat_color':
+            out['notes'].append(f"constant colour of writer {flat['writer']} (no base colour texture)"
+                                + ('; preview floor of a time- and noise-driven shader' if flat.get('floor') else ''))
     elif c_tex is None and g_tex is None:
         out['base_factor'] = [0.8, 0.8, 0.8]
         out['notes'].append('no base colour texture: the colour comes from a compiled shader this exporter does not run; white-grey placeholder')
@@ -273,6 +288,9 @@ def material_maps(archive, material, cache, map_cache=None):
             map_cache.put(key, entry)
     for name in ('base', 'mr', 'normal', 'emissive', 'emissive_strength', 'png'):
         out[name] = entry[name]
+    if paths.get('flat_surface', {}).get('model') == 'basic_flat_color':
+        out['emissive_strength'] = out.get('flat_source_emission_strength', 1.0)
+        out.pop('flat_source_emission_strength', None)
     out['notes'] += entry['notes']
     return out
 
