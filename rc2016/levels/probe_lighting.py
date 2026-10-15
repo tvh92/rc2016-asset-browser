@@ -9,8 +9,9 @@ GGX-prefiltered specular bands, and the atmosphere supplies the key light.
 
 Evidence and limits:
 
-- Decoded: the probe's radiance (``rc2016.formats.bc6h``; two-subset blocks, about 11 % of the Novalis
-  probe, keep Pillow's value clamped to 1), the atmosphere sun ray, and the RGB96 value.
+- Decoded: the probe's radiance (``rc2016.formats.bc6h``; a block in a BC6H mode the decoder lacks
+  keeps Pillow's value clamped to 1, none in the Novalis probe), the atmosphere sun ray, and the RGB96
+  value.
 - Checked: the probe's bright glare points at the atmosphere's sun (Novalis: 7 degrees apart, dot
   0.993), which fixes the cube's handedness and face orientation (identity, equal to the pipeline's
   validated state once Blender's bottom-up image rows are accounted for) for this probe.
@@ -37,7 +38,7 @@ from rc2016.formats.bc6h import decode_bc6h
 
 ROOT = Path(__file__).resolve().parents[2]
 CACHE_DIR = ROOT / '.cache' / 'environment'
-ENVIRONMENT_VERSION = 2       # bump when the maps' computation changes; it names the cache files
+ENVIRONMENT_VERSION = 3       # bump when the maps' computation changes; it names the cache files
 LATLONG_SIZE = (1024, 512)
 SEAM_RATIO_LIMIT = 2.0        # the pipeline rejects a cube whose seams are worse than this
 FORMAT_BC6H = 95
