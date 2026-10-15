@@ -1345,7 +1345,7 @@ def _viewer_rule_glass(mat, rule, key, img):
         if key == 'glass_basic':
             lit = add(diffuse(P.const3('glass body', p['body'])), scaled(lobe, f90), 'VR glass lit')
         else:   # rgb = C + w * specular: the emission is C, unlit
-            em = P.N.new('ShaderNodeEmission'); em.name = 'VR glass colour'
+            em = P.N.new('ShaderNodeEmission'); em.name = 'VR glass emission'
             P.L.new(P.const3('glass colour', p['colour']), em.inputs['Color'])
             lit = add(em.outputs[0], scaled(lobe, P.m('MULTIPLY', f90, P.const('glass weight', p['weight']))), 'VR glass lit')
     else:   # character_glass_02

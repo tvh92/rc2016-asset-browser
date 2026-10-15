@@ -252,6 +252,9 @@ class GlassValidationTests(unittest.TestCase):
         for node in ('VR glass lit', 'VR glass specular', 'VR glass weight', 'VR glass blend additive', 'VR glass alpha weight',
                      'VR cull back faces', 'glass normal map'):
             self.assertIn(node, body)
+        # Blender suffixes the source constant if a shader node claims its exact name first.
+        self.assertIn("P.const3('glass colour', p['colour'])", body)
+        self.assertIn("em.name = 'VR glass emission'", body)
         self.assertIn("mat.use_backface_culling = not f.get('two_sided')", body)
         self.assertIn("'DITHERED' if blend == 'opaque' else 'BLENDED'", body)
         self.assertIn("P.m('MULTIPLY', P.m('MAXIMUM', P.m('MAXIMUM', r, g), b), 60.0, clamp=True)", body)   # F90 = sat(60 F0)
