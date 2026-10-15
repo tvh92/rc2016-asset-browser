@@ -102,7 +102,11 @@ GRAPH_RULES = (
     ('materialgraph/global/basic_skin/', dict(g_mode='grey_skin')),
     # Writer 5EBDECA4 (no self-lit) is embedded only by these four (CorpusMismatchScan/writer_join.json).
     *((f'required/materials/basic_normal_gloss{suffix}.', dict(g_mode='grey', self_lit_key=None))
-      for suffix in ('', '_detail', '_monitor_dep', '_aniso')),
+      for suffix in ('', '_detail', '_monitor_dep')),
+    # The _aniso graph (hero_shared_hair: Skidd McMarx's eyebrows and goatee, the shared hero hair) embeds the same
+    # writer 5EBDECA4, plus its own pair 0170A892 (forward) / 48EAC24B (normal prepass) whose first act is a kill
+    # when the _c.a sample is below an interpolated cutoff (fade dither aside): hair cards are alpha-cut.
+    ('required/materials/basic_normal_gloss_aniso.', dict(g_mode='grey', self_lit_key=None, alpha_cut=True)),
     # Other basic_normal_gloss* graphs (emissive, fresnel, ...) have undecoded writers: grey _g by name
     # only (as before 2026-10-08), self-lit key from the graph's own table.
     # Six independently traced writers; Materials/BasicNormalGlossVariants/BASIC_NORMAL_GLOSS_VARIANTS_DECODE.md.

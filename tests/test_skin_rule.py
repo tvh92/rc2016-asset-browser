@@ -78,6 +78,21 @@ class SkinRuleTests(unittest.TestCase):
         self.assertEqual(rule['normal_z'], '1-x*x-y*y')
 
 
+class HairAnisoAlphaCutTests(unittest.TestCase):
+    ANISO = 'required/materials/basic_normal_gloss_aniso.materialgraph'
+
+    def test_aniso_graph_is_alpha_cut_and_siblings_are_not(self):
+        rule = tp._graph_rule([self.ANISO])
+        self.assertTrue(rule['alpha_cut'])
+        self.assertEqual((rule['g_mode'], rule['self_lit_key']), ('grey', None))
+        for graph in ('required/materials/basic_normal_gloss.materialgraph', 'required/materials/basic_normal_gloss_detail.materialgraph'):
+            self.assertNotIn('alpha_cut', tp._graph_rule([graph]))
+
+    def test_threshold_comes_from_the_material_flag_bytes(self):
+        _, got = extract(self.ANISO)
+        self.assertIsInstance(got['alpha_cut'], float)   # (base + reference) / 255 of the flags section, 0.6 for hero_shared_hair
+
+
 class SkinValidationTests(unittest.TestCase):
     def test_expected_constants_and_required_names(self):
         for graph, kind, extra in ((SKIN, 1, 0), (QWARK, 2, 2)):
