@@ -613,7 +613,8 @@ class LevelViewport(ModelViewport):
         probe = maps["probe"].rsplit("/", 2)[-2]
         sun = ", ".join(f"{float(x):.2f}" for x in maps["sun_rgb"])
         return (f"Level atmosphere: probe {probe} ambient, sun RGB96 ({sun}) from the atmosphere. Review preview: "
-                f"sun-to-sky scale and exposure are undecoded.")
+                f"sun-to-sky scale and exposure are undecoded; diffuse light is scaled by {maps.get('diffuse_scale', 1.0):.2f} "
+                f"to match one in-game screenshot (visual calibration).")
 
     def set_show_sky(self, show):
         self.show_sky = bool(show)

@@ -19,9 +19,10 @@ Evidence and limits:
   counted twice. The threshold is a viewer choice (about the 99th percentile of the Novalis probe).
 - Not decoded: how RGB96 scales against the probe (the Novalis sun, 0.7, is small beside the sky
   irradiance, about 1.5 to 2.2; field names and any multiplier are unresolved), the exposure that
-  maps these units to the display (``REVIEW_EXPOSURE_STOPS`` is 0 so the lit level agrees with the
-  sky dome drawn behind it, which is in the probe's units), light-grid irradiance, per-region
-  probe selection and occlusion of the sky term. This is a review preview, not game lighting.
+  maps these units to the display (``REVIEW_EXPOSURE_STOPS`` is 0 so the sky dome drawn behind
+  agrees with the game, and the lit level gets a visual ``DIFFUSE_LIGHT_SCALE`` instead), light-grid
+  irradiance, per-region probe selection and occlusion of the sky term. This is a review preview, not
+  game lighting.
 - The research pipeline's ``novalis`` source uses a different probe (``NOVALIS_PROBE``, about 25 times
   dimmer); the two are not interchangeable.
 """
@@ -43,6 +44,13 @@ LATLONG_SIZE = (1024, 512)
 SEAM_RATIO_LIMIT = 2.0        # the pipeline rejects a cube whose seams are worse than this
 FORMAT_BC6H = 95
 REVIEW_EXPOSURE_STOPS = 0.0   # see the module docstring
+# Visual calibration against one in-game Novalis screenshot, not decoded data: with unit scale the lit
+# level came out 1.4 to 2.7 stops darker than the game while the sky dome (drawn in the probe's units, at
+# exposure 0) already matched it, so exposure cannot be raised (it would also raise the sky). The
+# diffuse terms (SH irradiance and sun) are scaled by pi instead, which is 1.65 stops and what a diffuse
+# without the 1/pi factor would give; the specular bands stay in probe units. Best fit over sunlit
+# grass, tree canopy and sunlit rock was 1.5 stops.
+DIFFUSE_LIGHT_SCALE = math.pi
 GLARE_THRESHOLD = 2.0         # luminance above which probe radiance is left to the atmosphere sun
 
 
@@ -191,8 +199,11 @@ def environment_from_faces(faces, ray_native, sun_rgb, exposure_stops):
                 sun=np.array(sun_rgb, np.float32), strength=1.0, exposure=float(exposure_stops))
 
 
-def level_environment(archive, sky, exposure_stops=None):
+def level_environment(archive, sky, exposure_stops=None, diffuse_scale=None):
     """Lighting maps for a ``level_sky`` result: reflection probe ambient plus the atmosphere sun.
+
+    ``diffuse_scale`` (default ``DIFFUSE_LIGHT_SCALE``) multiplies the SH irradiance and the sun colour
+    after the cache, so the cached maps stay in probe units.
 
     Raises ValueError when the sky names no single reflection probe or the cube fails the seam check.
     Cached under .cache/environment by the probe's hash, the sun and the version."""
@@ -200,6 +211,7 @@ def level_environment(archive, sky, exposure_stops=None):
     if not sky or not sky.get('reflection'):
         raise ValueError('the level has no atmosphere with exactly one reflection probe')
     stops = REVIEW_EXPOSURE_STOPS if exposure_stops is None else float(exposure_stops)
+    scale = DIFFUSE_LIGHT_SCALE if diffuse_scale is None else float(diffuse_scale)
     ray, rgb = tuple(sky['sun_ray']), tuple(sky['sun_rgb'])
     faces, info = probe_faces(archive, sky['reflection'])
     key = hashlib.sha256(json.dumps([info['probe_sha256'], ray, rgb, ENVIRONMENT_VERSION]).encode()).hexdigest()[:16]
@@ -225,7 +237,9 @@ def level_environment(archive, sky, exposure_stops=None):
             temporary.replace(cache)
         except OSError:
             pass
-    maps.update(strength=1.0, exposure=stops, atmosphere=sky['atmosphere'], sun_rgb=list(rgb), **info)
+    maps['sh'] = (maps['sh'] * scale).astype(np.float32)
+    maps['sun'] = (maps['sun'] * scale).astype(np.float32)
+    maps.update(strength=1.0, exposure=stops, atmosphere=sky['atmosphere'], sun_rgb=list(rgb), diffuse_scale=scale, **info)
     return maps
 
 

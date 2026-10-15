@@ -129,6 +129,17 @@ class LevelEnvironmentTests(unittest.TestCase):
             moved = dict(self.sky, sun_ray=(1.0, 0.0, 0.0))
             np.testing.assert_allclose(pl.level_environment(None, moved)['sun_direction'], (-1.0, 0.0, 0.0), atol=1e-6)
 
+    def test_diffuse_scale_applies_to_sh_and_sun_after_the_cache(self):
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(pl, 'CACHE_DIR', Path(folder)), \
+                mock.patch.object(pl, 'probe_faces', side_effect=lambda *_a: self.faces_and_info()):
+            unit = pl.level_environment(None, self.sky, diffuse_scale=1.0)
+            default = pl.level_environment(None, self.sky)
+            self.assertEqual(len(list(Path(folder).glob('level_*.npz'))), 1)   # one cache entry for both scales
+        np.testing.assert_allclose(default['sh'], unit['sh'] * pl.DIFFUSE_LIGHT_SCALE, rtol=1e-6)
+        np.testing.assert_allclose(default['sun'], unit['sun'] * pl.DIFFUSE_LIGHT_SCALE, rtol=1e-6)
+        np.testing.assert_array_equal(default['bands'], unit['bands'])
+        self.assertEqual(default['sun_rgb'], [0.7, 0.6, 0.5])
+
     def test_missing_probe_or_broken_cube_raises(self):
         with self.assertRaises(ValueError):
             pl.level_environment(None, dict(self.sky, reflection=None))
