@@ -766,6 +766,34 @@ def _validate_viewer_rule_material(source, material):
             "Victor reticle does not use the shared deferred BRDF"
         assert brdf.inputs[0].is_linked and brdf.inputs[1].is_linked and brdf.inputs[2].is_linked and brdf.inputs[3].is_linked, \
             "Victor reticle albedo/F0/gloss/self-lit terms are not connected to the shared BRDF"
+        albedo_upstream = _viewer_upstream(brdf.inputs[0])
+        albedo_labels = {node.label: node for node in albedo_upstream}
+        for label in ("Victor reticle radial distance length", "Victor reticle b = 1 - distance",
+                      "Victor reticle e = abs(b)", "Victor reticle MRT1 R = 2*A*e",
+                      "Victor reticle MRT1 G ring equation", "Victor reticle MRT1 B ring equation",
+                      "Victor reticle UNORM lower clamp", "Victor reticle UNORM upper clamp"):
+            assert label in albedo_labels, "Victor reticle source albedo formula is missing from deferred albedo: " + label
+        assert albedo_labels["Victor reticle radial distance length"].operation == "LENGTH" and \
+            albedo_labels["Victor reticle b = 1 - distance"].operation == "SUBTRACT" and \
+            albedo_labels["Victor reticle e = abs(b)"].operation == "ABSOLUTE", \
+            "Victor reticle radial albedo source operations changed"
+        assert albedo_labels["Victor reticle MRT1 R = 2*A*e"].operation == "MULTIPLY" and \
+            albedo_labels["Victor reticle MRT1 G ring equation"].operation == "MULTIPLY" and \
+            albedo_labels["Victor reticle MRT1 B ring equation"].operation == "MULTIPLY", \
+            "Victor reticle MRT1 color equation outputs changed"
+        assert albedo_labels["Victor reticle UNORM lower clamp"].operation == "MAXIMUM" and \
+            albedo_labels["Victor reticle UNORM upper clamp"].operation == "MINIMUM", \
+            "Victor reticle deferred albedo no longer clamps to the UNORM range"
+        emission_upstream = _viewer_upstream(brdf.inputs[1])
+        emission_labels = {node.label: node for node in emission_upstream}
+        for label, operation in (("Victor reticle emission argument = 1 + API8.R*gain", "ADD"),
+                                 ("Victor reticle source log2", "LOGARITHM"),
+                                 ("Victor reticle source 0.20000000298*log2", "MULTIPLY"),
+                                 ("Victor reticle source exponent 5*payload", "MULTIPLY"),
+                                 ("Victor reticle source exp2", "POWER"),
+                                 ("Victor reticle EB9C8254 source self-lit scalar", "SUBTRACT")):
+            assert label in emission_labels and emission_labels[label].operation == operation, \
+                "Victor reticle source emission math is missing or changed: " + label
         assert abs(float(brdf.inputs[7].default_value) - 1.0) < 1e-7, "Victor reticle emission must use its source scalar directly"
         upstream = _viewer_upstream(*brdf.inputs)
         names = {node.name for node in upstream}
