@@ -23,15 +23,20 @@ SHARED_LIGHTING_FILE = Path(__file__).resolve().parents[2] / "assets" / "lightin
 _LIGHTING_KEYS = ("hdri", "hdri_rotation_z_degrees", "world_strength", "view_transform", "look", "exposure", "gamma",
                   "use_compositing")
 # Render Region padding (fractions of the model's own screen size): the longer screen axis gets the
-# first value, the shorter axis the second.
+# first value, the shorter axis the second.  The horizontal axis gets at least the side value, so the
+# crop leaves breathing space beside the model (the hand-widened npc_ryno_dealer.blend crop).
 REGION_PADDING_LONG = 0.10
 REGION_PADDING_SHORT = 0.07
+REGION_PADDING_SIDE = 0.25
 # Build camera: the exact orientation of the hand-framed reference npc_grimroth.blend (Euler XYZ, degrees).
 # Every pipeline build keeps this angle and only dollies the camera along its view axis.
 CAMERA_EULER_DEGREES = (77.90851178661542, -1.7045135013369456e-05, 21.765396705411746)
 # The model's longer screen axis fills this fraction of the frame; the Render Region crop then adds
 # the padding, so the padded box stays inside the frame.
 CAMERA_FILL_LONG_AXIS = 1.0 / (1.0 + REGION_PADDING_LONG)
+# Horizontally the crop may add the larger side padding, so a model whose width decides the
+# distance fills less of the frame width.
+CAMERA_FILL_HORIZONTAL = 1.0 / (1.0 + max(REGION_PADDING_LONG, REGION_PADDING_SIDE))
 
 
 def load_shared_lighting(path: Optional[Any] = None) -> Dict[str, Any]:
@@ -282,13 +287,13 @@ def apply_shared_lighting(scene: Any, lighting: Optional[Any] = None, hdri_path:
 
 
 def padded_region(bounds: Any, pixel_size: Any, long_padding: float = REGION_PADDING_LONG,
-                  short_padding: float = REGION_PADDING_SHORT) -> tuple:
+                  short_padding: float = REGION_PADDING_SHORT, side_padding: float = REGION_PADDING_SIDE) -> tuple:
     """Render Region fractions (min_x, min_y, max_x, max_y) around a model box.
 
     ``bounds`` is (x0, y0, x1, y1) in normalised camera-frame coordinates (origin bottom-left).
     Each padding is a fraction of the model's own size on that screen axis: the longer axis
-    (in pixels) takes ``long_padding`` and the shorter axis takes ``short_padding``.  The result
-    is clamped to the frame."""
+    (in pixels) takes ``long_padding`` and the shorter axis takes ``short_padding``; the horizontal
+    padding is raised to at least ``side_padding``.  The result is clamped to the frame."""
     x0, y0, x1, y1 = (float(v) for v in bounds)
     width_px = (x1 - x0) * float(pixel_size[0])
     height_px = (y1 - y0) * float(pixel_size[1])
@@ -296,6 +301,7 @@ def padded_region(bounds: Any, pixel_size: Any, long_padding: float = REGION_PAD
         pad_x, pad_y = short_padding, long_padding
     else:
         pad_x, pad_y = long_padding, short_padding
+    pad_x = max(pad_x, side_padding)
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     half_w, half_h = (x1 - x0) * (1 + pad_x) / 2, (y1 - y0) * (1 + pad_y) / 2
     return (max(0.0, cx - half_w), max(0.0, cy - half_h), min(1.0, cx + half_w), min(1.0, cy + half_h))
@@ -429,7 +435,8 @@ def visible_mesh_points(scene: Any) -> Any:
 
 def frame_camera_zoom(scene: Any, points: Any = None) -> Dict[str, Any]:
     """Set the scene camera to the reference angle (CAMERA_EULER_DEGREES) and dolly it along its
-    view axis, so the model fills CAMERA_FILL_LONG_AXIS of the frame on its longer screen axis.
+    view axis, so the model fills CAMERA_FILL_LONG_AXIS of the frame on its longer screen axis
+    (CAMERA_FILL_HORIZONTAL when its width decides the distance).
 
     ``points`` defaults to the visible mesh vertices.  The camera's lens and sensor are unchanged;
     only its rotation and location are set.  Call ``fit_render_region`` afterwards to crop."""
@@ -451,7 +458,7 @@ def frame_camera_zoom(scene: Any, points: Any = None) -> Dict[str, Any]:
     depsgraph = bpy.context.evaluated_depsgraph_get()
     projection = np.array(camera.calc_matrix_camera(depsgraph, x=render.resolution_x, y=render.resolution_y))
     centre = (points.min(axis=0) + points.max(axis=0)) / 2
-    horizontal = camera_distance_for_fill(points, centre, rotation, projection, 0, CAMERA_FILL_LONG_AXIS)
+    horizontal = camera_distance_for_fill(points, centre, rotation, projection, 0, CAMERA_FILL_HORIZONTAL)
     vertical = camera_distance_for_fill(points, centre, rotation, projection, 1, CAMERA_FILL_LONG_AXIS)
     # The axis that needs the larger distance is the one the model fills most, i.e. its longer screen axis.
     distance = max(horizontal, vertical)
@@ -475,7 +482,8 @@ def frame_camera_zoom(scene: Any, points: Any = None) -> Dict[str, Any]:
             + rotation[:, 1] * (offset[1] * distance / projection[1, 1])
     camera.location = tuple(float(v) for v in location)
     bpy.context.view_layer.update()
-    return {"dominant_axis": dominant, "distance": float(distance), "fill": CAMERA_FILL_LONG_AXIS,
+    return {"dominant_axis": dominant, "distance": float(distance),
+            "fill": CAMERA_FILL_HORIZONTAL if dominant == "horizontal" else CAMERA_FILL_LONG_AXIS,
             "location": [float(v) for v in camera.location],
             "rotation_degrees": [float(v) for v in CAMERA_EULER_DEGREES],
             "screen_centre_offset": [float(v) for v in screen_centre(location)]}

@@ -1,7 +1,7 @@
 """Render Region padding math (rc2016/pipeline/scene_defaults.padded_region); pure, no Blender."""
 import unittest
 
-from rc2016.pipeline.scene_defaults import REGION_PADDING_LONG, REGION_PADDING_SHORT, padded_region
+from rc2016.pipeline.scene_defaults import REGION_PADDING_LONG, REGION_PADDING_SHORT, REGION_PADDING_SIDE, padded_region
 
 
 class PaddedRegionTests(unittest.TestCase):
@@ -11,20 +11,30 @@ class PaddedRegionTests(unittest.TestCase):
 
     def test_taller_model_gets_long_padding_vertically_and_short_horizontally(self):
         # Box 0.2 wide x 0.6 high in frame fractions, square frame: taller on screen.
-        region = padded_region((0.4, 0.2, 0.6, 0.8), (1000, 1000))
+        region = padded_region((0.4, 0.2, 0.6, 0.8), (1000, 1000), side_padding=0.0)
         self.assert_region(region, (0.5 - 0.2 * 1.07 / 2, 0.5 - 0.6 * 1.10 / 2,
                                     0.5 + 0.2 * 1.07 / 2, 0.5 + 0.6 * 1.10 / 2))
 
     def test_wider_model_gets_long_padding_horizontally_and_short_vertically(self):
-        region = padded_region((0.1, 0.4, 0.9, 0.5), (1000, 1000))
+        region = padded_region((0.1, 0.4, 0.9, 0.5), (1000, 1000), side_padding=0.0)
         self.assert_region(region, (0.5 - 0.8 * 1.10 / 2, 0.45 - 0.1 * 1.07 / 2,
                                     0.5 + 0.8 * 1.10 / 2, 0.45 + 0.1 * 1.07 / 2))
 
     def test_aspect_is_judged_in_pixels_not_frame_fractions(self):
         # 0.2 x 0.3 of a 2000 x 1000 frame is 400 x 300 px: wider on screen, so horizontal gets 10%.
-        region = padded_region((0.4, 0.2, 0.6, 0.5), (2000, 1000))
+        region = padded_region((0.4, 0.2, 0.6, 0.5), (2000, 1000), side_padding=0.0)
         self.assert_region(region, (0.5 - 0.2 * 1.10 / 2, 0.35 - 0.3 * 1.07 / 2,
                                     0.5 + 0.2 * 1.10 / 2, 0.35 + 0.3 * 1.07 / 2))
+
+    def test_horizontal_padding_is_at_least_the_side_padding(self):
+        # Default: a tall model gets 25% beside it (12.5% each side) instead of the short-axis 7%.
+        region = padded_region((0.4, 0.2, 0.6, 0.8), (1000, 1000))
+        self.assert_region(region, (0.5 - 0.2 * 1.25 / 2, 0.5 - 0.6 * 1.10 / 2,
+                                    0.5 + 0.2 * 1.25 / 2, 0.5 + 0.6 * 1.10 / 2))
+        # A wider padding than the side minimum is kept.
+        region = padded_region((0.3, 0.4, 0.7, 0.5), (1000, 1000), long_padding=0.4)
+        self.assert_region(region, (0.5 - 0.4 * 1.40 / 2, 0.45 - 0.1 * 1.07 / 2,
+                                    0.5 + 0.4 * 1.40 / 2, 0.45 + 0.1 * 1.07 / 2))
 
     def test_region_is_clamped_to_the_frame(self):
         self.assert_region(padded_region((0.0, 0.0, 1.0, 1.0), (100, 100)), (0.0, 0.0, 1.0, 1.0))
@@ -73,8 +83,8 @@ class PaddedRegionTests(unittest.TestCase):
         self.assertEqual((render.border_min_x, render.border_min_y,
                           render.border_max_x, render.border_max_y), (0.0, 0.0, 1.0, 1.0))
 
-    def test_default_padding_is_ten_long_and_seven_short_percent(self):
-        self.assertEqual((REGION_PADDING_LONG, REGION_PADDING_SHORT), (0.10, 0.07))
+    def test_default_padding_is_ten_long_seven_short_and_twenty_five_side_percent(self):
+        self.assertEqual((REGION_PADDING_LONG, REGION_PADDING_SHORT, REGION_PADDING_SIDE), (0.10, 0.07, 0.25))
 
 
 if __name__ == "__main__":
