@@ -58,8 +58,8 @@ def build_manifest(model_path, model_id, joint_count, sources, errors, result, d
     """The manifest dict for one model.
 
     ``sources`` is ``cinematic_sources(..., include_unnamed=True)``; ``result`` the ``ModelExporter.export``
-    summary (``clips`` exported, ``skipped_clips`` with reasons). Every clip of every source gets a row in
-    source order: decoded (exported as a glTF animation), not decoded or not playable (with the reason), or
+    summary (``clips`` exported, ``skipped_clips`` with reasons). Every clip of every source gets a row, by
+    cutscene and shot number: decoded (exported as a glTF animation), not decoded or not playable (with the reason), or
     unnamed (its name hash matches no string of its file; never exported, never guessed).
     """
     exported = {(c['asset'], c['offset']): c for c in result.get('clips', ())}
