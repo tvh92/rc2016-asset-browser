@@ -464,6 +464,14 @@ def _viewer_expected_constants(rule):
         e.update({"screen grid": p["grid"], "screen alpha base": p["alpha_base"], "screen mask strength": p["mask_strength"],
                   "screen colour A": p["colour_a"], "screen colour B": p["colour_b"],
                   "screen intensity A": p["intensity_a"], "screen intensity B": p["intensity_b"]})
+    if "flat_surface" in ported:
+        f = terms["flat_surface"]
+        e.update({"flat surface colour": f["colour"], "flat surface F0": f["f0"], "flat surface gloss": f["gloss"],
+                  "flat surface self-lit mask": 1.0})
+    if "number_display" in ported:
+        p = terms["number_display"]["params"]
+        e.update({"number distort": p["distort"], "number b scale": p["b_scale"], "number vignette w": p["vignette_w"],
+                  "number kc": p["kc"], "number ko": p["ko"], "number amplitude": p["amplitude"]})
     return {"VR " + name: value for name, value in e.items()}
 
 
@@ -522,8 +530,8 @@ def _viewer_required(rule, has_n):
             req("_rock_mask", "_rock_c2", "_rock_g2", *(("_rock_n2",) if has_n else ()))
     if "bng" in ported:
         kind = int(terms["bng"]["kind"])
-        names += ["bng colour"] if kind == 1 or (kind == 4 and lit) else [] if kind == 4 else ["bng P0", "bng P1"] if kind == 7 else (["bng P0", "bng P1"] + (["bng P2"] if kind == 6 else []) if has_n else [])
-        if kind == 9:
+        names += ["bng colour"] if kind == 1 or (kind == 4 and lit) else [] if kind in (4, 10) else ["bng P0", "bng P1"] if kind == 7 else (["bng P0", "bng P1"] + (["bng P2"] if kind == 6 else []) if has_n else [])
+        if kind in (9, 10):
             req("_h")
     if "bng_detail" in ported and has_n:
         names += ["bng detail scale u", "bng detail scale v", "bng detail strength"]; req("_bng_detail")
@@ -545,6 +553,11 @@ def _viewer_required(rule, has_n):
     if "screen" in ported:
         names += ["screen alpha base", "screen mask strength", "screen colour A", "screen colour B", "screen intensity A",
                   "screen intensity B"] + (["screen grid"] if tex.get("_n") else [])
+        req("_c", "_n", "_pick", "_g")
+    if "flat_surface" in ported:
+        names += ["flat surface colour", "flat surface F0", "flat surface gloss"] + (["flat surface self-lit mask"] if lit else [])
+    if "number_display" in ported:
+        names += ["number distort", "number b scale", "number vignette w", "number kc", "number ko", "number amplitude"]
         req("_c", "_n", "_pick", "_g")
     return ["VR " + name for name in names], roles
 
@@ -622,6 +635,16 @@ def _validate_viewer_rule_material(source, material):
         constants = _viewer_check_constants_and_images(source, material, rule, upstream, has_n)
         return dict(status="passed_viewer_graph_rule_frontend", terms=ported, blend="alpha_over", constants=constants,
                     limitation=material.get("rc_shader_frontend_limitation"))
+    if "number_display" in ported:   # Surface = Cull(Emission(3.5 amp T (2 Kc G + Ko))), opaque
+        upstream = _viewer_upstream(output.inputs["Surface"])
+        names = {node.name for node in upstream}
+        two_sided = rule["terms"]["number_display"].get("two_sided")
+        assert "VR number colour (unlit)" in names, "Number display emission is not the output"
+        assert rule["terms"]["number_display"].get("blend") == "opaque", "Number display source blend is not opaque"
+        assert two_sided or "VR cull back faces" in names, "Number display back faces are not culled"
+        constants = _viewer_check_constants_and_images(source, material, rule, upstream, has_n)
+        return dict(status="passed_viewer_graph_rule_frontend", terms=ported, blend="opaque", constants=constants,
+                    limitation=material.get("rc_shader_frontend_limitation"))
     if "bright_glow" in ported:   # Surface = Cull(Add(Transparent, Emission(Clo + (C - Clo) x^2, 7 amp sat(x))))
         upstream = _viewer_upstream(output.inputs["Surface"])
         names = {node.name for node in upstream}
@@ -676,6 +699,11 @@ def _validate_viewer_rule_material(source, material):
     if facing:   # 0CD2AAFB has no albedo input
         assert {node.name for node in _viewer_upstream(brdf.inputs[0])} == {"VR facing glow albedo"}, \
             "Facing-glow albedo is not the white source constant"
+    elif "flat_surface" in ported:   # MRT1 rgb is the material constant
+        assert {node.name for node in _viewer_upstream(brdf.inputs[0])} == {"VR flat surface colour"}, \
+            "Flat-surface albedo is not the source colour constant"
+        assert not brdf.inputs[4].is_linked or not any(node.type == "TEX_IMAGE" for node in _viewer_upstream(brdf.inputs[4])), \
+            "Flat-surface normal samples a texture although the writer binds none"
     elif arch or glow1 or "hair" in ported:   # these writers never sample _c.rgb
         assert not reaches(brdf.inputs[0], "_c"), "Viewer-rule albedo samples _c although the writer does not"
         if "hair" in ported:

@@ -1093,7 +1093,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 9
+VIEWER_RULE_FRONTEND_VERSION = 10
 
 
 def _viewer_rule_images(nt):
@@ -1278,7 +1278,11 @@ def apply_viewer_graph_rule(mat, source):
         return False
     glow_shell = 'bright_glow' in ported and 'bright_glow' in terms   # 93695188 samples no texture
     eye_cornea = 'eye_cornea' in ported and 'eye_cornea' in terms   # A36A97CB samples _n only
-    if c is None and not (arch and g is not None) and not facing and not glow_shell and not eye_cornea:
+    number = 'number_display' in ported and 'number_display' in terms   # 8CEC816B / 37C85F4C sample the four number slots
+    flat = terms.get('flat_surface') if 'flat_surface' in ported else None   # constant albedo, F0 and gloss, no texture
+    if number and not all(img(role) is not None for role in ('_c', '_n', '_pick', '_g')):
+        return False
+    if c is None and not (arch and g is not None) and not facing and not glow_shell and not eye_cornea and not number and not flat:
         return False
     for node in list(nt.nodes):   # keep every source image node (provenance and coverage reports)
         if node.type != 'TEX_IMAGE':
@@ -1297,6 +1301,10 @@ def apply_viewer_graph_rule(mat, source):
     if glow_shell:
         limits += _viewer_rule_bright_glow(mat, rule)
         _finish_viewer_rule(mat, rule, 'forward bright glow 93695188 (unlit, additive, back faces culled)', limits)
+        return True
+    if number:
+        limits += _viewer_rule_number_display(mat, rule, img)
+        _finish_viewer_rule(mat, rule, 'forward number display %s (t=0, unlit, opaque)' % terms['number_display']['params']['writer'], limits)
         return True
     P = _ViewerNodes(nt)
     grp = nt.nodes.new('ShaderNodeGroup'); grp.node_tree = build_group()
@@ -1351,6 +1359,12 @@ def apply_viewer_graph_rule(mat, source):
                       'and the instance flag-128 mask texture are not decoded/ported' % float(hair['diffuse_sigma']))
     if facing:   # no albedo input: v76-v78 stay 1.0
         albedo = P.const3('facing glow albedo', facing['albedo'])
+    if flat:   # basic_emissive 452EDC8C / goo floor 4A73CC38: MRT1 rgb, grey MRT2 F0 and gloss are material constants
+        albedo = P.const3('flat surface colour', flat['colour'])
+        view_terms.append('flat surface' + (' (goo noise-mask floor)' if flat.get('floor') else ''))
+        limits.append('flat_surface: writer %s outputs constants for colour, F0 and gloss; its graph normal texture is a default '
+                      'and is not applied' % flat['writer'] + ('; PREVIEW floor: the noise-, time- and depth-driven terms and the '
+                      'CB0[115]-scaled emission are not decoded' if flat.get('floor') else '; the pass-1 variant E921A79B writes F0 0.1'))
     g_rgb = g.outputs['Color'] if g is not None else None
     gR, gG, gB = P.sep(g_rgb) if g is not None else (0.0, 0.0, 0.0)
     f0 = gloss_in = None          # BRDF F0 colour / gloss input (the group squares gloss and scales it)
@@ -1519,7 +1533,7 @@ def apply_viewer_graph_rule(mat, source):
             rim = P.m('SUBTRACT', 1.00100004673, P.sat(P.v('DOT_PRODUCT', Ng, V)))
             rim_b = P.m('POWER', P.m('ABSOLUTE', rim), bng_p(1))
             view_terms.append('bng rims')
-        if kind_terms and kind == 9:   # 14B1CC68: self-lit mask = _m.G (K stays the BRDF input)
+        if kind_terms and kind in (9, 10):   # 14B1CC68 / E680AA40: self-lit mask = _m.G (K stays the BRDF input)
             bng_self = P.sep(img('_h').outputs['Color'])[1] if img('_h') else 0.0
         glow = terms.get('glow') if on('glow') else None
         metal = terms.get('two_color_metal') if on('two_color_metal') else None
@@ -1545,9 +1559,9 @@ def apply_viewer_graph_rule(mat, source):
                 bng_p = lambda i: P.const('bng P%d' % i, bng['params'][i])
                 rim_a = P.m('POWER', P.m('ABSOLUTE', rim), bng_p(0)); rim_b = P.m('POWER', P.m('ABSOLUTE', rim), bng_p(1))
                 view_terms.append('bng rims')
-            if 'bng_detail' in ported and kind in (2, 3, 6):   # F3DCD431/F087BE8D/F8161C61 detail xy
+            if 'bng_detail' in ported and kind in (2, 3, 6, 10):   # F3DCD431/F087BE8D/F8161C61 detail xy; E680AA40 masks with _m.R
                 det = bng['detail']
-                dmask = gB if kind == 3 else (P.m('MULTIPLY', g.outputs['Alpha'], g.outputs['Alpha']) if g is not None else 0.0)
+                dmask = P.sep(img('_h').outputs['Color'])[0] if kind == 10 and img('_h') else gB if kind == 3 else (P.m('MULTIPLY', g.outputs['Alpha'], g.outputs['Alpha']) if g is not None else 0.0)
                 vec = P.game_uv(P.const('bng detail scale u', det[0]), P.const('bng detail scale v', det[1]))
                 dx, dy = P.rg(P.tex(img('_bng_detail'), vec, 'bng detail normal').outputs['Color'], dmask)
                 dz = P.m('SUBTRACT', 1.0, P.dot2(dx, dy)); zw = P.m('MULTIPLY', z, P.const('bng detail strength', det[2]))
@@ -1625,6 +1639,10 @@ def apply_viewer_graph_rule(mat, source):
             f0 = (0.0, 0.0999755859375, 0.0999755859375); gloss_in = 0.948681201424; spec, gloss_scale = 1.0, 1.0
         elif g is not None:
             f0, gloss_in = g_rgb, g.outputs['Alpha']
+        if flat:   # grey F0 = P, gloss = sqrt(sat(Q)); self-lit mask is 1 (albedo * K)
+            fs = P.const('flat surface F0', flat['f0']); f0 = P.comb(fs, fs, fs)
+            gloss_in = P.m('SQRT', P.sat(P.const('flat surface gloss', flat['gloss']))); spec = gloss_scale = 1.0
+            self_mask = P.const('flat surface self-lit mask', 1.0)
         if bright:   # D14A48D7: grey constant F0, gloss = sqrt(sat(G))
             fs = P.const('bright centre F0', bright['f0']); f0 = P.comb(fs, fs, fs)
             gloss_in = P.m('SQRT', P.sat(P.const('bright centre gloss', bright['gloss_sq']))); spec = gloss_scale = 1.0
@@ -1718,6 +1736,46 @@ def apply_viewer_graph_rule(mat, source):
                       % ', '.join(view_terms))
     _finish_viewer_rule(mat, rule, 'asset viewer per-graph reading (%s _g, self-lit %s, K %.6g)' % (mode, how, k), limits)
     return True
+
+
+def _viewer_rule_number_display(mat, rule, img):
+    """Prisoner number display forward colour (8CEC816B Shiv / 37C85F4C Qwark; gl_shading.GLASS_FRAGMENT uKind 7) at t = 0.
+
+    rgb = 3.5 amp T (2 Kc G + Ko); T = (1 - b_scale B7) R8 X8; G = sat((1 - |(u - .5, 2v - 1)| - w) / (1 - w)); sample 8
+    is read at uv + distort (B5 + B6). The emission is unlit and opaque (flags 0x230), back faces culled.
+    """
+    nt = mat.node_tree; P = _ViewerNodes(nt)
+    f = rule['terms']['number_display']; p = f['params']
+    c, n, pick, g = img('_c'), img('_n'), img('_pick'), img('_g')
+    u, vb, _ = P.uv_split(); v = P.m('SUBTRACT', 1.0, vb)   # game v counts from the top row
+    b5 = P.sep(P.tex(pick, P.game_uv(), 'number API5').outputs['Color'])[2]
+    b6 = P.sep(P.tex(n, P.game_uv(1.0, 2.0), 'number API6').outputs['Color'])[2]
+    b7 = P.sep(P.tex(g, P.game_uv(1.0, 10.0), 'number API7').outputs['Color'])[2]
+    shift = P.m('MULTIPLY', P.const('number distort', p['distort']), P.m('ADD', b5, b6))
+    s8 = P.tex(c, P.gl_coord(P.m('ADD', u, shift), P.m('ADD', v, shift)), 'number API8')
+    r8, g8, _ = P.sep(s8.outputs['Color'])
+    x8 = s8.outputs['Alpha'] if p['alpha_channel'] else g8
+    t = P.m('MULTIPLY', P.m('MULTIPLY', P.m('SUBTRACT', 1.0, P.m('MULTIPLY', P.const('number b scale', p['b_scale']), b7)), r8), x8)
+    w = P.const('number vignette w', p['vignette_w'])
+    dist = P.v('LENGTH', P.comb(P.m('SUBTRACT', u, 0.5), P.m('SUBTRACT', P.m('MULTIPLY', v, 2.0), 1.0)))
+    vignette = P.sat(P.m('DIVIDE', P.m('SUBTRACT', P.m('SUBTRACT', 1.0, dist), w), P.m('SUBTRACT', 1.0, w)))
+    shade = P.v('ADD', P.v('SCALE', P.const3('number kc', p['kc']), P.m('MULTIPLY', vignette, 2.0)), P.const3('number ko', p['ko']))
+    colour = P.v('SCALE', shade, P.m('MULTIPLY', P.m('MULTIPLY', P.const('number amplitude', p['amplitude']), 3.5), t))
+    em = P.N.new('ShaderNodeEmission'); em.name = em.label = 'VR number colour (unlit)'
+    P.L.new(colour, em.inputs['Color']); shader = em
+    if not f.get('two_sided'):
+        culled = P.N.new('ShaderNodeBsdfTransparent'); culled.name = 'VR culled back face'
+        cull = P.N.new('ShaderNodeMixShader'); cull.name = cull.label = 'VR cull back faces'
+        P.L.new(P.geo().outputs['Backfacing'], cull.inputs[0]); P.L.new(shader.outputs[0], cull.inputs[1])
+        P.L.new(culled.outputs[0], cull.inputs[2]); shader = cull
+    out = P.N.new('ShaderNodeOutputMaterial'); out.is_active_output = True
+    P.L.new(shader.outputs[0], out.inputs['Surface'])
+    mat.use_backface_culling = not f.get('two_sided')
+    return ['Prisoner number forward program %s at t = 0: amplitude CB0[115] is a labelled presentation value (captured %g, shown at %g), '
+            'not decoded; the scroll time, CB0[107] (vignette), fog fade, vertex alpha and the discard predicate are frozen or not '
+            'translated; the fifth texture sample (weight %g) is not modelled; the deferred writer of this graph outputs zero; '
+            'the viewer tonemaps the colour, Cycles emits scene-linear'
+            % (p['writer'], p['captured_amplitude'], p['amplitude'], p['s3_weight'])]
 
 
 def _finish_viewer_rule(mat, rule, frontend, limits):
