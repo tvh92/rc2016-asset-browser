@@ -1,10 +1,12 @@
 """Authored direct lights and bounded lightgrid references for level previews.
 
-Only source light type 1, raw byte +0x50 equal to 0, and normalization byte 0 have a captured Veldin join to
-the native category-0 point-light path. Other types and normalization modes are
-reported, not guessed. Lightgrid coefficients and native probe-slot allocation
-remain unresolved, so this module exposes source references without fabricating
-runtime probe bindings.
+`parse_light_record` decodes every understood field of a light record (shape byte +0x50, flag byte +0x51,
+normalization byte +0x52, aim axis, colour, radius, gobo path). Only shape 0 (point) with normalization byte 0 is
+emitted as a light. Flag byte 1 has a captured Veldin join to the native category-0 point-light path
+(`validated`); the other flag bytes use the same path as an inferred extension that the level viewer applies only
+under the Level atmosphere lighting (docs/levels.md, Authored lights). Spots, projectors, boxes and the other
+normalization modes are reported, not guessed. Lightgrid coefficients and native probe-slot allocation remain
+unresolved, so this module exposes source references without fabricating runtime probe bindings.
 """
 from __future__ import annotations
 
@@ -25,10 +27,42 @@ from rc2016.pipeline.lighting import (
 
 LIGHT_INDEX = 0x97FF6EB5
 DATA_HEAP = 0x06ABCAB2
-SUPPORTED_POINT_SOURCE_TYPE = 1
-SUPPORTED_POINT_RAW_BYTE_0X50 = 0
+SUPPORTED_POINT_SOURCE_TYPE = 1       # the flag byte (+0x51) value with a captured Veldin join
+SUPPORTED_POINT_RAW_BYTE_0X50 = 0     # shape byte (+0x50): point
 SUPPORTED_NORMALIZATION = 0
 MIN_LIGHT_RECORD_SIZE = 0x98
+SHAPE_NAMES = {0: 'point', 1: 'spot', 2: 'projector', 3: 'box', 4: 'box', 5: 'box'}
+
+
+def parse_light_record(record):
+    """Decode every understood field of one 0x97FF6EB5 light record (at least 0x98 bytes), applying no semantics.
+
+    `shape` is byte +0x50 (0 point, 1 spot, 2 gobo projector, 3 to 5 box); `flags` is byte +0x51 (a bit set whose
+    bits 1, 2, 8 and 16 are unresolved); `normalization` is byte +0x52. `axis` is the normalised third matrix row
+    (the aim direction of aimed shapes) and `scale` the three row lengths (the extents of box shapes).
+    `cone_degrees` (+0x64) and `range` (+0x80, +0x84) are decoded values with unverified meaning. `gobo` is the
+    texture path of the optional extension that the u16 at +0x56 announces, else None.
+    """
+    if len(record) < MIN_LIGHT_RECORD_SIZE:
+        raise ValueError(f'light record has {len(record)} bytes, fewer than {MIN_LIGHT_RECORD_SIZE}')
+    matrix = struct.unpack_from('<16f', record, 0x00)
+    rows = [matrix[i:i + 3] for i in (0, 4, 8)]
+    scale = [math.sqrt(sum(v * v for v in row)) for row in rows]
+    axis = [v / scale[2] for v in rows[2]] if scale[2] > 0.0 and math.isfinite(scale[2]) else [0.0, 0.0, 0.0]
+    gobo = None
+    extension = struct.unpack_from('<H', record, 0x56)[0]
+    if MIN_LIGHT_RECORD_SIZE <= extension < len(record):
+        gobo = record[extension:].split(b'\0', 1)[0].decode('ascii', 'replace')
+    return dict(
+        transform=[list(matrix[i:i + 4]) for i in range(0, 16, 4)],
+        position=list(struct.unpack_from('<3f', record, 0x30)), axis=axis, scale=scale,
+        source_id=struct.unpack_from('<Q', record, 0x48)[0], shape=record[0x50],
+        shape_name=SHAPE_NAMES.get(record[0x50], 'unknown'), flags=record[0x51], normalization=record[0x52],
+        raw_dword_0x50=struct.unpack_from('<I', record, 0x50)[0], byte_0x54=record[0x54],
+        colour=list(struct.unpack_from('<3f', record, 0x58)), cone_degrees=struct.unpack_from('<f', record, 0x64)[0],
+        radius=struct.unpack_from('<f', record, 0x68)[0], intensity_scale=struct.unpack_from('<f', record, 0x74)[0],
+        range=list(struct.unpack_from('<2f', record, 0x80)), link_id=struct.unpack_from('<Q', record, 0x90)[0],
+        gobo=gobo, size=len(record))
 
 
 def _light_radius(source_rgb, normalization, explicit_radius):
@@ -49,7 +83,8 @@ def _light_radius(source_rgb, normalization, explicit_radius):
 
 
 def _decode_zone_lights(data, source_path):
-    """Decode indexed 0x97FF6EB5 records without assigning unsupported semantics."""
+    """Decode indexed 0x97FF6EB5 records; only point shapes become lights, and `validated` marks the
+    flag byte with a Veldin capture join (the rest is an inferred extension for the Level atmosphere lighting)."""
     table = sections(data)
     if LIGHT_INDEX not in table or DATA_HEAP not in table:
         return [], []
@@ -82,11 +117,11 @@ def _decode_zone_lights(data, source_path):
         source_type = record[0x51]
         normalization = record[0x52]
         source_id = struct.unpack_from('<Q', record, 0x48)[0]
-        if (source_type != SUPPORTED_POINT_SOURCE_TYPE
-                or raw_byte_0x50 != SUPPORTED_POINT_RAW_BYTE_0X50):
+        if raw_byte_0x50 != SUPPORTED_POINT_RAW_BYTE_0X50:
             skipped.append(dict(source_path=source_path, ordinal=ordinal, source_id=f'0x{source_id:016x}',
-                                reason='unsupported_source_type_or_raw_byte_0x50', source_type=source_type,
-                                raw_byte_0x50=raw_byte_0x50, raw_flags=raw_flags, normalization=normalization))
+                                reason='unsupported_light_shape', shape=SHAPE_NAMES.get(raw_byte_0x50, 'unknown'),
+                                source_type=source_type, raw_byte_0x50=raw_byte_0x50, raw_flags=raw_flags,
+                                normalization=normalization))
             continue
 
         position = struct.unpack_from('<3f', record, 0x30)
@@ -119,6 +154,7 @@ def _decode_zone_lights(data, source_path):
                            source_path=source_path, source_ordinal=ordinal, source_id=f'0x{source_id:016x}',
                            source_type=source_type, raw_byte_0x50=raw_byte_0x50,
                            normalization=normalization, raw_flags=raw_flags,
+                           validated=source_type == SUPPORTED_POINT_SOURCE_TYPE,
                            source_radius=explicit_radius, source_record_size=record_size,
                            source_extension_size=record_size - MIN_LIGHT_RECORD_SIZE,
                            radius_rule=radius_rule))
@@ -217,13 +253,20 @@ def load_scene_lighting(archive, zone_paths):
 
     probes = dict(status='unsupported_zone', grid_count=0, grids=[], tableless_grid_count=0,
                   limitations=['No native global probe assignment is inferred.'])
-    notes = [dict(status='bounded_preview_data', message='Only source type byte 1, raw byte +0x50 equal to 0, and normalization byte 0 use the Veldin-joined category-0 path. The raw byte and dword are retained without assigning flag names.'),
+    notes = [dict(status='bounded_preview_data', message='Only point shapes (byte +0x50 equal to 0) with normalization byte 0 are emitted. Flag byte 1 has the Veldin-joined category-0 path (validated); other flag bytes reuse it as an inferred extension that the level viewer applies only under the Level atmosphere lighting. Spots, projectors, boxes and other normalization modes are reported, not drawn. The raw byte and dword are retained without assigning flag names.'),
              dict(status='runtime_binding_unobserved', message='Per-level runtime light dispatch, shader view-space conversion, global-light selection, and native probe-slot allocation are unobserved.')]
     sun = _authored_sun_note(archive, [p.replace('\\', '/').lstrip('?') for p in zone_paths])
     if sun is not None:
         notes.append(dict(sun, status='authored_sun_candidate'))
     if NOVALIS_LIGHTING_ZONE in seen:
         probes = _novalis_grid_probes(archive, NOVALIS_LIGHTING_ZONE)
+    undrawn = {}
+    for item in skipped:
+        if item.get('reason') == 'unsupported_light_shape':
+            undrawn[item['shape']] = undrawn.get(item['shape'], 0) + 1
+    if undrawn:
+        notes.append(dict(status='undrawn_light_shapes', counts=undrawn,
+                          message='Spot, projector and box lights are decoded (aim axis, extents, gobo) but not drawn: cone profile and falloff are unverified.'))
     if skipped:
         notes.append(dict(status='source_records_skipped', records=skipped))
     return dict(lights=lights, probes=probes, notes=notes, source_zones=loaded_zones)

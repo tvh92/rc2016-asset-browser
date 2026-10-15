@@ -4,7 +4,7 @@ import struct
 import unittest
 from unittest.mock import patch
 
-from rc2016.levels.scene_lighting import _decode_zone_lights, load_scene_lighting
+from rc2016.levels.scene_lighting import _decode_zone_lights, load_scene_lighting, parse_light_record
 
 
 def dat1(sections):
@@ -18,15 +18,21 @@ def dat1(sections):
     return b'1TAD' + struct.pack('<IIHH', 0, offset, count, 0) + rows + payload
 
 
-def light_record(source_type=1, normalization=0, radius=12.0, flags=0x100, size=0x98):
+def light_record(source_type=1, normalization=0, radius=12.0, flags=0x100, size=0x98, shape=None, gobo=None):
     record = bytearray(size)
     struct.pack_into('<16f', record, 0, 1, 0, 0, 0, 0, 1, 0, 0,
                      0, 0, 1, 0, 10, 20, 30, 1)
     struct.pack_into('<I', record, 0x44, len(record))
     struct.pack_into('<Q', record, 0x48, 0x123456789ABCDEF0)
     struct.pack_into('<I', record, 0x50, flags)
+    if shape is not None:
+        record[0x50] = shape
     record[0x51] = source_type
     record[0x52] = normalization
+    if gobo is not None:
+        struct.pack_into('<H', record, 0x56, 0x98)
+        record.extend(gobo.encode('ascii') + b'\0')
+        struct.pack_into('<I', record, 0x44, len(record))
     struct.pack_into('<3f', record, 0x58, 2.0, 3.0, 4.0)
     struct.pack_into('<f', record, 0x68, radius)
     return bytes(record)
@@ -69,13 +75,55 @@ class AuthoredLightTests(unittest.TestCase):
         self.assertEqual(light['inverse_radius'], struct.unpack('<f', struct.pack('<f', 1.0 / 12.0))[0])
         self.assertEqual(light['transform'][3], [10.0, 20.0, 30.0, 1.0])
 
-    def test_only_vetted_type_and_normalization_are_emitted(self):
+    def test_only_point_shape_and_vetted_normalization_are_emitted(self):
         lights, skipped = _decode_zone_lights(light_zone([
-            light_record(source_type=3), light_record(normalization=2),
+            light_record(shape=1), light_record(shape=2), light_record(shape=3), light_record(normalization=2),
         ]), 'levels/example/point.zone')
         self.assertEqual(lights, [])
         self.assertEqual([item['reason'] for item in skipped],
-                         ['unsupported_source_type_or_raw_byte_0x50', 'unsupported_normalization'])
+                         ['unsupported_light_shape'] * 3 + ['unsupported_normalization'])
+        self.assertEqual([item.get('shape') for item in skipped[:3]], ['spot', 'projector', 'box'])
+
+    def test_other_flag_bytes_are_marked_as_the_inferred_extension(self):
+        lights, skipped = _decode_zone_lights(light_zone([
+            light_record(source_type=1), light_record(source_type=9), light_record(source_type=17),
+            light_record(source_type=19, normalization=1),
+        ]), 'levels/example/point.zone')
+        self.assertEqual([light['source_type'] for light in lights], [1, 9, 17])
+        self.assertEqual([light['validated'] for light in lights], [True, False, False])
+        self.assertEqual([item['reason'] for item in skipped], ['unsupported_normalization'])
+
+    def test_load_reports_undrawn_shape_counts(self):
+        archive = FakeArchive(light_zone([light_record(), light_record(shape=1), light_record(shape=1),
+                                          light_record(shape=4)]))
+        result = load_scene_lighting(archive, ['levels/example/point.zone'])
+        self.assertEqual(len(result['lights']), 1)
+        note = next(note for note in result['notes'] if note['status'] == 'undrawn_light_shapes')
+        self.assertEqual(note['counts'], {'spot': 2, 'box': 1})
+
+    def test_parse_light_record_decodes_shape_axis_scale_and_gobo(self):
+        record = bytearray(light_record(source_type=11, shape=2, normalization=0, radius=9.0,
+                                        gobo='textures/lighting/global/gobos/rk_gobo_soft_rect.texture'))
+        struct.pack_into('<16f', record, 0, 2, 0, 0, 0, 0, 3, 0, 0, 0, 0, -4, 0, 5, 6, 7, 1)
+        struct.pack_into('<f', record, 0x64, 44.0)
+        struct.pack_into('<ff', record, 0x80, 11.0, 20.0)
+        struct.pack_into('<Q', record, 0x90, 0xAABBCCDD11223344)
+        parsed = parse_light_record(bytes(record))
+        self.assertEqual((parsed['shape'], parsed['shape_name'], parsed['flags'], parsed['normalization']),
+                         (2, 'projector', 11, 0))
+        self.assertEqual(parsed['position'], [5.0, 6.0, 7.0])
+        self.assertEqual(parsed['axis'], [0.0, 0.0, -1.0])
+        self.assertEqual(parsed['scale'], [2.0, 3.0, 4.0])
+        self.assertEqual((parsed['radius'], parsed['cone_degrees'], parsed['range']), (9.0, 44.0, [11.0, 20.0]))
+        self.assertEqual(parsed['colour'], [2.0, 3.0, 4.0])
+        self.assertEqual(parsed['link_id'], 0xAABBCCDD11223344)
+        self.assertEqual(parsed['gobo'], 'textures/lighting/global/gobos/rk_gobo_soft_rect.texture')
+        self.assertEqual(parsed['size'], len(record))
+
+    def test_parse_light_record_without_extension_has_no_gobo_and_rejects_short_records(self):
+        self.assertIsNone(parse_light_record(light_record())['gobo'])
+        with self.assertRaisesRegex(ValueError, 'fewer than'):
+            parse_light_record(light_record()[:0x90])
 
     def test_type_one_with_nonzero_raw_byte_50_does_not_enter_category_zero(self):
         lights, skipped = _decode_zone_lights(light_zone([light_record(flags=0x101)]),

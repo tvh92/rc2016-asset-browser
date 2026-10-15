@@ -677,7 +677,7 @@ class LevelViewport(ModelViewport):
                     native_translation=self.native_translation, program_switches=self.native_program_switches,
                     scene_preview=dict(active=self.scene_effects_active(),ao=getattr(self,'scene_ao',False),
                         shadows=getattr(self,'scene_shadows',False),
-                        authored_lights=len(getattr(self,'_scene_lighting',{}).get('lights',[])) if getattr(self,'scene_authored',False) else 0,
+                        authored_lights=len(self._active_authored_lights()) if getattr(self,'scene_authored',False) else 0,
                         light_limit=32,error=getattr(self,'scene_error',None),game_equivalence=False))
 
     def _emit_stats(self):
@@ -1104,11 +1104,24 @@ class LevelViewport(ModelViewport):
         effects.apply(self,u)
         if self._scene_geometry or not self.scene_authored:return
         mv=(ctypes.c_float*16)();self._gl.glGetFloatv(self.GL_MODELVIEW_MATRIX,mv)
-        count,positions,colours=self._authored_light_uniforms(bytes(mv),self._scene_lighting.get('lights',[]))
+        count,positions,colours=self._authored_light_uniforms(bytes(mv),self._active_authored_lights())
         self._shading.glUniform1i(u['uSceneLightCount'],count)
         if count:
             effects.uniform4(u['uSceneLightPos'],count,positions)
             self._shading.glUniform3fv(u['uSceneLightColour'],count,colours)
+
+    def _active_authored_lights(self):
+        """The authored point lights in use: the Veldin-validated ones for every lighting source, plus the inferred
+        extension (other flag bytes, rc2016.levels.scene_lighting) only under the built Level atmosphere lighting.
+        The list is rebuilt only when the loaded lights or that choice change, so its identity keys the frame cache."""
+        lights=self._scene_lighting.get('lights',[])
+        extended=self.lighting=="Level atmosphere" and self.__dict__.get("_environment_lighting")==self.lighting and bool(self.__dict__.get("_environment"))
+        cached=self.__dict__.get('_active_light_cache')
+        if cached is None or cached[0] is not lights or cached[1]!=extended:
+            chosen=lights if extended else [l for l in lights if l.get('validated',True)]
+            if len(chosen)==len(lights):chosen=lights
+            cached=self._active_light_cache=(lights,extended,chosen)
+        return cached[2]
 
     def _authored_light_uniforms(self,modelview,all_lights):
         """(count, positions, colours) of the 32 nearest authored lights in view space, as ctypes

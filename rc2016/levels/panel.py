@@ -795,7 +795,7 @@ class LevelPanel:
             if item[1]['duplicates']:
                 print(f"level viewer: {len(item[1]['duplicates'])} actor/static near pairs (see actor summary)", file=sys.stderr)
         elif kind == 'scene_lighting':
-            self.view.set_scene_lighting(item[1]);p['scene_lighting']=dict(points=len(item[1].get('lights',[])),notes=item[1].get('notes',[]))
+            self.view.set_scene_lighting(item[1]);p['scene_lighting']=dict(points=len(item[1].get('lights',[])),validated_points=sum(1 for l in item[1].get('lights',[]) if l.get('validated',True)),notes=item[1].get('notes',[]))
         elif kind == "sky":
             self.view.set_sky(item[1])
             p["sky"] = sky_summary(item[1])

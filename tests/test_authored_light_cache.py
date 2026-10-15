@@ -58,5 +58,45 @@ class AuthoredLightCacheTests(unittest.TestCase):
             self.assertEqual(sort.call_count, 3)
 
 
+class ActiveAuthoredLightTests(unittest.TestCase):
+    """The inferred point-light extension applies only to the built Level atmosphere lighting."""
+
+    def setUp(self):
+        self.lights = [dict(position=[0, 0, 0], inverse_radius=1., colour=[1, 1, 1], validated=True),
+                       dict(position=[1, 0, 0], inverse_radius=1., colour=[1, 1, 1], validated=False),
+                       dict(position=[2, 0, 0], inverse_radius=1., colour=[1, 1, 1], validated=False)]
+        self.view = object.__new__(LevelViewport)
+        self.view._scene_lighting = {'lights': self.lights, 'notes': []}
+        self.view.lighting = 'Viewer rig'
+
+    def atmosphere(self, built=True):
+        self.view.lighting = 'Level atmosphere'
+        self.view._environment_lighting = 'Level atmosphere' if built else None
+        self.view._environment = {'sun_direction': (0, 0, 1)} if built else None
+
+    def test_other_lighting_sources_use_only_the_validated_lights(self):
+        self.assertEqual(self.view._active_authored_lights(), self.lights[:1])
+        self.view.lighting = 'Shared HDRI'
+        self.assertEqual(self.view._active_authored_lights(), self.lights[:1])
+
+    def test_level_atmosphere_adds_the_extension_once_its_maps_are_built(self):
+        self.atmosphere(built=False)
+        self.assertEqual(self.view._active_authored_lights(), self.lights[:1])
+        self.atmosphere(built=True)
+        self.assertIs(self.view._active_authored_lights(), self.lights)
+
+    def test_selection_is_cached_and_follows_the_lighting_and_the_light_list(self):
+        first = self.view._active_authored_lights()
+        self.assertIs(self.view._active_authored_lights(), first)
+        self.atmosphere()
+        self.assertEqual(len(self.view._active_authored_lights()), 3)
+        self.view._scene_lighting = {'lights': self.lights[:2], 'notes': []}
+        self.assertEqual(len(self.view._active_authored_lights()), 2)
+
+    def test_lights_without_the_marker_count_as_validated(self):
+        self.view._scene_lighting = {'lights': [dict(position=[0, 0, 0])], 'notes': []}
+        self.assertEqual(len(self.view._active_authored_lights()), 1)
+
+
 if __name__ == '__main__':
     unittest.main()
