@@ -37,36 +37,40 @@ def _f2i(x, low, high):
     return from_bits(int(max(low, min(high, math.trunc(x)))) if math.isfinite(x) else (high if x > 0 else low))
 
 
+# One table for every operation, built once: compute() runs for every constant-folded operation.
+_COMPUTE = {
+    'add': lambda a: a[0]+a[1], 'sub': lambda a: a[0]-a[1],
+    'mul': lambda a: a[0]*a[1], 'div': lambda a: a[0]/a[1],
+    'neg': lambda a: -a[0], 'abs': lambda a: abs(a[0]),
+    'min': lambda a: min(a), 'max': lambda a: max(a),
+    'sqrt': lambda a: math.sqrt(a[0]), 'rsqrt': lambda a: 1/math.sqrt(a[0]),
+    'rcp': lambda a: 1/a[0], 'log2': lambda a: math.log2(a[0]),
+    'exp2': lambda a: 2**a[0], 'pow': lambda a: a[0]**a[1],
+    'sat': lambda a: max(0.,min(1.,a[0])), 'sin':lambda a: math.sin(a[0]),
+    'cos':lambda a: math.cos(a[0]), 'lt':lambda a: float(a[0]<a[1]),
+    'le':lambda a: float(a[0]<=a[1]), 'gt':lambda a: float(a[0]>a[1]),
+    'ge':lambda a: float(a[0]>=a[1]), 'eq':lambda a: float(a[0]==a[1]),
+    'ne':lambda a: float(a[0]!=a[1]), 'select':lambda a: a[1] if a[0] else a[2],
+    'pack':lambda a: list(a), 'bit_and':lambda a: int(a[0])&int(a[1]),
+    'bit_or':lambda a: int(a[0])|int(a[1]),
+    'floor':lambda a: float(math.floor(a[0])), 'fract':lambda a: a[0]-math.floor(a[0]),
+    'u_and':lambda a: from_bits(bits(a[0])&bits(a[1])), 'u_or':lambda a: from_bits(bits(a[0])|bits(a[1])),
+    'u_xor':lambda a: from_bits(bits(a[0])^bits(a[1])), 'u_andn2':lambda a: from_bits(bits(a[0])&~bits(a[1])),
+    'u_shl':lambda a: from_bits(bits(a[0])<<(bits(a[1])&31)), 'u_shr':lambda a: from_bits(bits(a[0])>>(bits(a[1])&31)),
+    'u_eq':lambda a: float(bits(a[0])==bits(a[1])), 'u_lt':lambda a: float(bits(a[0])<bits(a[1])),
+    'u_le':lambda a: float(bits(a[0])<=bits(a[1])), 'i_lt':lambda a: float(signed(bits(a[0]))<signed(bits(a[1]))),
+    'i_le':lambda a: float(signed(bits(a[0]))<=signed(bits(a[1]))), 'u_bit':lambda a: float((bits(a[0])>>(bits(a[1])&31))&1),
+    'u_add':lambda a: from_bits(bits(a[0])+bits(a[1])), 'u_sub':lambda a: from_bits(bits(a[0])-bits(a[1])),
+    'u_mul':lambda a: from_bits(bits(a[0])*bits(a[1])), 'i_shr':lambda a: from_bits(signed(bits(a[0]))>>(bits(a[1])&31)),
+    'u_sad':lambda a: from_bits(abs(bits(a[0])-bits(a[1]))+bits(a[2])),
+    'u_bfe':lambda a: from_bits((bits(a[0])>>(bits(a[1])&31))&((1<<(bits(a[2])&31))-1)),
+    'i2f':lambda a: float(signed(bits(a[0]))), 'u2f':lambda a: float(bits(a[0])),
+    'f2i':lambda a: _f2i(a[0], -2**31, 2**31-1), 'f2u':lambda a: _f2i(a[0], 0, 2**32-1),
+}
+
+
 def compute(op, a):
-    return {
-        'add': lambda: a[0]+a[1], 'sub': lambda: a[0]-a[1],
-        'mul': lambda: a[0]*a[1], 'div': lambda: a[0]/a[1],
-        'neg': lambda: -a[0], 'abs': lambda: abs(a[0]),
-        'min': lambda: min(a), 'max': lambda: max(a),
-        'sqrt': lambda: math.sqrt(a[0]), 'rsqrt': lambda: 1/math.sqrt(a[0]),
-        'rcp': lambda: 1/a[0], 'log2': lambda: math.log2(a[0]),
-        'exp2': lambda: 2**a[0], 'pow': lambda: a[0]**a[1],
-        'sat': lambda: max(0.,min(1.,a[0])), 'sin':lambda: math.sin(a[0]),
-        'cos':lambda: math.cos(a[0]), 'lt':lambda: float(a[0]<a[1]),
-        'le':lambda: float(a[0]<=a[1]), 'gt':lambda: float(a[0]>a[1]),
-        'ge':lambda: float(a[0]>=a[1]), 'eq':lambda: float(a[0]==a[1]),
-        'ne':lambda: float(a[0]!=a[1]), 'select':lambda: a[1] if a[0] else a[2],
-        'pack':lambda: list(a), 'bit_and':lambda: int(a[0])&int(a[1]),
-        'bit_or':lambda: int(a[0])|int(a[1]),
-        'floor':lambda: float(math.floor(a[0])), 'fract':lambda: a[0]-math.floor(a[0]),
-        'u_and':lambda: from_bits(bits(a[0])&bits(a[1])), 'u_or':lambda: from_bits(bits(a[0])|bits(a[1])),
-        'u_xor':lambda: from_bits(bits(a[0])^bits(a[1])), 'u_andn2':lambda: from_bits(bits(a[0])&~bits(a[1])),
-        'u_shl':lambda: from_bits(bits(a[0])<<(bits(a[1])&31)), 'u_shr':lambda: from_bits(bits(a[0])>>(bits(a[1])&31)),
-        'u_eq':lambda: float(bits(a[0])==bits(a[1])), 'u_lt':lambda: float(bits(a[0])<bits(a[1])),
-        'u_le':lambda: float(bits(a[0])<=bits(a[1])), 'i_lt':lambda: float(signed(bits(a[0]))<signed(bits(a[1]))),
-        'i_le':lambda: float(signed(bits(a[0]))<=signed(bits(a[1]))), 'u_bit':lambda: float((bits(a[0])>>(bits(a[1])&31))&1),
-        'u_add':lambda: from_bits(bits(a[0])+bits(a[1])), 'u_sub':lambda: from_bits(bits(a[0])-bits(a[1])),
-        'u_mul':lambda: from_bits(bits(a[0])*bits(a[1])), 'i_shr':lambda: from_bits(signed(bits(a[0]))>>(bits(a[1])&31)),
-        'u_sad':lambda: from_bits(abs(bits(a[0])-bits(a[1]))+bits(a[2])),
-        'u_bfe':lambda: from_bits((bits(a[0])>>(bits(a[1])&31))&((1<<(bits(a[2])&31))-1)),
-        'i2f':lambda: float(signed(bits(a[0]))), 'u2f':lambda: float(bits(a[0])),
-        'f2i':lambda: _f2i(a[0], -2**31, 2**31-1), 'f2u':lambda: _f2i(a[0], 0, 2**32-1),
-    }[op]()
+    return _COMPUTE[op](a)
 
 
 class DAG:
@@ -96,8 +100,10 @@ class DAG:
 
     def op(self,op,*args):
         if op not in OPS:raise ValueError('Unknown shader IR operation: '+op)
-        values=[self.value(x) for x in args]
-        if all(v is not None for v in values):
+        nodes=self.nodes;values=[]
+        for x in args:
+            n=nodes[x];values.append(n['value'] if n['op']=='const' else None)
+        if None not in values:
             try:
                 v=compute(op,values)
                 if isinstance(v,(int,float)) and math.isfinite(v):return self.const(v)
