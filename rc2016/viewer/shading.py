@@ -303,7 +303,7 @@ uniform bool uVehicle; uniform sampler2D uTexVehicleP2; uniform bool uHasVehicle
 uniform vec3 uVehicleA; uniform vec3 uVehicleB; uniform vec3 uVehicleP; // palette blend, rim suppression
 uniform float uArchPhase; // t=0; instance interpolants frozen to zero
 uniform bool uFacingGlow; uniform vec4 uFacingGlowP; uniform vec3 uFacingGlowQ; // amplitude, exponent, a scale, a offset; bias, g scale
-uniform bool uBrightCentre; uniform vec3 uBrightEdge; uniform vec3 uBrightColour; uniform vec4 uBrightP; // D14A48D7: exponent, weight, F0, gloss^2
+uniform bool uBrightCentre; uniform bool uBrightWhite; uniform vec3 uBrightEdge; uniform vec3 uBrightColour; uniform vec4 uBrightP; // D14A48D7: exponent, weight, F0, gloss^2
 varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
 varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm;
 const float PI = 3.14159265;
@@ -493,6 +493,7 @@ void main() {
     }
 
     if (uMode >= 1 && uFacingGlow) albedo = vec3(1.0); // 0CD2AAFB: no albedo input, v76-v78 = 1
+    if (uMode == 2 && uBrightCentre && uBrightWhite) albedo = vec3(1.0); // preview override: white_c stands in for the unbound _c
     if (uMode == 2 && uFlatSurface) albedo = uBasicFlatColor ? vec3(0.0) : uFlatColour; // D169A814 has no diffuse albedo term
     if (uMode == 2 && uPuddles && uHasPuddleAtlas) {
         vec3 g=texture2D(uTexG,vUV).rgb;if(uSrgbG)g=linear(g);
@@ -1120,7 +1121,7 @@ OPAQUE_UNIFORMS = (
     "uTexP", "uHasP", "uSrgbP", "uPick", "uSpecTint", "uTint", "uTintA", "uTintB", "uTintP", "uTintM",
     "uTintVariant", "uTintPalette", "uTintPaletteBlend", "uTintDetailP", "uTintWorldOrigin",
     "uTexTintDetail", "uHasTintDetail", "uSrgbTintDetail", "uTexH", "uHasH", "uArchSequence", "uTexSequence", "uHasSequence", "uArchColour", "uArchP", "uArchPhase",
-    "uFacingGlow", "uFacingGlowP", "uFacingGlowQ", "uBrightCentre", "uBrightEdge", "uBrightColour", "uBrightP",
+    "uFacingGlow", "uFacingGlowP", "uFacingGlowQ", "uBrightCentre", "uBrightWhite", "uBrightEdge", "uBrightColour", "uBrightP",
     "uSceneGeometry", *LIGHTING_UNIFORMS)
 GLASS_UNIFORMS = ("uSkin", "uBoneTex", "uBoneWidth", "uKind", "uA", "uB", "uC", "uD", "uE",
                   "uTexN", "uHasN", "uTexP", "uHasP", "uSrgbP",

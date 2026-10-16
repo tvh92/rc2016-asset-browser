@@ -460,6 +460,8 @@ def _viewer_expected_constants(rule):
         b = terms["bright_center"]
         e.update({"bright centre edge": b["edge"], "bright centre colour": b["centre"], "bright centre exponent": b["exponent"],
                   "bright centre weight": b["weight"], "bright centre F0": b["f0"], "bright centre gloss": b["gloss_sq"]})
+        if b.get("albedo_white"):
+            e["bright centre albedo"] = [1.0, 1.0, 1.0]
     if "facing_glow" in ported:
         f = terms["facing_glow"]
         e.update({"facing glow albedo": f["albedo"], "facing glow bias": f["bias"], "facing glow exponent": f["exponent"],
@@ -583,6 +585,8 @@ def _viewer_required(rule, has_n):
     if "bright_center" in ported:
         names += ["bright centre edge", "bright centre colour", "bright centre exponent", "bright centre weight",
                   "bright centre F0", "bright centre gloss"]
+        if terms["bright_center"].get("albedo_white"):
+            names.append("bright centre albedo")
     if "facing_glow" in ported:
         names += ["facing glow albedo", "facing glow bias", "facing glow exponent", "facing glow a scale",
                   "facing glow a offset", "facing glow amplitude", "facing glow g scale"]
@@ -867,6 +871,9 @@ def _validate_viewer_rule_material(source, material):
     if facing:   # 0CD2AAFB has no albedo input
         assert {node.name for node in _viewer_upstream(brdf.inputs[0])} == {"VR facing glow albedo"}, \
             "Facing-glow albedo is not the white source constant"
+    elif "bright_center" in ported and terms["bright_center"].get("albedo_white") and not rule["textures"].get("_c"):
+        assert any(node.name == "VR bright centre albedo" for node in _viewer_upstream(brdf.inputs[0])) and not any(
+            node.type == "TEX_IMAGE" for node in _viewer_upstream(brdf.inputs[0])),             "Preview bright-centre albedo is not the white constant"
     elif "flat_surface" in ported and flat.get("model") == "basic_flat_color":
         assert {node.name for node in _viewer_upstream(brdf.inputs[0])} == {"VR flat surface albedo zero"}, \
             "basic_flat_color albedo is not the zero source constant"

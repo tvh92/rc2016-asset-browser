@@ -475,7 +475,8 @@ def final_shader_status(build_status, rule, bound_paths, shader_translation, pro
         rule_coverage(list(graph_paths))[0]==EXACT)
     viewer_ready=((build_status.startswith('color_only_preview') or glass_ready or flat_ready or reticle_ready) and rule.get('applies') and
                   (anchor in bound_paths or any(key in rule.get('ported',()) for key in
-                   ('facing_glow','bright_glow','eye_cornea','flat_surface','number_display','glass_basic','glass_cg02','glass_jn'))))
+                   ('facing_glow','bright_glow','eye_cornea','flat_surface','number_display','glass_basic','glass_cg02','glass_jn')) or
+                  bool(rule.get('terms',{}).get('bright_center',{}).get('albedo_white'))))
     translated=(shader_translation.get('status')=='ready' and not profile and
         not any(p.get('family') in ('skin_emissive','basic_skin','character_glass') for p in shader_preflights))
     exact=rule_coverage(list(graph_paths))[0]==EXACT

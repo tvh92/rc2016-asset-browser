@@ -102,6 +102,18 @@ SPECULAR_SCALE_KEY, GLOSS_SCALE_KEY = 0x62835AF9, 0x24F4CA4C
 BRIGHT_GLOW_PRESENTATION = dict(amplitude=0.5, amplitude_input='CB0 dword 115', captured_amplitude=0.01,
                                 presentation=True, writer='93695188',
                                 frozen_inputs=dict(sin=0.0, cutoff=0.0, alpha=1.0, fog_fade=1.0))
+# PREVIEW OVERRIDE, not decoded: npc_qwark_robot's antenna tip (graph npc_qwark_robot_bulb) is a different writer from
+# Qwark's (0CD2AAFB: white base plus a red facing glow scaled by CB0[115]) and its material stores no constants, so the
+# decoded rule draws it white. The tip is meant to look like Qwark's, so the viewer and Blender can instead draw it with
+# Qwark's enm_qwark_light_center bright-centre term (writer D14A48D7): white _c (white_c.texture) and the material
+# values below, read from that material's keys (edge 0x16B8AB81, centre 0x5BC2D1F0 x intensity 0x398AD3E2, exponent
+# 0.2 (1 - 0x60DC3D2F), steady 0x01B78BF6 = 1, F0 0x08FE9F29, gloss 0x0B065E94, K 0xB7305C21). The halo mesh Qwark adds
+# (enm_qwark_light_glow) does not exist on the robot and is not drawn. Set False to draw the decoded 0CD2AAFB rule.
+ROBOT_BULB_QWARK_TIP_PREVIEW = True
+ROBOT_BULB_QWARK_TIP = dict(
+    edge=[0.006048833020031452, 0.0, 0.0], centre=[0.4691011607646942, 0.002428215928375721, 0.0], exponent=0.1,
+    weight=1.0, f0=0.20000000298023224, gloss_sq=0.3499999940395355, steady=1.0, k=50.0, writer='D14A48D7',
+    albedo_white=True, preview_override='npc_qwark_robot_bulb drawn with the enm_qwark_light_center values')
 # CB0[115] is engine-owned and absent from the material archive; use the established labelled preview convention.
 VICTOR_RETICLE_PRESENTATION_AMPLITUDE = 0.5
 # Eye cornea forward colour pass A36A97CB (hero_eye_cornea): literals read from the instruction words.
@@ -330,7 +342,7 @@ GRAPH_RULES = (
          ('body', 0x1DAF77B8, 3),))),
     # Forward colour pass 0CD2AAFB rel 12552-12672: white base + red facing glow; Materials/QwarkBulb/README.md.
     ('materialgraph/character/npc/npc_qwark_robot_bulb/npc_qwark_robot_bulb.',
-     dict(self_lit_key=None, facing_glow=True)),
+     dict(self_lit_key=None, facing_glow=True, bright_center_preview=True)),
     # Deferred writer D14A48D7 (material-bound DAG, pass 0): t = (1.001 - sat(N.V))^(0.2 (1 - S)) with the
     # tangent-mapped normal; albedo = _c * (E t + A M w (1 - t)); self-lit = K * _c.R * that red factor;
     # F0 = grey Fs, gloss = sqrt(sat(G)). w is a blink sat(1 + (1 - B)(0.5 sin(phase) - 0.5)), frozen at sin = 0.
@@ -1021,7 +1033,11 @@ def material_texture_paths(archive, material_path: str) -> dict:
         if flat is not None:
             result['flat_surface'] = flat
             result['spec'] = result['gloss'] = 1.0
-    if rule.get('facing_glow'):
+    preview = rule.get('bright_center_preview') and ROBOT_BULB_QWARK_TIP_PREVIEW
+    if preview:   # labelled override of the decoded 0CD2AAFB facing glow, see ROBOT_BULB_QWARK_TIP
+        result['bright_center'] = dict(ROBOT_BULB_QWARK_TIP)
+        result.update(self_lit='bright_center', k=ROBOT_BULB_QWARK_TIP['k'], spec=1.0, gloss=1.0)
+    if rule.get('facing_glow') and not preview:
         # No texture, parameter, vertex colour or instance input: albedo is 1.0 and the glow is
         # f = pow(sat(N.V) - bias, exponent), a = a_scale*f + a_offset,
         # rgb += amplitude * (2a(1 + a), g_scale*f*(1 + a), 0). Literals from the instruction words.

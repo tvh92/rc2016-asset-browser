@@ -1442,7 +1442,8 @@ def apply_viewer_graph_rule(mat, source):
     if number and not all(img(role) is not None for role in ('_c', '_n', '_pick', '_g')):
         return False
     glass = next((k for k in GLASS_VIEWER_KINDS if k in ported and k in terms), None)   # forward glass writers sample no _c
-    if c is None and not (arch and g is not None) and not facing and not glow_shell and not eye_cornea and not number and not reticle and not flat and not glass:
+    bright_white = bool(terms.get('bright_center', {}).get('albedo_white')) and 'bright_center' in ported   # preview override: no _c
+    if c is None and not (arch and g is not None) and not facing and not bright_white and not glow_shell and not eye_cornea and not number and not reticle and not flat and not glass:
         return False
     for node in list(nt.nodes):   # keep every source image node (provenance and coverage reports)
         if node.type != 'TEX_IMAGE':
@@ -1569,6 +1570,8 @@ def apply_viewer_graph_rule(mat, source):
                       'ramp/scatter term (_g.A, tint 0xCFCCABE4, skin_ramp, wrap) is not reproduced')
     if facing:   # no albedo input: v76-v78 stay 1.0
         albedo = P.const3('facing glow albedo', facing['albedo'])
+    if bright_white and c is None:   # preview override: white_c stands in for the unbound _c
+        albedo = P.const3('bright centre albedo', (1.0, 1.0, 1.0))
     if flat:
         if flat.get('model') == 'basic_flat_color':
             # SPIR-V/native slice D169A814 has no diffuse albedo: only independent CB2 colour * K is added
@@ -1839,6 +1842,9 @@ def apply_viewer_graph_rule(mat, source):
             albedo = P.v('MULTIPLY', albedo, fac)
             view_terms.append('bright centre')
             limits.append('bright centre: the blink weight is frozen at its sin = 0 value (%g)' % float(bright['weight']))
+            if bright.get('preview_override'):
+                limits.append('PREVIEW OVERRIDE, not decoded: %s; the decoded writer 0CD2AAFB (white base plus a CB0[115] facing glow) '
+                              'is not drawn and the halo mesh Qwark adds does not exist on this model' % bright['preview_override'])
         glow_mask = P.sep(img('_h').outputs['Color'])[0] if glow and img('_h') else (0.0 if glow else None)
         if glow and int(glow['kind']) == 1:   # 2685144F: _c.rgb never sampled; environment = viewer ambient
             up = P.sep(final_n)[2]
