@@ -483,6 +483,8 @@ class PipelineBatchRunner:
             command.extend(("--model", selector))
         for clip in clips:
             command.extend(("--clip", clip))
+        if clips:   # the viewer can offer a cutscene shot, which only the cutscene scan lists
+            command.append("--cinematic-clips")
         # Blend-only output keeps no receipts, so every run rebuilds.
         if self.skip_verified and not self.blend_only:
             command.append("--reuse-cache")
