@@ -41,6 +41,8 @@ def apply_dark_theme(root, ttk) -> None:
     style.configure("TButton", background=panel, foreground=fg, bordercolor=border, focuscolor=accent)
     style.map("TButton", background=[("disabled", bg), ("pressed", accent), ("active", "#383a40")],
               foreground=[("disabled", "#6b6f75")])
+    # Same height as a combobox, for buttons that share a row with one.
+    style.configure("Compact.TButton", padding=(8, 1))
     style.map("TCheckbutton", background=[("active", bg)], indicatorbackground=[("selected", accent)])
     # Asset-type selector (segmented Model / Level / Flash UI radio buttons).
     style.configure("Toolbutton", background=panel, foreground=fg, bordercolor=border)

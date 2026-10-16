@@ -82,7 +82,7 @@ Select one source row to load its geometry. Archive metadata is loaded once; onl
 
 **View modes** (`ModelViewport.MODES`): Shaded (default), Textured, Solid, Wireframe, Solid + wireframe.
 
-**Look and LOD:** the source look and Highest / Lowest / All LOD selections use the model's native memberships.
+**Look and LOD:** the source look and Highest / Lowest / All LOD selections use the model's native memberships. The model view shows the LOD box only when Highest, Lowest and All select different meshes (about 2% of models) and the look box only when a model has more than one look (none do in this archive). Counts and the asset ID are in Details; the line under the controls shows only load errors and shader warnings.
 
 **Pose:** the model is drawn in its bind/rest pose until an animation is played. Attachments and runtime animation blending are not reproduced.
 
@@ -141,15 +141,15 @@ A ready translation describes a bounded deferred surface, with `game_equivalence
 
 ### Lighting and tonemap
 
-Controls below the model view and in the level sidebar are grouped by purpose:
+Controls below the model view and in the level sidebar are grouped by purpose. The model view merges Lighting and Display into one **Shading** group (Lighting On, source, Tonemap) and shows the **Materials** group, and each toggle in it, only when a material of the shown model has a native translation or an experimental preview. The toggles are inert and greyed outside Shaded mode. Every control has a tooltip:
 
 | Group | Controls and master behaviour |
 |---|---|
 | Lighting | Master **On** switches rig/HDRI diffuse, specular and ambient lighting together. In levels it also gates AO, shadows and authored points. Off provides unlit opaque surface inspection; self-lit/forward emission remains. Child choices are remembered. |
-| Display | Tonemap stays available independently of the Lighting master. |
+| Display | Tonemap stays available independently of the Lighting master (model view: in the Shading group). |
 | Materials | Ordinary Native translation, enabled by default. |
 | Scene (levels) | Instance overrides, sky, source actors and collision/helpers. |
-| Experimental | Master **Enable**, off by default, gates Material previews and the level enemy-spawn preview. Their individual selections are retained across master toggles. |
+| Experimental | Level viewer: master **Enable**, off by default, gates Material previews and the level enemy-spawn preview. Their individual selections are retained across master toggles. The model view has the single **Experimental previews** checkbox, off by default. |
 
 The Lighting source and Display tonemap selectors offer:
 
@@ -501,11 +501,11 @@ One folder per model in the output root:
 
 **Options...** (in the main window) holds the formats, textures, game DDS, animations (all/none), LOD, skip-existing (keeps a folder whose `export.json` matches source and options), Python and Blender paths, the advanced research-build switch, backend and clip prefixes, and UI scale. Export choices are saved in the settings file.
 
-**Single clip:** pick a clip under the 3D view (the Animation button opens the searchable list) and tick **Extract only this clip**; it applies to the model shown there.
+**Single clip:** pick a clip under the 3D view (the Animation button opens the searchable list) and tick **Export only this clip**; it applies to the model shown there.
 
 ## Research Blender build and viewer rules
 
-Options -> Advanced selects the full research Blender scene (`PipelineBatchRunner`; backend "Full archive pipeline"), which runs the pipeline in [pipeline](pipeline.md) and needs Blender. With **Keep only the .blend files** ticked, a fully successful run deletes everything else in the output folder (reports, meshes, textures, caches); every run then rebuilds, since nothing is left to reuse. With **Extract only this clip** ticked, the shown model gets its own CLI run with `--clip name:<clip>` and the other selected models run without it.
+Options -> Advanced selects the full research Blender scene (`PipelineBatchRunner`; backend "Full archive pipeline"), which runs the pipeline in [pipeline](pipeline.md) and needs Blender. With **Keep only the .blend files** ticked, a fully successful run deletes everything else in the output folder (reports, meshes, textures, caches); every run then rebuilds, since nothing is left to reuse. With **Export only this clip** ticked, the shown model gets its own CLI run with `--clip name:<clip>` and the other selected models run without it.
 
 The research build consumes the viewer's material reading:
 

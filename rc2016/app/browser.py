@@ -69,17 +69,33 @@ def rule_text(material):
     return 'shading: generic reading — the material names no material graph'
 
 
-def lighting_controls(ttk, parent, viewport, lighting_var, tonemap_var):
-    """Lighting source selector. Tonemap lives in the separate Display group."""
+def lod_choices_differ(looks, mesh_count, look=0):
+    """Whether Highest, Lowest and All select different meshes for ``look`` (else the LOD choice does nothing)."""
+    from rc2016.formats.native_model import _selected_meshes
+    try:
+        return len({tuple(_selected_meshes(looks, mesh_count, mode, look)) for mode in ('Highest', 'Lowest', 'All')}) > 1
+    except ValueError:
+        return False
+
+
+def material_toggles(textures):
+    """(native translation applies, experimental preview applies) for a payload's per-slot material entries."""
+    entries = list((textures or {}).values())
+    return (any(e.get('native_translation') for e in entries), any(e.get('experimental_preview') for e in entries))
+
+
+def lighting_controls(ttk, parent, viewport, lighting_var, tonemap_var, note_parent=None):
+    """Lighting source selector; returns its combobox. The note about a pending HDRI goes in ``note_parent``."""
     def lighting_changed(_event=None):
         if lighting_var.get() == 'Shared HDRI':
             tonemap_var.set('Khronos PBR Neutral')
         viewport.set_lighting(lighting_var.get(), tonemap_var.get())
     box = ttk.Combobox(parent, textvariable=lighting_var, values=viewport.LIGHTINGS, state='readonly', width=12)
     box.pack(side='left', padx=(4, 0)); box.bind('<<ComboboxSelected>>', lighting_changed)
-    note = ttk.Label(parent, text='', foreground='#6b7280')
+    note = ttk.Label(note_parent or parent, text='', foreground='#6b7280')
     note.pack(side='left', padx=4)
     viewport.on_lighting_changed = lambda: note.configure(text=viewport.lighting_note or '')
+    return box
 
 
 MODEL_SUFFIX_TOKENS = ('enm', 'hero', 'npc', 'wpn')
@@ -217,57 +233,71 @@ class AssetBrowser:
         view.columnconfigure(0,weight=1);view.rowconfigure(8,weight=1)
         self.viewport=ModelViewport(view,width=380,height=560)
         self.viewport.grid(row=0,column=0,rowspan=9,sticky='nsew',padx=(0,8))
-        native=ttk.Frame(view);native.grid(row=0,column=1,sticky='ew',pady=6)
-        ttk.Label(native,text='Source look').pack(side='left')
+        tip=app._tip
+        # View: camera and draw mode.
+        viewrow=ttk.Frame(view);viewrow.grid(row=0,column=1,sticky='ew',pady=(6,4))
+        ttk.Label(viewrow,text='View').pack(side='left')
+        self.view_mode=self.tk.StringVar(value='Shaded')
+        self.mode_box=mode_box=ttk.Combobox(viewrow,textvariable=self.view_mode,values=self.viewport.MODES,state='readonly',width=16)
+        mode_box.pack(side='left',padx=4)
+        mode_box.bind('<<ComboboxSelected>>',self._mode_changed)
+        reset_button=ttk.Button(viewrow,text='Reset view',style='Compact.TButton',command=self.viewport._reset_camera)
+        reset_button.pack(side='left',padx=4)
+        tip('Shaded: the game BRDF (_c base colour, _g gloss, _n normals, self-lit) under the chosen lighting. It predicts the Blender review render, not game lighting.\nTextured: base colour only. Solid and Wireframe: geometry only.',mode_box)
+        tip('Frame the whole model again.\nDrag orbits, right-drag pans, the wheel zooms.',reset_button)
+        # Source: which meshes of the file are drawn. Shown only when the model has a choice (see _update_source_controls).
+        self.source_row=lodrow=ttk.Frame(view);lodrow.grid(row=1,column=1,sticky='ew',pady=(0,4))
         self.native_look=self.tk.StringVar(value='0')
-        self.native_look_box=ttk.Combobox(native,textvariable=self.native_look,values=(),state='disabled',width=4)
-        self.native_look_box.pack(side='left',padx=4)
+        self.native_look_label=ttk.Label(lodrow,text='Look')
+        self.native_look_box=ttk.Combobox(lodrow,textvariable=self.native_look,values=(),state='disabled',width=4)
         self.native_look_box.bind('<<ComboboxSelected>>',lambda _e:self._reload_source())
         self.native_lod=self.tk.StringVar(value='Highest')
-        self.native_lod_box=ttk.Combobox(native,textvariable=self.native_lod,values=('Highest','Lowest','All'),state='disabled',width=9)
+        self.native_lod_label=ttk.Label(lodrow,text='LOD')
+        self.native_lod_label.pack(side='left')
+        self.native_lod_box=ttk.Combobox(lodrow,textvariable=self.native_lod,values=('Highest','Lowest','All'),state='disabled',width=9)
         self.native_lod_box.pack(side='left',padx=4)
         self.native_lod_box.bind('<<ComboboxSelected>>',lambda _e:self._reload_source())
-        ttk.Button(native,text='Reset view',command=self.viewport._reset_camera).pack(side='left',padx=4)
-        self.view_mode=self.tk.StringVar(value='Shaded')
-        mode_box=ttk.Combobox(native,textvariable=self.view_mode,values=self.viewport.MODES,state='readonly',width=17)
-        mode_box.pack(side='left',padx=4)
-        mode_box.bind('<<ComboboxSelected>>',lambda _e:self.viewport.set_mode(self.view_mode.get()))
+        tip("Detail level of the meshes shown. Highest and Lowest use the model's own LOD membership; All also draws meshes no look references (a diagnostic).\nOnly shown for models whose LODs differ.",self.native_lod_box)
+        tip('Source look: a model can hold several alternative mesh sets. Only shown when it does.',self.native_look_label,self.native_look_box)
+        lodrow.grid_remove()
+        # Shading: lighting, then the tonemap that turns its output into screen colours.
         self.lighting_var=self.tk.StringVar(value=self.viewport.LIGHTINGS[0])
         self.lighting_enabled_var=self.tk.BooleanVar(value=True)
-        lighting_group=ttk.LabelFrame(view,text='Lighting',padding=(4,2))
-        lighting_group.grid(row=1,column=1,sticky='ew',pady=(0,4))
+        lighting_group=ttk.LabelFrame(view,text='Shading',padding=(4,2))
+        lighting_group.grid(row=2,column=1,sticky='ew',pady=(0,4))
         self.lighting_enabled_check=ttk.Checkbutton(
-            lighting_group,text='On',variable=self.lighting_enabled_var,
+            lighting_group,text='Lighting',variable=self.lighting_enabled_var,
             command=lambda:self.viewport.set_lighting_enabled(self.lighting_enabled_var.get()))
-        self.lighting_enabled_check.pack(side='left')
+        self.lighting_enabled_check.grid(row=0,column=0,sticky='w')
         self.lighting_controls=ttk.Frame(lighting_group)
-        self.lighting_controls.pack(side='left')
+        self.lighting_controls.grid(row=0,column=1,sticky='w')
         self.tonemap_var=self.tk.StringVar(value=self.viewport.TONEMAPS[0])
-        lighting_controls(ttk,self.lighting_controls,self.viewport,self.lighting_var,self.tonemap_var)
-        display=ttk.LabelFrame(view,text='Display',padding=(4,2))
-        display.grid(row=2,column=1,sticky='ew',pady=(0,4))
-        ttk.Label(display,text='Tonemap').pack(side='left')
-        tonemap_box=ttk.Combobox(display,textvariable=self.tonemap_var,values=self.viewport.TONEMAPS,state='readonly',width=19)
-        tonemap_box.pack(side='left',padx=4)
+        lighting_note_row=ttk.Frame(lighting_group);lighting_note_row.grid(row=1,column=0,columnspan=4,sticky='w')
+        lighting_box=lighting_controls(ttk,self.lighting_controls,self.viewport,self.lighting_var,self.tonemap_var,note_parent=lighting_note_row)
+        tonemap_label=ttk.Label(lighting_group,text='Tonemap')
+        tonemap_label.grid(row=0,column=2,sticky='w',padx=(12,0))
+        tonemap_box=ttk.Combobox(lighting_group,textvariable=self.tonemap_var,values=self.viewport.TONEMAPS,state='readonly',width=19)
+        tonemap_box.grid(row=0,column=3,sticky='w',padx=4)
         tonemap_box.bind('<<ComboboxSelected>>',lambda _e:self.viewport.set_lighting(tonemap=self.tonemap_var.get()))
-        materials=ttk.LabelFrame(view,text='Materials',padding=(4,2))
-        materials.grid(row=3,column=1,sticky='ew',pady=(0,4))
+        tip('Master switch for lighting. Off shows the unlit surface colour; self-lit emission stays.',self.lighting_enabled_check)
+        tip('Viewer rig: fixed key, fill and sky light that turns with the camera (what the gallery thumbnails use).\nShared HDRI: the shared review HDRI, as the Blender review render uses. Choosing it also selects Khronos PBR Neutral.',lighting_box)
+        tip('Maps the lit HDR result to screen colours.\nACES fit: filmic, desaturates highlights (gallery thumbnails).\nKhronos PBR Neutral: keeps base colours accurate until highlights.',tonemap_label,tonemap_box)
+        # Materials: only the toggles that change something for this model (see _update_source_controls).
         self.native_translation_var=self.tk.BooleanVar(value=True)
-        ttk.Checkbutton(materials,text='Native translation',variable=self.native_translation_var,
-                        command=self._native_translation_changed).pack(side='left')
-        self.material_previews_var=self.tk.BooleanVar(value=True)
         self.experimental_materials_var=self.tk.BooleanVar(value=False)
-        experimental=ttk.LabelFrame(view,text='Experimental',padding=(4,2))
-        experimental.grid(row=4,column=1,sticky='ew',pady=(0,4))
-        ttk.Checkbutton(experimental,text='Enable',variable=self.experimental_materials_var,
-                        command=self._experimental_materials_changed).pack(side='left')
-        ttk.Checkbutton(experimental,text='Material previews',variable=self.material_previews_var,
-                        command=self._experimental_materials_changed).pack(side='left',padx=(8,0))
-        ttk.Label(experimental,text='Mountain albedo: matte. Empty blend mask: review value 1; runtime unverified.',foreground='#6b7280',wraplength=330).pack(side='left',padx=8)
+        self.materials_group=materials=ttk.LabelFrame(view,text='Materials',padding=(4,2))
+        materials.grid(row=3,column=1,sticky='ew',pady=(0,4))
+        self.native_check=ttk.Checkbutton(materials,text='Native translation',variable=self.native_translation_var,
+                                          command=self._native_translation_changed)
+        self.experimental_check=ttk.Checkbutton(materials,text='Experimental previews',variable=self.experimental_materials_var,
+                                                command=self._experimental_materials_changed)
+        tip('Shade materials from their translated game shader program instead of the generic reading. Replaces the fallback rules only; exact hand-decoded rules stay.\nShown when a material of this model has a translation; Shaded mode only.',self.native_check)
+        tip('Best-effort material previews: pinned Novalis mountain and terrain materials, plus a generic adapter that substitutes viewer geometry for inputs that are not bound (matte lighting; paint and UVs inferred, runtime unverified).\nReplaces the native translation where one exists. Not game-equivalent.\nShown when a material of this model has such a preview; Shaded mode only.',self.experimental_check)
+        materials.grid_remove()
+        self.native_applicable=self.experimental_applicable=False
         self.viewport.set_lighting_enabled(self.lighting_enabled_var.get())
-        self.viewport.set_experimental_materials(
-            self.experimental_materials_var.get() and self.material_previews_var.get())
-        anim=ttk.Frame(view);anim.grid(row=5,column=1,sticky='ew',pady=(0,6))
+        self.viewport.set_experimental_materials(False)
+        anim=ttk.Frame(view);anim.grid(row=4,column=1,sticky='ew',pady=(0,6))
         anim.columnconfigure(3,weight=1)
         ttk.Label(anim,text='Animation').grid(row=0,column=0,padx=(0,4))
         self.clip_choice=tk.StringVar(value=REST_POSE)
@@ -278,8 +308,9 @@ class AssetBrowser:
         self.clip_button.grid(row=0,column=1,padx=4)
         self.clip_labels=[];self.clip_index=-1;self.clip_popup=None
         self.clip_only_var=tk.BooleanVar(value=False)
-        self.clip_only_check=ttk.Checkbutton(anim,text='Extract only this clip',variable=self.clip_only_var,state='disabled')
+        self.clip_only_check=ttk.Checkbutton(anim,text='Export only this clip',variable=self.clip_only_var,state='disabled')
         self.clip_only_check.grid(row=1,column=1,columnspan=4,sticky='w',padx=4,pady=(2,0))
+        tip('Export option: when ticked, Extract selected exports just this clip for the model shown here instead of all its clips.\nPick a clip first.',self.clip_only_check)
         self._fill_clip_menu([])
         self.play_button=ttk.Button(anim,text='Pause',width=7,command=self._toggle_play,state='disabled')
         self.play_button.grid(row=0,column=2,padx=4)
@@ -288,11 +319,15 @@ class AssetBrowser:
         self.frame_slider.grid(row=0,column=3,sticky='ew',padx=4)
         self.frame_text=tk.StringVar(value='')
         ttk.Label(anim,textvariable=self.frame_text,width=18,anchor='w').grid(row=0,column=4,sticky='w')   # fits '1234/1234 @ 29.97 fps'
+        tip('Pick a clip to play on the rest pose. Skinned models only.',self.clip_button)
         self.anim_work=LatestWork()
         self.animation=None;self.anim_frame=0;self.playing=False;self.play_job=None
+        # Load errors and shader warnings only; the model's counts and ID are in Details.
         self.model_info=self.tk.StringVar(value='Select one source model. It loads directly; no Blender is needed.')
-        ttk.Label(view,textvariable=self.model_info,wraplength=400).grid(row=6,column=1,sticky='ew')
-        ttk.Label(view,text='Drag: orbit · Right drag: pan · Wheel: zoom\nShaded = game BRDF (_c, _g gloss, _n normals, self-lit) under the viewer rig or the shared review HDRI (predicts the Blender review render), not game lighting',foreground='#6b7280',wraplength=400).grid(row=7,column=1,sticky='w',pady=5)
+        self.info_label=ttk.Label(view,textvariable=self.model_info,wraplength=400)
+        self.info_label.grid(row=5,column=1,sticky='ew')
+        self.model_info.trace_add('write',lambda *_a:self.info_label.grid() if self.model_info.get() else self.info_label.grid_remove())
+        ttk.Label(view,text='Drag: orbit · Right drag: pan · Wheel: zoom',foreground='#6b7280').grid(row=6,column=1,sticky='w',pady=5)
         result.columnconfigure(0,weight=1);result.rowconfigure(0,weight=1)
         self.description=app.ScrolledText(result,height=8,wrap='word',state='disabled',font='TkDefaultFont')
         self.description.grid(row=0,column=0,sticky='nsew')
@@ -761,6 +796,7 @@ class AssetBrowser:
         self.native_look.set('0');self.native_lod.set('Highest')
         self.viewport.clear('Loading selected source geometry…')
         self.native_look_box.configure(state='disabled');self.native_lod_box.configure(state='disabled')
+        self.source_row.grid_remove();self.materials_group.grid_remove()   # re-shown for the model that loads
         if not source_root:
             self.source_work.submit(lambda:None)
             self.viewport.clear('Choose the extracted source archive to load this model. No Blender is required.')
@@ -941,7 +977,7 @@ class AssetBrowser:
                 pass
 
     def export_clip(self):
-        """(model_id, clip label) when 'Extract only this clip' is ticked, else None."""
+        """(model_id, clip label) when 'Export only this clip' is ticked, else None."""
         if not self.clip_only_var.get() or self.clip_index<0 or not self.source_payload:return None
         return self.source_payload['model_id'],self.clip_labels[self.clip_index]
 
@@ -1053,8 +1089,38 @@ class AssetBrowser:
             self._render_details()
 
     def _experimental_materials_changed(self):
-        self.viewport.set_experimental_materials(
-            self.experimental_materials_var.get() and self.material_previews_var.get())
+        self.viewport.set_experimental_materials(self.experimental_materials_var.get())
+
+    def _mode_changed(self,_event=None):
+        self.viewport.set_mode(self.view_mode.get())
+        self._sync_material_state()
+
+    def _sync_material_state(self):
+        """Material toggles only change Shaded mode, so they are inert in the other modes."""
+        state='normal' if self.view_mode.get()=='Shaded' else 'disabled'
+        self.native_check.configure(state=state);self.experimental_check.configure(state=state)
+
+    def _update_source_controls(self,payload):
+        """Show the LOD, look and material toggles only where they change something for this model."""
+        looks=payload.get('looks') or []
+        look=int(self.native_look.get() or 0)
+        multi_look=len(looks)>1
+        lod=lod_choices_differ(looks,payload.get('mesh_record_count',0),look) if looks else False
+        self.native_look_box.configure(values=[str(r['index']) for r in looks],state='readonly' if multi_look else 'disabled')
+        self.native_lod_box.configure(state='readonly' if lod else 'disabled')
+        for widget in (self.native_look_label,self.native_look_box):
+            if multi_look:widget.pack(side='left',padx=(0,4),before=self.native_lod_label)
+            else:widget.pack_forget()
+        self.source_row.grid() if (lod or multi_look) else self.source_row.grid_remove()
+        self.native_applicable,self.experimental_applicable=material_toggles(payload.get('textures'))
+        self.native_check.grid_remove();self.experimental_check.grid_remove()
+        if self.native_applicable:self.native_check.grid(row=0,column=0,sticky='w')
+        if self.experimental_applicable:self.experimental_check.grid(row=0,column=1,sticky='w',padx=(8,0))
+        applicable=self.native_applicable or self.experimental_applicable
+        self.materials_group.grid() if applicable else self.materials_group.grid_remove()
+        # A toggle that is hidden must not keep changing the picture.
+        self.viewport.set_experimental_materials(self.experimental_applicable and self.experimental_materials_var.get())
+        self._sync_material_state()
 
     def _render_details(self):
         # Source facts from the game files first; a saved build in the output root, when present, below.
@@ -1168,9 +1234,8 @@ class AssetBrowser:
                     elif kind=='source':
                         self.source_payload=payload
                         self.viewport.set_mesh(payload)
-                        self.model_info.set(f"{len(payload['vertices']):,} vertices · {len(payload['triangles']):,} triangles · {payload['kind']}\nSource ID: {payload['model_id']}")
-                        self.native_look_box.configure(values=[str(r['index']) for r in payload['looks']],state='readonly' if payload['looks'] else 'disabled')
-                        self.native_lod_box.configure(state='readonly' if payload['looks'] else 'disabled')
+                        self.model_info.set('')
+                        self._update_source_controls(payload)
                         identity=(payload['model_id'],payload['source_path'])
                         self.metadata.setdefault(identity,{})['kind']=payload['kind']
                         self._set_clips(payload)
@@ -1181,8 +1246,7 @@ class AssetBrowser:
                         self.source_text=source_details(payload,getattr(self.selected_record,'used_by','') or '',self.viewport.native_translation)
                         self._request_placements(payload['source_path'])
                         self._render_details()
-                        if self.viewport.shading_error:self.model_info.set(self.model_info.get()+'\n'+self.viewport.shading_error)
-                        if getattr(self.viewport,'shading_warning',''):self.model_info.set(self.model_info.get()+'\n'+self.viewport.shading_warning)
+                        self.model_info.set('\n'.join(t for t in (self.viewport.shading_error,getattr(self.viewport,'shading_warning','')) if t))
                     elif kind=='animation':self._start_animation(payload)
                     elif kind=='clip_list':self._apply_clip_list(payload)
                     elif kind=='artifact':self._open(payload)

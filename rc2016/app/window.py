@@ -356,7 +356,7 @@ class AssetBrowserApp:
         ttk.Label(include, text="Animations").grid(row=2, column=0, sticky="w", pady=(6, 2))
         ttk.Radiobutton(include, text="All", value="all", variable=self.export_animations_var).grid(row=2, column=1, sticky="w", padx=8, pady=(6, 2))
         ttk.Radiobutton(include, text="None", value="none", variable=self.export_animations_var).grid(row=2, column=2, sticky="w", pady=(6, 2))
-        ttk.Label(include, text="To export one clip, pick it under the 3D view and tick 'Extract only this clip'.",
+        ttk.Label(include, text="To export one clip, pick it under the 3D view and tick 'Export only this clip'.",
                   foreground=muted).grid(row=3, column=0, columnspan=3, sticky="w")
         ttk.Label(include, text="Detail level (LOD)").grid(row=4, column=0, sticky="w", pady=(6, 2))
         ttk.Combobox(include, textvariable=self.export_lod_var, values=("Highest", "Lowest", "All"), state="readonly",

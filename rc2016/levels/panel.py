@@ -468,8 +468,9 @@ class LevelPanel:
             0 if self.cull_size_var.get() == "Off" else float(self.cull_size_var.get().split()[0])))
         materials = ttk.LabelFrame(side, text="Materials", padding=(4, 2)); materials.grid(row=6, column=0, sticky="ew", pady=(3, 0))
         self.native_translation_var = tk.BooleanVar(value=native_translation)
-        ttk.Checkbutton(materials, text="Native translation", variable=self.native_translation_var,
-                        command=lambda: self.view.set_native_translation(self.native_translation_var.get())).pack(side="left", padx=(8, 0))
+        native_check = ttk.Checkbutton(materials, text="Native translation", variable=self.native_translation_var,
+                                       command=lambda: self.view.set_native_translation(self.native_translation_var.get()))
+        native_check.pack(side="left", padx=(8, 0))
         scene = ttk.LabelFrame(side, text="Scene", padding=(4, 2)); scene.grid(row=7, column=0, sticky="ew", pady=(3, 0))
         self.overrides_var = tk.BooleanVar(value=material_overrides)
         ttk.Checkbutton(scene, text="Overrides", variable=self.overrides_var,
@@ -485,14 +486,21 @@ class LevelPanel:
                         command=lambda: self.view.set_show_actors(self.actors_var.get())).grid(row=1, column=1, sticky="w", padx=(8, 0))
         experimental = ttk.LabelFrame(side, text="Experimental", padding=(4, 2)); experimental.grid(row=8, column=0, sticky="ew", pady=(3, 0))
         self.experimental_var = tk.BooleanVar(value=bool(spawn_preview or experimental_materials))
-        ttk.Checkbutton(experimental, text="Enable", variable=self.experimental_var,
-                        command=self._experimental_changed).grid(row=0, column=0, sticky="w")
+        enable_check = ttk.Checkbutton(experimental, text="Enable", variable=self.experimental_var,
+                                       command=self._experimental_changed)
+        enable_check.grid(row=0, column=0, sticky="w")
         self.material_previews_var = tk.BooleanVar(value=bool(experimental_materials or not spawn_preview))
-        ttk.Checkbutton(experimental, text="Material previews", variable=self.material_previews_var,
-                        command=self._experimental_changed).grid(row=1, column=0, sticky="w")
+        previews_check = ttk.Checkbutton(experimental, text="Material previews", variable=self.material_previews_var,
+                                         command=self._experimental_changed)
+        previews_check.grid(row=1, column=0, sticky="w")
         self.spawn_var = tk.BooleanVar(value=spawn_preview)
         ttk.Checkbutton(experimental, text="Enemy spawns", variable=self.spawn_var,
                         command=self._experimental_changed).grid(row=1, column=1, sticky="w", padx=(8, 0))
+        from rc2016.app.theme import _Tooltip
+        _Tooltip(tk, tonemap_box, "Maps the lit HDR result to screen colours.\nACES fit: filmic. Khronos PBR Neutral: keeps base colours accurate until highlights.\nGame (captured): the decoded Veldin display chain, for Level atmosphere lighting.")
+        _Tooltip(tk, native_check, "Shade materials from their translated game shader program instead of the generic reading. Replaces the fallback rules only; exact hand-decoded rules stay.")
+        _Tooltip(tk, enable_check, "Master switch for the experimental previews below.")
+        _Tooltip(tk, previews_check, "Best-effort material previews (Novalis mountain, terrain, and a generic adapter). Matte lighting; inferred inputs; not game-equivalent.")
         ttk.Label(experimental, text="Mountains: matte. Paint and UVs inferred. Empty blend mask: review value 1; game behavior unverified.",
                   foreground="gray", wraplength=250).grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
         from rc2016.shaders.terrain_preview import DEFAULT_CONTROLS
