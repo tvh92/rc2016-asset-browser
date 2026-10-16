@@ -123,7 +123,7 @@ Skin (`apply_skin_emissive`, group `SKIN_GROUP_NAME`, `SKIN_GROUP_VERSION` 3):
 - `apply_native_skin_normal` connects the decoded normal `normalize(2R-1, 2G-1, 1-x²-y²)` to both the BRDF and the skin group's material normal input. The secondary-normal blend (keys `0x59011FBD`, `0xB7ABB64A`) is applied only when it resolves; otherwise `rc_shader_frontend_limitation` is set.
 - Stage assignments from native GCN: `7D3F5FA6` and `D7749B42` are vertex shaders; `BED06840` and `AE7244FE` are forward pixel shaders.
 - The `skin` viewer rule (viewer `uSkinKind`, Blender `apply_viewer_graph_rule` term `skin`) reads the same writer equations for graphs without a registered family. `basic_skin_02` (writer `0E6CC87B`) differs from `9AAD640B` in its table layout, two extra multipliers and a tinted F0 (see [viewer](viewer.md)). Both writers were checked numerically against the translator's decoded expression graphs. In the family route the status name `partial_skin_frontend` also labels `basic_colored_spec_emmisive_in_c_alpha` materials (gadget hoverboard, Combuster); their writer is fully decoded, so it only means the family is registered as `supported_partial`.
-- Remaining skin limitation: the forward shaders (`F0CD85FF`) add a per-light skin term from `_g.A²`, the tint `0xCFCCABE4`, a `skin_ramp` lookup (V coordinate key `0x3055F730`), per-channel wrap factors from key `0x991DAC4F` and shadowing. It needs per-light shading and is not reproduced in the viewer or in Cycles.
+- Remaining skin limitation: the forward shaders (`F0CD85FF`) add a per-light skin term from `_g.A²`, the tint `0xCFCCABE4`, a `skin_ramp` lookup (V coordinate key `0x3055F730`), per-channel wrap factors from key `0x991DAC4F` and shadowing. It needs per-light shading and is not reproduced in the viewer or in Cycles. The per-light equation, its table-0 dwords and the engine inputs it needs (light list and records, shadow and probe textures, CB0) are in [Ratchet forward passes](material-decoding/ratchet-forward-passes.md). `F0CD85FF` is in `basic_skin` only; Ratchet's body and head do not use it.
 
 Per-family decodes (decoded writers, native skin and `character_glass` GCN) come from the research notes, which are not included.
 
@@ -330,7 +330,7 @@ Approximations:
 
 Known gaps:
 - Glass, energy and VFX materials are forward-shaded and not covered by the deferred group. Only `character_glass` and the documented per-model recipes exist.
-- Fur shells (flag `0x80000`) are drawn as ordinary opaque surfaces; their alpha passes and `fur_control` textures are not modelled. One no-graph fur-shell skin layer is read with the grey `_g` layout by inference from its sibling (see [viewer](viewer.md)).
+- Fur shells (flag `0x80000`) are drawn as ordinary opaque surfaces; their alpha passes and `fur_control` textures are not modelled (the materials carry no graph, slot table or parameters, see [Ratchet forward passes](material-decoding/ratchet-forward-passes.md#fur-shells-test_hero_ratchet_head_fur)). One no-graph fur-shell skin layer is read with the grey `_g` layout by inference from its sibling (see [viewer](viewer.md)).
 - K is verified on two materials only; a capture with another weapon equipped would confirm further values.
 - Exposure is recovered for Veldin daytime only. Whether other levels use a different or adaptive exposure is unknown; the 1D and 3D tables are probably global.
 - The native skin ramp term and the full forward light and shadow response are not reproduced.
