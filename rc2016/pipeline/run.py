@@ -1595,7 +1595,8 @@ def main():
         index.save()
         validations={};unresolved={};unsupported={};geometry_models={}
         for key,result in manifest['models'].items():
-            if result.get('validation'):
+            # A model recorded by an earlier run whose output folder was since deleted has no reports to aggregate.
+            if result.get('validation') and Path(result['validation']).is_file() and Path(result['limitations']).is_file():
                 validations[key]=load(result['validation']);limits=load(result['limitations'])
                 unresolved[key]=dict(references=limits['unresolved_references'],attachments=limits['attachments'],dependency_errors=limits['dependency_errors'])
                 unsupported[key]=dict(clips=limits['unsupported_clips'],animsets=limits['animset_errors'],geometry=limits['geometry'],features=limits['features_not_decoded'],animation_coverage=limits.get('animation_coverage'))

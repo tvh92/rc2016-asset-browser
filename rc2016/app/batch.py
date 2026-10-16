@@ -617,7 +617,8 @@ class ExportBatchRunner:
             self.event("model_started", index=index, total=len(self.records), model=record.archive_path)
             options = self.options
             if self.clip_only and self.clip_only[0] == record.model_id:
-                options = replace_options(options, animations="clips", clips=(self.clip_only[1],))
+                # The viewer may have offered a real-time cutscene shot, which only exists in the cutscene scan.
+                options = replace_options(options, animations="clips", clips=(self.clip_only[1],), cinematic=True)
             try:
                 result = self.exporter.export(record.model_id, record.archive_path, options)
                 summary[result["status"]] += 1
