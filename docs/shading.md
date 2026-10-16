@@ -206,6 +206,14 @@ For graphs without a registered family, `apply_viewer_graph_rule` builds the ass
 - These materials carry `shader_preview_status = viewer_graph_rule_frontend` and `game_equivalence = False`.
 - Parallax UV marching and height visibility are explicitly unported in Blender. When POM is the only missing term, the proven C/G/N and tint/detail front-end remains selected instead of a native translation. Additional unported terms retain the existing translation-selection policy. Reopen validation checks that the limitation and source normal equation survive.
 
+### Liquid material front-ends
+
+The [liquid inventory](liquids.md) records source graphs, writer IDs, slots, keys and rule coverage. Water (`water` term) ports the first height-displaced normal sampling branch of `F4D47ECE`/`59540726`; material key `0x230C6389` controls displacement. Normal composition, world/engine-input transport and the water closure remain explicitly inferred. Both front ends freeze the time-like engine input at zero. Blender uses the shared deferred BRDF behind the inferred Fresnel alpha-over mix; its tangent frame and Cycles closure are approximations.
+
+Gaspar lava flow (`liquid_flow` term, `EA6006F6`/`BACB8758`) uses source albedo, grey `_g.G` F0, `_g.R` gloss, `_g.B` self-lit mask and material scales. The decoded UV is `attribute0.xy + (CB2[9], CB2[8]) + CB0[99] * (CB2[15], CB2[14])`; UV0 substitutes for attribute 0 and time is frozen to zero. Self-lit intensity is `CB2[12] * (0.5 + 0.5*cos(CB2[11]*CB0[99]))`, so its frozen multiplier is exactly 1. No heat-distortion term or complete native normal path is established. Geometry normals substitute for the latter. The native log encoding and deferred decode add only float rounding to this intensity equation.
+
+Reopen validation checks the source identities, bound image hashes/colourspaces, material scales, node wiring, water UV literals/displacement and flags, and evaluates the reopened lava UV network at signed out-of-range probes to check its V orientation. This proves the stored partial front-end, not runtime pass selection or game equivalence.
+
 ### Two-colour metal verification
 
 The exact `basic_normal_two_color_gloss_metal` rule preserves the source diffuse tint, grey specular strength, rim gloss and specular tint. In the viewport, the specular tint multiplies the accumulated lighting **after** GGX/F90. The Blender front-end instead multiplies F0 by the tint, because it cannot colour-multiply a closure; it records this approximation in `rc_shader_frontend_limitation`. Source material metadata parity does not establish closure or game equivalence.
