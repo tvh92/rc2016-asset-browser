@@ -822,6 +822,8 @@ class ModelViewport(_TkFrame):
             uploaded["glow"] = entry["glow"]
         if entry.get("foliage"):
             uploaded["foliage"] = True
+        if entry.get("linear_z"):
+            uploaded["linear_z"] = True
         if entry.get("alpha_cut"):
             uploaded["alpha_cut"] = float(entry["alpha_cut"])
         if "za_fresnel_power" in entry:
@@ -1512,6 +1514,7 @@ class ModelViewport(_TkFrame):
         sh.glUniform1i(u["uFoliage"], 1 if entry.get("foliage") else 0)
         # Leaf cut-out needs the bound `_c` alpha: Solid mode (level 0) binds no texture and draws whole.
         sh.glUniform1f(u["uAlphaCut"], float(entry.get("alpha_cut", 0.0)) if level and entry.get("_c") else 0.0)
+        sh.glUniform1i(u["uLinearZ"], 1 if entry.get("linear_z") else 0)
         sh.glUniform1i(u["uZaFresnel"], 1 if "za_fresnel_power" in entry else 0)
         sh.glUniform1f(u["uZaFresnelPower"], float(entry.get("za_fresnel_power", 8.0)))
         sh.glUniform1i(u["uSelfLitG"], 1 if entry.get("self_lit") == "g_blue" else 0)

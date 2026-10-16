@@ -143,6 +143,13 @@ NUMBER_DISPLAY_QWARK = dict(_NUMBER_DISPLAY_COMMON, variant='qwark', writer='37C
 # MRT1 rgb = CB2[0..2], MRT2 rgb = CB2[4], gloss = sqrt(sat(CB2[5])), emission K = CB2[3]. The pass-1 variant E921A79B
 # (no texture, record 17) writes F0 0.1 and a fixed gloss instead. enm_blarg_green_goo writer 4A73CC38 (pass 1 record 4,
 # 41-dword CB2): the albedo floor sat(0x34392B3C) (all noise masks 0), MRT2 F0 = 0x17DE448C, gloss = sqrt(sat(0x24F4CA4C)).
+# Clank's antenna light (graph hero_bright_center_light, deferred writer 7BEC2D2F; docs/material-decoding/clank-antenna.md).
+# The graph literal 0.9890101552009583 is the encoded gloss 1 - 2^(-11 g) at specular-AA width 0, so g = sqrt(0.35).
+# The inverse of the engine gloss encoding is the same one `_gloss_without_aa` recognises.
+CLANK_ANTENNA_GRAPH_SHA256 = 'd3e43dc01666699bfbaefedf8b018eb9db4e34583d1ad859cf7e10e75ce4d28d'
+CLANK_ANTENNA_CENTRE_GAIN = 10.0                  # literal multiplier of the centre colour in the writer
+CLANK_ANTENNA_GLOSS_SQ = (-math.log2(1.0 - 0.9890101552009583) / 11.0) ** 2
+CLANK_ANTENNA_BLINK_RATE = 4.2                    # phase = 4.2 CB0[99]; no per-vertex phase term
 FLAT_SURFACE_GOO = dict(colour_key=0x34392B3C, f0_key=0x17DE448C, gloss_key=GLOSS_SCALE_KEY)
 BASIC_FLAT_COLOR_SHA256 = '6d9bcad5a9dab38dd5988195cc9e87514c08a90c6b8fa899c2d21f3e42c14f95'
 # Decoded writers that do not read _g as coloured F0 + gloss alpha (first matching prefix wins).
@@ -161,9 +168,13 @@ GRAPH_RULES = (
     ('materialgraph/global/basic_skin/skin_emissive.', dict(g_mode='grey_skin', skin=1)),
     ('materialgraph/global/basic_skin/basic_skin_02.', dict(g_mode='grey_skin', self_lit_key=None, skin=2)),
     ('materialgraph/global/basic_skin/', dict(g_mode='grey_skin')),
-    # Writer 5EBDECA4 (no self-lit) is embedded only by these four (CorpusMismatchScan/writer_join.json).
+    # basic_normal_gloss_detail, pass-0 writer 905021E4: detail normal at (U 0x34493800, V 0xAD4069BA), strength 0x49AFC3A0
+    # (graph default 0.75), masked by _g.B; grey F0 = P _g.G, gloss = sqrt(sat(Q _g.R)), no self-lit. Pass 1 is the shared
+    # fallback 5EBDECA4, which has no detail normal.
+    ('required/materials/basic_normal_gloss_detail.', dict(g_mode='grey', self_lit_key=None, bng=11)),
+    # Writer 5EBDECA4 (no self-lit) is the pass-1 writer shared by these graphs (CorpusMismatchScan/writer_join.json).
     *((f'required/materials/basic_normal_gloss{suffix}.', dict(g_mode='grey', self_lit_key=None))
-      for suffix in ('', '_detail', '_monitor_dep')),
+      for suffix in ('', '_monitor_dep')),
     # The _aniso graph (hero_shared_hair: Skidd McMarx's eyebrows and goatee, the shared hero hair) embeds the same
     # writer 5EBDECA4, plus its own pair 0170A892 (forward) / 48EAC24B (normal prepass) whose first act is a kill
     # when the _c.a sample is below an interpolated cutoff (fade dither aside): hair cards are alpha-cut.
@@ -189,7 +200,8 @@ GRAPH_RULES = (
     # rim = 1.001 - sat(N.V), A = 0xAAC47D17, P = 0xB7BAC19F. A5343A0C (7): N is the interpolated geometry
     # normal, mask 1, self-lit _c.a * K. 76C79AA4 (8): N is the tangent-mapped _n normal, mask _c.a, no self-lit.
     # 14B1CC68 (9): N is the mapped normal, mask = the _m slot's R, self-lit = _m.G * K. The detail-normal
-    # samples of 8 and 9 (slot 0x45A52060) are not composed.
+    # samples of 8 and 9 (slot 0x45A52060, UV scale 0x34493800/0xAD4069BA, strength 0x49AFC3A0) are composed like kind 10's: mask _m.R
+    # for 14B1CC68 and _c.a for 76C79AA4; CB0[95] and the per-instance fade are taken as 1 and 0.
     ('required/materials/basic_normal_coloredgloss_emissive_fresnel.', dict(self_lit_key=0x06F19114, bng=7)),
     ('required/materials/basic_normal_coloredgloss_fresnel_detail.', dict(self_lit_key=None, bng=8)),
     # Deferred writer E680AA40 (pass 0 record 4): albedo _c, F0 = P * _g.rgb, gloss = sqrt(sat(Q _g.a^2)), self-lit =
@@ -229,7 +241,13 @@ GRAPH_RULES = (
     # Cached SPIR-V 63EEBF51 (ID in the graph's OrbShdr): coloured F0 = P*_g.rgb, gloss = sqrt(Q*_g.a^2), no self-lit;
     # Materials/BasicColoredSpec/BASIC_COLORED_SPEC_DECODE.md. Exact graph only; 1BC3FDDF/F8FBB38F are undecoded.
     ('materialgraph/global/basic_colored_spec/basic_colored_spec.',
-     dict(g_mode='colored', self_lit_key=None)),
+     dict(g_mode='colored', self_lit_key=None, linear_z=True)),   # 63EEBF51 normal z = 1 - x*x - y*y (no square root)
+    # basic_colored_spec_emmisive_in_c_alpha_swap, pass-0 writer 63278DBA (pass 1 is D1DDEB45, the same surface without the
+    # normal map). CB2: rate 0xAF5BEBBC, K 0xF8C61683 (graph default 5), P 0x62835AF9, Q 0x24F4CA4C, swap weight 0xBB8D619C
+    # (graph default 0). Albedo mix(_c, _c2, W), F0 = P mix(_g, _g2) rgb, gloss = sqrt(sat(Q mix(_g.a^2, _g2.a^2))),
+    # self-lit = K cos(rate t) mix(_c.a, _c2.a). A swap weight other than 0 would sample _c2/_g2 (the V5 textures) and is not ported.
+    ('materialgraph/global/basic_colored_spec_emmisive_in_c_alpha_swap/basic_colored_spec_emmisive_in_c_alpha_swap.',
+     dict(g_mode='colored', self_lit_key=0xF8C61683, swap=True)),
     # Exact graph only: the jn_/_detail/_random_color tint variants have their own, undecoded writers.
     ('materialgraph/environment/global/gbl_color_tint_01/mo_gbl_color_tint_01.',
      dict(g_switch=TINT_G_SWITCH, self_lit_key=None, tint=True)),
@@ -360,6 +378,13 @@ GRAPH_RULES = (
     # F0 = grey Fs, gloss = sqrt(sat(G)). w is a blink sat(1 + (1 - B)(0.5 sin(phase) - 0.5)), frozen at sin = 0.
     ('materialgraph/character/hero/hero_bright_center_light/hero_bright_center_light_variable.',
      dict(self_lit='bright_center', self_lit_key=0xB7305C21, bright_center=True)),
+    # Deferred writer 7BEC2D2F of the sibling graph (Clank's antenna, hero_bright_center_light_clank): the same
+    # bright-centre form with the exponent taken directly from key 0x9E351D7A, a literal centre gain of 10, a baked
+    # gloss and a blink phase of 4.2 CB0[99] only, so CB0[99] = 0 gives the exact sin = 0 weight. `_c` is the material's
+    # clank_antenna_c override of the graph slot. Exact graph + SHA only.
+    ('materialgraph/character/hero/hero_bright_center_light/hero_bright_center_light.',
+     dict(self_lit='bright_center', self_lit_key=0xB7305C21, bright_center='clank',
+          _graph_sha256=CLANK_ANTENNA_GRAPH_SHA256)),
     # Forward colour pass 93695188 (one FP16 target, no texture), flags 0x200039: additive, back faces culled.
     # The antenna glow shell (enm_qwark_light_glow and the other materials on this graph); no _c/_g/_n is read.
     ('materialgraph/character/hero/hero_bright_center_light_glow/hero_bright_center_light_glow_variable.',
@@ -692,6 +717,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
     if 'g_switch' in rule:
         result['g_mode'] = 'colored' if value(rule['g_switch'], 0.0) >= 0.5 else 'grey'
     result['self_lit'] = rule.get('self_lit', 'c_alpha')
+    if rule.get('linear_z'):
+        result['linear_z'] = True
     if 'za_fresnel_key' in rule:
         result['za_fresnel_power'] = value(rule['za_fresnel_key'], 8.0)
     if 'self_lit_key' in rule:
@@ -730,6 +757,16 @@ def material_texture_paths(archive, material_path: str) -> dict:
         result['foliage'] = True
     if rule.get('alpha_cut'):
         result['alpha_cut'] = _foliage_alpha_cutoff(data)
+    if rule.get('swap'):
+        # 63278DBA: API5 _g, API7 _n, API8 _c by serialized slot, so the V5 _c2/_g2 textures are never picked by suffix.
+        material_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
+        for role, slot in (('_c', 0x49A7866BABDAD780), ('_g', 0x49A7866B1576D848), ('_n', 0x49A7866B7AE34E7A)):
+            path = material_slots.get(slot) or slots.get(slot)
+            if path: result[role] = path
+            else: result.pop(role, None)
+        weight = value(0xBB8D619C, 0.0)
+        if weight != 0.0:   # no archive material sets it; the blend to _c2/_g2 is a runtime upgrade term
+            result['swap'] = dict(weight=weight, writer='63278DBA')
     if rule.get('hair'):
         # Serialized graph slots, never suffixes: the material also stores stale C/G/N keys of another graph
         # (the plumber beard binds Shared_Hair_Plumber_c only under one), and its _g key names Shared_Hair_02_g.
@@ -813,7 +850,7 @@ def material_texture_paths(archive, material_path: str) -> dict:
         # Bind by serialized slot identity: suffixes do not identify normal/detail or mo_black_h.
         material_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
         bindings = {'_c': 0x49A7866BABDAD780, '_g': 0x49A7866B1576D848, '_n': 0x49A7866B7AE34E7A}
-        if kind in (2, 3, 6, 10):
+        if kind in (2, 3, 6, 8, 9, 10, 11):
             bindings['_bng_detail'] = 0x49A7866B45A52060
         if kind == 10:   # E680AA40: _m slot 0x6A016FF9, R masks the detail normal, G is the self-lit mask
             bindings['_h'] = 0x49A7866B6A016FF9
@@ -838,7 +875,7 @@ def material_texture_paths(archive, material_path: str) -> dict:
             params = (value(0x9ACE7120, 3.0), value(0x07CC3BD9, 1.0), value(0xD94E1303, 10.0), 0.0)
         if kind in (7, 8, 9):
             params = (value(0xAAC47D17, 1.0), value(0xB7BAC19F, 1.0), 0.0, 0.0)
-        if kind in (2, 3):
+        if kind in (2, 3, 8, 9, 11):   # 905021E4 / 76C79AA4 / 14B1CC68 read the same u, v scale and strength keys as F3DCD431
             detail = (value(0x34493800, 1.0), value(0xAD4069BA, 1.0), value(0x49AFC3A0, 0.75))
         if kind == 6:
             detail = (value(0x34493800, 1.0), value(0xAD4069BA, 1.0), value(0x49AFC3A0, 0.75))
@@ -1019,6 +1056,11 @@ def material_texture_paths(archive, material_path: str) -> dict:
                     raise ValueError('Victor reticle parameter %s is non-finite' % name)
         params = {name: vec3(key, (0.0, 0.0, 0.0)) if size == 3 else value(key, 0.0) for name, key, size in rule['params']}
         params.update(rule.get('constants', {}))  # graph constants, not read from the material
+        if rule['forward'] in ('glass_basic', 'glass_jn'):
+            # attr0.w is the per-instance record's opacity product: material render-state byte 22 / 255 times the
+            # per-draw opacity (1 here). The 4FC5703F captured draw has byte 22 = 255 and attr0.w = 1.0.
+            flags_offset, flags_size = _sections(data).get(MATERIAL_FLAGS_SECTION, (0, 0))
+            params['alpha_scale'] = data[flags_offset + 22] / 255.0 if flags_size >= 23 else 1.0
         if rule['forward'] == 'water':
             params.update(WATER_PRESENTATION)
         if rule.get('water_sampling'):
@@ -1104,7 +1146,23 @@ def material_texture_paths(archive, material_path: str) -> dict:
             a_scale=0.30324259, a_offset=0.06301001, g_scale=0.03041702,
             amplitude=0.5, amplitude_input='CB0 dword 115', captured_amplitude=0.01,
             presentation=True, writer='0CD2AAFB')
-    if rule.get('bright_center'):
+    if rule.get('bright_center') == 'clank':
+        # 7BEC2D2F: t = |1.001 - sat(N.V)|^CB2[3]; albedo = _c (E t + 10 C w (1 - t)); w = B + (1 - B)(0.5 sin(4.2 CB0[99]) + 0.5);
+        # self-lit = K albedo.R; F0 = grey CB2[9]; gloss = sqrt(0.35). Material keys are read, else the graph defaults.
+        steady = value(0x9872D04A, 0.15)
+        result['bright_center'] = dict(
+            edge=vec3(0x16B8AB81, (0.0, 0.0, 0.0)),
+            centre=[x * CLANK_ANTENNA_CENTRE_GAIN for x in vec3(0x5BC2D1F0, (1.0, 0.5271151, 0.462077))],
+            exponent=value(0x9E351D7A, 0.01),
+            weight=min(1.0, max(0.0, 1.0 - 0.5 * (1.0 - steady))),
+            f0=value(0x08FE9F29, 0.2), gloss_sq=CLANK_ANTENNA_GLOSS_SQ, steady=steady, writer='7BEC2D2F',
+            graph_path=rule['graph_path'], graph_sha256=rule['graph_sha256'], frozen_inputs=dict(CB0_99=0.0),
+            blink_rate=CLANK_ANTENNA_BLINK_RATE, game_equivalence=False,
+            limitation='CB0[99] is frozen at 0 (blink weight %g); the geometry normal stands in for the interpolated '
+                       'normal and the viewer camera for the screen-ray view vector; the normal-map fade (CB0[95], two '
+                       'TBUFFER reads, POS_W) and tangent frame are not reproduced' % min(1.0, max(0.0, 1.0 - 0.5 * (1.0 - steady))))
+        result['spec'] = result['gloss'] = 1.0   # F0 and gloss are the writer's constants
+    elif rule.get('bright_center'):
         steady = value(0x01B78BF6, 0.15)
         intensity = value(0x398AD3E2, 5.0)
         result['bright_center'] = dict(
@@ -1602,6 +1660,8 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
                 entry[key] = paths[key]
         if paths.get('foliage'):
             entry['foliage'] = True
+        if paths.get('linear_z'):
+            entry['linear_z'] = True
         if paths.get('alpha_cut'):
             entry['alpha_cut'] = float(paths['alpha_cut'])
         if 'za_fresnel_power' in paths:

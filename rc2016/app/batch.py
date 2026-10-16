@@ -483,6 +483,8 @@ class PipelineBatchRunner:
             command.extend(("--model", selector))
         for clip in clips:
             command.extend(("--clip", clip))
+        if clips:   # the viewer can offer a cutscene shot, which only the cutscene scan lists
+            command.append("--cinematic-clips")
         # Blend-only output keeps no receipts, so every run rebuilds.
         if self.skip_verified and not self.blend_only:
             command.append("--reuse-cache")
@@ -617,7 +619,8 @@ class ExportBatchRunner:
             self.event("model_started", index=index, total=len(self.records), model=record.archive_path)
             options = self.options
             if self.clip_only and self.clip_only[0] == record.model_id:
-                options = replace_options(options, animations="clips", clips=(self.clip_only[1],))
+                # The viewer may have offered a real-time cutscene shot, which only exists in the cutscene scan.
+                options = replace_options(options, animations="clips", clips=(self.clip_only[1],), cinematic=True)
             try:
                 result = self.exporter.export(record.model_id, record.archive_path, options)
                 summary[result["status"]] += 1

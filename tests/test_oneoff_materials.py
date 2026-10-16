@@ -17,6 +17,10 @@ from tests.test_viewer_textures import FakeArchive, dat1, flags
 EMISSIVE = 'materialgraph/global/basic_emissive/basic_emissive.materialgraph'
 GOO = 'materialgraph/environment/nebula/ambient/neb_amb_lava_fissure_blast_01/enm_blarg_green_goo.materialgraph'
 DETAIL = 'required/materials/basic_normal_coloredgloss_detail_emissive.materialgraph'
+FRESNEL_DETAIL_EMISSIVE = 'required/materials/basic_normla_gloss_fresnel_detail_emissive.materialgraph'
+COLOREDGLOSS_FRESNEL_DETAIL = 'required/materials/basic_normal_coloredgloss_fresnel_detail.materialgraph'
+GLOSS_DETAIL = 'required/materials/basic_normal_gloss_detail.materialgraph'
+SWAP = 'materialgraph/global/basic_colored_spec_emmisive_in_c_alpha_swap/basic_colored_spec_emmisive_in_c_alpha_swap.materialgraph'
 SHIV = 'materialgraph/character/enemy/enm_shiv_prisoner_number/enm_shiv_prisoner_number.materialgraph'
 QWARK = 'materialgraph/character/npc/npc_qwark_prisoner_number/npc_qwark_prisoner_number.materialgraph'
 BASIC_FLAT = 'materialgraph/global/basic_flat_color/basic_flat_color.materialgraph'
@@ -188,7 +192,27 @@ class DetailEmissiveTests(unittest.TestCase):
 
     def test_glsl_uses_m_channels(self):
         self.assertIn('uBngKind == 9 || uBngKind == 10) bngSelfLit = bngM.g * uK', FRAGMENT)
-        self.assertIn('uBngKind == 10 ? bngM.r', FRAGMENT)
+        self.assertIn('(uBngKind == 9 || uBngKind == 10) ? bngM.r', FRAGMENT)
+        self.assertIn('uBngKind == 8 ? c.a', FRAGMENT)   # 76C79AA4 masks its detail normal with _c.a
+
+    def test_fresnel_detail_kinds_compose_the_detail_normal(self):
+        defaults = {tp.SPECULAR_SCALE_KEY: 1.0, tp.GLOSS_SCALE_KEY: 1.0, 0x49AFC3A0: 0.75, 0x34493800: 1.0, 0xAD4069BA: 1.0,
+                    0x06F19114: 1.0, 0x66EFA55B: 1.0, 0xAAC47D17: 1.0, 0xB7BAC19F: 1.0}
+        for graph, kind, mask_role in ((FRESNEL_DETAIL_EMISSIVE, 9, '_h'), (COLOREDGLOSS_FRESNEL_DETAIL, 8, None)):
+            with self.subTest(kind=kind):
+                archive, got = extract(graph, defaults, [row(0x49AFC3A0, 1.5), row(0x34493800, 10.0), row(0xAD4069BA, 20.0)])
+                self.assertEqual(got['bng']['kind'], kind)
+                self.assertEqual(got['bng']['detail'], (10.0, 20.0, 1.5))
+                _, defaulted = extract(graph, defaults)
+                self.assertEqual(defaulted['bng']['detail'], (1.0, 1.0, 0.75))
+                from rc2016.viewer.textures import GRAPH_RULES
+                self.assertTrue(any(prefix.endswith('.') and graph.startswith(prefix) for prefix, _ in GRAPH_RULES))
+                rule = dict(applies=True, ported=['bng', 'bng_detail'], k=1.0,
+                            terms={'bng': dict(kind=kind, colour=[1, 1, 1], params=[1, 1, 0, 0], detail=[10.0, 20.0, 1.5])},
+                            textures={'_c': 'c', '_g': 'g', '_n': 'n', '_bng_detail': 'd', **({'_h': 'm'} if mask_role else {})})
+                names, roles = validation._viewer_required(rule, True)
+                self.assertIn('VR bng detail strength', names)
+                self.assertIn('_bng_detail', roles)
 
     def test_validation_names(self):
         rule = dict(applies=True, ported=['bng', 'bng_detail'], k=5.0,
@@ -197,6 +221,48 @@ class DetailEmissiveTests(unittest.TestCase):
         names, roles = validation._viewer_required(rule, True)
         self.assertEqual(sorted(names), ['VR bng detail scale u', 'VR bng detail scale v', 'VR bng detail strength'])
         self.assertIn('_h', roles)
+
+
+class ProjectileGraphTests(unittest.TestCase):
+    def test_gloss_detail_composes_the_detail_normal_with_the_g_blue_mask(self):
+        defaults = {tp.SPECULAR_SCALE_KEY: 1.0, tp.GLOSS_SCALE_KEY: 1.0, 0x49AFC3A0: 0.75, 0x34493800: 1.0, 0xAD4069BA: 1.0}
+        archive, got = extract(GLOSS_DETAIL, defaults, [row(0x34493800, 3.0), row(0xAD4069BA, 3.0), row(0x49AFC3A0, 1.0)])
+        self.assertEqual((got['bng']['kind'], got['bng']['detail'], got['g_mode']), (11, (3.0, 3.0, 1.0), 'grey'))
+        self.assertIn('(uBngKind == 3 || uBngKind == 11) ? bngGl.b', FRAGMENT)
+        rule = viewer_graph_rule(archive, 'm/x.material', set())
+        self.assertNotIn('bng', rule.get('ported', []))   # no colour, rim or self-lit term
+        self.assertEqual(rule.get('normal_z'), '1-x*x-y*y')
+
+    def test_swap_graph_is_an_exact_rule_that_keeps_the_normal_map(self):
+        defaults = {0xAF5BEBBC: 0.0, 0xF8C61683: 5.0, tp.SPECULAR_SCALE_KEY: 1.0, tp.GLOSS_SCALE_KEY: 1.0, 0xBB8D619C: 0.0}
+        archive, got = extract(SWAP, defaults, [row(0xF8C61683, 15.0)])
+        self.assertEqual((got['g_mode'], got['k']), ('colored', 15.0))
+        self.assertNotIn('swap', got)
+        from rc2016.formats.links import EXACT, rule_coverage
+        self.assertEqual(rule_coverage([SWAP])[0], EXACT)
+        self.assertEqual(extract(SWAP, defaults)[1]['k'], 5.0)
+        # A nonzero swap weight would blend in the V5 textures, which no rule builds: it must stay visible.
+        _, swapped = extract(SWAP, defaults, [row(0xBB8D619C, 0.5)])
+        self.assertEqual(swapped['swap']['weight'], 0.5)
+        rule = viewer_graph_rule(archive, 'm/x.material', set())
+        self.assertTrue(rule.get('applies'), rule)
+        self.assertEqual(rule.get('unported'), [])
+
+
+class ColoredSpecLinearZTests(unittest.TestCase):
+    GRAPH = 'materialgraph/global/basic_colored_spec/basic_colored_spec.materialgraph'
+
+    def test_exact_graph_uses_linear_normal_z(self):
+        defaults = {tp.SPECULAR_SCALE_KEY: 1.0, tp.GLOSS_SCALE_KEY: 1.0}
+        archive, got = extract(self.GRAPH, defaults)
+        self.assertTrue(got.get('linear_z'))
+        self.assertEqual(viewer_graph_rule(archive, 'm/x.material', set()).get('normal_z'), '1-x*x-y*y')
+        self.assertIn('uBngKind > 0 || uLinearZ', FRAGMENT)
+
+    def test_other_graphs_keep_the_square_root(self):
+        defaults = {tp.SPECULAR_SCALE_KEY: 1.0, tp.GLOSS_SCALE_KEY: 1.0}
+        archive, got = extract(SWAP, {**defaults, 0xAF5BEBBC: 0.0, 0xF8C61683: 5.0, 0xBB8D619C: 0.0})
+        self.assertNotIn('linear_z', got)
 
 
 class NumberDisplayTests(unittest.TestCase):

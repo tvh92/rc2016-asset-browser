@@ -276,6 +276,7 @@ uniform bool uHair; uniform vec3 uHairA; uniform vec3 uHairB; uniform vec4 uHair
 // uSkinB = (albedo, gloss, spec, gloss2), uSkinC = (spec2, detail UV scale, detail blend, unused).
 uniform int uSkinKind; uniform vec4 uSkinA; uniform vec4 uSkinB; uniform vec4 uSkinC;
 uniform sampler2D uTexCma; uniform bool uHasCma; uniform bool uSrgbCma;
+uniform bool uLinearZ; // basic_colored_spec 63EEBF51: normal z = 1 - x*x - y*y
 uniform bool uZaFresnel; uniform float uZaFresnelPower; // za_basic_normal_gloss geometry-normal rim suppression
 uniform bool uSelfLitG;       // self-lit mask from _g.B instead of _c.a
 uniform float uK;
@@ -603,7 +604,7 @@ void main() {
         if (uHair) rg *= uHairP.w;   // 94CE8CCE: x, y = 0.3 (2 RG - 1) at the close-range fade s = 1
         float z = sqrt(max(0.0, 1.0 - dot(rg, rg)));
         if (uTwoColorMetal) z = 1.0 - dot(rg, rg); // 1012E99D: source fade 2, not a square root
-        if (uBngKind > 0) z = 1.0 - dot(rg, rg);
+        if (uBngKind > 0 || uLinearZ) z = 1.0 - dot(rg, rg);
         if (uSkinKind > 0) z = 1.0 - dot(rg, rg); // forward skin shaders F0CD85FF/BED06840: z = 1 - x*x - y*y
         if (uGlowKind > 0) z = 1.0 - dot(rg, rg); // 2685144F / CA81B14F normal z weight
         if (uGlowKind == 1) { // geometry TBN, before the normal map; close-range fade s=2
@@ -632,9 +633,10 @@ void main() {
             bngRimA = pow(abs(rim), uBngP.x);
             bngRimB = pow(abs(rim), uBngP.y);
         }
-        if ((uBngKind == 2 || uBngKind == 3 || uBngKind == 6 || uBngKind == 10) && uHasBngDetail) {
+        if ((uBngKind == 2 || uBngKind == 3 || uBngKind == 6 || uBngKind == 8 || uBngKind == 9 || uBngKind == 10 || uBngKind == 11) && uHasBngDetail) {
             // F3DCD431/F087BE8D/F8161C61: detail xy masked by _g.a^2 (emissive/specfresnel), _g.B (fresnel).
-            float mask = uBngKind == 3 ? bngGl.b : uBngKind == 10 ? bngM.r : bngG.a * bngG.a;   // E680AA40: _m.R
+            // 14B1CC68 / E680AA40: _m.R; 76C79AA4: _c.a. The close-range fade CB0[95] (1 - s) is taken as 1.
+            float mask = (uBngKind == 3 || uBngKind == 11) ? bngGl.b : (uBngKind == 9 || uBngKind == 10) ? bngM.r : uBngKind == 8 ? c.a : bngG.a * bngG.a;
             vec2 drg = (texture2D(uTexBngDetail, vUV * uBngDetail.xy).rg * 2.0 - 1.0) * mask;
             float dz = 1.0 - dot(drg, drg);
             rg = rg * dz + drg * z * uBngDetail.z;
@@ -824,7 +826,8 @@ void main() {
 # viewer rig replaces the light list, shadows, probes and fog (t = 1), and tone mapping precedes the blend.
 # uKind 8, basic_glass 4FC5703F (decode: NoRuleDecodes/basic_glass): uA = tint.rgb, rim bias P3; uB = body.rgb, gloss;
 #   uC = P8, rim exponent P9. rim = sat(4 (1 - N.V)^P9), alpha = sat(P3 + rim), F0 = sat(T / luma(T)) (P8 + rim^10),
-#   rgb = body * L + specular. Instance fade b = 0, attr0.w = 1, flags 0x61 (diffuse and specular terms on).
+#   rgb = body * L + specular. alpha = sat(alpha0 attr0.w), attr0.w = uD.x = material render-state byte 22 / 255 (the
+#   captured draw has 255). Instance fade b = 0, flags 0x61 (diffuse and specular terms on).
 # uKind 9, character_glass_02 4DF1D438: uA = body.rgb, gloss; uB = tint.rgb, tint scale; uC = env k, env exponent,
 #   alpha floor, alpha exponent; uD = rim colour.rgb, rim exponent; uE = rim multiplier, rim cap, normal U, normal V.
 #   X = B (1 + k P E S), P = (1.001 - N.V)^e, S = sat(4 sqrt(1 - N.V)); Q = clamp(m (C + X) (1.001 - sat(N'.V))^r + X, 0, cap);
@@ -904,7 +907,7 @@ void main() {
               + (lens + 1.0) * lobe * (4.0 - 3.0 * uC.x);
     } else if (uKind == 8 || uKind == 10) { // basic_glass 4FC5703F / jn_glass E7118623
         float rim = sat(4.0 * pow(om, uC.y));
-        alpha = sat(uA.w + rim);
+        alpha = sat(sat(uA.w + rim) * uD.x);   // attr0.w = material opacity byte 22 / 255
         float luma = max(dot(vec3(0.2126, 0.7152, 0.0722), uA.rgb), 1e-6);
         vec3 F0 = clamp(uA.rgb / luma, 0.0, 1.0) * (uC.x + pow(rim, 10.0));
         float gloss = uKind == 8 ? uB.w : uC.z;
@@ -1105,10 +1108,10 @@ def glass_uniforms(forward):
                 tuple(p["uv_a"]), tuple(p["uv_b"]),
                 (float(sampling.get("displacement", 0.0)), 1.0 if sampling else 0.0, 0.0, 0.0))
     if forward["kind"] == "glass_basic":
-        return (GLASS_KINDS["glass_basic"], (*p["tint"], p["rim_bias"]), (*p["body"], p["gloss"]), (p["f0_base"], p["rim_exp"], 0.0, 0.0), (0.0,) * 4, (0.0,) * 4)
+        return (GLASS_KINDS["glass_basic"], (*p["tint"], p["rim_bias"]), (*p["body"], p["gloss"]), (p["f0_base"], p["rim_exp"], 0.0, 0.0), (p["alpha_scale"], 0.0, 0.0, 0.0), (0.0,) * 4)
     if forward["kind"] == "glass_jn":
         return (GLASS_KINDS["glass_jn"], (*p["tint"], p["rim_bias"]), (*p["colour"], p["weight"]), (p["f0_base"], p["rim_exp"], p["gloss"], 0.0),
-                (0.0,) * 4, (0.0,) * 4)
+                (p["alpha_scale"], 0.0, 0.0, 0.0), (0.0,) * 4)
     if forward["kind"] == "glass_cg02":
         return (GLASS_KINDS["glass_cg02"], (*p["body"], p["gloss"]), (*p["tint"], p["tint_scale"]),
                 (p["env_scale"], p["env_exp"], p["alpha_floor"], p["alpha_exp"]), (*p["rim_colour"], p["rim_exp"]),
@@ -1131,7 +1134,7 @@ OPAQUE_UNIFORMS = (
     "uFresnelTint", "uFresnelC", "uFresnelE", "uLiquidFlow", "uLiquidUV", "uFlatSurface", "uFlatColour", "uFlatSpec", "uBasicFlatColor", "uBasicFlatEmissionScale", "uVictorReticle", "uTexReticle", "uHasReticle", "uReticleP", "uReticleF0",
     "uHair", "uHairA", "uHairB", "uHairP",
     "uSkinKind", "uSkinA", "uSkinB", "uSkinC",
-    "uZaFresnel", "uZaFresnelPower",
+    "uLinearZ", "uZaFresnel", "uZaFresnelPower",
     "uGlowKind", "uGlowColour", "uGlowP", "uTexGlowParallax", "uHasGlowParallax", "uSrgbGlowParallax", "uSrgbGlowMask",
     "uVehicle", "uTexVehicleP2", "uHasVehicleP2", "uSrgbVehicleP2", "uVehicleA", "uVehicleB", "uVehicleP",
     "uBngKind", "uBngColour", "uBngP", "uBngDetail", "uTexBngDetail", "uHasBngDetail",

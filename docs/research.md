@@ -30,6 +30,7 @@ The output folder must be outside the repository and source root. It receives `r
 | `cross_reference.py` | Actual vendored dat1lib reader execution and CRC algorithms; guarded generic serialized reader |
 | `report.py` | Two-pass analysis and deterministic JSON/Markdown |
 | `mip_layout.py` | Texture payload sizes against top-mip-only, tile-padded and unpadded mip-chain layouts (`python -m rc2016.research.mip_layout --source-root <Image0>`); a prerequisite for uploading stored mips instead of generating them |
+| `forward_programs.py` | Resource-table texture and sampler usage of a graph's forward pixel programs (`forward_resource_usage`), read from the GCN descriptor loads; results in [Ratchet forward passes](material-decoding/ratchet-forward-passes.md) |
 | `npc_audit.py` | Per-model animation and material coverage for one path prefix (default `character/npc/`); see [Character audit](#character-audit) |
 | `inheritance_audit.py` | Bit-0 scale-compensation rules: inverse-bind fit of every model and world-basis shear of paired clips per rule (`python -m rc2016.research.inheritance_audit <game or asset_archive root> --out <folder>`); see [pipeline](pipeline.md#inheritance-rule) |
 

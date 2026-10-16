@@ -223,7 +223,7 @@ class Compiler:
         self.allow_independent_samplers=allow_independent_samplers
         self.buffer_descriptor_taint=set()
         self.exec=self.ir.const(1.);self.bp=self.ir.const(1.);self.masks={};self.scc=None;self.scc_source='program start'
-        self.pending={};self.premerged=set();self.exec_masked_export=False
+        self.pending={};self.premerged=set();self.exec_masked_export=False;self.export_exec={}
         self.pred_tables={};self.pred_memo={};self.back=None;self.fetch_call=False;self.lane_checks={};self.runtime_conditions=False;self.lane_values=set()
         if ps_input_addr is not None:
             for reg,(name,j,loaded) in ps_input_registers(ps_input_addr,ps_input_ena or 0,vgpr_count).items():
@@ -817,13 +817,16 @@ class Compiler:
                     if api is not None and name in ('IMAGE_SAMPLE','IMAGE_SAMPLE_LZ') else self.unknown(reason))
             return
         if k==15:
-            channels=[]
+            channels=[];masked=self.ir.value(self.exec)!=1
+            values=[self.getv(reg) for reg in f['src_registers']]
+            # Only lanes still in exec export, so inside them a select on the exec mask takes its live arm.
+            if masked:values=self.ir.replace(values,{self.exec:self.ir.const(1.)})
             if f['compressed']:
-                for reg in f['src_registers']:
-                    value=self.getv(reg);n=self.ir.nodes[value];pair=self.unpack(value)
+                for value in values:
+                    n=self.ir.nodes[value];pair=self.unpack(value)
                     channels.extend(pair or [self.unknown('Unresolved packed export from '+(n.get('reason') or n['op']))]*2)
-            else:channels=[self.getv(reg) for reg in f['src_registers']]
-            if self.ir.value(self.exec)!=1:self.exec_masked_export=True
+            else:channels=values
+            if masked:self.exec_masked_export=True;self.export_exec[f['target']]=self.exec
             self.exports[f['target']]=[v if f['enable_mask']&(1<<j) else None for j,v in enumerate(channels)]
             return
         if k==4:
@@ -1104,6 +1107,23 @@ class Compiler:
                     self.bp=taken;n=index[target];continue
             n+=1
 
+    def discard_note(self):
+        """Name what the keep predicate of a masked export reads that no frontend binds: constant-buffer
+        words other than the material's CB2, interpolants other than the UV0 pair, engine textures and
+        unresolved values. A predicate without any is the only kind a discard path could carry."""
+        blockers=set()
+        for i in self.ir.reachable(sorted(set(self.export_exec.values()))):
+            n=self.ir.nodes[i];op=n['op']
+            if op=='input':
+                if n.get('kind')=='cb' and n.get('api')==2:continue
+                if n.get('kind')=='attribute' and n.get('attribute')==0 and n.get('channel') in (0,1):continue
+                blockers.add(n['name'])
+            elif op=='texture':
+                if not isinstance(n.get('api'),int) or not 5<=n['api']<32:blockers.add(f"texture API {n.get('api')}")
+            elif op=='unsupported':blockers.add(n['reason'])
+        return '; discard predicate reads '+(', '.join(sorted(blockers)) if blockers else
+            'only material parameters, UV0 and material textures')
+
     def compile(self):
         instructions=decoder().decode_stream(self.code,0)
         self.run(instructions)
@@ -1111,7 +1131,7 @@ class Compiler:
             raise ValueError('Not a complete three-target deferred writer')
         if self.exec_masked_export:
             # Fail closed until the discard predicate is carried to both frontends.
-            raise ValueError('Exec-masked exports (alpha test/discard) are not translated')
+            raise ValueError('Exec-masked exports (alpha test/discard) are not translated'+self.discard_note())
         return dict(nodes=self.ir.nodes,exports={str(k):v for k,v in self.exports.items()},exec_masked_export=self.exec_masked_export,
             samples=self.samples,instruction_count=len(instructions),opcode_counts=dict(Counter(i['name'] for i in instructions)))
 

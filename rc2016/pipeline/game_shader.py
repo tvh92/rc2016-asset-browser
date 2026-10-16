@@ -1419,6 +1419,7 @@ def _viewer_rule_glass(mat, rule, key, img):
     if key in ('glass_basic', 'glass_jn'):
         rim = P.sat(P.m('MULTIPLY', P.m('POWER', om, P.const('glass rim exp', p['rim_exp'])), 4.0))
         alpha = P.sat(P.m('ADD', P.const('glass rim bias', p['rim_bias']), rim))
+        alpha = P.m('MULTIPLY', alpha, P.const('glass alpha scale', p['alpha_scale']), clamp=True)   # attr0.w
         f0 = P.v('SCALE', tint_k(P.const3('glass tint', p['tint'])),
                  P.m('ADD', P.const('glass f0 base', p['f0_base']), P.m('POWER', rim, 10.0)))
         lobe, f90 = spec_lobe(f0, P.const('glass gloss', p['gloss']))
@@ -1909,9 +1910,11 @@ def apply_viewer_graph_rule(mat, source):
                 bng_p = lambda i: P.const('bng P%d' % i, bng['params'][i])
                 rim_a = P.m('POWER', P.m('ABSOLUTE', rim), bng_p(0)); rim_b = P.m('POWER', P.m('ABSOLUTE', rim), bng_p(1))
                 view_terms.append('bng rims')
-            if 'bng_detail' in ported and kind in (2, 3, 6, 10):   # F3DCD431/F087BE8D/F8161C61 detail xy; E680AA40 masks with _m.R
+            if 'bng_detail' in ported and kind in (2, 3, 6, 8, 9, 10, 11):   # F3DCD431/F087BE8D/F8161C61 detail xy; 14B1CC68/E680AA40 mask with _m.R, 76C79AA4 with _c.a
                 det = bng['detail']
-                dmask = P.sep(img('_h').outputs['Color'])[0] if kind == 10 and img('_h') else gB if kind == 3 else (P.m('MULTIPLY', g.outputs['Alpha'], g.outputs['Alpha']) if g is not None else 0.0)
+                dmask = P.sep(img('_h').outputs['Color'])[0] if kind in (9, 10) and img('_h') else \
+                    (c.outputs['Alpha'] if c is not None else 0.0) if kind == 8 else gB if kind in (3, 11) else \
+                    (P.m('MULTIPLY', g.outputs['Alpha'], g.outputs['Alpha']) if g is not None else 0.0)
                 vec = P.game_uv(P.const('bng detail scale u', det[0]), P.const('bng detail scale v', det[1]))
                 dx, dy = P.rg(P.tex(img('_bng_detail'), vec, 'bng detail normal').outputs['Color'], dmask)
                 dz = P.m('SUBTRACT', 1.0, P.dot2(dx, dy)); zw = P.m('MULTIPLY', z, P.const('bng detail strength', det[2]))
@@ -1965,7 +1968,11 @@ def apply_viewer_graph_rule(mat, source):
             bright_self = P.m('MULTIPLY', P.sep(albedo)[0], P.sep(fac)[0])
             albedo = P.v('MULTIPLY', albedo, fac)
             view_terms.append('bright centre')
-            limits.append('bright centre: the blink weight is frozen at its sin = 0 value (%g)' % float(bright['weight']))
+            if bright.get('limitation'):   # exact-graph rule that carries its own frozen-input label
+                limits.append('bright centre (%s): %s' % (bright.get('writer', ''), bright['limitation']))
+            else:
+                limits.append('bright centre: the blink weight is frozen at sin = 0 (%g), a review value; the D14A48D7 phase is '
+                              'rate * time + 1000 * |attribute3.w|, so the writer itself is not at sin = 0 when time is 0' % float(bright['weight']))
             if bright.get('preview_override'):
                 limits.append('PREVIEW OVERRIDE, not decoded: %s; the decoded writer 0CD2AAFB (white base plus a CB0[115] facing glow) '
                               'is not drawn and the halo mesh Qwark adds does not exist on this model' % bright['preview_override'])

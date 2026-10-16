@@ -297,6 +297,35 @@ class ControlFlowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'alpha test'):
             compiler.compile()
 
+    def test_discard_note_names_unbound_predicate_inputs(self):
+        code = program(vopc('V_CMPX_GT_F32', V + 1, 2), vmov(3, V + 1))
+        _, compiler = run(code, {1: 5., 2: 1.})
+        compiler.exports = {t: [compiler.v[3]] * 4 for t in (0, 1, 2)}
+        compiler.exec_masked_export = True
+        compiler.export_exec = {t: compiler.exec for t in (0, 1, 2)}
+        with self.assertRaisesRegex(ValueError, 'discard predicate reads v1, v2$'):
+            compiler.compile()
+        # Material parameters, the UV0 pair and material textures are the bindable inputs.
+        ir = compiler.ir
+        bound = [ir.node('input', name='CB2[0]', kind='cb', api=2, dword=0), ir.node('input', name='attribute0.1', kind='attribute', attribute=0, channel=1),
+                 ir.node('texture', [ir.const(0.), ir.const(0.)], api=5, sample=0, channel=3)]
+        compiler.export_exec = {0: ir.op('lt', ir.op('add', bound[0], bound[1]), bound[2])}
+        self.assertEqual(compiler.discard_note(), '; discard predicate reads only material parameters, UV0 and material textures')
+        for name, node in (('attribute0.2', ir.node('input', name='attribute0.2', kind='attribute', attribute=0, channel=2)),
+                           ('CB0[99]', ir.node('input', name='CB0[99]', kind='cb', api=0, dword=99)),
+                           ('texture API 33', ir.node('texture', [ir.const(0.), ir.const(0.)], api=33, sample=1, channel=0)),
+                           ('TBUFFER_LOAD_FORMAT_X', ir.node('unsupported', [], reason='TBUFFER_LOAD_FORMAT_X'))):
+            compiler.export_exec = {0: ir.op('lt', bound[0], node)}
+            self.assertEqual(compiler.discard_note(), '; discard predicate reads ' + name)
+
+    def test_masked_export_takes_the_live_arm_of_exec_selects(self):
+        code = program(vopc('V_CMPX_GT_F32', V + 1, 2), vmov(0, V + 1), export(0))
+        _, compiler = run(code, {1: 5., 2: 1.}, register=0)
+        # v0 was never written before the masked move; the live lane exports the moved value itself.
+        self.assertEqual(compiler.exports[0], [compiler.ir.node('input', name='v1', kind='test')] * 4)
+        self.assertEqual(set(compiler.export_exec), {0})
+        self.assertNotEqual(compiler.ir.value(compiler.export_exec[0]), 1.)
+
     def test_unresolved_scc_and_backward_branch_stay_unsupported(self):
         unresolved = program(sop2('S_ADD_U32', 4, 5, 6), ('branch', 'S_CBRANCH_SCC1', 'end'), ('label', 'end'))
         with self.assertRaisesRegex(ValueError, 'unresolved SCC'):

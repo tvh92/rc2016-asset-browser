@@ -372,14 +372,16 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
     substitutions={i:ir.const(values[n['dword']]) for i,n in enumerate(list(ir.nodes))
         if n['op']=='input' and n.get('kind')=='cb' and n['api']==2 and n['dword'] in values}
     if source_preview_policy:
-        preview_input=source_preview_policy['input']
-        substitutions.update({i:ir.const(preview_input['value']) for i,n in enumerate(list(ir.nodes))
-            if n['op']=='input' and n.get('kind')==preview_input['kind'] and
-               n.get('api')==preview_input['api'] and n.get('dword')==preview_input['dword']})
-        if not any(n['op']=='input' and n.get('kind')==preview_input['kind'] and
-                   n.get('api')==preview_input['api'] and n.get('dword')==preview_input['dword']
-                   for n in ir.nodes):
-            raise ValueError('Exact source preview input is absent from the matched writer')
+        # The primary input plus any further frozen engine words the exact policy names (extra_inputs).
+        for preview_input in (source_preview_policy['input'],*source_preview_policy.get('extra_inputs',())):
+            substitutions.update({i:ir.const(preview_input['value']) for i,n in enumerate(list(ir.nodes))
+                if n['op']=='input' and n.get('kind')==preview_input['kind'] and
+                   n.get('api')==preview_input['api'] and n.get('dword')==preview_input['dword']})
+            if not any(n['op']=='input' and n.get('kind')==preview_input['kind'] and
+                       n.get('api')==preview_input['api'] and n.get('dword')==preview_input['dword']
+                       for n in ir.nodes):
+                raise ValueError('Exact source preview input is absent from the matched writer')
+        lowered['limitations'].extend(extra['limitation'] for extra in source_preview_policy.get('extra_inputs',()))
         if 'selector' in source_preview_policy:
             selector=source_preview_policy['selector']
             selector_row=next((row for row in receipt if row.get('key_hash')==selector['key_hash']),None)
@@ -509,6 +511,16 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
             for a,s,i in sorted(independent)]} if independent else {}))
 
 
+# Deferred writers audited to sample nothing (no texture node, native resource bitmap 0) whose outputs are
+# constants. The pointer join alone proves their pass; the general rule still drops every other program with
+# no sampler at API 5 or above, because it would also bind the zero-output placeholder writers
+# (docs/material-decoding/plasma-striker-body-glow.md). Keyed by exact graph SHA-256, shader id and code SHA-256.
+RESOURCE_FREE_WRITERS=frozenset({
+    ('2dcefd19645c75b10d5773454bc8224df7ea792e8b16b369e02e4e0edc9f5838','0x368cca2e',
+     '82d8502ff82e36291b77c5091fad87da303ee9b28624f7d566c71fba3c34032d'),  # wpn_plasma_striker_fx body glow
+})
+
+
 def program_contracts(data,program,contracts,allow_independent_samplers=False):
     """Join native envelope to its source pass, never to a sorted texture list.
 
@@ -534,6 +546,8 @@ def program_contracts(data,program,contracts,allow_independent_samplers=False):
                           and type(n.get('sampler_api')) is int and 0<=n['sampler_api']<32)) for n in textures))
     if not static_table and any(n.get('resource_table') for n in textures):return []
     cb=[n['dword'] for n in program['ir']['nodes'] if n['op']=='input' and n.get('kind')=='cb' and n.get('api')==2]
+    resource_free=not apis and not textures and (hashlib.sha256(data).hexdigest(),program.get('shader_id'),
+        program.get('code_sha256')) in RESOURCE_FREE_WRITERS
     joined=[]
     for i in range(size//20):
         cb_mask,resource_mask,record_word2,relative,blob_size=struct.unpack_from('<5I',data,base+i*20)
@@ -544,7 +558,10 @@ def program_contracts(data,program,contracts,allow_independent_samplers=False):
         if 'code_offset' in program and program['code_offset']+program['code_size']+28>shader_base+relative+blob_size:
             raise ValueError('Serialized shader blob does not contain the source program')
         contract=contracts[i//13]
-        if not static_table and (not apis or max(apis)-4!=len(contract['resources'])):continue
+        if not static_table:
+            if apis:
+                if max(apis)-4!=len(contract['resources']):continue
+            elif not resource_free or resource_mask:continue
         if any(a is None or not 5<=a<min(32,5+len(contract['resources'])) or not resource_mask&(1<<a) for a in used):continue
         if cb and (not cb_mask&4 or contract['cb_bytes']!=(max(cb)+1+3)//4*16):continue
         matches.append(dict(contract,source_shader_record=dict(index=i,file_offset=base+i*20,
@@ -644,8 +661,93 @@ EXTERMITANK_HOSES_SOURCE_PREVIEW=dict(
     input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
     label='Extermitank hoses')
 
+# Weapon and gadget graphs whose deferred writer is exact and portable once CB0[99] is frozen at 0
+# (decode notes: docs/material-decoding/weapon-gadget-frozen-time.md). Each gate names the exact graph,
+# material, shader id and code hash, so a source-identical writer elsewhere gets nothing.
+TRESPASSER_SCREEN_SOURCE_PREVIEW=dict(
+    graph_path='required/materials/gdgt_tresspasser_screen.materialgraph',
+    graph_sha256='780d58f5ecaabb6aab389db429488462b1a93e7982ca95ba11876ffad0f79684',
+    material_path='material/equipment/gadget/gdgt_trespasser_gun_screen/gdgt_trespasser_gun_screen.material',
+    material_sha256='babbe8db216098c8129cbf145ecb1b7135ec4d1971251aaaccc59dd11cedc741',
+    shader_id='0x97715c0e',
+    code_sha256='0be1b5f614120fa63507abb3ff23627bed7b9ca1f0c705a02d2e0454e31ea1f7',
+    input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
+    label='Trespasser gun screen')
+
+PIXELIZER_BARREL_SOURCE_PREVIEW=dict(
+    graph_path='materialgraph/equipment/weapon/wpn_pixelizer_barrel/wpn_pixelizer_barrel.materialgraph',
+    graph_sha256='04946d70c1f463fc1f5f40986974a0fde400fbfdbfe982e58ccebf782fdc2dab',
+    material_path='material/equipment/weapon/wpn_pixelizer_barrel/wpn_pixelizer_barrel.material',
+    material_sha256='d2a46a76c1bd2e20fe7b4a6c259001fc50a8fc1bca0229bd946a181b963957a7',
+    shader_id='0x566afd49',
+    code_sha256='f12c42f90ec1b381b7d0b6a48b0a12466f024f072069fc805703676eb94a5d3c',
+    input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
+    label='Pixelizer barrel')
+
+PLASMA_STRIKER_SCOPE_SOURCE_PREVIEW=dict(
+    graph_path='materialgraph/equipment/weapon/wpn_plasma_striker_fx_scope/wpn_plasma_striker_fx_scope.materialgraph',
+    graph_sha256='f3606ca7af344ca9954fec4553374452aa1e8c973cf332be8670ec79e19fb8f3',
+    material_path='material/equipment/weapon/wpn_plasma_striker_fx_scope/wpn_plasma_striker_fx_scope.material',
+    material_sha256='632909173f0de4e891002751a774ba6639450ba6e5db5d0c65b1cc9bb0ce97f1',
+    shader_id='0x00e1b2fe',
+    code_sha256='718debe4cbfd05b36438d37ba230349f4b366256c6ac903aeb04eacc63c1a598',
+    input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
+    label='Plasma Striker scope')
+
+# Mag boot fan: only the writer 0x00707a09 (pass contract 1) is bound. The sibling 0x5fdcac1d has the same
+# colour outputs but its normal needs CB0[95], POS_W and two TBUFFER reads, so the exact code hash excludes it.
+MAG_BOOT_FAN_SOURCE_PREVIEW=dict(
+    graph_path='materialgraph/environment/global/prop/gbl_prop_basic_rotate_01/gbl_prop_basic_rotate_01.materialgraph',
+    graph_sha256='eada07399ab9cfdfa5737aa2974f54696196f3e17de835386540e179e84932fe',
+    material_path='material/character/hero/hero_mag_boot_fan/hero_mag_boot_fan.material',
+    material_sha256='61a5c760da5bcf79a3f7a5feb0598dc4ce18dbb16635d18821743bb7cc2e80f0',
+    shader_id='0x00707a09',
+    code_sha256='1842a74e63edfd9d9dd44a12482a9e511f5678e17bffc6dce817c8a76d4f3584',
+    input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
+    label='Mag boot fan')
+
+# Gauge needle and Map-o-matic screen: the gloss output of both writers is -log2(1 - C (2 - R))/11 with
+# R = 1/max(0.5, 1 - S/4), where S is a screen-space specular-AA width scaled by CB0[139] and the vertex input
+# attribute1.2. CB0[139] = 0 makes S = 0, R = 1 and gloss the flat-surface value, which is the width-1 convention
+# the translator already applies where the exp2 term survives folding (docs/material-decoding/gauge-needle-map-o-matic.md).
+# The Map-o-matic albedo is 2 A CB2 X with A = CB0[115]; 0.5 makes the factor 2A exactly 1 (a presentation value).
+GAUGE_NEEDLE_SOURCE_PREVIEW=dict(
+    graph_path='materialgraph/environment/global/prop/gbl_prop_guage_needle_01/gbl_prop_guage_needle_01.materialgraph',
+    graph_sha256='f4810854e2a2c50e504f9f3d71bee11e633fed5bbf1080df5d939c8f32f0d13d',
+    material_path='material/environment/global/prop/gbl_prop_guage_needle_01/gbl_prop_guage_needle_01.material',
+    material_sha256='54149adf021041cd2823e62899f87cbbc0356c9f6c90cdfe897c47ea394e079d',
+    shader_id='0x7d4cea47',
+    code_sha256='d3f8e8bebd52897b646682955a8ec48445e1b46dca527973d9e1c432691f9a6f',
+    input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
+    extra_inputs=[dict(kind='cb',api=0,dword=139,value=0.0,name='CB0[139]',
+        meaning='specular-AA width scale; 0 selects the flat-surface gloss; runtime upload/value unverified',
+        limitation='CB0[139] is frozen at 0 so the screen-space specular-AA width term is neutral (flat-surface '
+            'gloss, width 1); the engine value and the vertex input attribute1.2 it multiplies are unverified and not read.')],
+    label='Gauge needle')
+
+MAP_O_MATIC_SCREEN_SOURCE_PREVIEW=dict(
+    graph_path='materialgraph/environment/veldin/prop/vel_prop_monitor_screen_03/vel_prop_monitor_screen_03.materialgraph',
+    graph_sha256='bcce8de0419a4bca936ba1f25aabacbeecab7ccadd0f2a45ae02d6a88ded9404',
+    material_path='material/environment/veldin/prop/vel_prop_monitor_screen_03/gbl_map_o_matic.material',
+    material_sha256='0d758e93fb8d736db2d7d15576f8ffe1f7c4c440228cb73e34d1afe75b891f43',
+    shader_id='0x4dd02bef',
+    code_sha256='02657ce3b54b0051c122384076f2f7e66e96fc8b6d148c558e0948fcc1ac10d5',
+    input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
+    extra_inputs=[
+        dict(kind='cb',api=0,dword=115,value=0.5,name='CB0[115]',
+            meaning='albedo amplitude; 0.5 makes the writer factor 2A equal 1; presentation value, not a decoded game value',
+            limitation='CB0[115] scales the albedo as 2A and is set to the presentation value 0.5 (factor 1). It is not a '
+                'decoded game value; amplitude captures of other writers read 0.01, so the in-game albedo brightness is unknown.'),
+        dict(kind='cb',api=0,dword=139,value=0.0,name='CB0[139]',
+            meaning='specular-AA width scale; 0 selects the flat-surface gloss; runtime upload/value unverified',
+            limitation='CB0[139] is frozen at 0 so the screen-space specular-AA width term is neutral (flat-surface '
+                'gloss, width 1); the engine value and the vertex input attribute1.2 it multiplies are unverified and not read.')],
+    label='Map-o-matic screen')
+
 SOURCE_PREVIEW_POLICIES={rule['graph_path']:rule for rule in
-    (CONSTRUCTO_BUTTON_SOURCE_PREVIEW,WARBOT_V3_EYE_SOURCE_PREVIEW,EXTERMITANK_HOSES_SOURCE_PREVIEW)}
+    (CONSTRUCTO_BUTTON_SOURCE_PREVIEW,WARBOT_V3_EYE_SOURCE_PREVIEW,EXTERMITANK_HOSES_SOURCE_PREVIEW,
+     TRESPASSER_SCREEN_SOURCE_PREVIEW,PIXELIZER_BARREL_SOURCE_PREVIEW,PLASMA_STRIKER_SCOPE_SOURCE_PREVIEW,
+     MAG_BOOT_FAN_SOURCE_PREVIEW,GAUGE_NEEDLE_SOURCE_PREVIEW,MAP_O_MATIC_SCREEN_SOURCE_PREVIEW)}
 
 
 def _source_preview_policy(graph_paths, graph_sha256, material_path, material_sha256, program):
@@ -665,6 +767,15 @@ def _source_preview_policy(graph_paths, graph_sha256, material_path, material_sh
     return dict(rule)
 
 
+def _extra_input_receipts(rule):
+    """Receipt rows for the further frozen engine words of a policy; each names its own meaning."""
+    return [dict(name=e['name'],kind=e['kind'],api=e['api'],dword=e['dword'],value=e['value'],
+        graph_path=rule['graph_path'],graph_sha256=rule['graph_sha256'],
+        material_path=rule['material_path'],material_sha256=rule['material_sha256'],
+        shader_id=rule['shader_id'],code_sha256=rule['code_sha256'],meaning=e['meaning'])
+        for e in rule.get('extra_inputs',())]
+
+
 def validate_source_preview_inputs(translation):
     """Reject edited or stale source-preview input receipts before Blender acceptance."""
     rows=translation.get('source_preview_inputs',[])
@@ -682,7 +793,7 @@ def validate_source_preview_inputs(translation):
     if rule.get('parameters'):
         expected['parameter_receipts']=[dict(key_hash='0x%08X'%p['key_hash'],dword=p['dword'],
             values=p['values'],source=p['source']) for p in rule['parameters']]
-    if rows != [expected] or translation.get('shader_id')!=rule['shader_id'] or \
+    if rows != [expected,*_extra_input_receipts(rule)] or translation.get('shader_id')!=rule['shader_id'] or \
             translation.get('code_sha256')!=rule['code_sha256'] or \
             translation.get('graph_sha256')!=rule['graph_sha256']:
         raise ValueError('Source preview input receipt does not match its exact graph, material and writer source')
@@ -774,7 +885,7 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False,
         if rule.get('parameters'):
             preview_receipt['parameter_receipts']=[dict(key_hash='0x%08X'%p['key_hash'],dword=p['dword'],
                 values=p['values'],source=p['source']) for p in rule['parameters']]
-        result['source_preview_inputs']=[preview_receipt]
+        result['source_preview_inputs']=[preview_receipt,*_extra_input_receipts(rule)]
     result['limitations']=list(dict.fromkeys(
         limitation for c in candidates for limitation in c['bound']['limitations']))
     result['limitations']+=graph['limitations']+[
