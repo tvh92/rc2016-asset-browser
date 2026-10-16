@@ -631,8 +631,21 @@ WARBOT_V3_EYE_SOURCE_PREVIEW=dict(
         dict(key_hash=0x62835AF9,dword=4,values=[0.0],source='material_instance'),
         dict(key_hash=0x4069EA80,dword=5,values=[0.0],source='material_instance')])
 
+# Extermitank hoses: only the writer 0x91799332 (pass contract 1) is bound. Its one unbound
+# input is CB0[99]; the sibling writer 0x315a8578 in the same graph needs POS_W, TBUFFER and
+# CB0[95] and stays unbound, so the exact shader_id/code hash below excludes it.
+EXTERMITANK_HOSES_SOURCE_PREVIEW=dict(
+    graph_path='materialgraph/character/enemy/enm_extermitank_hoses/enm_extermitank_hoses.materialgraph',
+    graph_sha256='ded9c6922595742a6dd88670284a3551ce03c78e4aad58da2445b2a565efa58c',
+    material_path='material/character/enemy/enm_extermitank_hoses/enm_extermitank_hoses.material',
+    material_sha256='905d93721826c44646981e3ca991b96ede18022316023280348d7700ebc546df',
+    shader_id='0x91799332',
+    code_sha256='f0caa0b6ebb3b94abb07c383065ea91b26edc30ff5e14c5454c052215c639ac4',
+    input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
+    label='Extermitank hoses')
+
 SOURCE_PREVIEW_POLICIES={rule['graph_path']:rule for rule in
-    (CONSTRUCTO_BUTTON_SOURCE_PREVIEW,WARBOT_V3_EYE_SOURCE_PREVIEW)}
+    (CONSTRUCTO_BUTTON_SOURCE_PREVIEW,WARBOT_V3_EYE_SOURCE_PREVIEW,EXTERMITANK_HOSES_SOURCE_PREVIEW)}
 
 
 def _source_preview_policy(graph_paths, graph_sha256, material_path, material_sha256, program):
