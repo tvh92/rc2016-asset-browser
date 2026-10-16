@@ -126,5 +126,38 @@ class VictorReticleRuleTests(unittest.TestCase):
         self.assertEqual(terms['gloss'], 0.0)
 
 
+class VictorReticleBindingTests(unittest.TestCase):
+    def test_api8_alias_preserves_regular_c_and_other_sampler_units(self):
+        from types import SimpleNamespace
+        from rc2016.levels.viewport import _Recorder
+        from rc2016.viewer.shading import OPAQUE_UNIFORMS
+        from rc2016.viewer.viewport import ModelViewport
+
+        recorder = _Recorder(object(), object())
+        view = SimpleNamespace(_gl=recorder.gl, _shading=recorder.shading, native_translation=False,
+                               GL_TEXTURE0=0x84C0, GL_TEXTURE_2D=0x0DE1)
+        view._selected_surface = lambda entry, level: (None, {}, False)
+        uniforms = {name: i for i, name in enumerate(OPAQUE_UNIFORMS)}
+        # Existing environment unit 6 is not touched by per-material binding; puddle atlas retains unit 14.
+        regular = dict(_c=(41, False), _puddle_atlas=(74, False))
+        ModelViewport._apply_material(view, uniforms, regular, 2)
+        unit0 = [op[3] for op in recorder.ops if op[0] == 't' and op[1] == 0x84C0 and op[2] == 0x0DE1]
+        self.assertEqual(unit0, [41])
+        self.assertFalse(any(op[0] == 't' and op[1] == 0x84C0 + 6 for op in recorder.ops))
+        self.assertIn(('t', 0x84C0 + 14, 0x0DE1, 74), recorder.ops)
+        self.assertFalse([op for op in recorder.ops if op[0] == 'u' and op[1] == uniforms['uVictorReticle'] and op[3] == (1,)])
+
+        recorder.ops.clear()
+        reticle = dict(forward={'kind': 'victor_reticle', 'params': {
+            'uv_phase': 0.0, 'texture_gain': 4.0, 'ring_tint': 0.0, 'amplitude': 0.5}},
+            _reticle=(88, False), _puddle_atlas=(74, False))
+        ModelViewport._apply_material(view, uniforms, reticle, 2)
+        unit0 = [op[3] for op in recorder.ops if op[0] == 't' and op[1] == 0x84C0 and op[2] == 0x0DE1]
+        self.assertEqual(unit0, [0, 88])
+        self.assertIn(('t', 0x84C0 + 14, 0x0DE1, 74), recorder.ops)
+        self.assertTrue(any(op[0] == 'u' and op[1] == uniforms['uHasReticle'] and op[3] == (1,) for op in recorder.ops))
+        self.assertTrue(any(op[0] == 'u' and op[1] == uniforms['uVictorReticle'] and op[3] == (1,) for op in recorder.ops))
+
+
 if __name__ == '__main__':
     unittest.main()

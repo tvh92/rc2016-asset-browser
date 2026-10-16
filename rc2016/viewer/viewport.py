@@ -1421,11 +1421,14 @@ class ModelViewport(_TkFrame):
         sh.glUniform1f(u["uBasicFlatEmissionScale"], float(flat.get("emission_scale", 0.0)))
         reticle = (entry.get('forward') or {}) if (entry.get('forward') or {}).get('kind') == 'victor_reticle' else {}
         reticle_texture = entry.get('_reticle')
-        sh.glActiveTexture(self.GL_TEXTURE0 + RETICLE_TEXTURE_UNIT)
-        gl.glBindTexture(self.GL_TEXTURE_2D, reticle_texture[0] if reticle_texture else 0)
+        # The bounded reticle has no _c read, so it aliases sampler unit 0 only when its API8
+        # source exists. Leave ordinary materials' C texture intact; unit 14 remains puddle atlas.
+        if reticle and reticle_texture:
+            sh.glActiveTexture(self.GL_TEXTURE0 + RETICLE_TEXTURE_UNIT)
+            gl.glBindTexture(self.GL_TEXTURE_2D, reticle_texture[0])
         sh.glUniform1i(u['uTexReticle'], RETICLE_TEXTURE_UNIT)
-        sh.glUniform1i(u['uHasReticle'], int(bool(reticle_texture)))
-        sh.glUniform1i(u['uVictorReticle'], int(bool(reticle) and level == 2))
+        sh.glUniform1i(u['uHasReticle'], int(bool(reticle and reticle_texture)))
+        sh.glUniform1i(u['uVictorReticle'], int(bool(reticle and reticle_texture) and level == 2))
         rp = reticle.get('params') or {}
         sh.glUniform4f(u['uReticleP'], float(rp.get('uv_phase', 0.0)), float(rp.get('texture_gain', 0.0)),
                        float(rp.get('ring_tint', 0.0)), float(rp.get('amplitude', 0.0)))
