@@ -826,7 +826,8 @@ void main() {
 # viewer rig replaces the light list, shadows, probes and fog (t = 1), and tone mapping precedes the blend.
 # uKind 8, basic_glass 4FC5703F (decode: NoRuleDecodes/basic_glass): uA = tint.rgb, rim bias P3; uB = body.rgb, gloss;
 #   uC = P8, rim exponent P9. rim = sat(4 (1 - N.V)^P9), alpha = sat(P3 + rim), F0 = sat(T / luma(T)) (P8 + rim^10),
-#   rgb = body * L + specular. Instance fade b = 0, attr0.w = 1, flags 0x61 (diffuse and specular terms on).
+#   rgb = body * L + specular. alpha = sat(alpha0 attr0.w), attr0.w = uD.x = material render-state byte 22 / 255 (the
+#   captured draw has 255). Instance fade b = 0, flags 0x61 (diffuse and specular terms on).
 # uKind 9, character_glass_02 4DF1D438: uA = body.rgb, gloss; uB = tint.rgb, tint scale; uC = env k, env exponent,
 #   alpha floor, alpha exponent; uD = rim colour.rgb, rim exponent; uE = rim multiplier, rim cap, normal U, normal V.
 #   X = B (1 + k P E S), P = (1.001 - N.V)^e, S = sat(4 sqrt(1 - N.V)); Q = clamp(m (C + X) (1.001 - sat(N'.V))^r + X, 0, cap);
@@ -906,7 +907,7 @@ void main() {
               + (lens + 1.0) * lobe * (4.0 - 3.0 * uC.x);
     } else if (uKind == 8 || uKind == 10) { // basic_glass 4FC5703F / jn_glass E7118623
         float rim = sat(4.0 * pow(om, uC.y));
-        alpha = sat(uA.w + rim);
+        alpha = sat(sat(uA.w + rim) * uD.x);   // attr0.w = material opacity byte 22 / 255
         float luma = max(dot(vec3(0.2126, 0.7152, 0.0722), uA.rgb), 1e-6);
         vec3 F0 = clamp(uA.rgb / luma, 0.0, 1.0) * (uC.x + pow(rim, 10.0));
         float gloss = uKind == 8 ? uB.w : uC.z;
@@ -1107,10 +1108,10 @@ def glass_uniforms(forward):
                 tuple(p["uv_a"]), tuple(p["uv_b"]),
                 (float(sampling.get("displacement", 0.0)), 1.0 if sampling else 0.0, 0.0, 0.0))
     if forward["kind"] == "glass_basic":
-        return (GLASS_KINDS["glass_basic"], (*p["tint"], p["rim_bias"]), (*p["body"], p["gloss"]), (p["f0_base"], p["rim_exp"], 0.0, 0.0), (0.0,) * 4, (0.0,) * 4)
+        return (GLASS_KINDS["glass_basic"], (*p["tint"], p["rim_bias"]), (*p["body"], p["gloss"]), (p["f0_base"], p["rim_exp"], 0.0, 0.0), (p["alpha_scale"], 0.0, 0.0, 0.0), (0.0,) * 4)
     if forward["kind"] == "glass_jn":
         return (GLASS_KINDS["glass_jn"], (*p["tint"], p["rim_bias"]), (*p["colour"], p["weight"]), (p["f0_base"], p["rim_exp"], p["gloss"], 0.0),
-                (0.0,) * 4, (0.0,) * 4)
+                (p["alpha_scale"], 0.0, 0.0, 0.0), (0.0,) * 4)
     if forward["kind"] == "glass_cg02":
         return (GLASS_KINDS["glass_cg02"], (*p["body"], p["gloss"]), (*p["tint"], p["tint_scale"]),
                 (p["env_scale"], p["env_exp"], p["alpha_floor"], p["alpha_exp"]), (*p["rim_colour"], p["rim_exp"]),

@@ -385,8 +385,8 @@ def _viewer_upstream(*sockets):
 
 # Source-rule parameters each forward glass writer front-end (game_shader._viewer_rule_glass) builds as 'VR glass <name>'.
 GLASS_CONSTANTS = {
-    "glass_basic": ("tint", "rim bias", "body", "gloss", "f0 base", "rim exp"),
-    "glass_jn": ("tint", "rim bias", "colour", "weight", "gloss", "f0 base", "rim exp"),
+    "glass_basic": ("tint", "rim bias", "body", "gloss", "f0 base", "rim exp", "alpha scale"),
+    "glass_jn": ("tint", "rim bias", "colour", "weight", "gloss", "f0 base", "rim exp", "alpha scale"),
     "glass_cg02": ("rim colour", "gloss", "body", "tint scale", "tint", "env scale", "rim exp", "rim mult", "rim cap",
                    "alpha floor", "env exp", "alpha exp"),
 }
@@ -631,7 +631,7 @@ def _viewer_required(rule, has_n):
             glass = terms[key]
             names += ["glass " + name for name in GLASS_CONSTANTS[key]
                       if not (glass.get("blend") == "opaque" and
-                              name == ("alpha floor" if key == "glass_cg02" else "rim bias"))]
+                              name in (("alpha floor",) if key == "glass_cg02" else ("rim bias", "alpha scale")))]
             if key == "glass_cg02" and tex.get("_n"):
                 names += ["glass normal u", "glass normal v"]; req("_n")
     if "screen" in ported:

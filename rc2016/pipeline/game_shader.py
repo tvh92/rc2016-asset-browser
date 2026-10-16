@@ -1419,6 +1419,7 @@ def _viewer_rule_glass(mat, rule, key, img):
     if key in ('glass_basic', 'glass_jn'):
         rim = P.sat(P.m('MULTIPLY', P.m('POWER', om, P.const('glass rim exp', p['rim_exp'])), 4.0))
         alpha = P.sat(P.m('ADD', P.const('glass rim bias', p['rim_bias']), rim))
+        alpha = P.m('MULTIPLY', alpha, P.const('glass alpha scale', p['alpha_scale']), clamp=True)   # attr0.w
         f0 = P.v('SCALE', tint_k(P.const3('glass tint', p['tint'])),
                  P.m('ADD', P.const('glass f0 base', p['f0_base']), P.m('POWER', rim, 10.0)))
         lobe, f90 = spec_lobe(f0, P.const('glass gloss', p['gloss']))

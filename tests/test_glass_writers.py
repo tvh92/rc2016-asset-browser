@@ -35,8 +35,9 @@ def row(key, values):
     return dict(key_hash=key, size=4 * len(values), raw_hex=struct.pack('<%df' % len(values), *values).hex())
 
 
-def extract(graph, defaults, material_rows, flag_word):
-    mat = dat1([graph], lambda at: [(tp.MATERIAL_FLAGS_SECTION, flags(flag_word))])
+def extract(graph, defaults, material_rows, flag_word, opacity=255):
+    state = flags(flag_word)   # render-state byte 22 is the material opacity
+    mat = dat1([graph], lambda at: [(tp.MATERIAL_FLAGS_SECTION, state[:22] + bytes((opacity,)) + state[23:])])
     archive = FakeArchive({'m/glass.material': ('material', mat), graph: ('materialgraph', dat1([], lambda at: []))})
     params = dict(parameters=[], unsupported_parameters=material_rows)
     with (patch('rc2016.shaders.families.graph_parameter_tables', return_value=([[dict(key_hash=k) for k in defaults]], defaults)),
@@ -95,8 +96,9 @@ class GlassRuleTests(unittest.TestCase):
     def test_basic_glass_parameters_and_blend(self):
         rows = [row(TINT, (0.05951123684644699, 1.0, 0.18447498977184296)), row(P3, 1.0), row(P8, 0.01), row(P9, 0.0),
                 row(BODY, (0.0, 0.04373503103852272, 0.005181516520678997))]
-        _, got, _ = extract(BASIC, BASIC_DEFAULTS, rows, 0x3a)       # npc_brax_visor_glass
+        _, got, _ = extract(BASIC, BASIC_DEFAULTS, rows, 0x3a, opacity=76)       # npc_brax_visor_glass
         f = got['forward']; p = f['params']
+        self.assertAlmostEqual(p['alpha_scale'], 76 / 255)           # rim bias 1 makes the lens opaque without it
         self.assertEqual((f['kind'], f['writer'], f['blend'], f['two_sided']), ('glass_basic', '4FC5703F', 'alpha_over', False))
         self.assertAlmostEqual(p['rim_bias'], 1.0); self.assertAlmostEqual(p['f0_base'], 0.01, places=6)
         self.assertEqual(p['rim_exp'], 0.0); self.assertAlmostEqual(p['body'][1], 0.04373503, places=6)
@@ -135,7 +137,7 @@ class GlassRuleTests(unittest.TestCase):
         kind, a, b, c, d, e = glass_uniforms(got['forward'])
         self.assertEqual(kind, 8)
         self.assertEqual(tuple(round(x, 6) for x in a), (0.1, 0.2, 0.3, 0.4)); self.assertEqual(tuple(round(x, 6) for x in b), (0.01, 0.02, 0.03, 0.7))
-        self.assertEqual(c[:2], (0.5, 6.0)); self.assertEqual((d, e), ((0.0,) * 4, (0.0,) * 4))
+        self.assertEqual(c[:2], (0.5, 6.0)); self.assertEqual((d, e), ((1.0, 0.0, 0.0, 0.0), (0.0,) * 4))   # d.x = opacity byte 22 / 255
         _, got, _ = extract(CG02, CG02_DEFAULTS, [row(CG02_KEYS['alpha_floor'], 0.8)], 0x39)
         kind, a, b, c, d, e = glass_uniforms(got['forward'])
         p = got['forward']['params']
@@ -158,7 +160,7 @@ class GlassRuleTests(unittest.TestCase):
                      'clamp(60.0 * F0, 0.0, 1.0)'):
             self.assertIn(text, lobe)
         basic = GLASS_FRAGMENT.split('uKind == 8 || uKind == 10')[1].split('uKind == 9')[0]
-        for text in ('float rim = sat(4.0 * pow(om, uC.y))', 'alpha = sat(uA.w + rim)', 'uC.x + pow(rim, 10.0)',
+        for text in ('float rim = sat(4.0 * pow(om, uC.y))', 'alpha = sat(sat(uA.w + rim) * uD.x)', 'uC.x + pow(rim, 10.0)',
                      'clamp(uA.rgb / luma, 0.0, 1.0)', 'uB.rgb * Ld + S : uB.rgb + uB.w * S'):
             self.assertIn(text, basic)
         cg02 = GLASS_FRAGMENT.split('uKind == 9')[1].split('uKind == 3')[0]
@@ -226,7 +228,7 @@ class GlassValidationTests(unittest.TestCase):
         return dict(applies=True, ported=[key], terms={key: got['forward']}, textures={'_c': None, '_g': None, '_n': 't/n.texture' if has_n else None})
 
     def test_expected_constants_and_required_names(self):
-        for graph, defaults, key, flag_word, n_names in ((BASIC, BASIC_DEFAULTS, 'glass_basic', 0x3a, 6), (JN, JN_DEFAULTS, 'glass_jn', 0x36, 7),
+        for graph, defaults, key, flag_word, n_names in ((BASIC, BASIC_DEFAULTS, 'glass_basic', 0x3a, 7), (JN, JN_DEFAULTS, 'glass_jn', 0x36, 8),
                                                          (CG02, CG02_DEFAULTS, 'glass_cg02', 0x39, 12)):
             rule = self.rule(graph, defaults, [], key, flag_word)
             expected = validation._viewer_expected_constants(rule)

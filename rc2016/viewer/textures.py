@@ -1041,6 +1041,11 @@ def material_texture_paths(archive, material_path: str) -> dict:
                     raise ValueError('Victor reticle parameter %s is non-finite' % name)
         params = {name: vec3(key, (0.0, 0.0, 0.0)) if size == 3 else value(key, 0.0) for name, key, size in rule['params']}
         params.update(rule.get('constants', {}))  # graph constants, not read from the material
+        if rule['forward'] in ('glass_basic', 'glass_jn'):
+            # attr0.w is the per-instance record's opacity product: material render-state byte 22 / 255 times the
+            # per-draw opacity (1 here). The 4FC5703F captured draw has byte 22 = 255 and attr0.w = 1.0.
+            flags_offset, flags_size = _sections(data).get(MATERIAL_FLAGS_SECTION, (0, 0))
+            params['alpha_scale'] = data[flags_offset + 22] / 255.0 if flags_size >= 23 else 1.0
         if rule['forward'] == 'water':
             params.update(WATER_PRESENTATION)
         if rule.get('water_sampling'):
