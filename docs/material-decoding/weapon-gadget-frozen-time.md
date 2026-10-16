@@ -24,5 +24,5 @@ All expressions were read from the lowered source DAG and checked numerically ag
 
 - The Plasma Striker body glow (`wpn_plasma_striker_fx`, writer `0x368cca2e`) has constant outputs, but the pass-contract join drops any program with no sampler at API 5 or above, so it does not bind.
 - The Warmonger reticle and Sheepinator internal energy deferred writers are the zero-output placeholder `0x11408de9`; their visible colour is in forward and discard programs that have no translator path.
-- The Thumper glove glass and shockwave field writers are exec-masked or forward-only.
+- The Thumper glove glass and shockwave field writers are exec-masked or forward-only; see [thumper-glove-glass-and-field.md](thumper-glove-glass-and-field.md).
 - The gauge needle (Hydrodisplacer) and Map-o-matic gloss terms need `CB0[139]` and `attribute1.2`, which have no decoded value.
