@@ -2019,11 +2019,11 @@ def apply_viewer_graph_rule(mat, source):
         if bright:   # D14A48D7: grey constant F0, gloss = sqrt(sat(G))
             fs = P.const('bright centre F0', bright['f0']); f0 = P.comb(fs, fs, fs)
             gloss_in = P.m('SQRT', P.sat(P.const('bright centre gloss', bright['gloss_sq']))); spec = gloss_scale = 1.0
-    if reticle:
-        f = terms['victor_reticle']['params']
-        f0 = P.const3('Victor reticle EB9C8254 F0', f['f0'])
-        gloss_in = P.const('Victor reticle EB9C8254 gloss', f['gloss'])
-        spec = gloss_scale = 1.0
+        if reticle:
+            f = terms['victor_reticle']['params']
+            f0 = P.const3('Victor reticle EB9C8254 F0', f['f0'])
+            gloss_in = P.const('Victor reticle EB9C8254 gloss', f['gloss'])
+            spec = gloss_scale = 1.0
         if hair and g is not None:
             # 94CE8CCE: F0 = B * _g.G, gloss argument sat(0.71 * _g.R * w), w = 1 - sat(|1.001 - N.V|^E) on the geometry normal.
             ndv_h = P.sat(P.v('DOT_PRODUCT', P.v('NORMALIZE', Ng), P.v('NORMALIZE', V)))
