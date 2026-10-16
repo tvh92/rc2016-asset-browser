@@ -46,6 +46,10 @@ def smrd_buffer_load(dst, base, dword):
                        (dst << 15) | ((base // 2) << 9) | (1 << 8) | dword)
 
 
+def export(target):
+    return struct.pack('<II', (0x3e << 26) | (target << 4) | 0xf, 0)
+
+
 def program(*parts):
     """Assemble parts; ('branch', name, label) and ('label', name) resolve forward displacements."""
     code, labels, fixups = b'', {}, []
@@ -300,6 +304,19 @@ class ControlFlowTests(unittest.TestCase):
         endless = program(('label', 'top'), vmov(3, V + 1), sopp('S_CBRANCH_EXECNZ', -2))
         with self.assertRaisesRegex(ValueError, 'not shown to end'):
             run(endless, {1: 1.})
+
+    def test_unbounded_loop_names_a_forward_pass_program_by_its_exports(self):
+        endless = lambda *exports: program(*(export(t) for t in exports), ('label', 'top'), vmov(3, V + 1),
+                                           sopp('S_CBRANCH_EXECNZ', -2))
+        # Back-edge unconditional under an exec-mask test, as in a forward light-list loop.
+        with self.assertRaisesRegex(ValueError, r'not shown to end within 32 iterations \(forward-pass program: exports target 0, not'):
+            run(endless(0), {1: 1.})
+        with self.assertRaisesRegex(ValueError, r'forward-pass program: exports no target'):
+            run(endless(), {1: 1.})
+        # A three-target program keeps the plain loop diagnostic.
+        with self.assertRaises(ValueError) as caught:
+            run(endless(0, 1, 2), {1: 1.})
+        self.assertTrue(str(caught.exception).endswith('not shown to end within 32 iterations'))
 
     def test_scalar_counter_loop_unrolls(self):
         # s4 = 0; do { v3 += v1; s4 += 1; } while (s4 < 4u);

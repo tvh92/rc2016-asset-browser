@@ -120,7 +120,8 @@ class WarbotEyeArchiveTests(unittest.TestCase):
         self.assertEqual(bad_override['status'],'unsupported')
 
         programs=translation['diagnostics']
-        self.assertTrue(any('Loop at 892' in row.get('reason','') for row in programs if isinstance(row,dict)))
+        self.assertTrue(any('Loop at 892' in row.get('reason','') and 'forward-pass program: exports target 0' in row['reason']
+                            for row in programs if isinstance(row,dict)))
         self.assertTrue(any('Exec-masked exports' in row.get('reason','') for row in programs if isinstance(row,dict)))
 
 
