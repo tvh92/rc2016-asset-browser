@@ -506,7 +506,9 @@ def _viewer_expected_constants(rule):
         e.update({"Victor reticle CB2[0] material UV phase": p["uv_phase"],
                   "Victor reticle CB2[1] API8 gain": p["texture_gain"],
                   "Victor reticle CB2[2] ring tint": p["ring_tint"],
-                  "Victor reticle CB0[115] presentation amplitude": p["amplitude"]})
+                  "Victor reticle CB0[115] presentation amplitude": p["amplitude"],
+                  "Victor reticle EB9C8254 F0": p["f0"],
+                  "Victor reticle EB9C8254 gloss": p["gloss"]})
     return {"VR " + name: value for name, value in e.items()}
 
 

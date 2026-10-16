@@ -125,6 +125,24 @@ class VictorReticleRuleTests(unittest.TestCase):
         self.assertEqual(terms['f0'], [0.0, 0.0999755859375, 0.0999755859375])
         self.assertEqual(terms['gloss'], 0.0)
 
+    def test_blender_constant_expectations_include_all_reticle_source_values(self):
+        from rc2016.shaders.validation import _viewer_expected_constants
+
+        archive = archive_for()
+        graph_blob = archive.blobs[archive.resolve(GRAPH)[0]][4:]
+        with patch('rc2016.viewer.textures.hashlib.sha256', side_effect=exact_hash_for_blob(graph_blob)):
+            term_params = extract(archive)['forward']['params']
+        expected = _viewer_expected_constants({
+            'ported': ['victor_reticle'],
+            'terms': {'victor_reticle': {'params': term_params}},
+        })
+        self.assertEqual(expected['VR Victor reticle EB9C8254 F0'], term_params['f0'])
+        self.assertEqual(expected['VR Victor reticle EB9C8254 gloss'], term_params['gloss'])
+        self.assertEqual(expected['VR Victor reticle CB2[0] material UV phase'], term_params['uv_phase'])
+        self.assertEqual(expected['VR Victor reticle CB2[1] API8 gain'], term_params['texture_gain'])
+        self.assertEqual(expected['VR Victor reticle CB2[2] ring tint'], term_params['ring_tint'])
+        self.assertEqual(expected['VR Victor reticle CB0[115] presentation amplitude'], term_params['amplitude'])
+
 
 class VictorReticleBindingTests(unittest.TestCase):
     def test_api8_alias_preserves_regular_c_and_other_sampler_units(self):
