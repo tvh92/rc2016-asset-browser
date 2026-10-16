@@ -23,14 +23,14 @@ RIG_TO_WORLD = ((1.0, 0.0, 0.0), (0.0, 0.0, -1.0), (0.0, 1.0, 0.0))
 
 # texture_preview entry roles uploaded as 2D GL textures, deduplicated by texture path. Other textures
 # in an entry (tint palette, screen timeline, puddle and RockBlend sources) are only sampled on the CPU.
-GL_TEXTURE_ROLES = ("_c", "_g", "_n", "_pick", "_h", "_sequence", "_tint_detail", "_bng_detail", "_vehicle_p2",
+GL_TEXTURE_ROLES = ("_water_height_a", "_water_height_b", "_c", "_g", "_n", "_pick", "_h", "_sequence", "_tint_detail", "_bng_detail", "_vehicle_p2",
                     "_glow_parallax", "_puddle_atlas", "_parallax_height", "_cma", "_reticle")
 
 
 # GL_TEXTURE_ROLES sampled as ordinary surface textures by UV. Palettes and sequences (_pick,
 # _vehicle_p2, _sequence) are lookup tables, and the puddle atlas is sampled through fract(), so those
 # keep their top mip only.
-MIPMAP_ROLES = frozenset(("_c", "_g", "_n", "_h", "_tint_detail", "_bng_detail", "_glow_parallax",
+MIPMAP_ROLES = frozenset(("_water_height_a", "_water_height_b", "_c", "_g", "_n", "_h", "_tint_detail", "_bng_detail", "_glow_parallax",
                           "_parallax_height", "_cma"))
 
 
@@ -808,7 +808,7 @@ class ModelViewport(_TkFrame):
         """One material's texture_preview entry with its textures uploaded: {role: (GL id, sRGB)} + parameters.
 
         ``by_path`` maps texture path -> (GL id, sRGB) or None and is shared across materials."""
-        uploaded = {key: entry[key] for key in ("k", "g_mode", "self_lit", "spec", "gloss", "pick", "tint", "spec_tint", "forward", "arch_sequence", "vehicle", "facing_glow", "bright_center", "flat_surface") if key in entry}
+        uploaded = {key: entry[key] for key in ("k", "g_mode", "self_lit", "spec", "gloss", "pick", "tint", "spec_tint", "forward", "arch_sequence", "vehicle", "facing_glow", "bright_center", "flat_surface", "liquid_flow") if key in entry}
         if "two_color_metal" in entry:
             uploaded["two_color_metal"] = entry["two_color_metal"]
         if "puddles" in entry:
@@ -1413,6 +1413,9 @@ class ModelViewport(_TkFrame):
         sh.glUniform3f(u["uHairB"], *(float(x) for x in hair.get("spec", (0.0, 0.0, 0.0))))
         sh.glUniform4f(u["uHairP"], float(hair.get("rim_exponent", 3.0)), float(hair.get("gloss_scale", 0.71)),
                        float(hair.get("diffuse_sigma", 0.0)), float(hair.get("normal_strength", 0.3)))
+        flow = entry.get("liquid_flow") or {}
+        sh.glUniform1i(u["uLiquidFlow"], 1 if flow and level == 2 else 0)
+        sh.glUniform3f(u["uLiquidUV"], *(float(x) for x in flow.get("uv_offset", (0.0, 0.0))), 0.0)
         flat = entry.get("flat_surface") or {}   # constant albedo, F0 and gloss: no texture input
         sh.glUniform1i(u["uFlatSurface"], 1 if flat and level == 2 else 0)
         sh.glUniform3f(u["uFlatColour"], *(float(x) for x in flat.get("colour", (1.0, 1.0, 1.0))))
@@ -1598,6 +1601,14 @@ class ModelViewport(_TkFrame):
                     sh.glUniform1i(u[srgb], 1 if texture and texture[1] else 0)
             if forward.get('kind') in ('screen', 'number_display', 'victor_reticle'):
                 self._apply_screen_forward(u, entry)
+            water_heights = forward.get('kind') == 'water' and bool(forward.get('sampling'))
+            sh.glUniform1i(u['uHasWaterHeights'], 1 if water_heights and entry.get('_water_height_a') and entry.get('_water_height_b') else 0)
+            if water_heights:
+                for unit, role, name in ((0, '_water_height_a', 'uWaterHeightA'), (1, '_water_height_b', 'uWaterHeightB')):
+                    texture = entry.get(role)
+                    sh.glActiveTexture(self.GL_TEXTURE0 + unit)
+                    gl.glBindTexture(self.GL_TEXTURE_2D, texture[0] if texture else 0)
+                    sh.glUniform1i(u[name], unit)
             kind, *vectors = glass_uniforms(forward)
             sh.glUniform1i(u["uKind"], kind)
             for name, vector in zip(("uA", "uB", "uC", "uD", "uE"), vectors):

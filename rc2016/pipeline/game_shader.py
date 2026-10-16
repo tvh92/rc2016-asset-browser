@@ -1109,7 +1109,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 12
+VIEWER_RULE_FRONTEND_VERSION = 14
 
 
 def _viewer_rule_images(nt):
@@ -1120,6 +1120,86 @@ def _viewer_rule_images(nt):
             if path and (path not in images or (images[path].get('source_graph_fallback') and not node.get('source_graph_fallback'))):
                 images[path] = node
     return images
+
+
+def _viewer_rule_water(mat, rule, img):
+    """Bounded water preview: proven first height/normal sample UVs plus inferred closure."""
+    nt = mat.node_tree; P = _ViewerNodes(nt); L = nt.links
+    term = rule['terms']['water']; params = term['params']; sampling = term['sampling']
+    height_a, height_b = img('_water_height_a'), img('_water_height_b')
+    normal_a, normal_b = img('_n'), img('_pick')
+    if any(node is None for node in (height_a, height_b, normal_a, normal_b)):
+        return False
+
+    pos = P.native_position(); dx, _, dz = P.sep(pos)
+    # CB0[28]/[30] minus attribute3 and CB0[99] are unresolved runtime inputs.
+    # Native object-space X/Z and time=0 are explicit preview substitutions.
+    time = P.const('water frozen time substitution', 0.0)
+    h5_u = P.const('water API5 U scale', .105); h5_v = P.const('water API5 V scale', .095)
+    h6_u = P.const('water API6 U scale', .095); h6_v = P.const('water API6 V scale', .105)
+    h6_u0 = P.const('water API6 U offset', .248); h6_v0 = P.const('water API6 V offset', .613)
+    u5 = P.gl_coord(P.m('MULTIPLY_ADD', dx, h5_u, P.m('MULTIPLY', time, .252)),
+                    P.m('MULTIPLY_ADD', dz, h5_v, P.m('MULTIPLY', time, -.246)))
+    u6 = P.gl_coord(P.m('MULTIPLY_ADD', dx, h6_u, P.m('MULTIPLY_ADD', time, -.247, h6_u0)),
+                    P.m('MULTIPLY_ADD', dz, h6_v, P.m('MULTIPLY_ADD', time, .255, h6_v0)))
+    h5 = P.sep(P.tex(height_a, u5, 'water API5 height sample').outputs['Color'])[0]
+    h6 = P.sep(P.tex(height_b, u6, 'water API6 height sample').outputs['Color'])[0]
+    disp = P.const('water CB2 displacement parameter', sampling['displacement'])
+    cross = P.m('MULTIPLY', disp, P.m('SUBTRACT', P.m('ADD', h5, h6), 1.0),
+                label='water source height cross displacement')
+    n7_u = P.const('water API7 U scale', .315); n7_v = P.const('water API7 V scale', .285)
+    n7_u0 = P.const('water API7 U offset', .133); n7_v0 = P.const('water API7 V offset', .346)
+    n8_u = P.const('water API8 U scale', .285); n8_v = P.const('water API8 V scale', .315)
+    n7 = P.gl_coord(P.m('MULTIPLY_ADD', dx, n7_u, P.m('ADD', n7_u0, cross)),
+                    P.m('MULTIPLY_ADD', dz, n7_v, P.m('ADD', n7_v0, cross)))
+    n8 = P.gl_coord(P.m('MULTIPLY_ADD', dx, n8_u, cross), P.m('MULTIPLY_ADD', dz, n8_v, cross))
+    na = P.tex(normal_a, n7, 'water API7 primary normal sample')
+    nb = P.tex(normal_b, n8, 'water API8 primary normal sample')
+    xa, ya = P.rg(na.outputs['Color']); xb, yb = P.rg(nb.outputs['Color'])
+    strength = P.const('water inferred normal strength', params['normal_strength'])
+    x = P.m('MULTIPLY', P.m('ADD', xa, xb), strength)
+    y = P.m('MULTIPLY', P.m('ADD', ya, yb), strength)
+    z = P.m('SQRT', P.m('MAXIMUM', P.m('SUBTRACT', 1.0, P.dot2(x, y)), 0.0))
+    normal = P.tangent_normal(x, y, z, 'Water inferred summed tangent normal')
+
+    body = P.const3('water inferred body colour', params['body'])
+    fresnel0 = P.const('water presentation F0', params['f0'])
+    gloss = P.const('water presentation gloss', params['gloss'])
+    ndv = P.sat(P.v('DOT_PRODUCT', normal, P.v('NORMALIZE', P.geo().outputs['Incoming'])))
+    fresnel = P.m('ADD', fresnel0, P.m('MULTIPLY', P.m('SUBTRACT', 1.0, fresnel0),
+                  P.m('POWER', P.m('SUBTRACT', 1.0, ndv), 5.0)), label='water inferred Schlick coverage Fresnel')
+    albedo = P.v('MULTIPLY', body, P.m('SUBTRACT', 1.0, fresnel), label='water inferred body times one minus Fresnel')
+    grp = nt.nodes.new('ShaderNodeGroup'); grp.node_tree = build_group()
+    grp.name = grp.label = 'VR water presentation deferred BRDF'
+    L.new(albedo, grp.inputs[0]); grp.inputs[1].default_value = 0.0
+    L.new(P.comb(fresnel0, fresnel0, fresnel0), grp.inputs[2])
+    L.new(P.m('SQRT', P.sat(gloss)), grp.inputs[3])
+    L.new(normal, grp.inputs[4]); grp.inputs[5].default_value = 1.0
+    grp.inputs[6].default_value = 1.0; grp.inputs[7].default_value = 0.0
+    opacity = P.const('water presentation opacity', params['opacity'])
+    alpha = P.sat(P.m('MULTIPLY_ADD', P.m('SUBTRACT', 1.0, opacity), fresnel, opacity,
+                       label='water inferred Fresnel opacity'))
+    clear = nt.nodes.new('ShaderNodeBsdfTransparent'); clear.name = 'VR water transparent background'
+    blend = nt.nodes.new('ShaderNodeMixShader'); blend.name = blend.label = 'VR water inferred alpha-over'
+    L.new(alpha, blend.inputs[0]); L.new(clear.outputs[0], blend.inputs[1]); L.new(grp.outputs[0], blend.inputs[2])
+    shader = blend
+    if not term.get('two_sided'):
+        culled = nt.nodes.new('ShaderNodeBsdfTransparent'); culled.name = 'VR culled back face'
+        cull = nt.nodes.new('ShaderNodeMixShader'); cull.name = cull.label = 'VR cull back faces'
+        L.new(P.geo().outputs['Backfacing'], cull.inputs[0]); L.new(shader.outputs[0], cull.inputs[1]); L.new(culled.outputs[0], cull.inputs[2])
+        shader = cull
+    out = nt.nodes.new('ShaderNodeOutputMaterial'); out.is_active_output = True
+    L.new(shader.outputs[0], out.inputs['Surface'])
+    mat.use_backface_culling = not term.get('two_sided')
+    if hasattr(mat, 'surface_render_method'):
+        mat.surface_render_method = 'BLENDED'
+    return [
+        'Water writer %s: first height and primary normal sample UVs are source-decoded for graph %s (%s); '
+        'only the primary shore branch is represented. CB0[28]/[30] and attribute3 are substituted with native object-space X/Z, '
+        'and CB0[99] is frozen at time 0.' % (term.get('writer'), term.get('graph_path'), term.get('graph_sha256')),
+        'Water normal composition/strength, body colour, opacity, Fresnel closure, gloss and reflection are inferred presentation values; '
+        'the shared deferred BRDF substitutes for the unrecovered forward lighting. Blender tangent-frame derivatives and runtime pass/draw selection are unresolved.'
+    ]
 
 
 def _viewer_rule_screen(mat, rule, img):
@@ -1438,12 +1518,13 @@ def apply_viewer_graph_rule(mat, source):
     eye_cornea = 'eye_cornea' in ported and 'eye_cornea' in terms   # A36A97CB samples _n only
     number = 'number_display' in ported and 'number_display' in terms   # 8CEC816B / 37C85F4C sample the four number slots
     reticle = 'victor_reticle' in ported and 'victor_reticle' in terms # EB9C8254 source pass 0, exact graph identity
+    water = 'water' in ported and 'water' in terms
     flat = terms.get('flat_surface') if 'flat_surface' in ported else None   # constant albedo, F0 and gloss, no texture
     if number and not all(img(role) is not None for role in ('_c', '_n', '_pick', '_g')):
         return False
     glass = next((k for k in GLASS_VIEWER_KINDS if k in ported and k in terms), None)   # forward glass writers sample no _c
     bright_white = bool(terms.get('bright_center', {}).get('albedo_white')) and 'bright_center' in ported   # preview override: no _c
-    if c is None and not (arch and g is not None) and not facing and not bright_white and not glow_shell and not eye_cornea and not number and not reticle and not flat and not glass:
+    if c is None and not (arch and g is not None) and not facing and not bright_white and not glow_shell and not eye_cornea and not number and not reticle and not flat and not glass and not water:
         return False
     for node in list(nt.nodes):   # keep every source image node (provenance and coverage reports)
         if node.type != 'TEX_IMAGE':
@@ -1471,6 +1552,12 @@ def apply_viewer_graph_rule(mat, source):
         limits += _viewer_rule_number_display(mat, rule, img)
         _finish_viewer_rule(mat, rule, 'forward number display %s (t=0, unlit, opaque)' % terms['number_display']['params']['writer'], limits)
         return True
+    if water:
+        water_limits = _viewer_rule_water(mat, rule, img)
+        if water_limits is False:
+            return False
+        _finish_viewer_rule(mat, rule, 'forward water %s (alpha-over, back faces culled)' % terms['water'].get('writer'), water_limits)
+        return True
     P = _ViewerNodes(nt)
     grp = nt.nodes.new('ShaderNodeGroup'); grp.node_tree = build_group()
     grp.name = grp.label = GROUP_NAME; grp.location = (500, 0)
@@ -1482,6 +1569,14 @@ def apply_viewer_graph_rule(mat, source):
     k = float(rule.get('k', 0.0))
     geo = P.geo(); V = geo.outputs['Incoming']; Ng = geo.outputs['Normal']
     view_terms = []
+    if on('liquid_flow'):
+        flow = terms['liquid_flow']
+        u, vb, _ = P.uv_split()
+        uv = P.gl_coord(P.m('ADD', u, P.const('liquid flow U offset', flow['uv_offset'][0])),
+                        P.m('ADD', P.m('SUBTRACT', 1.0, vb), P.const('liquid flow V offset', flow['uv_offset'][1])))
+        for image in (c, g):
+            L.new(uv, image.inputs['Vector'])
+        limits.extend(flow['limitations'])
     albedo = c.outputs['Color'] if c is not None else (0.0, 0.0, 0.0)
     reticle_emission = None
     if reticle:

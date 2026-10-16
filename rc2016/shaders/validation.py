@@ -396,6 +396,23 @@ def _viewer_expected_constants(rule):
     """'VR <name>' constant -> value, derived from the source rule alone (rc_game_shader._ViewerNodes)."""
     terms, ported = rule.get("terms") or {}, set(rule.get("ported") or ())
     e = {}
+    if "liquid_flow" in ported:
+        flow = terms["liquid_flow"]
+        e.update({"liquid flow U offset": flow["uv_offset"][0], "liquid flow V offset": flow["uv_offset"][1]})
+    if "water" in ported:
+        water = terms["water"]; p = water["params"]
+        e.update({"water frozen time substitution": 0.0,
+                  "water CB2 displacement parameter": water["sampling"]["displacement"],
+                  "water API5 U scale": .105, "water API5 V scale": .095,
+                  "water API6 U scale": .095, "water API6 V scale": .105,
+                  "water API6 U offset": .248, "water API6 V offset": .613,
+                  "water API7 U scale": .315, "water API7 V scale": .285,
+                  "water API7 U offset": .133, "water API7 V offset": .346,
+                  "water API8 U scale": .285, "water API8 V scale": .315,
+                  "water inferred normal strength": p["normal_strength"],
+                  "water inferred body colour": p["body"],
+                  "water presentation F0": p["f0"], "water presentation gloss": p["gloss"],
+                  "water presentation opacity": p["opacity"]})
     if "leaf_colour" in ported:
         l = terms["leaf_colour"]; e.update({"leaf exponent":l["exponent"], "leaf scale":l["scale"], "leaf palette":l["palette_rgb"]})
     if "fresnel_tint" in ported:
@@ -520,6 +537,16 @@ def _viewer_required(rule, has_n):
     tex = rule.get("textures") or {}
     names, roles = [], []
     req = lambda *rs: roles.extend(r for r in rs if tex.get(r))
+    if "liquid_flow" in ported:
+        names += ["liquid flow U offset", "liquid flow V offset"]; req("_c", "_g")
+    if "water" in ported:
+        names += ["water frozen time substitution", "water CB2 displacement parameter",
+                  "water API5 U scale", "water API5 V scale", "water API6 U scale", "water API6 V scale",
+                  "water API6 U offset", "water API6 V offset", "water API7 U scale", "water API7 V scale",
+                  "water API7 U offset", "water API7 V offset", "water API8 U scale", "water API8 V scale",
+                  "water inferred normal strength",
+                  "water inferred body colour", "water presentation F0", "water presentation gloss", "water presentation opacity"]
+        req("_water_height_a", "_water_height_b", "_n", "_pick")
     if "leaf_colour" in ported:
         names += ["leaf exponent", "leaf scale", "leaf palette"]; req("_cma")
     if "fresnel_tint" in ported:
@@ -662,6 +689,105 @@ def _viewer_check_constants_and_images(source, material, rule, upstream, has_n):
     return sorted(reached & set(expected))
 
 
+def _validate_viewer_rule_water(source, material, rule, output, has_n):
+    """Reopened structural checks for the bounded water sampling preview."""
+    from rc2016.shaders.water import WATER_GRAPH, WATER_GRAPH_SHA256, GLOW_GRAPH, GLOW_GRAPH_SHA256, WATER_WRITERS, GLOW_WRITERS
+    term = rule["terms"]["water"]; sampling = term["sampling"]
+    graph_path, graph_sha = term.get("graph_path"), term.get("graph_sha256")
+    assert (graph_path, graph_sha) in ((WATER_GRAPH, WATER_GRAPH_SHA256), (GLOW_GRAPH, GLOW_GRAPH_SHA256)), \
+        "Water preview graph identity is not one of the source-decoded graph hashes"
+    writer_sha = sampling.get("writer_sha256")
+    accepted = WATER_WRITERS if graph_path == WATER_GRAPH else GLOW_WRITERS
+    assert writer_sha in accepted and term.get("writer", "").lower() == accepted[writer_sha]["shader_id"], \
+        "Water preview writer identity is not source-bound to its graph"
+    assert sampling.get("graph_path") == graph_path and sampling.get("graph_sha256") == graph_sha, \
+        "Water sampling contract graph identity differs from the forward term"
+    expression = sampling.get("sampling", {})
+    assert expression.get("displacement_parameter_key") == "0x230C6389", \
+        "Water height cross displacement is not bound to material key 0x230C6389"
+    assert sampling.get("displacement") is not None and "height_uvs_by_api" in expression and \
+        "height_cross_displacement" in expression and "primary_normal_uvs_by_api" in expression, \
+        "Water source-decoded sampling contract is incomplete"
+
+    upstream = _viewer_upstream(output.inputs["Surface"])
+    names = {node.name for node in upstream}
+    labels = {node.label for node in upstream}
+    for name in ("VR water API5 height sample", "VR water API6 height sample",
+                 "VR water API7 primary normal sample", "VR water API8 primary normal sample",
+                 "VR water presentation deferred BRDF", "VR water inferred alpha-over",
+                 "VR water transparent background", "water source height cross displacement",
+                 "water inferred Schlick coverage Fresnel", "water inferred Fresnel opacity"):
+        assert name in names or name in labels, "Water sampling or closure node is missing from the output: " + name
+    from rc2016.shaders.water import water_height_sample_uvs, water_primary_normal_sample_uvs
+    sample_names = {5: "VR water API5 height sample", 6: "VR water API6 height sample",
+                    7: "VR water API7 primary normal sample", 8: "VR water API8 primary normal sample"}
+    controlled_heights = {sample_names[5]: (0.2, 0.2, 0.2), sample_names[6]: (0.7, 0.7, 0.7)}
+    for position in ((2.0, 0.0, -3.0), (-1.1, 4.0, 0.37)):
+        expected_uvs = water_height_sample_uvs(position[0], position[2])
+        expected_uvs.update(water_primary_normal_sample_uvs(position[0], position[2], 0.2, 0.7,
+                                                          displacement=sampling["displacement"]))
+        for api, name in sample_names.items():
+            image = material.node_tree.nodes[name]
+            got = _viewer_uv_value(image.inputs["Vector"], (0.23, 0.61, 0.0), controlled_heights, position)
+            u, v = expected_uvs[api]
+            assert max(abs(a-b) for a,b in zip(got, (u, 1.0-v, 0.0))) < 1e-6, \
+                "Water source sample UV differs from the decoded first branch (including V orientation)"
+    brdf = next(node for node in upstream if node.name == "VR water presentation deferred BRDF")
+    assert brdf.type == "GROUP" and brdf.node_tree and brdf.node_tree.name == DEFERRED_GROUP, \
+        "Water preview does not use the shared deferred BRDF"
+    assert all(brdf.inputs[index].is_linked for index in (0, 2, 3, 4)), \
+        "Water inferred albedo/F0/gloss/normal are not connected to the deferred BRDF"
+    assert abs(float(brdf.inputs[1].default_value)) < 1e-7 and \
+        abs(float(brdf.inputs[5].default_value) - 1.0) < 1e-7 and \
+        abs(float(brdf.inputs[6].default_value) - 1.0) < 1e-7 and \
+        abs(float(brdf.inputs[7].default_value)) < 1e-7, \
+        "Water deferred BRDF self-lit/specular/gloss scales differ from the bounded preview contract"
+    assert brdf.inputs[3].links[0].from_node.operation == "SQRT", \
+        "Water presentation gloss is not square-rooted before the shared deferred BRDF"
+    assert term.get("blend") == "alpha_over" and not term.get("two_sided"), \
+        "Water source render state must be one-sided alpha-over"
+    assert "VR cull back faces" in names and material.use_backface_culling, \
+        "Water one-sided material culling is missing"
+    if hasattr(material, "surface_render_method"):
+        assert material.surface_render_method == "BLENDED", "Water alpha-over material is not configured as blended"
+    constants = _viewer_check_constants_and_images(source, material, rule, upstream, has_n)
+    return dict(status="passed_viewer_graph_rule_frontend", terms=["water"], blend="alpha_over",
+                writer=term.get("writer"), graph_path=graph_path, graph_sha256=graph_sha,
+                sampling_status=sampling.get("status"), constants=constants,
+                limitation=material.get("rc_shader_frontend_limitation"))
+
+
+def _viewer_uv_value(socket, uv, texture_values=None, position=None):
+    """Evaluate the source-rule UV arithmetic at a native UV probe after reopening."""
+    if not socket.is_linked:
+        value = socket.default_value
+        return tuple(value) if hasattr(value, '__len__') else float(value)
+    source = socket.links[0].from_socket
+    node = source.node
+    value = lambda s: _viewer_uv_value(s, uv, texture_values, position)
+    if node.type == 'TEX_COORD':
+        assert source.name == 'Object' and position is not None, "Unexpected source-rule coordinate input"
+        return position
+    if node.type == 'TEX_IMAGE':
+        assert texture_values is not None and node.name in texture_values, "Unexpected source-rule sample in UV transform"
+        return texture_values[node.name]
+    if node.type == 'UVMAP':
+        assert node.uv_map == 'UV0', "Source rule uses another UV layer"
+        return uv
+    if node.type == 'VALUE':
+        return float(source.default_value)
+    if node.type == 'SEPXYZ':
+        return value(node.inputs[0])[list(node.outputs).index(source)]
+    if node.type == 'COMBXYZ':
+        return tuple(value(s) for s in node.inputs[:3])
+    if node.type == 'MATH':
+        a, b = (value(s) for s in node.inputs[:2])
+        assert node.operation in ('ADD', 'SUBTRACT', 'MULTIPLY', 'MULTIPLY_ADD'), "Unexpected source-rule UV arithmetic"
+        return {'ADD': lambda: a+b, 'SUBTRACT': lambda: a-b, 'MULTIPLY': lambda: a*b,
+                'MULTIPLY_ADD': lambda: a*b + value(node.inputs[2])}[node.operation]()
+    raise AssertionError('Unexpected node in source-rule UV transform: ' + node.type)
+
+
 def _validate_viewer_rule_material(source, material):
     """rc_game_shader.apply_viewer_graph_rule: the asset viewer's per-graph reading on the deferred BRDF."""
     rule = source.get("viewer_graph_rule") or {}
@@ -678,6 +804,8 @@ def _validate_viewer_rule_material(source, material):
     assert output and output.inputs["Surface"].is_linked, "Viewer-rule material has no active surface output"
     sources = {row.get("path", "").lower() for row in source.get("textures", [])}
     has_n = bool(rule["textures"].get("_n")) and rule["textures"]["_n"].lower() in sources
+    if "water" in ported:
+        return _validate_viewer_rule_water(source, material, rule, output, has_n)
     if "screen" in ported:
         upstream = _viewer_upstream(output.inputs["Surface"])
         blend = rule["terms"]["screen"].get("blend")
@@ -902,6 +1030,25 @@ def _validate_viewer_rule_material(source, material):
     if arch and want_k > 0.0:
         assert k > 0.0 and reaches(brdf.inputs[1], "_sequence") if rule["textures"].get("_sequence") else True, \
             "Arch sequence self-lit does not sample the sequence"
+    if "liquid_flow" in ported:
+        from rc2016.shaders.liquids import LAVA_FLOW_GRAPH, LAVA_FLOW_SHA256
+        flow = terms["liquid_flow"]
+        assert rule.get("graph_identity") == dict(path=LAVA_FLOW_GRAPH, sha256=LAVA_FLOW_SHA256), "Lava flow graph identity changed"
+        assert flow["time"] == 0.0 and flow["normal_fallback"] == "geometry_normal", "Lava flow frozen-input contract changed"
+        assert rule["g_mode"] == "grey" and rule["self_lit"] == "g_blue", "Lava flow C/G channel contract changed"
+        assert (rule["spec"], rule["gloss"], rule["k"]) == (flow["spec"], flow["gloss"], flow["k"]), "Lava flow surface scales changed"
+        assert not rule["textures"].get("_n") and not reaches(brdf.inputs[4], "_n"), "Lava flow acquired an unsupported normal map"
+        for role in ("_c", "_g"):
+            path = rule["textures"][role].lower()
+            images = [node for node in upstream if node.type == "TEX_IMAGE" and str(node.get("source_texture_path", "")).lower() == path]
+            assert images, "Lava flow source image missing"
+            for image in images:
+                assert image.inputs["Vector"].is_linked, "Lava flow source image lost its UV transform"
+                for uv in ((0.23, 0.61, 0.0), (-0.2, 1.4, 0.0)):
+                    got = _viewer_uv_value(image.inputs["Vector"], uv)
+                    expected_uv = (uv[0] + flow["uv_offset"][0], uv[1] - flow["uv_offset"][1], 0.0)
+                    assert max(abs(a-b) for a,b in zip(got, expected_uv)) < 1e-6, "Lava flow UV transform differs from source (including V orientation)"
+        assert "freezes CB0[99] at 0" in material.get("rc_shader_frontend_limitation", ""), "Lava flow frozen-time limitation lost"
     normal_nodes = _viewer_upstream(brdf.inputs[4])
     labels = {node.label for node in normal_nodes}
     if has_n and not arch and "vehicle" not in ported and "puddles" not in ported:

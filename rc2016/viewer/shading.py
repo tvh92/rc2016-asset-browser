@@ -264,6 +264,7 @@ uniform float uAlphaCut; // leaf cut-out: discard when _c.a < threshold (0 = off
 // Novalis tree leaf colour, rp_nov pass-0 writer 0476D929. uLeafP = (E, S, mapped-normal Fresnel, unused);
 // palette U is a frozen preview input (textures.LEAF_PALETTE_U_PLACEHOLDER).
 uniform bool uLeafColour; uniform vec4 uLeafP; uniform vec3 uLeafPalette; // uLeafPalette = cmb ramp sample
+uniform bool uLiquidFlow; uniform vec3 uLiquidUV; // EA6006F6/BACB8758 C/G coordinates, time=0
 uniform bool uFlatSurface; uniform vec3 uFlatColour; uniform vec4 uFlatSpec; // constant surfaces: basic_emissive 452EDC8C, goo floor 4A73CC38, basic_flat_color D169A814
 uniform bool uBasicFlatColor; uniform float uBasicFlatEmissionScale; // D169A814: independent CB2 colour * scale additive output
 uniform bool uVictorReticle; uniform sampler2D uTexReticle; uniform bool uHasReticle; uniform vec4 uReticleP; uniform vec3 uReticleF0;
@@ -455,6 +456,7 @@ void main() {
         zaWeight = 1.0 - clamp(pow(1.00100004673 - clamp(dot(N, V), 0.0, 1.0), uZaFresnelPower), 0.0, 1.0);
     }
     vec2 materialUV=vUV;float parallaxShadowWeight=1.0;
+    if (uMode == 2 && uLiquidFlow) materialUV += uLiquidUV.xy;
     bool rockBreakup = uMode == 2 && uRockBlend && uRockBreakup.x > 0.5;
     if (rockBreakup) materialUV = vUV * uRockBreakup.z; // A3DAA047 rel448/472: U scales the layer g/n samples only
     vec3 pomT=vec3(0.0),pomB=vec3(0.0),pomN=normalize(vNrm);
@@ -832,6 +834,7 @@ void main() {
 #   alpha = sat(P3 + rim); rgb = C + w * specular, F0 = sat(T / luma(T)) (P8 + rim^10); no body term in this table.
 GLASS_FRAGMENT = """
 #version 120
+uniform sampler2D uWaterHeightA; uniform sampler2D uWaterHeightB; uniform bool uHasWaterHeights;
 uniform sampler2D uScreenNoiseA; uniform sampler2D uScreenNoiseB;
 uniform bool uScreenSrgbN; uniform bool uScreenSrgbA; uniform bool uScreenSrgbB;
 uniform int uKind;
@@ -961,8 +964,20 @@ void main() {
     } else if (uKind == 4) {
         vec2 xz = vTintWorldPos.xz;
         vec2 d = vec2(0.0);
-        if (uHasN) d += texture2D(uTexN, xz * uC.xy + uC.zw).rg * 2.0 - 1.0;
-        if (uHasP) d += texture2D(uTexP, xz * uD.xy + uD.zw).rg * 2.0 - 1.0;
+        if (uE.y > 0.5) {
+            // First source sample branch of F4D47ECE/59540726. Frozen engine time=0;
+            // native world xz substitutes for unresolved CB0/attribute delta inputs.
+            if (uHasWaterHeights) {
+                float h5 = texture2D(uWaterHeightA, xz * vec2(0.105, 0.095)).r;
+                float h6 = texture2D(uWaterHeightB, xz * vec2(0.095, 0.105) + vec2(0.248, 0.613)).r;
+                float crossHeight = uE.x * (h5 + h6 - 1.0);
+                if (uHasN) d += texture2D(uTexN, xz * vec2(0.315, 0.285) + vec2(0.133, 0.346) + crossHeight).rg * 2.0 - 1.0;
+                if (uHasP) d += texture2D(uTexP, xz * vec2(0.285, 0.315) + crossHeight).rg * 2.0 - 1.0;
+            } // Missing height inputs retain geometry normal; never invent sampled heights.
+        } else {
+            if (uHasN) d += texture2D(uTexN, xz * uC.xy + uC.zw).rg * 2.0 - 1.0;
+            if (uHasP) d += texture2D(uTexP, xz * uD.xy + uD.zw).rg * 2.0 - 1.0;
+        }
         d *= uB.y;
         // Tangent frame of the planar (x, z) mapping from screen derivatives, as for the patterned glass.
         vec3 dp1 = dFdx(vPos), dp2 = dFdy(vPos); vec2 du1 = dFdx(xz), du2 = dFdy(xz);
@@ -1085,8 +1100,10 @@ def glass_uniforms(forward):
                 (p["reflect_base"], p["reflect_weight"], p["highlight_normal"], p["env_normal"]),
                 (p["highlight_k"], 0.0, 0.0, 0.0), (0.0,) * 4)
     if forward["kind"] == "water":
+        sampling = forward.get("sampling") or {}
         return (4, (*p["body"], p["opacity"]), (p["f0"], p["normal_strength"], p["gloss"], 0.0),
-                tuple(p["uv_a"]), tuple(p["uv_b"]))
+                tuple(p["uv_a"]), tuple(p["uv_b"]),
+                (float(sampling.get("displacement", 0.0)), 1.0 if sampling else 0.0, 0.0, 0.0))
     if forward["kind"] == "glass_basic":
         return (GLASS_KINDS["glass_basic"], (*p["tint"], p["rim_bias"]), (*p["body"], p["gloss"]), (p["f0_base"], p["rim_exp"], 0.0, 0.0), (0.0,) * 4, (0.0,) * 4)
     if forward["kind"] == "glass_jn":
@@ -1111,7 +1128,7 @@ OPAQUE_UNIFORMS = (
     "uTwoColorMetal", "uMetalDiffuseA", "uMetalDiffuseB", "uMetalSpecA", "uMetalSpecB", "uMetalP",
     "uParallax", "uParallaxNormal", "uHasParallaxHeight", "uTexParallaxHeight", "uParallaxP",
     "uFoliage", "uAlphaCut", "uLeafColour", "uLeafP", "uLeafPalette", "uTexCma", "uHasCma", "uSrgbCma",
-    "uFresnelTint", "uFresnelC", "uFresnelE", "uFlatSurface", "uFlatColour", "uFlatSpec", "uBasicFlatColor", "uBasicFlatEmissionScale", "uVictorReticle", "uTexReticle", "uHasReticle", "uReticleP", "uReticleF0",
+    "uFresnelTint", "uFresnelC", "uFresnelE", "uLiquidFlow", "uLiquidUV", "uFlatSurface", "uFlatColour", "uFlatSpec", "uBasicFlatColor", "uBasicFlatEmissionScale", "uVictorReticle", "uTexReticle", "uHasReticle", "uReticleP", "uReticleF0",
     "uHair", "uHairA", "uHairB", "uHairP",
     "uSkinKind", "uSkinA", "uSkinB", "uSkinC",
     "uZaFresnel", "uZaFresnelPower",
@@ -1124,7 +1141,7 @@ OPAQUE_UNIFORMS = (
     "uFacingGlow", "uFacingGlowP", "uFacingGlowQ", "uBrightCentre", "uBrightWhite", "uBrightEdge", "uBrightColour", "uBrightP",
     "uSceneGeometry", *LIGHTING_UNIFORMS)
 GLASS_UNIFORMS = ("uSkin", "uBoneTex", "uBoneWidth", "uKind", "uA", "uB", "uC", "uD", "uE",
-                  "uTexN", "uHasN", "uTexP", "uHasP", "uSrgbP",
+                  "uWaterHeightA", "uWaterHeightB", "uHasWaterHeights", "uTexN", "uHasN", "uTexP", "uHasP", "uSrgbP",
                   "uScreenNoiseA", "uScreenNoiseB", "uScreenSrgbN", "uScreenSrgbA", "uScreenSrgbB", *LIGHTING_UNIFORMS)
 
 # Level viewer: one draw per model and material for all its instances. The zone's row-vector

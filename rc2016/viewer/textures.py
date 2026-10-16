@@ -20,6 +20,8 @@ import math
 from rc2016.formats.archive import asset_data, asset_references, decompress, lz4_block
 from rc2016.formats.index import references
 from rc2016.formats.texture import dds_bytes, parse_header, ps4_deswizzle_slices
+from rc2016.shaders.liquids import LAVA_FLOW_GRAPH, LAVA_FLOW_SHA256, liquid_flow_rule
+from rc2016.shaders.water import WATER_GRAPH, WATER_GRAPH_SHA256, GLOW_GRAPH, GLOW_GRAPH_SHA256, water_sampling_rule
 
 # DXGI format -> OpenGL internal format. sRGB variants are uploaded as their
 # UNORM twin on purpose: the fixed-function viewer lights in display space.
@@ -332,7 +334,14 @@ GRAPH_RULES = (
     # DB75867B forward terminal, explicit viewer leaves; Materials/GroundPuddles/GROUND_PUDDLES_DECODE.md.
     ('materialgraph/environment/kalebo/jn_ground_puddles.',
      dict(g_mode='grey', self_lit_key=None, puddles=True)),
-    # Water PREVIEW, not a decode (family prefix, so rule coverage counts it as a fallback). The colour
+    # EA6006F6/BACB8758: source C/G UV transform and deferred surface at frozen time zero.
+    (LAVA_FLOW_GRAPH.removesuffix('materialgraph'),
+     dict(liquid_flow=True, _graph_sha256=LAVA_FLOW_SHA256, g_mode='grey', self_lit='g_blue', self_lit_key=None)),
+    # Partial source sampling from F4D47ECE/59540726; the closure and normal sum remain presentation choices.
+    *((path.removesuffix('materialgraph'), dict(forward='water', water_sampling=True, _graph_sha256=digest,
+         params=(('body', 0x1DAF77B8, 3),))) for path, digest in
+      ((WATER_GRAPH, WATER_GRAPH_SHA256), (GLOW_GRAPH, GLOW_GRAPH_SHA256))),
+    # Other graphs in this folder retain the explicitly inferred family preview. The colour
     # writers f4d47ece/5476807b (light loops, 63 samples) are not translated. Decoded: the alpha-over
     # state, the textures by slot (water_tile_01n/02n), and from the normal pre-pass b9a5ef0f the
     # world-planar UV (native x, z) scale literals of the two tiles. Body colour is key 0x1DAF77B8,
@@ -636,6 +645,25 @@ def material_texture_paths(archive, material_path: str) -> dict:
         exact_path = rule.get('graph_path')
         if not exact_path or graph_hashes.get(exact_path) != rule['graph_sha256']:
             rule = {}
+    if rule.get('liquid_flow'):
+        graph_ids = [i for i in archive.resolve(LAVA_FLOW_GRAPH) if archive.entries[i]['type'] == 'materialgraph']
+        if len(graph_ids) != 1:
+            raise ValueError('Lava flow graph identity is ambiguous')
+        flow = liquid_flow_rule(asset_data(archive, graph_ids[0]), data)
+        if flow.get('status') != 'source_decoded_partial':
+            raise ValueError('Lava flow source contract rejected: ' + flow.get('reason', 'unknown'))
+        instance_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
+        for role, slot in (('_c', 0x49A7866BABDAD780), ('_g', 0x49A7866B1576D848)):
+            result.pop(role, None)
+            path = instance_slots.get(slot) or slots.get(slot)
+            if not path:
+                raise ValueError('Lava flow source slot is unbound: ' + role)
+            result[role] = path
+        # The native normal combines separate samples and engine fade inputs; do not invent a tangent-map rule.
+        for role in ('_n', '_h', '_pick'):
+            result.pop(role, None)
+        result['liquid_flow'] = flow
+        result['graph_identity'] = dict(path=LAVA_FLOW_GRAPH, sha256=LAVA_FLOW_SHA256)
     if rule.get('flat_surface') == 'basic_flat_color':
         graph_path = next((g.replace('\\', '/').lower() for g in graphs
                            if g.replace('\\', '/').lower().startswith('materialgraph/global/basic_flat_color/basic_flat_color.')
@@ -935,6 +963,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
             result['rock_blend'] = dict(tint=vec3(0x1AAD6A99, (1.0, 1.0, 1.0)),
                 exponent=value(0x965B2DCD, 1.0), tint_amount=value(0xF0A64F9B, 0.0),
                 mask_strength=value(0x21C2A812, 1.0), sharpness=value(0xF2634949, 1.0), writer='886AAC94')
+    if rule.get('liquid_flow'):
+        result.update(g_mode='grey', self_lit='g_blue', spec=flow['spec'], gloss=flow['gloss'], k=flow['k'])
     if rule.get('screen'):
         # 8716DC7A: timeline api5 is sampled once at t=0; api6 reads alpha only.
         # Existing forward units 0/1/2/4 carry api6/api9/api7/api8. No new unit.
@@ -976,6 +1006,14 @@ def material_texture_paths(archive, material_path: str) -> dict:
         params.update(rule.get('constants', {}))  # graph constants, not read from the material
         if rule['forward'] == 'water':
             params.update(WATER_PRESENTATION)
+        if rule.get('water_sampling'):
+            graph_ids = [i for i in archive.resolve(rule['graph_path']) if archive.entries[i]['type'] == 'materialgraph']
+            if len(graph_ids) != 1:
+                raise ValueError('Water sampling graph identity is ambiguous')
+            sampling = water_sampling_rule(asset_data(archive, graph_ids[0]), data)
+            for role in ('_c', '_g', '_h', '_n', '_pick'):
+                result.pop(role, None)
+            result.update(sampling['textures'])
         if rule['forward'] == 'bright_glow':
             # t = |1.001 - N.V|^e with e = 0.2 (1 - S); w = sat(1 + (1 - B)(0.5 sin - 0.5)) at sin = 0.
             params['exponent'] = 0.2 * (1.0 - params['sharp'])
@@ -990,6 +1028,10 @@ def material_texture_paths(archive, material_path: str) -> dict:
                                  **({'graph_path': rule['graph_path'], 'graph_sha256': rule['graph_sha256']}
                                     if rule.get('graph_path') and rule.get('graph_sha256') else {}),
                                  **blend_state(material_flags(data)))
+        if rule.get('water_sampling'):
+            result['forward']['sampling'] = sampling
+            result['forward']['writer'] = sampling['shader_id']
+            result['graph_identity'] = dict(path=rule['graph_path'], sha256=rule['graph_sha256'])
         if rule['forward'] == 'victor_reticle':
             # EB9C8254 is a deferred material writer (ALBEDO/F0/gloss/self-lit), not a forward coverage shader.
             if not all(math.isfinite(float(params[k])) for k in ('uv_phase', 'texture_gain', 'ring_tint', 'amplitude')):
@@ -1540,7 +1582,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             paths = {}
         entry.update(k=paths.get('k', 0.0), g_mode=paths.get('g_mode', 'colored'), self_lit=paths.get('self_lit', 'c_alpha'),
                      spec=paths.get('spec', 1.0), gloss=paths.get('gloss', 1.0))
-        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'bright_center', 'flat_surface', 'parallax', 'parallax_normal', 'hair', 'skin', 'skin_detail', 'fresnel_tint'):
+        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'bright_center', 'flat_surface', 'parallax', 'parallax_normal', 'hair', 'skin', 'skin_detail', 'fresnel_tint', 'liquid_flow'):
             if paths.get(key):
                 entry[key] = paths[key]
         if paths.get('foliage'):
@@ -1549,7 +1591,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             entry['alpha_cut'] = float(paths['alpha_cut'])
         if 'za_fresnel_power' in paths:
             entry['za_fresnel_power'] = paths['za_fresnel_power']
-        for role in (*ROLES, *(('_reticle',) if paths.get('forward', {}).get('kind') == 'victor_reticle' and paths.get('_reticle') else ()), *(('_parallax_height',) if paths.get('parallax') else ()), *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') or paths.get('skin_detail') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ()), *(('_cma',) if paths.get('leaf_colour') else ())):
+        for role in (*ROLES, *(('_water_height_a', '_water_height_b') if paths.get('forward', {}).get('sampling') else ()), *(('_reticle',) if paths.get('forward', {}).get('kind') == 'victor_reticle' and paths.get('_reticle') else ()), *(('_parallax_height',) if paths.get('parallax') else ()), *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') or paths.get('skin_detail') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ()), *(('_cma',) if paths.get('leaf_colour') else ())):
             path = paths.get(role)
             if not path:
                 continue
