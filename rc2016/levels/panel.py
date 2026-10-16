@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 
+from rc2016.app.layout import Splitter, regrid
 from rc2016.levels import scene as level_scene
 from rc2016.levels.viewport import LevelViewport
 from rc2016.viewer.viewport import GL_TEXTURE_ROLES
@@ -399,11 +400,12 @@ def _load_models(archive, pool, workers, models, catalog, actor_groups, points, 
 class LevelPanel:
     """Tk panel; ``source_root`` is a callable returning the current extracted source root."""
 
-    CONTROLS_WIDTH = 300   # initial width of the controls column
+    CONTROLS_WIDTH = 300   # initial width of the controls column (Vertical layout)
+    CONTROLS_HEIGHT = 340  # initial height of the controls (Horizontal layout: three columns)
 
     def __init__(self, parent, tk, ttk, source_root, level=None, mode="Shaded", zone_filter=None, on_done=None,
                  list_parent=None, on_open_model=None, material_overrides=True, sky=True, native_translation=True, actors=True, spawn_preview=False,
-                 experimental_materials=False):
+                 experimental_materials=False, layout=None):
         """``list_parent``: a separate frame for the level list (the asset browser's left pane);
         by default the list sits at the top of the panel's own side column (standalone window).
         ``on_open_model(model path)``: open a picked model elsewhere (the browser's Model tab)."""
@@ -415,12 +417,11 @@ class LevelPanel:
         self._stats_due = False
         self.zone_vars, self.zone_rows, self.progress = {}, {}, {}
         self.closed, self.loaded_level, self.levels = False, None, []
-        # Viewport on the left, controls on the right, as in the model viewer; drag the sash to resize either.
-        self.frame = ttk.Panedwindow(parent, orient="horizontal")
-        side = ttk.Frame(self.frame, padding=(8, 4, 4, 4))
-        main = ttk.Frame(self.frame)
-        self.frame.add(main, weight=1); self.frame.add(side, weight=0)
-        self._place_sash = lambda: self.frame.winfo_width() > 1 and self.frame.sashpos(0, max(200, self.frame.winfo_width() - self.CONTROLS_WIDTH))
+        # Viewport and controls, side by side or stacked per ``layout`` (the model viewer's arrangement); drag the sash to resize.
+        self.frame = Splitter(parent, side=self.CONTROLS_WIDTH, stacked=self.CONTROLS_HEIGHT, width=720, height=500)
+        main = self.frame.first
+        side = self.controls = self.frame.second
+        side.configure(padding=(8, 4, 4, 4))
         side.columnconfigure(0, weight=1)
         self.level_var = tk.StringVar(value=level or DEFAULT_LEVEL)
         if list_parent is None:
@@ -451,21 +452,22 @@ class LevelPanel:
         scene_tip_text = {"AO": "Ambient occlusion: darkens creases and contact areas. Needs Lighting on and the Shaded view.",
                           "Shadows": "Shadows cast in the scene preview. Needs Lighting on and the Shaded view.",
                           "Authored lights": "The point lights authored in the level data (the nearest ones are used). Needs Lighting on and the Shaded view."}
-        for text,var,name in (("AO",self.scene_ao_var,"ao"),("Shadows",self.scene_shadows_var,"shadows"),("Authored lights",self.scene_authored_var,"authored")):
+        # Two rows: the lighting effects, then the atmosphere options.
+        for column,(text,var,name) in enumerate((("AO",self.scene_ao_var,"ao"),("Shadows",self.scene_shadows_var,"shadows"),("Authored lights",self.scene_authored_var,"authored"))):
             check = ttk.Checkbutton(scene_options,text=text,variable=var,command=lambda v=var,n=name:self.view.set_scene_effects(**{n:v.get()}))
-            check.pack(side="left",padx=(0,5))
+            check.grid(row=0,column=column,sticky="w",padx=(0,8))
             scene_tips.append((check, scene_tip_text[text]))
             self.effect_checks.append(check)
         self.fog_var = tk.BooleanVar(value=True)
         haze_check = ttk.Checkbutton(scene_options, text="Haze", variable=self.fog_var,
                                      command=lambda: self.view.set_fog(self.fog_var.get()))
-        haze_check.pack(side="left", padx=(0, 5))
+        haze_check.grid(row=1, column=0, sticky="w", padx=(0, 8))
         scene_tips.append((haze_check, "Distance haze from the level's atmosphere. Only used by the Level atmosphere lighting."))
         self.atmosphere_checks.append(haze_check)
         self.lightgrid_var = tk.BooleanVar(value=True)
         grid_check = ttk.Checkbutton(scene_options, text="Light grid", variable=self.lightgrid_var,
                                      command=lambda: self.view.set_lightgrid(self.lightgrid_var.get()))
-        grid_check.pack(side="left", padx=(0, 5))
+        grid_check.grid(row=1, column=1, columnspan=2, sticky="w")
         scene_tips.append((grid_check, "The decoded light grid: baked ambient light that varies through the level. Off uses the reflection-probe ambient. Only used by the Level atmosphere lighting."))
         self.atmosphere_checks.append(grid_check)
         self.scene_note=ttk.Label(light,text='Scene preview; game caster/probe allocation is unverified.',foreground='gray',wraplength=240)
@@ -578,7 +580,10 @@ class LevelPanel:
         self.zone_list = ttk.Frame(self.zone_canvas)
         self.zone_canvas.create_window((0, 0), window=self.zone_list, anchor="nw")
         self.zone_list.bind("<Configure>", lambda _e: self.zone_canvas.configure(scrollregion=self.zone_canvas.bbox("all")))
-        ttk.Label(side, text=HELP, wraplength=250, foreground="gray").grid(row=10, column=0, sticky="ew", pady=(8, 0))
+        self.help_label = ttk.Label(side, text=HELP, wraplength=250, foreground="gray")
+        self.help_label.grid(row=10, column=0, sticky="ew", pady=(8, 0))
+        self._groups = dict(options=options, light=light, display=display, scene=scene, experimental=experimental,
+                            head=head, holder=holder, help=self.help_label)
         main.columnconfigure(0, weight=1); main.rowconfigure(0, weight=1)
         self.view = LevelViewport(main, width=420, height=300)
         self.view.grid(row=0, column=0, sticky="nsew")
@@ -610,7 +615,24 @@ class LevelPanel:
         if on_open_model:
             self.open_button.grid(row=0, column=1, padx=4, pady=(0, 3))
         self.frame.after(50, self._poll)
-        self.frame.after(300, self._place_sash)
+        if layout is not None and list_parent is not None:
+            layout.register(self.frame)
+            layout.listen(self._arrange_controls)
+
+    def _arrange_controls(self, stacked):
+        """Vertical layout: one column of control groups. Horizontal (stacked): three columns, so the viewport keeps the height."""
+        side, g = self.controls, self._groups
+        side.configure(padding=(4, 6, 4, 4) if stacked else (8, 4, 4, 4))
+        places = ({"options": (0, 0), "light": (1, 0), "display": (2, 0), "scene": (0, 1), "experimental": (1, 1),
+                   "head": (0, 2), "holder": (1, 2), "help": (2, 2)} if stacked else
+                  {"options": (3, 0), "light": (4, 0), "display": (5, 0), "scene": (6, 0), "experimental": (7, 0),
+                   "head": (8, 0), "holder": (9, 0), "help": (10, 0)})
+        for name, (row, column) in places.items():
+            regrid(g[name], row=row, column=column, sticky="nsew" if name == "holder" else "ew", padx=(0, 12) if stacked and column < 2 else 0)
+        for column in range(3):
+            side.columnconfigure(column, weight=1 if stacked or column == 0 else 0, uniform="groups" if stacked else "")
+        side.rowconfigure(9, weight=0 if stacked else 1)
+        side.rowconfigure(1, weight=1 if stacked else 0)
 
     def _build_level_list(self, parent, height):
         """Level list (selecting a row loads it) plus an entry for a typed .level/.zone path."""

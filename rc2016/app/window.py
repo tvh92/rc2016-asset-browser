@@ -87,7 +87,15 @@ HELP = {
     "asset_type": (
         "Model: the model list with the 3D view, textures and details.\n"
         "Level: the game levels, in a 3D level viewer.\n"
-        "Flash UI: the menu and HUD movies."),
+        "Flash UI: the menu and HUD movies.\n\n"
+        "The search, filters and List/Grid switch belong to the model list and show only for Model."),
+    "layout": (
+        "Vertical: each viewer has its viewport on the left and its controls on the right.\n"
+        "Horizontal: the viewport on top and the controls below it, in columns.\n"
+        "Applies to the 3D model, textures, level and Flash UI viewers. Drag the divider to resize; "
+        "each layout remembers its own sizes."),
+    "select_visible": "Select every model the search and filters currently show (all of them when nothing is filtered).",
+    "clear_selection": "Deselect every model.",
     "list_view": (
         "List: the model tree, with the output state of every model.\n"
         "Grid: the same models as thumbnails (the selection, or else the search results). "
@@ -148,7 +156,7 @@ class AssetBrowserApp:
         apply_ui_scale(self.root, ttk, int(self.ui_scale_var.get().rstrip("%")))
         self.root.protocol("WM_DELETE_WINDOW", self._close)
         self.root.geometry("1420x980")
-        self.root.minsize(1180, 900)
+        self.root.minsize(min(1480, self.root.winfo_screenwidth()), 900)
         try:
             self.root.state("zoomed")   # open maximised: the 3D view needs the room
         except Exception:
@@ -198,12 +206,16 @@ class AssetBrowserApp:
         self.export_summary_var = tk.StringVar()
         self.exported_names: set[str] = set()
         self.selection_var = tk.StringVar(value="0 models selected")
-        self.progress_var = tk.StringVar(value="Step 1: Browse… next to 'Game folder', pick your unpacked game folder (CUSA01073).")
+        self.progress_var = tk.StringVar(value="Step 1: pick the game folder (Browse…).")
 
     def _build_ui(self) -> None:
         tk, ttk = self.tk, self.ttk
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(2, weight=1)
+        # Segmented buttons (asset type, List/Grid, layout) are roomier than ordinary buttons.
+        ttk.Style(self.root).configure("Segment.Toolbutton", padding=(14, 6))
+        from rc2016.app.layout import SplitLayout
+        self.split_layout = SplitLayout(_load_settings().get("layout", ""))
 
         sources = ttk.LabelFrame(self.root, text="Sources and output")
         sources.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
@@ -221,27 +233,16 @@ class AssetBrowserApp:
 
         actions = ttk.Frame(self.root)
         actions.grid(row=1, column=0, sticky="ew", padx=12, pady=6)
-        actions.columnconfigure(1, weight=1)
-        # The bar and the three buttons stretch to the row's height (Extract selected is the tallest).
+        actions.columnconfigure(2, weight=1)
+        # The status text, the bar and the three buttons stretch to the row's height (Extract selected is the tallest).
         scan_button = ttk.Button(actions, text="Scan archive", command=self.scan)
         scan_button.grid(row=0, column=0, padx=(0, 8), sticky="ns")
-        # Status text, then the asset types. The text has a fixed width so the buttons stay put as it changes.
-        status_row = ttk.Frame(actions)
-        status_row.grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
-        ttk.Label(status_row, textvariable=self.progress_var, width=64, anchor="w").pack(side="left")
-        # Each asset type has its own list (left) and viewer (right); see AssetBrowser.show_asset_type.
-        self.asset_type_var = tk.StringVar(value="Model")
-        self.asset_type_buttons = {}
-        for kind in ("Model", "Level", "Flash UI"):
-            button = ttk.Radiobutton(status_row, text=kind, value=kind, variable=self.asset_type_var, style="Toolbutton",
-                                     command=lambda: self.browser.show_asset_type(self.asset_type_var.get()))
-            button.pack(side="left", padx=(0, 2))
-            self.asset_type_buttons[kind] = button
-        self._tip(HELP["asset_type"], *self.asset_type_buttons.values())
+        # Fixed width, so the bar does not move as the text changes.
+        ttk.Label(actions, textvariable=self.progress_var, width=46, anchor="w").grid(row=0, column=1, padx=(0, 8), sticky="ns")
         # A scan reports fractions of PROGRESS_STEPS; a batch counts models.
         self.progressbar = ttk.Progressbar(actions, mode="determinate", maximum=1, value=0)
         # The 4 px right pad matches Extract's left pad, so the bar is centred between the two buttons.
-        self.progressbar.grid(row=0, column=1, sticky="nsew", padx=(0, 4))
+        self.progressbar.grid(row=0, column=2, sticky="nsew", padx=(0, 4))
         accent_bg, accent_active, accent_disabled = (("#3d6fb6", "#2f5a97", "#8ea6c9") if self.dark
                                                      else ("#2563eb", "#1d4ed8", "#c7d2fe"))
         self.start_button = tk.Button(actions, text="Extract selected", command=self.start_batch, state="disabled",
@@ -249,9 +250,9 @@ class AssetBrowserApp:
                                       cursor="hand2", foreground="#ffffff", disabledforeground=accent_disabled,
                                       background=accent_bg, activebackground=accent_active,
                                       activeforeground="#ffffff")
-        self.start_button.grid(row=0, column=2, padx=4, sticky="ns")
+        self.start_button.grid(row=0, column=3, padx=4, sticky="ns")
         self.cancel_button = ttk.Button(actions, text="Cancel", command=self.cancel_batch, state="disabled")
-        self.cancel_button.grid(row=0, column=3, padx=(4, 0), sticky="ns")
+        self.cancel_button.grid(row=0, column=4, padx=(4, 0), sticky="ns")
         self._tip(HELP["scan"], scan_button)
         self._tip(HELP["extract"], self.start_button)
         self._tip(HELP["cancel"], self.cancel_button)
@@ -263,52 +264,77 @@ class AssetBrowserApp:
         top.rowconfigure(1, weight=1)
         main.add(top, weight=6)
 
-        # Model view: search/filters above the model list | review notebook.
-        model_view = ttk.Frame(top)
-        model_view.grid(row=1, column=0, sticky="nsew")
-        model_view.columnconfigure(0, weight=1)
-        model_view.rowconfigure(1, weight=1)
-
-        filters = ttk.Frame(model_view)
-        filters.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        filters.columnconfigure(1, weight=1)
+        # One toolbar row: asset type, then the model list's own tools (hidden for Level and Flash UI), then the layout.
+        toolbar = ttk.Frame(top)
+        toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        toolbar.columnconfigure(1, weight=1)
+        types = ttk.Frame(toolbar)
+        types.grid(row=0, column=0, sticky="w", padx=(0, 18))
+        # Each asset type has its own list (left) and viewer (right); see AssetBrowser.show_asset_type.
+        self.asset_type_var = tk.StringVar(value="Model")
+        self.asset_type_buttons = {}
+        for kind in ("Model", "Level", "Flash UI"):
+            button = ttk.Radiobutton(types, text=kind, value=kind, variable=self.asset_type_var, style="Segment.Toolbutton", width=9,
+                                     command=lambda: self.browser.show_asset_type(self.asset_type_var.get()))
+            button.pack(side="left", padx=(0, 2))
+            self.asset_type_buttons[kind] = button
+        self._tip(HELP["asset_type"], *self.asset_type_buttons.values())
+        self.model_tools = filters = ttk.Frame(toolbar)
+        filters.grid(row=0, column=1, sticky="ew")
+        filters.columnconfigure(2, weight=1)
+        view_box = ttk.Frame(filters)
+        view_box.grid(row=0, column=0, padx=(0, 18))
+        self.list_view_var = tk.StringVar(value="List")
+        for kind in ("List", "Grid"):
+            button = ttk.Radiobutton(view_box, text=kind, value=kind, variable=self.list_view_var, style="Segment.Toolbutton", width=6,
+                                     command=lambda: self.show_list_view(self.list_view_var.get()))
+            button.pack(side="left", padx=(0, 2))
+            self._tip(HELP["list_view"], button)
         filter_label = ttk.Label(filters, text="Search  ⓘ")
-        filter_label.grid(row=0, column=0, padx=(0, 8))
-        filter_entry = ttk.Entry(filters, textvariable=self.filter_var)
-        filter_entry.grid(row=0, column=1, sticky="ew")
+        filter_label.grid(row=0, column=1, padx=(0, 8))
+        filter_entry = ttk.Entry(filters, textvariable=self.filter_var, width=8)
+        filter_entry.grid(row=0, column=2, sticky="ew")
         self.filter_var.trace_add("write", lambda *_args: self.on_filter_changed())
-        self.expand_button = ttk.Button(filters, text="Expand all", command=self.toggle_expand_all)
+        self.expand_button = ttk.Button(filters, text="Expand all", width=11, command=self.toggle_expand_all)
         self._tip(HELP["expand"], self.expand_button)
-        self.expand_button.grid(row=0, column=2, padx=(8, 0))
+        self.expand_button.grid(row=0, column=4, padx=(10, 0), sticky="ns")
         state_label = ttk.Label(filters, text="State")
-        state_label.grid(row=0, column=3, padx=(14, 8))
+        state_label.grid(row=0, column=5, padx=(18, 8))
         self.state_box = state = ttk.Combobox(filters, textvariable=self.state_var, state="readonly", width=14,
                                               values=STATE_FILTERS["pipeline"])
-        state.grid(row=0, column=4)
+        state.grid(row=0, column=6)
         self._tip(HELP["filter"], filter_label, filter_entry)
         self.state_tips = [_Tooltip(self.tk, widget, HELP["state"]) for widget in (state_label, state)]
         state.bind("<<ComboboxSelected>>", lambda _event: self.refresh_table())
         shading_label = ttk.Label(filters, text="Shading")
-        shading_label.grid(row=0, column=5, padx=(14, 8))
+        shading_label.grid(row=0, column=7, padx=(18, 8))
         shading = ttk.Combobox(filters, textvariable=self.shading_var, state="readonly", values=("All", *SHADING_FILTERS), width=17)
-        shading.grid(row=0, column=6)
+        shading.grid(row=0, column=8)
         self._tip(HELP["shading"], shading_label, shading)
         shading.bind("<<ComboboxSelected>>", lambda _event: self.refresh_table())
-        select_button = ttk.Button(filters, text="Select visible", command=self.select_visible)
-        select_button.grid(row=0, column=7, padx=(14, 4))
-        self._tip(HELP["tree"], select_button)
-        ttk.Button(filters, text="Clear selection", command=self.clear_selection).grid(row=0, column=8)
-        view_box = ttk.Frame(filters)
-        view_box.grid(row=0, column=9, padx=(14, 0))
-        self.list_view_var = tk.StringVar(value="List")
-        for kind in ("List", "Grid"):
-            button = ttk.Radiobutton(view_box, text=kind, value=kind, variable=self.list_view_var, style="Toolbutton",
-                                     command=lambda: self.show_list_view(self.list_view_var.get()))
+        # Layout of the viewers (all asset types): Vertical = viewport left, controls right; Horizontal = stacked.
+        layout_box = ttk.Frame(toolbar)
+        layout_box.grid(row=0, column=2, sticky="e", padx=(18, 0))
+        layout_label = ttk.Label(layout_box, text="Layout")
+        layout_label.pack(side="left", padx=(0, 8))
+        self.layout_var = tk.StringVar(value=self.split_layout.mode)
+        self.layout_buttons = []
+        from rc2016.app.layout import MODES
+        for mode in MODES:
+            button = ttk.Radiobutton(layout_box, text=mode, value=mode, variable=self.layout_var, style="Segment.Toolbutton", width=10,
+                                     command=lambda: self.set_layout(self.layout_var.get()))
             button.pack(side="left", padx=(0, 2))
-            self._tip(HELP["list_view"], button)
+            self.layout_buttons.append(button)
+        self._tip(HELP["layout"], layout_label, *self.layout_buttons)
+
+        # Model view: the model list | review notebook.
+        model_view = ttk.Frame(top)
+        model_view.grid(row=1, column=0, sticky="nsew")
+        model_view.columnconfigure(0, weight=1)
+        model_view.rowconfigure(0, weight=1)
 
         browser_split = ttk.Panedwindow(model_view, orient="horizontal")
-        browser_split.grid(row=1, column=0, sticky="nsew")
+        browser_split.grid(row=0, column=0, sticky="nsew")
         # The model tree and the thumbnail grid share this cell; show_list_view swaps them.
         self.list_host = list_host = ttk.Frame(browser_split)
         browser_split.add(list_host, weight=3)
@@ -335,6 +361,7 @@ class AssetBrowserApp:
         hscroll = ttk.Scrollbar(table_frame, orient="horizontal", command=self.table.xview)
         hscroll.grid(row=1, column=0, sticky="ew")
         self.table.configure(yscrollcommand=scroll.set, xscrollcommand=hscroll.set)
+        self._tip(HELP["tree"], self.table)
         self.table.bind("<<TreeviewSelect>>", lambda _event: self.update_selection_label())
         self.table.bind("<Double-1>", self._table_double_click)
 
@@ -353,7 +380,16 @@ class AssetBrowserApp:
         self.log.tag_configure("success", foreground="#34d399" if self.dark else "#047857")
         self.log.tag_configure("muted", foreground="#9aa0a6" if self.dark else "#6b7280")
 
-        ttk.Label(self.root, textvariable=self.selection_var, anchor="w").grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 10))
+        # Selection: the actions on the model list, then how many models are selected.
+        selection_row = ttk.Frame(self.root)
+        selection_row.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 10))
+        select_button = ttk.Button(selection_row, text="Select visible", command=self.select_visible)
+        select_button.pack(side="left")
+        clear_button = ttk.Button(selection_row, text="Clear selection", command=self.clear_selection)
+        clear_button.pack(side="left", padx=(6, 12))
+        ttk.Label(selection_row, textvariable=self.selection_var, anchor="w").pack(side="left")
+        self._tip(HELP["select_visible"], select_button)
+        self._tip(HELP["clear_selection"], clear_button)
 
     def _build_options_window(self) -> None:
         """All optional yes/no settings, in a window that is built once and shown by Options…"""
@@ -496,8 +532,16 @@ class AssetBrowserApp:
         for widget in widgets:
             _Tooltip(self.tk, widget, text)
 
+    def set_layout(self, mode: str) -> None:
+        """Vertical or Horizontal viewers; remembered for the next start."""
+        self.split_layout.set_mode(mode)
+        self.layout_var.set(self.split_layout.mode)
+        settings = _load_settings()
+        settings["layout"] = self.split_layout.mode
+        _save_settings(settings)
+
     def _remember_settings(self) -> None:
-        _save_settings({"source": self.source_var.get().strip(), "output": self.output_var.get().strip(),
+        _save_settings({**_load_settings(), "source": self.source_var.get().strip(), "output": self.output_var.get().strip(),
                         "python": self.interpreter_var.get().strip(), "blender": self.blender_var.get().strip(),
                         "ui_scale": self.ui_scale_var.get(), "export_formats": ",".join(self._export_formats()),
                         "export_textures": "1" if self.export_textures_var.get() else "0",

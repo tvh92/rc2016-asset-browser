@@ -12,6 +12,7 @@ from pathlib import Path
 import queue
 import threading
 
+from rc2016.app.layout import Splitter
 from rc2016.app.workers import LatestWork
 
 # Where the pause-menu planet maps live; offered first when it exists.
@@ -20,90 +21,118 @@ MAP_SYMBOL = 'Map_fla.map_image_asset_holder_6'
 
 
 class FlashTab:
-    def __init__(self, app, tab, loader, list_parent=None):
-        """``list_parent``: a separate frame for the UI file list (the asset browser's left pane);
-        by default the list sits at the top of ``tab``."""
+    def __init__(self, app, tab, loader, list_parent, layout=None):
+        """``list_parent``: the frame for the UI file list (the asset browser's left pane). ``tab``: the
+        viewer: the symbol list and the canvas side by side (or stacked, per ``layout``), then the
+        frame and export controls. ``layout``: the browser's SplitLayout (Vertical or Horizontal)."""
         self.app, self.tk, self.ttk, self.loader = app, app.tk, app.ttk, loader
-        tk, ttk = self.tk, self.ttk
+        tk, ttk, tip = self.tk, self.ttk, app._tip
         self.list_work, self.symbol_work, self.render_work = LatestWork(), LatestWork(), LatestWork()
         self.events = queue.Queue()
         self.files, self.symbols, self.rows = [], [], []
         self.current, self.image, self.photo, self.exporting = None, None, None, False
         self.files_root = None
         self.file_var = tk.StringVar()
-        tab.columnconfigure(0, weight=1); tab.rowconfigure(2, weight=1)
-        if list_parent is None:
-            list_parent = ttk.Frame(tab); list_parent.grid(row=0, column=0, sticky='ew')
-            self._build_file_list(list_parent, height=5)
-        else:
-            self._build_file_list(list_parent, height=20)
-        filt = ttk.Frame(tab); filt.grid(row=1, column=0, sticky='ew', pady=(4, 0))
+        self._build_file_list(list_parent, height=20)
+        tab.columnconfigure(0, weight=1); tab.rowconfigure(1, weight=1)
+        # Row 0: which symbols. Row 1: the symbol list and the canvas. Rows 2-3: the frame to show, then export.
+        filt = ttk.Frame(tab); filt.grid(row=0, column=0, sticky='ew', pady=(0, 6))
         filt.columnconfigure(1, weight=1)
-        ttk.Label(filt, text='Filter').grid(row=0, column=0)
+        filter_label = ttk.Label(filt, text='Symbols')
+        filter_label.grid(row=0, column=0)
         self.filter_var = tk.StringVar()
-        ttk.Entry(filt, textvariable=self.filter_var).grid(row=0, column=1, sticky='ew', padx=4)
+        filter_entry = ttk.Entry(filt, textvariable=self.filter_var)
+        filter_entry.grid(row=0, column=1, sticky='ew', padx=8)
         self.filter_var.trace_add('write', lambda *_a: self._fill_symbols())
         self.named_only = tk.BooleanVar(value=True)
-        ttk.Checkbutton(filt, text='Named only', variable=self.named_only, command=self._fill_symbols).grid(row=0, column=2)
-        body = ttk.Panedwindow(tab, orient='vertical'); body.grid(row=2, column=0, sticky='nsew', pady=4)
-        listing = ttk.Frame(body); listing.columnconfigure(0, weight=1); listing.rowconfigure(0, weight=1)
+        named_check = ttk.Checkbutton(filt, text='Named only', variable=self.named_only, command=self._fill_symbols)
+        named_check.grid(row=0, column=2)
+        tip('Words that must all appear in the symbol name or its number.', filter_label, filter_entry)
+        tip('Hide the symbols that have no name in the file. Most unnamed ones are shape parts, not screens.', named_check)
+        self.body = body = Splitter(tab, side=360, stacked=200, fixed_first=True, width=700, height=300)
+        body.grid(row=1, column=0, sticky='nsew')
+        if layout is not None:
+            layout.register(body)
+        listing = body.first; listing.columnconfigure(0, weight=1); listing.rowconfigure(0, weight=1)
         self.tree = ttk.Treeview(listing, columns=('kind', 'frames'), height=6, selectmode='browse')
-        for column, text, width in [('#0', 'Symbol', 260), ('kind', 'Kind', 70), ('frames', 'Frames', 60)]:
+        for column, text, width in [('#0', 'Symbol', 190), ('kind', 'Kind', 60), ('frames', 'Frames', 55)]:
             self.tree.heading(column, text=text); self.tree.column(column, width=width, stretch=column == '#0')
         self.tree.grid(row=0, column=0, sticky='nsew')
         scroll = ttk.Scrollbar(listing, orient='vertical', command=self.tree.yview); scroll.grid(row=0, column=1, sticky='ns')
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.bind('<<TreeviewSelect>>', lambda _e: self._symbol_selected())
-        self.canvas = tk.Canvas(body, width=420, height=260, background='#2b2b2b', highlightthickness=0)
+        tip('The symbols (movie clips, shapes, sprites) in the open file. Click one to draw it.', self.tree)
+        body.second.columnconfigure(0, weight=1); body.second.rowconfigure(0, weight=1)
+        self.canvas = tk.Canvas(body.second, width=420, height=260, background='#2b2b2b', highlightthickness=0)
+        self.canvas.grid(row=0, column=0, sticky='nsew', padx=(6, 0) if not (layout and layout.stacked) else 0)
         self.canvas.bind('<Configure>', lambda _e: self._draw())
-        body.add(listing, weight=1); body.add(self.canvas, weight=3)
-        frame_row = ttk.Frame(tab); frame_row.grid(row=3, column=0, sticky='ew')
-        ttk.Label(frame_row, text='Label').pack(side='left')
+        # What to draw: a labelled frame (a screen state), a frame number, and the backdrop behind transparent art.
+        frame_row = ttk.Frame(tab); frame_row.grid(row=2, column=0, sticky='ew', pady=(8, 0))
+        label_label = ttk.Label(frame_row, text='Label'); label_label.pack(side='left')
         self.label_var = tk.StringVar()
         self.label_box = ttk.Combobox(frame_row, textvariable=self.label_var, state='disabled', width=24)
-        self.label_box.pack(side='left', padx=4)
+        self.label_box.pack(side='left', padx=(6, 0))
         self.label_box.bind('<<ComboboxSelected>>', lambda _e: self._label_chosen())
-        ttk.Label(frame_row, text='Frame').pack(side='left', padx=(8, 0))
+        frame_label = ttk.Label(frame_row, text='Frame'); frame_label.pack(side='left', padx=(18, 0))
         self.frame_var = tk.StringVar(value='1')
         self.frame_box = ttk.Spinbox(frame_row, textvariable=self.frame_var, from_=1, to=1, width=5,
                                      state='disabled', command=self._render_current)
-        self.frame_box.pack(side='left', padx=4)
+        self.frame_box.pack(side='left', padx=(6, 0))
         self.frame_box.bind('<Return>', lambda _e: self._render_current())
-        ttk.Label(frame_row, text='Background').pack(side='left', padx=(8, 0))
+        background_label = ttk.Label(frame_row, text='Background'); background_label.pack(side='left', padx=(18, 0))
         self.background_var = tk.StringVar(value='Checker')
         background = ttk.Combobox(frame_row, textvariable=self.background_var, values=('Checker', 'Dark', 'Light'),
                                   state='readonly', width=8)
-        background.pack(side='left', padx=4)
+        background.pack(side='left', padx=(6, 0))
         background.bind('<<ComboboxSelected>>', lambda _e: self._draw())
-        export = ttk.Frame(tab); export.grid(row=4, column=0, sticky='ew', pady=(4, 0))
-        ttk.Label(export, text='PNG size').pack(side='left')
+        tip('The named frames of this symbol (screen states such as idle or pressed). Choosing one sets Frame.\nGreyed out when the symbol has no labels.', label_label, self.label_box)
+        tip('The frame number to draw. Greyed out when the symbol has a single frame.', frame_label, self.frame_box)
+        tip('What shows behind transparent art. Only the preview; exports stay transparent.', background_label, background)
+        export = ttk.LabelFrame(tab, text='Export', padding=(6, 4)); export.grid(row=3, column=0, sticky='ew', pady=(8, 0))
+        size_label = ttk.Label(export, text='PNG size'); size_label.pack(side='left')
         self.size_var = tk.StringVar(value='2048')
-        ttk.Spinbox(export, textvariable=self.size_var, values=(512, 1024, 2048, 4096, 8192), width=6).pack(side='left', padx=4)
+        size_box = ttk.Spinbox(export, textvariable=self.size_var, values=(512, 1024, 2048, 4096, 8192), width=6)
+        size_box.pack(side='left', padx=(6, 0))
         self.source_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(export, text='+ original .gfx', variable=self.source_var).pack(side='left', padx=4)
+        source_check = ttk.Checkbutton(export, text='+ original .gfx', variable=self.source_var)
+        source_check.pack(side='left', padx=(14, 0))
         self.export_frame_button = ttk.Button(export, text='Export frame…', state='disabled', command=lambda: self._export(False))
-        self.export_frame_button.pack(side='left', padx=(6, 2))
+        self.export_frame_button.pack(side='left', padx=(18, 4))
         self.export_all_button = ttk.Button(export, text='Export all labels…', state='disabled', command=lambda: self._export(True))
-        self.export_all_button.pack(side='left', padx=2)
-        maps = ttk.Frame(tab); maps.grid(row=7, column=0, sticky='ew', pady=(2, 0))
-        self.maps_button = ttk.Button(maps, text='Export planet maps (game colours)…', command=self._export_maps)
-        self.maps_button.pack(side='left')
-        ttk.Label(maps, text='All 15 maps: areas #AFDAFF, secrets #AFFFE4, transparent.',
-                  foreground='#6b7280').pack(side='left', padx=6)
-        self.info = tk.StringVar(value='Load the list of the game\'s Flash UI files. The pause-menu planet maps are in '
-                                      f'{MAP_FILE}, symbol {MAP_SYMBOL} (one labelled frame per planet).')
-        ttk.Label(tab, textvariable=self.info, wraplength=410).grid(row=5, column=0, sticky='ew', pady=(4, 0))
-        ttk.Label(tab, text='Basic vector renderer: shapes, sprites, frames, masks and gradients. Text, filters and '
-                            'ActionScript-driven colours are not drawn, so menus appear in their authored base colours.',
-                  foreground='#6b7280', wraplength=410).grid(row=6, column=0, sticky='w', pady=4)
+        self.export_all_button.pack(side='left')
+        self.maps_button = ttk.Button(export, text='Export planet maps…', command=self._export_maps)
+        self.maps_button.pack(side='right')
+        tip('Edge of the exported PNG, in pixels (the longer side of the art).', size_label, size_box)
+        tip('Also copy the source .gfx file next to the PNGs.', source_check)
+        tip('Export the frame shown, as a transparent PNG.', self.export_frame_button)
+        tip('Export one PNG per labelled frame of the symbol. Needs a symbol with labels.', self.export_all_button)
+        tip('The 15 pause-menu planet maps in the game colours: areas #AFDAFF, secrets #AFFFE4, transparent.\n'
+            f'They live in {MAP_FILE}, symbol {MAP_SYMBOL}.', self.maps_button)
+        self.info = tk.StringVar(value='Choose a Flash UI file on the left.')
+        info = ttk.Label(tab, textvariable=self.info, wraplength=410)
+        info.grid(row=4, column=0, sticky='ew', pady=(6, 0))
+        note = ttk.Label(tab, text='Basic vector renderer: shapes, sprites, frames, masks and gradients. Text, filters and '
+                                   'ActionScript-driven colours are not drawn, so menus appear in their authored base colours.',
+                         foreground='#6b7280', wraplength=410)
+        note.grid(row=5, column=0, sticky='ew', pady=(2, 0))
+        for label in (info, note):   # wrap to the pane's width
+            label.bind('<Configure>', lambda e, w=label: w.configure(wraplength=max(200, e.width - 8)))
 
     def _build_file_list(self, parent, height):
-        ttk = self.ttk
+        tk, ttk, tip = self.tk, self.ttk, self.app._tip
         parent.columnconfigure(0, weight=1); parent.rowconfigure(1, weight=1)
         head = ttk.Frame(parent); head.grid(row=0, column=0, sticky='ew')
-        ttk.Label(head, text='UI files (.gfx / .swf)').pack(side='left')
-        ttk.Button(head, text='Load list', command=self.load_files).pack(side='right')
-        box = ttk.Frame(parent); box.grid(row=1, column=0, sticky='nsew', pady=(4, 0))
+        head.columnconfigure(1, weight=1)
+        filter_label = ttk.Label(head, text='Filter'); filter_label.grid(row=0, column=0)
+        self.file_filter_var = tk.StringVar()
+        filter_entry = ttk.Entry(head, textvariable=self.file_filter_var)
+        filter_entry.grid(row=0, column=1, sticky='ew', padx=6)
+        self.file_filter_var.trace_add('write', lambda *_a: self._fill_file_list())
+        reload_button = ttk.Button(head, text='Reload', command=self.load_files)
+        reload_button.grid(row=0, column=2)
+        tip('Words that must all appear in the file path.', filter_label, filter_entry)
+        tip('Read the .gfx / .swf list from the archive again. It is read on its own the first time this type is shown.', reload_button)
+        box = ttk.Frame(parent); box.grid(row=1, column=0, sticky='nsew', pady=(6, 0))
         box.columnconfigure(0, weight=1); box.rowconfigure(0, weight=1)
         self.file_list = ttk.Treeview(box, show='tree', selectmode='browse', height=height)
         self.file_list.column('#0', width=260, stretch=True)
@@ -111,6 +140,7 @@ class FlashTab:
         scroll = ttk.Scrollbar(box, orient='vertical', command=self.file_list.yview); scroll.grid(row=0, column=1, sticky='ns')
         self.file_list.configure(yscrollcommand=scroll.set)
         self.file_list.bind('<<TreeviewSelect>>', lambda _e: self._file_chosen())
+        tip('The Scaleform UI movies (.gfx / .swf) in the archive. Click one to list its symbols.', self.file_list)
 
     def _file_chosen(self):
         selection = self.file_list.selection()
@@ -120,8 +150,11 @@ class FlashTab:
     def _fill_file_list(self):
         tree = self.file_list
         tree.delete(*tree.get_children())
+        words = self.file_filter_var.get().lower().split()
         for path in self.files:
-            tree.insert('', 'end', iid=path, text=path)
+            if all(word in path.lower() for word in words):
+                tree.insert('', 'end', iid=path, text=path)
+        self._mark_file(self.file_var.get())
 
     def _mark_file(self, path):
         """Highlight the open file; the select handler skips it, so it is not parsed twice."""

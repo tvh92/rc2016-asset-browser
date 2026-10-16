@@ -7,6 +7,7 @@ import queue
 import threading
 import uuid
 from rc2016.app import catalog
+from rc2016.app.layout import SplitLayout, Splitter, regrid
 from rc2016.viewer.loader import SourcePreviewLoader
 from rc2016.viewer.viewport import ModelViewport
 from rc2016.app.workers import LatestWork, ReviewProcess, open_local, review_command
@@ -211,6 +212,7 @@ class AssetBrowser:
         from rc2016.app.links import LinkService
         self.links = LinkService(app)   # archive-wide links: texture users, level placements, coverage
         tk, ttk = self.tk, self.ttk
+        self.layout = getattr(app, 'split_layout', None) or SplitLayout()
         self.frame = ttk.LabelFrame(parent, text='Asset and result review', padding=8)
         parent.add(self.frame, weight=2)
         self.frame.columnconfigure(0,weight=1)
@@ -228,19 +230,15 @@ class AssetBrowser:
         self.gallery=Gallery(self,app.list_host)
         self._build_texture_tab(textures)
         self._build_type_views(type_host if type_host is not None else parent.master,model_view if model_view is not None else parent)
-        # Portrait layout: the viewport is the tall left pane and grows with the window; the controls stack in
-        # the right pane. Drag the sash between them to resize either. Row 8 of the controls is the spare row.
+        # The viewport is the big pane and grows with the window; the controls sit beside it (Vertical layout)
+        # or below it in two columns (Horizontal, see _arrange_view_controls). Drag the sash to resize either.
         view.columnconfigure(0,weight=1);view.rowconfigure(0,weight=1)
-        self.view_split=split=ttk.Panedwindow(view,orient='horizontal');split.grid(row=0,column=0,sticky='nsew')
-        holder=ttk.Frame(split);holder.columnconfigure(0,weight=1);holder.rowconfigure(0,weight=1)
-        side=ttk.Frame(split,padding=(8,0,0,0));side.columnconfigure(0,weight=1);side.rowconfigure(8,weight=1)
-        split.add(holder,weight=1);split.add(side,weight=0)
+        self.view_split=split=Splitter(view,side=430,stacked=180);split.grid(row=0,column=0,sticky='nsew')
+        self.layout.register(split)
+        holder=split.first;holder.columnconfigure(0,weight=1);holder.rowconfigure(0,weight=1)
+        side=split.second;side.configure(padding=(8,0,0,0));side.columnconfigure(0,weight=1);side.rowconfigure(8,weight=1)
         self.viewport=ModelViewport(holder,width=380,height=560)
         self.viewport.grid(row=0,column=0,sticky='nsew')
-        self.CONTROLS_WIDTH=430
-        def place_sash(_event=None):
-            if split.winfo_width()>1:split.sashpos(0,max(200,split.winfo_width()-self.CONTROLS_WIDTH))
-        app.root.after(300,place_sash)
         tip=app._tip
         # View: camera and draw mode.
         viewrow=ttk.Frame(side);viewrow.grid(row=0,column=0,sticky='ew',pady=(0,4))
@@ -271,7 +269,7 @@ class AssetBrowser:
         # Shading: lighting, then the tonemap that turns its output into screen colours.
         self.lighting_var=self.tk.StringVar(value=self.viewport.LIGHTINGS[0])
         self.lighting_enabled_var=self.tk.BooleanVar(value=True)
-        lighting_group=ttk.LabelFrame(side,text='Shading',padding=(4,2))
+        self.lighting_group=lighting_group=ttk.LabelFrame(side,text='Shading',padding=(4,2))
         lighting_group.grid(row=2,column=0,sticky='ew',pady=(0,4))
         self.lighting_enabled_check=ttk.Checkbutton(
             lighting_group,text='Lighting',variable=self.lighting_enabled_var,
@@ -305,28 +303,31 @@ class AssetBrowser:
         self.native_applicable=self.experimental_applicable=False
         self.viewport.set_lighting_enabled(self.lighting_enabled_var.get())
         self.viewport.set_experimental_materials(False)
-        anim=ttk.Frame(side);anim.grid(row=4,column=0,sticky='ew',pady=(0,6))
-        anim.columnconfigure(3,weight=1)
-        ttk.Label(anim,text='Animation').grid(row=0,column=0,padx=(0,4))
+        self.anim_box=anim=ttk.Frame(side);anim.grid(row=4,column=0,sticky='ew',pady=(0,6))
+        anim.columnconfigure(1,weight=1)
+        # Row 0: the clip picker. Row 1: play/pause and the scrubber, which takes the whole width. Row 2: export option and frame readout.
+        ttk.Label(anim,text='Animation').grid(row=0,column=0,sticky='w',padx=(0,6))
         self.clip_choice=tk.StringVar(value=REST_POSE)
         # A themed button that opens a searchable clip list (_open_clip_picker), not a Tk menu.
         self.clip_button=ttk.Menubutton(anim,textvariable=self.clip_choice,state='disabled',width=22)
         self.clip_button.bind('<ButtonPress-1>',self._open_clip_picker)
         self.clip_button.bind('<KeyPress-space>',self._open_clip_picker)
-        self.clip_button.grid(row=0,column=1,padx=4)
+        self.clip_button.grid(row=0,column=1,columnspan=2,sticky='ew')
         self.clip_labels=[];self.clip_index=-1;self.clip_popup=None
-        self.clip_only_var=tk.BooleanVar(value=False)
-        self.clip_only_check=ttk.Checkbutton(anim,text='Export only this clip',variable=self.clip_only_var,state='disabled')
-        self.clip_only_check.grid(row=1,column=1,columnspan=4,sticky='w',padx=4,pady=(2,0))
-        tip('Export option: when ticked, Extract selected exports just this clip for the model shown here instead of all its clips.\nPick a clip first.',self.clip_only_check)
-        self._fill_clip_menu([])
         self.play_button=ttk.Button(anim,text='Pause',width=7,command=self._toggle_play,state='disabled')
-        self.play_button.grid(row=0,column=2,padx=4)
+        self.play_button.grid(row=1,column=0,sticky='ew',padx=(0,6),pady=(4,0))
         self.frame_pos=tk.DoubleVar(value=0)
         self.frame_slider=ttk.Scale(anim,from_=0,to=1,variable=self.frame_pos,command=self._scrub,state='disabled')
-        self.frame_slider.grid(row=0,column=3,sticky='ew',padx=4)
+        self.frame_slider.grid(row=1,column=1,columnspan=2,sticky='ew',pady=(4,0))
+        self.clip_only_var=tk.BooleanVar(value=False)
+        self.clip_only_check=ttk.Checkbutton(anim,text='Export only this clip',variable=self.clip_only_var,state='disabled')
+        self.clip_only_check.grid(row=2,column=0,columnspan=2,sticky='w',pady=(2,0))
+        tip('Export option: when ticked, Extract selected exports just this clip for the model shown here instead of all its clips.\nPick a clip first.',self.clip_only_check)
+        self._fill_clip_menu([])
         self.frame_text=tk.StringVar(value='')
-        ttk.Label(anim,textvariable=self.frame_text,width=18,anchor='w').grid(row=0,column=4,sticky='w')   # fits '1234/1234 @ 29.97 fps'
+        ttk.Label(anim,textvariable=self.frame_text,width=18,anchor='e').grid(row=2,column=2,sticky='e',pady=(2,0))   # fits '1234/1234 @ 29.97 fps'
+        tip('Play or pause the clip.',self.play_button)
+        tip('Drag to scrub through the clip frame by frame.',self.frame_slider)
         tip('Pick a clip to play on the rest pose. Skinned models only.',self.clip_button)
         self.anim_work=LatestWork()
         self.animation=None;self.anim_frame=0;self.playing=False;self.play_job=None
@@ -335,7 +336,8 @@ class AssetBrowser:
         self.info_label=ttk.Label(side,textvariable=self.model_info,wraplength=400)
         self.info_label.grid(row=5,column=0,sticky='ew')
         self.model_info.trace_add('write',lambda *_a:self.info_label.grid() if self.model_info.get() else self.info_label.grid_remove())
-        ttk.Label(side,text='Drag: orbit · Right drag: pan · Wheel: zoom',foreground='#6b7280').grid(row=6,column=0,sticky='w',pady=5)
+        self.view_hint=ttk.Label(side,text='Drag: orbit · Right drag: pan · Wheel: zoom',foreground='#6b7280');self.view_hint.grid(row=6,column=0,sticky='w',pady=5)
+        self.layout.listen(self._arrange_view_controls)
         result.columnconfigure(0,weight=1);result.rowconfigure(0,weight=1)
         self.description=app.ScrolledText(result,height=8,wrap='word',state='disabled',font='TkDefaultFont')
         self.description.grid(row=0,column=0,sticky='nsew')
@@ -363,6 +365,18 @@ class AssetBrowser:
         self.reload()
         app.root.after(100,self._drain)
 
+    def _arrange_view_controls(self,stacked):
+        """Vertical layout: one column of controls. Horizontal (stacked) layout: two columns, so the viewport keeps the height."""
+        side=self.view_split.second
+        side.configure(padding=(0,6,0,0) if stacked else (8,0,0,0))
+        side.columnconfigure(1,weight=1 if stacked else 0,uniform='controls' if stacked else '')
+        side.columnconfigure(0,uniform='controls' if stacked else '')
+        # Stacked: the animation controls sit beside the view/shading column, spanning its first rows so no row stretches.
+        for widget,vrow,srow,sticky in ((self.mode_box.master,0,0,'new'),(self.source_row,1,1,'new'),(self.lighting_group,2,2,'new'),(self.view_hint,6,3,'nw')):
+            regrid(widget,row=srow if stacked else vrow,column=0,rowspan=1,sticky=sticky,padx=(0,12) if stacked else 0)
+        for widget,vrow,srow,span in ((self.anim_box,4,0,3),(self.materials_group,3,3,1),(self.info_label,5,4,1)):
+            regrid(widget,row=srow if stacked else vrow,column=1 if stacked else 0,rowspan=span if stacked else 1,sticky='new',padx=0)
+
     # Asset types (Model / Level / Flash UI) --------------------------------
     def _build_type_views(self,host,model_view):
         """Level and Flash UI views: a file list on the left, the viewer on the right. They are
@@ -380,7 +394,7 @@ class AssetBrowser:
         self.level_view.add(level_list,weight=1);self.level_view.add(level_right,weight=4)
         level_right.columnconfigure(0,weight=1);level_right.rowconfigure(0,weight=1)
         self.level_panel=LevelPanel(level_right,tk,ttk,lambda:app.source_var.get().strip(),list_parent=level_list,
-                                    on_open_model=self.open_model)
+                                    on_open_model=self.open_model,layout=self.layout)
         self.level_panel.frame.grid(row=0,column=0,sticky='nsew')
         # Flash UI (flash_tab.py): the .gfx/.swf list on the left; reads the list on first show.
         from rc2016.flash.tab import FlashTab
@@ -388,7 +402,7 @@ class AssetBrowser:
         flash_list=ttk.LabelFrame(self.flash_view,text='Flash UI files',padding=6)
         flash_right=ttk.LabelFrame(self.flash_view,text='Flash UI viewer',padding=6)
         self.flash_view.add(flash_list,weight=1);self.flash_view.add(flash_right,weight=4)
-        self.flash_tab=FlashTab(app,flash_right,self.source_loader,list_parent=flash_list)
+        self.flash_tab=FlashTab(app,flash_right,self.source_loader,list_parent=flash_list,layout=self.layout)
         self.type_views={'Model':model_view,'Level':self.level_view,'Flash UI':self.flash_view}
 
     def show_asset_type(self,kind):
@@ -398,6 +412,9 @@ class AssetBrowser:
             if name!=kind:widget.grid_remove()
         self.type_views[kind].grid(**self._type_grid)
         self.asset_type=kind
+        tools=getattr(self.app,'model_tools',None)
+        if tools is not None:
+            tools.grid() if kind=='Model' else tools.grid_remove()
         first=kind not in self._types_shown
         self._types_shown.add(kind)
         if kind=='Level' and not self.level_panel.levels:
@@ -425,10 +442,10 @@ class AssetBrowser:
         self.texture_image=None;self.texture_facts=None;self.texture_photo=None
         self.texture_exporting=False;self.texture_filter_job=None
         tab.columnconfigure(0,weight=1);tab.rowconfigure(0,weight=1)
-        split=self.texture_split=ttk.Panedwindow(tab,orient='horizontal');split.grid(row=0,column=0,sticky='nsew')
-        left=ttk.Frame(split);left.columnconfigure(0,weight=1);left.rowconfigure(0,weight=1)
-        right=ttk.Frame(split,padding=(8,0,0,0));right.columnconfigure(0,weight=1);right.rowconfigure(1,weight=1)
-        split.add(left,weight=1);split.add(right,weight=0)
+        split=self.texture_split=Splitter(tab,side=520,stacked=330);split.grid(row=0,column=0,sticky='nsew')
+        self.layout.register(split)
+        left=split.first;left.columnconfigure(0,weight=1);left.rowconfigure(0,weight=1)
+        right=split.second;right.configure(padding=(8,0,0,0));right.columnconfigure(0,weight=1);right.rowconfigure(1,weight=1)
         # Left: the image, how to read it, and what it is.
         self.texture_canvas=tk.Canvas(left,width=380,height=300,background='#2b2b2b',highlightthickness=0)
         self.texture_canvas.grid(row=0,column=0,sticky='nsew')
@@ -489,9 +506,6 @@ class AssetBrowser:
         self.texture_open_button=ttk.Button(users,text='Open model',state='disabled',
                                             command=lambda:self._open_texture_user())
         self.texture_open_button.grid(row=0,column=2,padx=(4,0))
-        def place_sash(_event=None):
-            if split.winfo_width()>1:split.sashpos(0,max(200,split.winfo_width()-520))
-        self.app.root.after(300,place_sash)
         tip('This model: the textures its materials reference.\nWhole archive: every texture in the game, with or without a model.',show_label,mode)
         tip('Words that must all appear in the texture path.',filter_label,filter_entry)
         tip('Click a texture to preview it. Ctrl/Shift-click selects several for export.',self.texture_tree)
