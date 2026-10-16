@@ -70,6 +70,8 @@ def main(argv=None):
     parser.add_argument("--no-lighting", action="store_true", help="unlit surface inspection; disable rig/HDRI, AO, shadows and authored lights")
     parser.add_argument("--lighting", choices=LevelViewport.LIGHTINGS, default=LevelViewport.LIGHTINGS[0],
                         help="lighting source; Level atmosphere is the reflection probe plus atmosphere sun (review preview)")
+    parser.add_argument("--no-lightgrid", action="store_true",
+                        help="Level atmosphere lighting: keep the single-probe ambient instead of the baked lightgrid")
     parser.add_argument("--no-actors", action="store_true", help="hide the source-placement actor layer")
     parser.add_argument("--no-sky", action="store_true", help="draw the flat background instead of the level sky")
     parser.add_argument("--no-native-translation", action="store_true",
@@ -121,6 +123,9 @@ def main(argv=None):
     if args.lighting != LevelViewport.LIGHTINGS[0]:
         panel.lighting_var.set(args.lighting)
         panel._lighting_changed()
+    if args.no_lightgrid:
+        panel.lightgrid_var.set(False)
+        panel.view.set_lightgrid(False)
     panel.frame.pack(side="top", fill="both", expand=True)
 
     def close():

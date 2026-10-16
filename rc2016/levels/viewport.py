@@ -616,6 +616,14 @@ class LevelViewport(ModelViewport):
         from rc2016.levels.display import display_table, grade_from_bytes
         return display_table(grade_from_bytes(self._sky["grade"]))
 
+    lightgrid_enabled = True   # Level atmosphere only: lightgrid indirect light in place of the single-probe ambient
+
+    def set_lightgrid(self, enabled):
+        """Switch the Level atmosphere lightgrid ambient (rc2016.levels.lightgrid) on or off; off is the reflection-probe ambient."""
+        self.lightgrid_enabled = bool(enabled)
+        self._frame_lighting = None
+        self._schedule_draw()
+
     def set_fog(self, enabled):
         """Switch the Level atmosphere distance haze on or off (it only applies to that lighting)."""
         self.fog_enabled = bool(enabled)
@@ -645,7 +653,8 @@ class LevelViewport(ModelViewport):
         sun = ", ".join(f"{float(x):.2f}" for x in maps["sun_rgb"])
         return (f"Level atmosphere: probe {probe} ambient, sun RGB96 ({sun}) from the atmosphere. Review preview: "
                 f"sun-to-sky scale is undecoded; diffuse light is scaled by {maps.get('diffuse_scale', 1.0):.2f} "
-                f"to match one in-game screenshot (visual calibration). Display: the captured game tone curve and grade.")
+                f"to match one in-game screenshot (visual calibration). Display: the captured game tone curve and grade."
+                + (" Ambient: baked lightgrid (calibrated, sky-term scale inferred)." if maps.get("lightgrid") is not None else ""))
 
     def set_show_sky(self, show):
         self.show_sky = bool(show)
@@ -709,7 +718,7 @@ class LevelViewport(ModelViewport):
                 self._gl.glDeleteTextures(len(textures), (ctypes.c_uint * len(textures))(*textures))
         self._release_sky()
         self._reset_level_environment()
-        if self._scene_effects and self._make_current():self._scene_effects.close()
+        if self._scene_effects and self._make_current():self._scene_effects.release_grid();self._scene_effects.close()
         self._scene_effects=None;self.scene_error=None;self._scene_lighting={'lights':[],'notes':[]}
         self._sky = None
         self._models, self._materials, self._texture_names, self._draw_list = {}, {}, {}, None
@@ -1227,7 +1236,7 @@ class LevelViewport(ModelViewport):
                 except Exception as exc:
                     self.scene_error=f'Scene preview unavailable: {exc}'
                     print(self.scene_error,file=sys.stderr)
-                    if self._scene_effects:self._scene_effects.close()
+                    if self._scene_effects:self._scene_effects.release_grid();self._scene_effects.close()
                     self._scene_effects=None
             scene_ms = (time.perf_counter() - phase) * 1000.0
             self._cull_frame(width, height)

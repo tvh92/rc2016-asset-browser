@@ -62,7 +62,14 @@ def load_sky(archive, zones):
         if sky.get("reflection"):
             def environment_loader():
                 from rc2016.levels.probe_lighting import level_environment
-                return level_environment(archive, sky)
+                maps = level_environment(archive, sky)
+                try:
+                    from rc2016.levels.lightgrid import level_lightgrid
+                    maps["lightgrid"] = level_lightgrid(archive, zones)   # None for levels without a decoded lighting zone
+                except Exception as exc:   # keep the single-probe ambient and say why
+                    maps["lightgrid"] = None
+                    print(f"lightgrid unavailable: {type(exc).__name__}: {exc}", file=sys.stderr)
+                return maps
             sky["environment_loader"] = environment_loader   # Level atmosphere lighting, built on demand
     return sky
 
@@ -439,6 +446,9 @@ class LevelPanel:
         self.fog_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(scene_options, text="Haze", variable=self.fog_var,
                         command=lambda: self.view.set_fog(self.fog_var.get())).pack(side="left", padx=(0, 5))
+        self.lightgrid_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(scene_options, text="Light grid", variable=self.lightgrid_var,
+                        command=lambda: self.view.set_lightgrid(self.lightgrid_var.get())).pack(side="left", padx=(0, 5))
         self.scene_note=ttk.Label(light,text='Scene preview; game caster/probe allocation is unverified.',foreground='gray',wraplength=240)
         self.scene_note.grid(row=2,column=0,columnspan=2,sticky="w")
         self.lighting_note = ttk.Label(light, text="", foreground="gray", wraplength=240)

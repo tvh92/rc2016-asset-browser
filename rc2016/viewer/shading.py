@@ -47,10 +47,58 @@ vec3 irradiance(vec3 n) {
         + uSH[4] * (1.092548 * n.x * n.y) + uSH[5] * (1.092548 * n.y * n.z) + uSH[6] * (0.315392 * (3.0 * n.z * n.z - 1.0))
         + uSH[7] * (1.092548 * n.x * n.z) + uSH[8] * (0.546274 * (n.x * n.x - n.y * n.y)), 0.0);
 }
+#ifdef RC_SCENE_EFFECTS
+// Lightgrid indirect light of the Level atmosphere lighting (rc2016/levels/lightgrid.py is the CPU reference and
+// documents the layout). Eight cells around the fragment, weighted by trilinear * validity, each lerp(B, A, 0.5 +
+// 0.5 d.n) + S (0.5 + 0.5 n.y) C; `cover` is how much of the sample lies on existing valid cells, and ambientLight
+// fades to the single-probe SH ambient as it falls. The position and normal go to the game's native Y-up frame.
+uniform bool uGridOn; uniform sampler3D uGridTable; uniform sampler3D uGridColour; uniform sampler3D uGridDirQ;
+uniform mat4 uGridFromView; uniform vec2 uGridParams; uniform vec3 uGridInvSize;   // params: sky-term scale S, grid-to-ambient scale
+const float GRID_COVER_GAIN = 4.0;
+vec3 gridAmbient(vec3 Nv, out float cover) {
+    vec3 P = (uGridFromView * vec4(vPos, 1.0)).xyz;
+    vec3 n = normalize(mat3(uGridFromView) * Nv);
+    vec3 s = P - 0.5, base = floor(s), f = s - base;
+    vec3 acc = vec3(0.0); float total = 0.0, valid = 0.0;
+    for (int i = 0; i < 8; i++) {
+        vec3 b = vec3(mod(float(i), 2.0), mod(floor(float(i) * 0.5), 2.0), floor(float(i) * 0.25));
+        vec3 cell = base + b, tw = mix(1.0 - f, f, b);
+        float tri = tw.x * tw.y * tw.z;
+        vec3 tile = floor(cell / 16.0);
+        vec4 e = texture3D(uGridTable, (mod(tile, 64.0) + 0.5) / 64.0);
+        if (e.a > 0.5) {
+            vec3 c = e.rgb * 16.0 + (cell - tile * 16.0);
+            vec2 yz = (c.yz + 0.5) * uGridInvSize.yz;
+            vec4 dd = texture3D(uGridDirQ, vec3((c.x * 2.0 + 0.5) * uGridInvSize.x * 0.5, yz));
+            vec4 qw = texture3D(uGridDirQ, vec3((c.x * 2.0 + 1.5) * uGridInvSize.x * 0.5, yz));
+            vec3 o = s - cell;
+            float v = clamp(8.0 * dot(qw.xyz - 0.5, o) + 16.0 * qw.w - 7.0, 0.0, 1.0);
+            float w = max(3.814697265625e-06, tri * v);
+            float x3 = uGridInvSize.x / 3.0;
+            vec3 A = texture3D(uGridColour, vec3((c.x * 3.0 + 0.5) * x3, yz)).rgb;
+            vec3 B = texture3D(uGridColour, vec3((c.x * 3.0 + 1.5) * x3, yz)).rgb;
+            vec3 C = texture3D(uGridColour, vec3((c.x * 3.0 + 2.5) * x3, yz)).rgb;
+            vec3 d = dd.xyz * 2.0 - 1.0;
+            acc += w * (mix(B, A, 0.5 + 0.5 * dot(n, d)) + uGridParams.x * (0.5 + 0.5 * n.y) * C);
+            total += w; valid += tri * v;
+        }
+    }
+    cover = clamp(valid * GRID_COVER_GAIN, 0.0, 1.0);
+    return total > 0.0 ? acc / total : vec3(0.0);
+}
+#endif
 // Diffuse is albedo * (lights + ambient) / PI * diffuseScale().
 vec3 ambientLight(vec3 N) {
     if (!uLightingEnabled) return vec3(0.0);
-    if (uLighting == 1) return irradiance(uViewToWorld * N);
+    if (uLighting == 1) {
+#ifdef RC_SCENE_EFFECTS
+        if (uGridOn) {
+            float cover; vec3 g = gridAmbient(N, cover);
+            return mix(irradiance(uViewToWorld * N), g * uGridParams.y, cover);
+        }
+#endif
+        return irradiance(uViewToWorld * N);
+    }
     return mix(vec3(0.10, 0.09, 0.08), vec3(0.30, 0.33, 0.38), dot(N, uLightFrame[1]) * 0.5 + 0.5);
 }
 // Band i of the atlas (six bands, sharpest at the top) at Blender's equirectangular (u, v).

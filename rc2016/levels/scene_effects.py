@@ -2,6 +2,7 @@
 import ctypes as C
 import time
 AO_UNIT, SHADOW_UNIT = 16, 17
+GRID_UNITS = (19, 20, 21)   # lightgrid tile table, colour atlas, direction/plane atlas (unit 18 is the display table)
 # Scene content changes (models, instances, materials) arrive many times a second during a load; each
 # shadow refresh redraws the whole unculled level, so content-driven refreshes wait this long apart.
 SHADOW_REFRESH_SECONDS = 2.0
@@ -27,7 +28,8 @@ def shadowed_ambient_factor(shadow, ndl, ambient=SHADOW_AMBIENT):
 # this long and reused until the camera or scene changes; frames in between draw without AO.
 AO_SETTLE_SECONDS = 0.15
 SCENE_UNIFORMS = ('uSceneEnabled','uSceneAOEnabled','uSceneShadowEnabled','uSceneAO','uSceneShadow',
-                  'uSceneSize','uSceneShadowSize','uSceneShadowMatrix','uSceneLightCount','uSceneLightPos','uSceneLightColour','uSceneShadowAmbient')
+                  'uSceneSize','uSceneShadowSize','uSceneShadowMatrix','uSceneLightCount','uSceneLightPos','uSceneLightColour','uSceneShadowAmbient',
+                  'uGridOn','uGridTable','uGridColour','uGridDirQ','uGridFromView','uGridParams','uGridInvSize')
 HELPERS = '''
 uniform bool uSceneEnabled,uSceneAOEnabled,uSceneShadowEnabled;
 uniform sampler2D uSceneAO; uniform sampler2DShadow uSceneShadow;
@@ -88,6 +90,13 @@ class SceneEffects:
         gl.glReadBuffer.argtypes=[ui];gl.glDrawBuffer.argtypes=[ui]
         maximum=si();gl.glGetIntegerv(0x8872,C.byref(maximum))
         if maximum.value<=SHADOW_UNIT:raise RuntimeError('Scene preview requires 18 fragment texture units')
+        # Lightgrid lookup (optional): three 3D textures on units above the display table.
+        self.grid_textures=[];self.grid_source=None;self.grid_size=None;self.view_to_native=None;self.grid_error=None;self.grid_failed=None
+        try:
+            if maximum.value<=max(GRID_UNITS):raise RuntimeError('lightgrid needs %d fragment texture units'%(max(GRID_UNITS)+1))
+            self.image3d=fn('glTexImage3D',None,[ui,si,si,si,si,si,si,ui,ui,vp])
+        except RuntimeError as exc:
+            self.image3d=None;self.grid_error=str(exc)
     def _texture(self,w,h,internal,fmt,typ,shadow=False):
         gl=self.gl;obj=C.c_uint();gl.glGenTextures(1,C.byref(obj));self.textures.append(obj.value)
         self.sh.glActiveTexture(0x84C0+SHADOW_UNIT);gl.glBindTexture(0x0DE1,obj)
@@ -112,7 +121,7 @@ class SceneEffects:
         import numpy as np
         gl=self.gl;w,h=max(1,view.winfo_width()),max(1,view.winfo_height());self.resize(w,h)
         projection=(C.c_float*16)();modelview=(C.c_float*16)();gl.glGetFloatv(0x0BA7,projection);gl.glGetFloatv(0x0BA6,modelview)
-        vm=np.array(modelview,dtype=float).reshape(4,4).T;gl.glPushAttrib(0x00004000|0x00000100|0x00000800|0x00002000)
+        vm=np.array(modelview,dtype=float).reshape(4,4).T;self.view_to_native=np.linalg.inv(vm);gl.glPushAttrib(0x00004000|0x00000100|0x00000800|0x00002000)
         try:
             if view.scene_shadows:
                 if view.lighting in view.ENVIRONMENT_LIGHTINGS and view._environment_lighting==view.lighting and view._environment:
@@ -163,8 +172,49 @@ class SceneEffects:
                 view._schedule_draw()
             self.shadow_retry=(view,view.after(int(wait*1000)+1,retry))
         return False
+    def _upload_grid(self,grid):
+        """Upload a lightgrid.LightGrid to three 3D textures; returns False (and records why) when the driver refuses."""
+        import numpy as np
+        gl=self.gl;self.release_grid();colour,dirq=grid.atlas()
+        names=(C.c_uint*3)();gl.glGenTextures(3,names);self.grid_textures=list(names)
+        gl.glPixelStorei(0x0CF5,1)
+        planes=((grid.table,0x881A,0x1908,0x1406),(colour,0x8C3A,0x1907,0x8C3B),(dirq,0x8058,0x1908,0x1401))
+        try:
+            for unit,name,(data,internal,fmt,typ) in zip(GRID_UNITS,self.grid_textures,planes):
+                self.sh.glActiveTexture(0x84C0+unit);gl.glBindTexture(0x806F,name)
+                for parameter,value in ((0x2801,0x2600),(0x2800,0x2600),(0x2802,0x812F),(0x2803,0x812F),(0x8072,0x812F)):gl.glTexParameteri(0x806F,parameter,value)
+                data=np.ascontiguousarray(data);d,h,w=data.shape[:3]
+                self.image3d(0x806F,0,internal,w,h,d,0,fmt,typ,data.ctypes.data_as(C.c_void_p))
+                if gl.glGetError():raise RuntimeError('glTexImage3D failed for the lightgrid')
+        except Exception as exc:
+            self.grid_error=str(exc);self.release_grid();self.sh.glActiveTexture(0x84C0);return False
+        gl.glPixelStorei(0x0CF5,4);self.sh.glActiveTexture(0x84C0)
+        ax,ay,az=grid.atlas_tiles;self.grid_size=(ax*16,ay*16,az*16);self.grid_source=grid;return True
+    def release_grid(self):
+        if self.grid_textures:self.gl.glDeleteTextures(len(self.grid_textures),(C.c_uint*len(self.grid_textures))(*self.grid_textures))
+        self.grid_textures=[];self.grid_source=None;self.grid_size=None
+    def _grid_ready(self,view):
+        """The LightGrid to sample this frame (uploaded on first use), or None."""
+        if self.image3d is None or self.view_to_native is None or not getattr(view,'lightgrid_enabled',True):return None
+        if view.lighting!=ATMOSPHERE_LIGHTING or view._environment_lighting!=view.lighting or not view._environment:return None
+        grid=view._environment.get('lightgrid')
+        if grid is None:return None
+        if self.grid_source is not grid:
+            if self.grid_failed is grid or not self._upload_grid(grid):
+                self.grid_failed=grid;return None
+        return grid
     def apply(self,view,u):
         sh,gl=self.sh,self.gl;ready=not view._scene_geometry and view.scene_effects_active()
+        grid=self._grid_ready(view) if ready else None
+        sh.glUniform1i(u.get('uGridOn',-1),int(grid is not None))
+        if grid is not None:
+            from rc2016.levels.lightgrid import AMBIENT_SCALE,SKY_TERM_SCALE
+            for name,unit,texture in zip(('uGridTable','uGridColour','uGridDirQ'),GRID_UNITS,self.grid_textures):
+                sh.glUniform1i(u.get(name,-1),unit);sh.glActiveTexture(0x84C0+unit);gl.glBindTexture(0x806F,texture)
+            sh.glActiveTexture(0x84C0)
+            self.uniform_matrix(u.get('uGridFromView',-1),1,0,(C.c_float*16)(*self.view_to_native.T.flat))
+            self.uniform2(u.get('uGridParams',-1),SKY_TERM_SCALE,AMBIENT_SCALE)
+            sh.glUniform3f(u.get('uGridInvSize',-1),*(1.0/s for s in self.grid_size))
         sh.glUniform1i(u['uSceneEnabled'],int(ready));sh.glUniform1i(u.get('uSceneGeometry',-1),int(view._scene_geometry))
         sh.glUniform1i(u['uSceneAOEnabled'],int(ready and view.scene_ao and self.ao_valid and bool(self.ao_texture)))
         sh.glUniform1i(u['uSceneShadowEnabled'],int(ready and view.scene_shadows and self.view_shadow_matrix is not None))
@@ -175,7 +225,7 @@ class SceneEffects:
             sh.glActiveTexture(0x84C0+unit);gl.glBindTexture(0x0DE1,texture)
         if self.view_shadow_matrix is not None:self.uniform_matrix(u['uSceneShadowMatrix'],1,0,(C.c_float*16)(*self.view_shadow_matrix.T.flat))
         sh.glActiveTexture(0x84C0)
-    def close(self):
+    def close(self):   # keeps the lightgrid textures (a resize closes the buffers); release_grid frees them
         for name in ('shadow_retry','ao_retry'):
             pending=getattr(self,name,None)
             if pending:
