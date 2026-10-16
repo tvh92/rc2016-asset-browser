@@ -142,6 +142,13 @@ NUMBER_DISPLAY_QWARK = dict(_NUMBER_DISPLAY_COMMON, variant='qwark', writer='37C
 # MRT1 rgb = CB2[0..2], MRT2 rgb = CB2[4], gloss = sqrt(sat(CB2[5])), emission K = CB2[3]. The pass-1 variant E921A79B
 # (no texture, record 17) writes F0 0.1 and a fixed gloss instead. enm_blarg_green_goo writer 4A73CC38 (pass 1 record 4,
 # 41-dword CB2): the albedo floor sat(0x34392B3C) (all noise masks 0), MRT2 F0 = 0x17DE448C, gloss = sqrt(sat(0x24F4CA4C)).
+# Clank's antenna light (graph hero_bright_center_light, deferred writer 7BEC2D2F; docs/material-decoding/clank-antenna.md).
+# The graph literal 0.9890101552009583 is the encoded gloss 1 - 2^(-11 g) at specular-AA width 0, so g = sqrt(0.35).
+# The inverse of the engine gloss encoding is the same one `_gloss_without_aa` recognises.
+CLANK_ANTENNA_GRAPH_SHA256 = 'd3e43dc01666699bfbaefedf8b018eb9db4e34583d1ad859cf7e10e75ce4d28d'
+CLANK_ANTENNA_CENTRE_GAIN = 10.0                  # literal multiplier of the centre colour in the writer
+CLANK_ANTENNA_GLOSS_SQ = (-math.log2(1.0 - 0.9890101552009583) / 11.0) ** 2
+CLANK_ANTENNA_BLINK_RATE = 4.2                    # phase = 4.2 CB0[99]; no per-vertex phase term
 FLAT_SURFACE_GOO = dict(colour_key=0x34392B3C, f0_key=0x17DE448C, gloss_key=GLOSS_SCALE_KEY)
 BASIC_FLAT_COLOR_SHA256 = '6d9bcad5a9dab38dd5988195cc9e87514c08a90c6b8fa899c2d21f3e42c14f95'
 # Decoded writers that do not read _g as coloured F0 + gloss alpha (first matching prefix wins).
@@ -368,6 +375,13 @@ GRAPH_RULES = (
     # F0 = grey Fs, gloss = sqrt(sat(G)). w is a blink sat(1 + (1 - B)(0.5 sin(phase) - 0.5)), frozen at sin = 0.
     ('materialgraph/character/hero/hero_bright_center_light/hero_bright_center_light_variable.',
      dict(self_lit='bright_center', self_lit_key=0xB7305C21, bright_center=True)),
+    # Deferred writer 7BEC2D2F of the sibling graph (Clank's antenna, hero_bright_center_light_clank): the same
+    # bright-centre form with the exponent taken directly from key 0x9E351D7A, a literal centre gain of 10, a baked
+    # gloss and a blink phase of 4.2 CB0[99] only, so CB0[99] = 0 gives the exact sin = 0 weight. `_c` is the material's
+    # clank_antenna_c override of the graph slot. Exact graph + SHA only.
+    ('materialgraph/character/hero/hero_bright_center_light/hero_bright_center_light.',
+     dict(self_lit='bright_center', self_lit_key=0xB7305C21, bright_center='clank',
+          _graph_sha256=CLANK_ANTENNA_GRAPH_SHA256)),
     # Forward colour pass 93695188 (one FP16 target, no texture), flags 0x200039: additive, back faces culled.
     # The antenna glow shell (enm_qwark_light_glow and the other materials on this graph); no _c/_g/_n is read.
     ('materialgraph/character/hero/hero_bright_center_light_glow/hero_bright_center_light_glow_variable.',
@@ -1112,7 +1126,23 @@ def material_texture_paths(archive, material_path: str) -> dict:
             a_scale=0.30324259, a_offset=0.06301001, g_scale=0.03041702,
             amplitude=0.5, amplitude_input='CB0 dword 115', captured_amplitude=0.01,
             presentation=True, writer='0CD2AAFB')
-    if rule.get('bright_center'):
+    if rule.get('bright_center') == 'clank':
+        # 7BEC2D2F: t = |1.001 - sat(N.V)|^CB2[3]; albedo = _c (E t + 10 C w (1 - t)); w = B + (1 - B)(0.5 sin(4.2 CB0[99]) + 0.5);
+        # self-lit = K albedo.R; F0 = grey CB2[9]; gloss = sqrt(0.35). Material keys are read, else the graph defaults.
+        steady = value(0x9872D04A, 0.15)
+        result['bright_center'] = dict(
+            edge=vec3(0x16B8AB81, (0.0, 0.0, 0.0)),
+            centre=[x * CLANK_ANTENNA_CENTRE_GAIN for x in vec3(0x5BC2D1F0, (1.0, 0.5271151, 0.462077))],
+            exponent=value(0x9E351D7A, 0.01),
+            weight=min(1.0, max(0.0, 1.0 - 0.5 * (1.0 - steady))),
+            f0=value(0x08FE9F29, 0.2), gloss_sq=CLANK_ANTENNA_GLOSS_SQ, steady=steady, writer='7BEC2D2F',
+            graph_path=rule['graph_path'], graph_sha256=rule['graph_sha256'], frozen_inputs=dict(CB0_99=0.0),
+            blink_rate=CLANK_ANTENNA_BLINK_RATE, game_equivalence=False,
+            limitation='CB0[99] is frozen at 0 (blink weight %g); the geometry normal stands in for the interpolated '
+                       'normal and the viewer camera for the screen-ray view vector; the normal-map fade (CB0[95], two '
+                       'TBUFFER reads, POS_W) and tangent frame are not reproduced' % min(1.0, max(0.0, 1.0 - 0.5 * (1.0 - steady))))
+        result['spec'] = result['gloss'] = 1.0   # F0 and gloss are the writer's constants
+    elif rule.get('bright_center'):
         steady = value(0x01B78BF6, 0.15)
         intensity = value(0x398AD3E2, 5.0)
         result['bright_center'] = dict(

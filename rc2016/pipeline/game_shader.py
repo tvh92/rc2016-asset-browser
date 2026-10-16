@@ -1938,7 +1938,11 @@ def apply_viewer_graph_rule(mat, source):
             bright_self = P.m('MULTIPLY', P.sep(albedo)[0], P.sep(fac)[0])
             albedo = P.v('MULTIPLY', albedo, fac)
             view_terms.append('bright centre')
-            limits.append('bright centre: the blink weight is frozen at its sin = 0 value (%g)' % float(bright['weight']))
+            if bright.get('limitation'):   # exact-graph rule that carries its own frozen-input label
+                limits.append('bright centre (%s): %s' % (bright.get('writer', ''), bright['limitation']))
+            else:
+                limits.append('bright centre: the blink weight is frozen at sin = 0 (%g), a review value; the D14A48D7 phase is '
+                              'rate * time + 1000 * |attribute3.w|, so the writer itself is not at sin = 0 when time is 0' % float(bright['weight']))
             if bright.get('preview_override'):
                 limits.append('PREVIEW OVERRIDE, not decoded: %s; the decoded writer 0CD2AAFB (white base plus a CB0[115] facing glow) '
                               'is not drawn and the halo mesh Qwark adds does not exist on this model' % bright['preview_override'])
