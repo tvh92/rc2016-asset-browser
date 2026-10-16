@@ -241,6 +241,33 @@ class GlassValidationTests(unittest.TestCase):
         self.assertEqual(expected['VR glass rim mult'], rule['terms']['glass_cg02']['params']['rim_mult'])
         self.assertEqual(expected['VR glass normal v'], 1.0)
 
+    def test_opaque_glass_does_not_require_unconsumed_alpha_constant(self):
+        # The opaque writer uses its RGB lit output directly. Its computed alpha
+        # (rim bias for basic/JN, alpha floor for CG02) is intentionally unused.
+        for graph, defaults, key, flag_word, alpha_name in (
+            (BASIC, BASIC_DEFAULTS, 'glass_basic', 0x838, 'VR glass rim bias'),
+            (JN, JN_DEFAULTS, 'glass_jn', 0x838, 'VR glass rim bias'),
+            (CG02, CG02_DEFAULTS, 'glass_cg02', 0x838, 'VR glass alpha floor'),
+        ):
+            rule = self.rule(graph, defaults, [], key, flag_word)
+            self.assertEqual(rule['terms'][key]['blend'], 'opaque')
+            names, _ = validation._viewer_required(rule, False)
+            self.assertNotIn(alpha_name, names)
+            # The source value is still checked if present on the Blender node;
+            # only output-cone reachability is waived for this opaque branch.
+            self.assertIn(alpha_name, validation._viewer_expected_constants(rule))
+
+    def test_translucent_glass_still_requires_alpha_constant(self):
+        for graph, defaults, key, flag_word, alpha_name in (
+            (BASIC, BASIC_DEFAULTS, 'glass_basic', 0x3a, 'VR glass rim bias'),
+            (JN, JN_DEFAULTS, 'glass_jn', 0x36, 'VR glass rim bias'),
+            (CG02, CG02_DEFAULTS, 'glass_cg02', 0x39, 'VR glass alpha floor'),
+        ):
+            rule = self.rule(graph, defaults, [], key, flag_word)
+            self.assertNotEqual(rule['terms'][key]['blend'], 'opaque')
+            names, _ = validation._viewer_required(rule, False)
+            self.assertIn(alpha_name, names)
+
     def test_blender_front_end_builds_the_nodes_the_validator_requires(self):
         import pathlib
         text = (pathlib.Path(__file__).resolve().parents[1] / 'rc2016/pipeline/game_shader.py').read_text(encoding='utf-8')

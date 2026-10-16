@@ -597,7 +597,10 @@ def _viewer_required(rule, has_n):
         req("_n")
     for key in ("glass_basic", "glass_cg02", "glass_jn"):
         if key in ported:
-            names += ["glass " + name for name in GLASS_CONSTANTS[key]]
+            glass = terms[key]
+            names += ["glass " + name for name in GLASS_CONSTANTS[key]
+                      if not (glass.get("blend") == "opaque" and
+                              name == ("alpha floor" if key == "glass_cg02" else "rim bias"))]
             if key == "glass_cg02" and tex.get("_n"):
                 names += ["glass normal u", "glass normal v"]; req("_n")
     if "screen" in ported:
