@@ -398,7 +398,7 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
             lowered['limitations'].append(
                 'Constructor Bot chest-button source selector 0x2A40709D is 1.0; the graph compares it with 0.5 '
                 'and selects the source false branch. MRT0 alpha comes from TBUFFER_LOAD_FORMAT_X and is omitted; '
-                'its semantics are unknown and it is not interpreted as opacity. MRT0 RGB contains a front-face-' 
+                'its semantics are unknown and it is not interpreted as opacity. MRT0 RGB contains a front-face-'
                 'polarized encoded attribute normal, but this preview uses geometry normals because tangent-frame '
                 'reconstruction is unproven.')
         if source_preview_policy.get('parameters'):
