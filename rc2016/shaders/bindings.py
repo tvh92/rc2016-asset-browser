@@ -380,18 +380,31 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
                    n.get('api')==preview_input['api'] and n.get('dword')==preview_input['dword']
                    for n in ir.nodes):
             raise ValueError('Exact source preview input is absent from the matched writer')
-        selector=source_preview_policy['selector']
-        selector_row=next((row for row in receipt if row.get('key_hash')==selector['key_hash']),None)
-        if not selector_row or selector_row.get('values')!=[selector['value']] or selector_row.get('source')!='graph_default':
-            raise ValueError('Constructor Button source selector differs from its graph default')
+        if 'selector' in source_preview_policy:
+            selector=source_preview_policy['selector']
+            selector_row=next((row for row in receipt if row.get('key_hash')==selector['key_hash']),None)
+            if not selector_row or selector_row.get('values')!=[selector['value']] or selector_row.get('source')!='graph_default':
+                raise ValueError('Constructor Button source selector differs from its graph default')
+        for parameter in source_preview_policy.get('parameters',()):
+            parameter_row=next((row for row in receipt if row.get('key_hash')==parameter['key_hash']),None)
+            if (not parameter_row or parameter_row.get('dword')!=parameter['dword'] or
+                parameter_row.get('values')!=parameter['values'] or parameter_row.get('source')!=parameter['source']):
+                raise ValueError('Exact source preview parameter differs from the serialized material and graph table')
+        label=source_preview_policy.get('label','Source material')
         lowered['limitations'].append(
-            'Constructor Bot chest-button source preview: CB0[99] is frozen at 0 as a time/phase presentation input; '
-            'the engine upload and runtime value are unverified. The serialized source selector 0x2A40709D is 1.0; '
-            'the graph compares it with 0.5 and selects the source false branch.')
-        lowered['limitations'].append(
-            'Constructor Bot chest-button MRT0 alpha comes from TBUFFER_LOAD_FORMAT_X and is omitted; its semantics '
-            'are unknown and it is not interpreted as opacity. MRT0 RGB contains a front-face-polarized encoded '
-            'attribute normal, but this preview uses geometry normals because tangent-frame reconstruction is unproven.')
+            f'{label} source preview: CB0[99] is frozen at 0 as a time/phase presentation input; '
+            'the engine upload and runtime value are unverified.')
+        if source_preview_policy['graph_path']==CONSTRUCTO_BUTTON_SOURCE_PREVIEW['graph_path']:
+            lowered['limitations'].append(
+                'Constructor Bot chest-button source selector 0x2A40709D is 1.0; the graph compares it with 0.5 '
+                'and selects the source false branch. MRT0 alpha comes from TBUFFER_LOAD_FORMAT_X and is omitted; '
+                'its semantics are unknown and it is not interpreted as opacity. MRT0 RGB contains a front-face-' 
+                'polarized encoded attribute normal, but this preview uses geometry normals because tangent-frame '
+                'reconstruction is unproven.')
+        if source_preview_policy.get('parameters'):
+            lowered['limitations'].append(
+                'Warbot V3 eye CB2 values are read as source float rows by the exact pass-table key/width mapping; '
+                'their named engine semantics and runtime pass selection remain unverified.')
     replaced=ir.replace(roots,substitutions);adapted=0;neutral_masks=[];static_used=set()
     if world_position:
         # Explicit review input for the decoded rock Blend Mask slot. An empty
@@ -604,16 +617,34 @@ CONSTRUCTO_BUTTON_SOURCE_PREVIEW=dict(
     input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
     selector=dict(key_hash=0x2A40709D,dword=0,value=1.0))
 
+WARBOT_V3_EYE_SOURCE_PREVIEW=dict(
+    graph_path='materialgraph/character/enemy/enm_warbot_v3_eye/enm_warbot_v3_eye.materialgraph',
+    graph_sha256='28c3f0d182bbdb1d2c62a193339abcb1abbb7c4992c18d7c6fa19cb3b4aa91c9',
+    material_path='material/character/enemy/enm_warbot_v3_eye/enm_warbot_v3_eye.material',
+    material_sha256='0102d39765c61b550f3a8b3f1ab1f6beafad8defbb15f8506c7dcd816fb4ffda',
+    shader_id='0xbbcf827b',
+    code_sha256='439a2fb594be9f55d18fd79884552e72fa7864392b24314392d5fd8a66351383',
+    input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
+    parameters=[
+        dict(key_hash=0x7F058428,dword=0,values=[1.0,0.520995557308197,0.0],source='material_instance'),
+        dict(key_hash=0x06F19114,dword=3,values=[20.0],source='material_instance'),
+        dict(key_hash=0x62835AF9,dword=4,values=[0.0],source='material_instance'),
+        dict(key_hash=0x4069EA80,dword=5,values=[0.0],source='material_instance')])
+
+SOURCE_PREVIEW_POLICIES={rule['graph_path']:rule for rule in
+    (CONSTRUCTO_BUTTON_SOURCE_PREVIEW,WARBOT_V3_EYE_SOURCE_PREVIEW)}
+
 
 def _source_preview_policy(graph_paths, graph_sha256, material_path, material_sha256, program):
     """Return a source-preview input only for the exact audited material/writer."""
-    rule=CONSTRUCTO_BUTTON_SOURCE_PREVIEW
     if not isinstance(graph_paths,(list,tuple)) or len(graph_paths)!=1:return None
     try:
         normalized_graph=asset_path(str(graph_paths[0]))
         normalized_material=asset_path(str(material_path or ''))
     except ValueError:
         return None
+    rule=SOURCE_PREVIEW_POLICIES.get(normalized_graph)
+    if not rule:return None
     if (normalized_graph!=rule['graph_path'] or graph_sha256!=rule['graph_sha256'] or
         normalized_material!=rule['material_path'] or material_sha256!=rule['material_sha256'] or
         program.get('shader_id')!=rule['shader_id'] or program.get('code_sha256')!=rule['code_sha256']):
@@ -625,18 +656,23 @@ def validate_source_preview_inputs(translation):
     """Reject edited or stale source-preview input receipts before Blender acceptance."""
     rows=translation.get('source_preview_inputs',[])
     if not rows:return True
-    rule=CONSTRUCTO_BUTTON_SOURCE_PREVIEW
+    rule=SOURCE_PREVIEW_POLICIES.get(rows[0].get('graph_path'))
+    if not rule:raise ValueError('Source preview input names an unregistered graph')
     expected=dict(name=rule['input']['name'],kind=rule['input']['kind'],api=rule['input']['api'],
         dword=rule['input']['dword'],value=rule['input']['value'],graph_path=rule['graph_path'],
         graph_sha256=rule['graph_sha256'],material_path=rule['material_path'],
         material_sha256=rule['material_sha256'],shader_id=rule['shader_id'],
         code_sha256=rule['code_sha256'],
-        meaning='time/phase-like source input; runtime upload/value unverified',
-        selector_key_hash='0x%08X'%rule['selector']['key_hash'],selector_value=rule['selector']['value'])
+        meaning='time/phase-like source input; runtime upload/value unverified')
+    if 'selector' in rule:
+        expected.update(selector_key_hash='0x%08X'%rule['selector']['key_hash'],selector_value=rule['selector']['value'])
+    if rule.get('parameters'):
+        expected['parameter_receipts']=[dict(key_hash='0x%08X'%p['key_hash'],dword=p['dword'],
+            values=p['values'],source=p['source']) for p in rule['parameters']]
     if rows != [expected] or translation.get('shader_id')!=rule['shader_id'] or \
             translation.get('code_sha256')!=rule['code_sha256'] or \
             translation.get('graph_sha256')!=rule['graph_sha256']:
-        raise ValueError('Source preview input receipt does not match the exact Constructor Bot chest-button source')
+        raise ValueError('Source preview input receipt does not match its exact graph, material and writer source')
     return True
 
 
@@ -713,14 +749,19 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False,
             **({'source_shader_record':c['bound']['source_shader_record']} if 'source_shader_record' in c['bound'] else {})) for c in candidates])
     if candidate['source_preview_policy']:
         rule=candidate['source_preview_policy']
-        result['source_preview_inputs']=[dict(name=rule['input']['name'],kind=rule['input']['kind'],
+        preview_receipt=dict(name=rule['input']['name'],kind=rule['input']['kind'],
             api=rule['input']['api'],dword=rule['input']['dword'],value=rule['input']['value'],
             graph_path=rule['graph_path'],graph_sha256=rule['graph_sha256'],
             material_path=rule['material_path'],material_sha256=rule['material_sha256'],
             shader_id=rule['shader_id'],code_sha256=rule['code_sha256'],
-            meaning='time/phase-like source input; runtime upload/value unverified',
-            selector_key_hash='0x%08X'%rule['selector']['key_hash'],
-            selector_value=rule['selector']['value'])]
+            meaning='time/phase-like source input; runtime upload/value unverified')
+        if 'selector' in rule:
+            preview_receipt.update(selector_key_hash='0x%08X'%rule['selector']['key_hash'],
+                selector_value=rule['selector']['value'])
+        if rule.get('parameters'):
+            preview_receipt['parameter_receipts']=[dict(key_hash='0x%08X'%p['key_hash'],dword=p['dword'],
+                values=p['values'],source=p['source']) for p in rule['parameters']]
+        result['source_preview_inputs']=[preview_receipt]
     result['limitations']=list(dict.fromkeys(
         limitation for c in candidates for limitation in c['bound']['limitations']))
     result['limitations']+=graph['limitations']+[

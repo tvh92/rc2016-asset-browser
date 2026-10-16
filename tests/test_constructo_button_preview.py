@@ -44,7 +44,7 @@ class SourcePreviewGuardTests(unittest.TestCase):
         for field,value in [('value',1.0),('material_path','material/other.material'),
                             ('selector_value',0.0),('shader_id','0x00000000')]:
             bad=dict(translation);bad['source_preview_inputs']=[dict(receipt,**{field:value})]
-            with self.subTest(field=field),self.assertRaisesRegex(ValueError,'exact Constructor Bot'):
+            with self.subTest(field=field),self.assertRaisesRegex(ValueError,'exact graph, material and writer'):
                 validate_source_preview_inputs(bad)
 
 
