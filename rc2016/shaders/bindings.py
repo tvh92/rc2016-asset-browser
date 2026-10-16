@@ -511,6 +511,16 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
             for a,s,i in sorted(independent)]} if independent else {}))
 
 
+# Deferred writers audited to sample nothing (no texture node, native resource bitmap 0) whose outputs are
+# constants. The pointer join alone proves their pass; the general rule still drops every other program with
+# no sampler at API 5 or above, because it would also bind the zero-output placeholder writers
+# (docs/material-decoding/plasma-striker-body-glow.md). Keyed by exact graph SHA-256, shader id and code SHA-256.
+RESOURCE_FREE_WRITERS=frozenset({
+    ('2dcefd19645c75b10d5773454bc8224df7ea792e8b16b369e02e4e0edc9f5838','0x368cca2e',
+     '82d8502ff82e36291b77c5091fad87da303ee9b28624f7d566c71fba3c34032d'),  # wpn_plasma_striker_fx body glow
+})
+
+
 def program_contracts(data,program,contracts,allow_independent_samplers=False):
     """Join native envelope to its source pass, never to a sorted texture list.
 
@@ -536,6 +546,8 @@ def program_contracts(data,program,contracts,allow_independent_samplers=False):
                           and type(n.get('sampler_api')) is int and 0<=n['sampler_api']<32)) for n in textures))
     if not static_table and any(n.get('resource_table') for n in textures):return []
     cb=[n['dword'] for n in program['ir']['nodes'] if n['op']=='input' and n.get('kind')=='cb' and n.get('api')==2]
+    resource_free=not apis and not textures and (hashlib.sha256(data).hexdigest(),program.get('shader_id'),
+        program.get('code_sha256')) in RESOURCE_FREE_WRITERS
     joined=[]
     for i in range(size//20):
         cb_mask,resource_mask,record_word2,relative,blob_size=struct.unpack_from('<5I',data,base+i*20)
@@ -546,7 +558,10 @@ def program_contracts(data,program,contracts,allow_independent_samplers=False):
         if 'code_offset' in program and program['code_offset']+program['code_size']+28>shader_base+relative+blob_size:
             raise ValueError('Serialized shader blob does not contain the source program')
         contract=contracts[i//13]
-        if not static_table and (not apis or max(apis)-4!=len(contract['resources'])):continue
+        if not static_table:
+            if apis:
+                if max(apis)-4!=len(contract['resources']):continue
+            elif not resource_free or resource_mask:continue
         if any(a is None or not 5<=a<min(32,5+len(contract['resources'])) or not resource_mask&(1<<a) for a in used):continue
         if cb and (not cb_mask&4 or contract['cb_bytes']!=(max(cb)+1+3)//4*16):continue
         matches.append(dict(contract,source_shader_record=dict(index=i,file_offset=base+i*20,
