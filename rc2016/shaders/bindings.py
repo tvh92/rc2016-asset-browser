@@ -372,14 +372,16 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
     substitutions={i:ir.const(values[n['dword']]) for i,n in enumerate(list(ir.nodes))
         if n['op']=='input' and n.get('kind')=='cb' and n['api']==2 and n['dword'] in values}
     if source_preview_policy:
-        preview_input=source_preview_policy['input']
-        substitutions.update({i:ir.const(preview_input['value']) for i,n in enumerate(list(ir.nodes))
-            if n['op']=='input' and n.get('kind')==preview_input['kind'] and
-               n.get('api')==preview_input['api'] and n.get('dword')==preview_input['dword']})
-        if not any(n['op']=='input' and n.get('kind')==preview_input['kind'] and
-                   n.get('api')==preview_input['api'] and n.get('dword')==preview_input['dword']
-                   for n in ir.nodes):
-            raise ValueError('Exact source preview input is absent from the matched writer')
+        # The primary input plus any further frozen engine words the exact policy names (extra_inputs).
+        for preview_input in (source_preview_policy['input'],*source_preview_policy.get('extra_inputs',())):
+            substitutions.update({i:ir.const(preview_input['value']) for i,n in enumerate(list(ir.nodes))
+                if n['op']=='input' and n.get('kind')==preview_input['kind'] and
+                   n.get('api')==preview_input['api'] and n.get('dword')==preview_input['dword']})
+            if not any(n['op']=='input' and n.get('kind')==preview_input['kind'] and
+                       n.get('api')==preview_input['api'] and n.get('dword')==preview_input['dword']
+                       for n in ir.nodes):
+                raise ValueError('Exact source preview input is absent from the matched writer')
+        lowered['limitations'].extend(extra['limitation'] for extra in source_preview_policy.get('extra_inputs',()))
         if 'selector' in source_preview_policy:
             selector=source_preview_policy['selector']
             selector_row=next((row for row in receipt if row.get('key_hash')==selector['key_hash']),None)
@@ -689,10 +691,48 @@ MAG_BOOT_FAN_SOURCE_PREVIEW=dict(
     input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
     label='Mag boot fan')
 
+# Gauge needle and Map-o-matic screen: the gloss output of both writers is -log2(1 - C (2 - R))/11 with
+# R = 1/max(0.5, 1 - S/4), where S is a screen-space specular-AA width scaled by CB0[139] and the vertex input
+# attribute1.2. CB0[139] = 0 makes S = 0, R = 1 and gloss the flat-surface value, which is the width-1 convention
+# the translator already applies where the exp2 term survives folding (docs/material-decoding/gauge-needle-map-o-matic.md).
+# The Map-o-matic albedo is 2 A CB2 X with A = CB0[115]; 0.5 makes the factor 2A exactly 1 (a presentation value).
+GAUGE_NEEDLE_SOURCE_PREVIEW=dict(
+    graph_path='materialgraph/environment/global/prop/gbl_prop_guage_needle_01/gbl_prop_guage_needle_01.materialgraph',
+    graph_sha256='f4810854e2a2c50e504f9f3d71bee11e633fed5bbf1080df5d939c8f32f0d13d',
+    material_path='material/environment/global/prop/gbl_prop_guage_needle_01/gbl_prop_guage_needle_01.material',
+    material_sha256='54149adf021041cd2823e62899f87cbbc0356c9f6c90cdfe897c47ea394e079d',
+    shader_id='0x7d4cea47',
+    code_sha256='d3f8e8bebd52897b646682955a8ec48445e1b46dca527973d9e1c432691f9a6f',
+    input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
+    extra_inputs=[dict(kind='cb',api=0,dword=139,value=0.0,name='CB0[139]',
+        meaning='specular-AA width scale; 0 selects the flat-surface gloss; runtime upload/value unverified',
+        limitation='CB0[139] is frozen at 0 so the screen-space specular-AA width term is neutral (flat-surface '
+            'gloss, width 1); the engine value and the vertex input attribute1.2 it multiplies are unverified and not read.')],
+    label='Gauge needle')
+
+MAP_O_MATIC_SCREEN_SOURCE_PREVIEW=dict(
+    graph_path='materialgraph/environment/veldin/prop/vel_prop_monitor_screen_03/vel_prop_monitor_screen_03.materialgraph',
+    graph_sha256='bcce8de0419a4bca936ba1f25aabacbeecab7ccadd0f2a45ae02d6a88ded9404',
+    material_path='material/environment/veldin/prop/vel_prop_monitor_screen_03/gbl_map_o_matic.material',
+    material_sha256='0d758e93fb8d736db2d7d15576f8ffe1f7c4c440228cb73e34d1afe75b891f43',
+    shader_id='0x4dd02bef',
+    code_sha256='02657ce3b54b0051c122384076f2f7e66e96fc8b6d148c558e0948fcc1ac10d5',
+    input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
+    extra_inputs=[
+        dict(kind='cb',api=0,dword=115,value=0.5,name='CB0[115]',
+            meaning='albedo amplitude; 0.5 makes the writer factor 2A equal 1; presentation value, not a decoded game value',
+            limitation='CB0[115] scales the albedo as 2A and is set to the presentation value 0.5 (factor 1). It is not a '
+                'decoded game value; amplitude captures of other writers read 0.01, so the in-game albedo brightness is unknown.'),
+        dict(kind='cb',api=0,dword=139,value=0.0,name='CB0[139]',
+            meaning='specular-AA width scale; 0 selects the flat-surface gloss; runtime upload/value unverified',
+            limitation='CB0[139] is frozen at 0 so the screen-space specular-AA width term is neutral (flat-surface '
+                'gloss, width 1); the engine value and the vertex input attribute1.2 it multiplies are unverified and not read.')],
+    label='Map-o-matic screen')
+
 SOURCE_PREVIEW_POLICIES={rule['graph_path']:rule for rule in
     (CONSTRUCTO_BUTTON_SOURCE_PREVIEW,WARBOT_V3_EYE_SOURCE_PREVIEW,EXTERMITANK_HOSES_SOURCE_PREVIEW,
      TRESPASSER_SCREEN_SOURCE_PREVIEW,PIXELIZER_BARREL_SOURCE_PREVIEW,PLASMA_STRIKER_SCOPE_SOURCE_PREVIEW,
-     MAG_BOOT_FAN_SOURCE_PREVIEW)}
+     MAG_BOOT_FAN_SOURCE_PREVIEW,GAUGE_NEEDLE_SOURCE_PREVIEW,MAP_O_MATIC_SCREEN_SOURCE_PREVIEW)}
 
 
 def _source_preview_policy(graph_paths, graph_sha256, material_path, material_sha256, program):
@@ -712,6 +752,15 @@ def _source_preview_policy(graph_paths, graph_sha256, material_path, material_sh
     return dict(rule)
 
 
+def _extra_input_receipts(rule):
+    """Receipt rows for the further frozen engine words of a policy; each names its own meaning."""
+    return [dict(name=e['name'],kind=e['kind'],api=e['api'],dword=e['dword'],value=e['value'],
+        graph_path=rule['graph_path'],graph_sha256=rule['graph_sha256'],
+        material_path=rule['material_path'],material_sha256=rule['material_sha256'],
+        shader_id=rule['shader_id'],code_sha256=rule['code_sha256'],meaning=e['meaning'])
+        for e in rule.get('extra_inputs',())]
+
+
 def validate_source_preview_inputs(translation):
     """Reject edited or stale source-preview input receipts before Blender acceptance."""
     rows=translation.get('source_preview_inputs',[])
@@ -729,7 +778,7 @@ def validate_source_preview_inputs(translation):
     if rule.get('parameters'):
         expected['parameter_receipts']=[dict(key_hash='0x%08X'%p['key_hash'],dword=p['dword'],
             values=p['values'],source=p['source']) for p in rule['parameters']]
-    if rows != [expected] or translation.get('shader_id')!=rule['shader_id'] or \
+    if rows != [expected,*_extra_input_receipts(rule)] or translation.get('shader_id')!=rule['shader_id'] or \
             translation.get('code_sha256')!=rule['code_sha256'] or \
             translation.get('graph_sha256')!=rule['graph_sha256']:
         raise ValueError('Source preview input receipt does not match its exact graph, material and writer source')
@@ -821,7 +870,7 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False,
         if rule.get('parameters'):
             preview_receipt['parameter_receipts']=[dict(key_hash='0x%08X'%p['key_hash'],dword=p['dword'],
                 values=p['values'],source=p['source']) for p in rule['parameters']]
-        result['source_preview_inputs']=[preview_receipt]
+        result['source_preview_inputs']=[preview_receipt,*_extra_input_receipts(rule)]
     result['limitations']=list(dict.fromkeys(
         limitation for c in candidates for limitation in c['bound']['limitations']))
     result['limitations']+=graph['limitations']+[
