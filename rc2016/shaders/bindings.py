@@ -644,8 +644,55 @@ EXTERMITANK_HOSES_SOURCE_PREVIEW=dict(
     input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
     label='Extermitank hoses')
 
+# Weapon and gadget graphs whose deferred writer is exact and portable once CB0[99] is frozen at 0
+# (decode notes: docs/material-decoding/weapon-gadget-frozen-time.md). Each gate names the exact graph,
+# material, shader id and code hash, so a source-identical writer elsewhere gets nothing.
+TRESPASSER_SCREEN_SOURCE_PREVIEW=dict(
+    graph_path='required/materials/gdgt_tresspasser_screen.materialgraph',
+    graph_sha256='780d58f5ecaabb6aab389db429488462b1a93e7982ca95ba11876ffad0f79684',
+    material_path='material/equipment/gadget/gdgt_trespasser_gun_screen/gdgt_trespasser_gun_screen.material',
+    material_sha256='babbe8db216098c8129cbf145ecb1b7135ec4d1971251aaaccc59dd11cedc741',
+    shader_id='0x97715c0e',
+    code_sha256='0be1b5f614120fa63507abb3ff23627bed7b9ca1f0c705a02d2e0454e31ea1f7',
+    input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
+    label='Trespasser gun screen')
+
+PIXELIZER_BARREL_SOURCE_PREVIEW=dict(
+    graph_path='materialgraph/equipment/weapon/wpn_pixelizer_barrel/wpn_pixelizer_barrel.materialgraph',
+    graph_sha256='04946d70c1f463fc1f5f40986974a0fde400fbfdbfe982e58ccebf782fdc2dab',
+    material_path='material/equipment/weapon/wpn_pixelizer_barrel/wpn_pixelizer_barrel.material',
+    material_sha256='d2a46a76c1bd2e20fe7b4a6c259001fc50a8fc1bca0229bd946a181b963957a7',
+    shader_id='0x566afd49',
+    code_sha256='f12c42f90ec1b381b7d0b6a48b0a12466f024f072069fc805703676eb94a5d3c',
+    input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
+    label='Pixelizer barrel')
+
+PLASMA_STRIKER_SCOPE_SOURCE_PREVIEW=dict(
+    graph_path='materialgraph/equipment/weapon/wpn_plasma_striker_fx_scope/wpn_plasma_striker_fx_scope.materialgraph',
+    graph_sha256='f3606ca7af344ca9954fec4553374452aa1e8c973cf332be8670ec79e19fb8f3',
+    material_path='material/equipment/weapon/wpn_plasma_striker_fx_scope/wpn_plasma_striker_fx_scope.material',
+    material_sha256='632909173f0de4e891002751a774ba6639450ba6e5db5d0c65b1cc9bb0ce97f1',
+    shader_id='0x00e1b2fe',
+    code_sha256='718debe4cbfd05b36438d37ba230349f4b366256c6ac903aeb04eacc63c1a598',
+    input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
+    label='Plasma Striker scope')
+
+# Mag boot fan: only the writer 0x00707a09 (pass contract 1) is bound. The sibling 0x5fdcac1d has the same
+# colour outputs but its normal needs CB0[95], POS_W and two TBUFFER reads, so the exact code hash excludes it.
+MAG_BOOT_FAN_SOURCE_PREVIEW=dict(
+    graph_path='materialgraph/environment/global/prop/gbl_prop_basic_rotate_01/gbl_prop_basic_rotate_01.materialgraph',
+    graph_sha256='eada07399ab9cfdfa5737aa2974f54696196f3e17de835386540e179e84932fe',
+    material_path='material/character/hero/hero_mag_boot_fan/hero_mag_boot_fan.material',
+    material_sha256='61a5c760da5bcf79a3f7a5feb0598dc4ce18dbb16635d18821743bb7cc2e80f0',
+    shader_id='0x00707a09',
+    code_sha256='1842a74e63edfd9d9dd44a12482a9e511f5678e17bffc6dce817c8a76d4f3584',
+    input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
+    label='Mag boot fan')
+
 SOURCE_PREVIEW_POLICIES={rule['graph_path']:rule for rule in
-    (CONSTRUCTO_BUTTON_SOURCE_PREVIEW,WARBOT_V3_EYE_SOURCE_PREVIEW,EXTERMITANK_HOSES_SOURCE_PREVIEW)}
+    (CONSTRUCTO_BUTTON_SOURCE_PREVIEW,WARBOT_V3_EYE_SOURCE_PREVIEW,EXTERMITANK_HOSES_SOURCE_PREVIEW,
+     TRESPASSER_SCREEN_SOURCE_PREVIEW,PIXELIZER_BARREL_SOURCE_PREVIEW,PLASMA_STRIKER_SCOPE_SOURCE_PREVIEW,
+     MAG_BOOT_FAN_SOURCE_PREVIEW)}
 
 
 def _source_preview_policy(graph_paths, graph_sha256, material_path, material_sha256, program):
