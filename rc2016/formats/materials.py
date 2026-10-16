@@ -431,9 +431,9 @@ def classify_absent_texture(path, refs, material_data, graph_datas):
 # Viewer reading keys that change the result beyond the generic _g/self-lit front-end
 # ('screen' is the viewer's forward 'screen' entry; 'bng'/'bng_detail' the basic_normal_gloss variants).
 VIEWER_RULE_EXTRAS=('pick','tint','spec_tint','arch_sequence','vehicle','glow','two_color_metal','puddles',
-    'foliage','za_fresnel_power','screen','rock_blend','bng','bng_detail','facing_glow','bright_center','parallax','alpha_cut','leaf_colour','bright_glow','fresnel_tint','number_display','victor_reticle','flat_surface','eye_cornea','hair','skin','skin_detail','glass_basic','glass_cg02','glass_jn','liquid_flow','water')
+    'foliage','za_fresnel_power','screen','rock_blend','bng','bng_detail','facing_glow','bright_center','parallax','alpha_cut','leaf_colour','bright_glow','fresnel_tint','number_display','victor_reticle','flat_surface','eye_cornea','hair','skin','skin_detail','glass_basic','glass_cg02','glass_jn','liquid_flow','water','swap')
 # Terms rc_game_shader.apply_viewer_graph_rule builds (same GLSL math as gl_shading.FRAGMENT/GLASS_FRAGMENT).
-VIEWER_RULE_BUILT=frozenset(VIEWER_RULE_EXTRAS)-{'parallax'}
+VIEWER_RULE_BUILT=frozenset(VIEWER_RULE_EXTRAS)-{'parallax','swap'}
 # Extra source images each term samples (texture_preview.material_texture_paths roles).
 VIEWER_TERM_ROLES=dict(water=('_water_height_a','_water_height_b','_n','_pick'),liquid_flow=('_c','_g'),pick=('_pick',),tint=('_h','_tint_detail','_tint_palette','_pick'),arch_sequence=('_h','_sequence','_pick'),
     vehicle=('_pick','_vehicle_p2','_h'),glow=('_h','_glow_parallax'),puddles=('_puddle_noise','_puddle_ripple'),victor_reticle=('_reticle',),
@@ -542,7 +542,7 @@ def viewer_graph_rule(archive, material_path, bound_paths=None):
     present=[key for key in VIEWER_RULE_EXTRAS if (forward.get('kind')=='water' and bool(forward.get('sampling')) if key=='water' else forward.get('kind')=='screen' and forward if key=='screen' else
         forward.get('kind')=='bright_glow' if key=='bright_glow' else forward.get('kind')=='number_display' if key=='number_display' else forward.get('kind')=='victor_reticle' if key=='victor_reticle' else forward.get('kind')=='eye_cornea' if key=='eye_cornea' else
         forward.get('kind')==key if key in ('glass_basic','glass_cg02','glass_jn') else
-        paths.get('_bng_detail') and bng.get('kind') in (2,3,6,8,9,10) if key=='bng_detail' else
+        paths.get('_bng_detail') and bng.get('kind') in (2,3,6,8,9,10,11) if key=='bng_detail' else
         bng.get('kind') in (1,3,4,6,7,8,9,10) if key=='bng' else key in paths if key=='za_fresnel_power' else paths.get(key))]
     roles={'_c','_g','_n'}|{role for key in present for role in VIEWER_TERM_ROLES.get(key,())}
     textures={role:paths.get(role) for role in sorted(roles) if paths.get(role) or role in ('_c','_g','_n')}

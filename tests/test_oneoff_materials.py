@@ -19,6 +19,8 @@ GOO = 'materialgraph/environment/nebula/ambient/neb_amb_lava_fissure_blast_01/en
 DETAIL = 'required/materials/basic_normal_coloredgloss_detail_emissive.materialgraph'
 FRESNEL_DETAIL_EMISSIVE = 'required/materials/basic_normla_gloss_fresnel_detail_emissive.materialgraph'
 COLOREDGLOSS_FRESNEL_DETAIL = 'required/materials/basic_normal_coloredgloss_fresnel_detail.materialgraph'
+GLOSS_DETAIL = 'required/materials/basic_normal_gloss_detail.materialgraph'
+SWAP = 'materialgraph/global/basic_colored_spec_emmisive_in_c_alpha_swap/basic_colored_spec_emmisive_in_c_alpha_swap.materialgraph'
 SHIV = 'materialgraph/character/enemy/enm_shiv_prisoner_number/enm_shiv_prisoner_number.materialgraph'
 QWARK = 'materialgraph/character/npc/npc_qwark_prisoner_number/npc_qwark_prisoner_number.materialgraph'
 BASIC_FLAT = 'materialgraph/global/basic_flat_color/basic_flat_color.materialgraph'
@@ -219,6 +221,32 @@ class DetailEmissiveTests(unittest.TestCase):
         names, roles = validation._viewer_required(rule, True)
         self.assertEqual(sorted(names), ['VR bng detail scale u', 'VR bng detail scale v', 'VR bng detail strength'])
         self.assertIn('_h', roles)
+
+
+class ProjectileGraphTests(unittest.TestCase):
+    def test_gloss_detail_composes_the_detail_normal_with_the_g_blue_mask(self):
+        defaults = {tp.SPECULAR_SCALE_KEY: 1.0, tp.GLOSS_SCALE_KEY: 1.0, 0x49AFC3A0: 0.75, 0x34493800: 1.0, 0xAD4069BA: 1.0}
+        archive, got = extract(GLOSS_DETAIL, defaults, [row(0x34493800, 3.0), row(0xAD4069BA, 3.0), row(0x49AFC3A0, 1.0)])
+        self.assertEqual((got['bng']['kind'], got['bng']['detail'], got['g_mode']), (11, (3.0, 3.0, 1.0), 'grey'))
+        self.assertIn('(uBngKind == 3 || uBngKind == 11) ? bngGl.b', FRAGMENT)
+        rule = viewer_graph_rule(archive, 'm/x.material', set())
+        self.assertNotIn('bng', rule.get('ported', []))   # no colour, rim or self-lit term
+        self.assertEqual(rule.get('normal_z'), '1-x*x-y*y')
+
+    def test_swap_graph_is_an_exact_rule_that_keeps_the_normal_map(self):
+        defaults = {0xAF5BEBBC: 0.0, 0xF8C61683: 5.0, tp.SPECULAR_SCALE_KEY: 1.0, tp.GLOSS_SCALE_KEY: 1.0, 0xBB8D619C: 0.0}
+        archive, got = extract(SWAP, defaults, [row(0xF8C61683, 15.0)])
+        self.assertEqual((got['g_mode'], got['k']), ('colored', 15.0))
+        self.assertNotIn('swap', got)
+        from rc2016.formats.links import EXACT, rule_coverage
+        self.assertEqual(rule_coverage([SWAP])[0], EXACT)
+        self.assertEqual(extract(SWAP, defaults)[1]['k'], 5.0)
+        # A nonzero swap weight would blend in the V5 textures, which no rule builds: it must stay visible.
+        _, swapped = extract(SWAP, defaults, [row(0xBB8D619C, 0.5)])
+        self.assertEqual(swapped['swap']['weight'], 0.5)
+        rule = viewer_graph_rule(archive, 'm/x.material', set())
+        self.assertTrue(rule.get('applies'), rule)
+        self.assertEqual(rule.get('unported'), [])
 
 
 class NumberDisplayTests(unittest.TestCase):
