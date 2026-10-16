@@ -188,7 +188,8 @@ GRAPH_RULES = (
     # rim = 1.001 - sat(N.V), A = 0xAAC47D17, P = 0xB7BAC19F. A5343A0C (7): N is the interpolated geometry
     # normal, mask 1, self-lit _c.a * K. 76C79AA4 (8): N is the tangent-mapped _n normal, mask _c.a, no self-lit.
     # 14B1CC68 (9): N is the mapped normal, mask = the _m slot's R, self-lit = _m.G * K. The detail-normal
-    # samples of 8 and 9 (slot 0x45A52060) are not composed.
+    # samples of 8 and 9 (slot 0x45A52060, UV scale 0x34493800/0xAD4069BA, strength 0x49AFC3A0) are composed like kind 10's: mask _m.R
+    # for 14B1CC68 and _c.a for 76C79AA4; CB0[95] and the per-instance fade are taken as 1 and 0.
     ('required/materials/basic_normal_coloredgloss_emissive_fresnel.', dict(self_lit_key=0x06F19114, bng=7)),
     ('required/materials/basic_normal_coloredgloss_fresnel_detail.', dict(self_lit_key=None, bng=8)),
     # Deferred writer E680AA40 (pass 0 record 4): albedo _c, F0 = P * _g.rgb, gloss = sqrt(sat(Q _g.a^2)), self-lit =
@@ -798,7 +799,7 @@ def material_texture_paths(archive, material_path: str) -> dict:
         # Bind by serialized slot identity: suffixes do not identify normal/detail or mo_black_h.
         material_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
         bindings = {'_c': 0x49A7866BABDAD780, '_g': 0x49A7866B1576D848, '_n': 0x49A7866B7AE34E7A}
-        if kind in (2, 3, 6, 10):
+        if kind in (2, 3, 6, 8, 9, 10):
             bindings['_bng_detail'] = 0x49A7866B45A52060
         if kind == 10:   # E680AA40: _m slot 0x6A016FF9, R masks the detail normal, G is the self-lit mask
             bindings['_h'] = 0x49A7866B6A016FF9
@@ -823,7 +824,7 @@ def material_texture_paths(archive, material_path: str) -> dict:
             params = (value(0x9ACE7120, 3.0), value(0x07CC3BD9, 1.0), value(0xD94E1303, 10.0), 0.0)
         if kind in (7, 8, 9):
             params = (value(0xAAC47D17, 1.0), value(0xB7BAC19F, 1.0), 0.0, 0.0)
-        if kind in (2, 3):
+        if kind in (2, 3, 8, 9):   # 76C79AA4 / 14B1CC68 read the same u, v scale and strength keys as F3DCD431
             detail = (value(0x34493800, 1.0), value(0xAD4069BA, 1.0), value(0x49AFC3A0, 0.75))
         if kind == 6:
             detail = (value(0x34493800, 1.0), value(0xAD4069BA, 1.0), value(0x49AFC3A0, 0.75))

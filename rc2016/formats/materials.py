@@ -542,7 +542,7 @@ def viewer_graph_rule(archive, material_path, bound_paths=None):
     present=[key for key in VIEWER_RULE_EXTRAS if (forward.get('kind')=='water' and bool(forward.get('sampling')) if key=='water' else forward.get('kind')=='screen' and forward if key=='screen' else
         forward.get('kind')=='bright_glow' if key=='bright_glow' else forward.get('kind')=='number_display' if key=='number_display' else forward.get('kind')=='victor_reticle' if key=='victor_reticle' else forward.get('kind')=='eye_cornea' if key=='eye_cornea' else
         forward.get('kind')==key if key in ('glass_basic','glass_cg02','glass_jn') else
-        paths.get('_bng_detail') and bng.get('kind') in (2,3,6,10) if key=='bng_detail' else
+        paths.get('_bng_detail') and bng.get('kind') in (2,3,6,8,9,10) if key=='bng_detail' else
         bng.get('kind') in (1,3,4,6,7,8,9,10) if key=='bng' else key in paths if key=='za_fresnel_power' else paths.get(key))]
     roles={'_c','_g','_n'}|{role for key in present for role in VIEWER_TERM_ROLES.get(key,())}
     textures={role:paths.get(role) for role in sorted(roles) if paths.get(role) or role in ('_c','_g','_n')}

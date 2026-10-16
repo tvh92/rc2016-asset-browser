@@ -1880,9 +1880,11 @@ def apply_viewer_graph_rule(mat, source):
                 bng_p = lambda i: P.const('bng P%d' % i, bng['params'][i])
                 rim_a = P.m('POWER', P.m('ABSOLUTE', rim), bng_p(0)); rim_b = P.m('POWER', P.m('ABSOLUTE', rim), bng_p(1))
                 view_terms.append('bng rims')
-            if 'bng_detail' in ported and kind in (2, 3, 6, 10):   # F3DCD431/F087BE8D/F8161C61 detail xy; E680AA40 masks with _m.R
+            if 'bng_detail' in ported and kind in (2, 3, 6, 8, 9, 10):   # F3DCD431/F087BE8D/F8161C61 detail xy; 14B1CC68/E680AA40 mask with _m.R, 76C79AA4 with _c.a
                 det = bng['detail']
-                dmask = P.sep(img('_h').outputs['Color'])[0] if kind == 10 and img('_h') else gB if kind == 3 else (P.m('MULTIPLY', g.outputs['Alpha'], g.outputs['Alpha']) if g is not None else 0.0)
+                dmask = P.sep(img('_h').outputs['Color'])[0] if kind in (9, 10) and img('_h') else \
+                    (c.outputs['Alpha'] if c is not None else 0.0) if kind == 8 else gB if kind == 3 else \
+                    (P.m('MULTIPLY', g.outputs['Alpha'], g.outputs['Alpha']) if g is not None else 0.0)
                 vec = P.game_uv(P.const('bng detail scale u', det[0]), P.const('bng detail scale v', det[1]))
                 dx, dy = P.rg(P.tex(img('_bng_detail'), vec, 'bng detail normal').outputs['Color'], dmask)
                 dz = P.m('SUBTRACT', 1.0, P.dot2(dx, dy)); zw = P.m('MULTIPLY', z, P.const('bng detail strength', det[2]))

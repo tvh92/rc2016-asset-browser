@@ -17,6 +17,8 @@ from tests.test_viewer_textures import FakeArchive, dat1, flags
 EMISSIVE = 'materialgraph/global/basic_emissive/basic_emissive.materialgraph'
 GOO = 'materialgraph/environment/nebula/ambient/neb_amb_lava_fissure_blast_01/enm_blarg_green_goo.materialgraph'
 DETAIL = 'required/materials/basic_normal_coloredgloss_detail_emissive.materialgraph'
+FRESNEL_DETAIL_EMISSIVE = 'required/materials/basic_normla_gloss_fresnel_detail_emissive.materialgraph'
+COLOREDGLOSS_FRESNEL_DETAIL = 'required/materials/basic_normal_coloredgloss_fresnel_detail.materialgraph'
 SHIV = 'materialgraph/character/enemy/enm_shiv_prisoner_number/enm_shiv_prisoner_number.materialgraph'
 QWARK = 'materialgraph/character/npc/npc_qwark_prisoner_number/npc_qwark_prisoner_number.materialgraph'
 BASIC_FLAT = 'materialgraph/global/basic_flat_color/basic_flat_color.materialgraph'
@@ -188,7 +190,27 @@ class DetailEmissiveTests(unittest.TestCase):
 
     def test_glsl_uses_m_channels(self):
         self.assertIn('uBngKind == 9 || uBngKind == 10) bngSelfLit = bngM.g * uK', FRAGMENT)
-        self.assertIn('uBngKind == 10 ? bngM.r', FRAGMENT)
+        self.assertIn('(uBngKind == 9 || uBngKind == 10) ? bngM.r', FRAGMENT)
+        self.assertIn('uBngKind == 8 ? c.a', FRAGMENT)   # 76C79AA4 masks its detail normal with _c.a
+
+    def test_fresnel_detail_kinds_compose_the_detail_normal(self):
+        defaults = {tp.SPECULAR_SCALE_KEY: 1.0, tp.GLOSS_SCALE_KEY: 1.0, 0x49AFC3A0: 0.75, 0x34493800: 1.0, 0xAD4069BA: 1.0,
+                    0x06F19114: 1.0, 0x66EFA55B: 1.0, 0xAAC47D17: 1.0, 0xB7BAC19F: 1.0}
+        for graph, kind, mask_role in ((FRESNEL_DETAIL_EMISSIVE, 9, '_h'), (COLOREDGLOSS_FRESNEL_DETAIL, 8, None)):
+            with self.subTest(kind=kind):
+                archive, got = extract(graph, defaults, [row(0x49AFC3A0, 1.5), row(0x34493800, 10.0), row(0xAD4069BA, 20.0)])
+                self.assertEqual(got['bng']['kind'], kind)
+                self.assertEqual(got['bng']['detail'], (10.0, 20.0, 1.5))
+                _, defaulted = extract(graph, defaults)
+                self.assertEqual(defaulted['bng']['detail'], (1.0, 1.0, 0.75))
+                from rc2016.viewer.textures import GRAPH_RULES
+                self.assertTrue(any(prefix.endswith('.') and graph.startswith(prefix) for prefix, _ in GRAPH_RULES))
+                rule = dict(applies=True, ported=['bng', 'bng_detail'], k=1.0,
+                            terms={'bng': dict(kind=kind, colour=[1, 1, 1], params=[1, 1, 0, 0], detail=[10.0, 20.0, 1.5])},
+                            textures={'_c': 'c', '_g': 'g', '_n': 'n', '_bng_detail': 'd', **({'_h': 'm'} if mask_role else {})})
+                names, roles = validation._viewer_required(rule, True)
+                self.assertIn('VR bng detail strength', names)
+                self.assertIn('_bng_detail', roles)
 
     def test_validation_names(self):
         rule = dict(applies=True, ported=['bng', 'bng_detail'], k=5.0,

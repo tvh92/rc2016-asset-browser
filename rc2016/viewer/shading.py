@@ -632,9 +632,10 @@ void main() {
             bngRimA = pow(abs(rim), uBngP.x);
             bngRimB = pow(abs(rim), uBngP.y);
         }
-        if ((uBngKind == 2 || uBngKind == 3 || uBngKind == 6 || uBngKind == 10) && uHasBngDetail) {
+        if ((uBngKind == 2 || uBngKind == 3 || uBngKind == 6 || uBngKind == 8 || uBngKind == 9 || uBngKind == 10) && uHasBngDetail) {
             // F3DCD431/F087BE8D/F8161C61: detail xy masked by _g.a^2 (emissive/specfresnel), _g.B (fresnel).
-            float mask = uBngKind == 3 ? bngGl.b : uBngKind == 10 ? bngM.r : bngG.a * bngG.a;   // E680AA40: _m.R
+            // 14B1CC68 / E680AA40: _m.R; 76C79AA4: _c.a. The close-range fade CB0[95] (1 - s) is taken as 1.
+            float mask = uBngKind == 3 ? bngGl.b : (uBngKind == 9 || uBngKind == 10) ? bngM.r : uBngKind == 8 ? c.a : bngG.a * bngG.a;
             vec2 drg = (texture2D(uTexBngDetail, vUV * uBngDetail.xy).rg * 2.0 - 1.0) * mask;
             float dz = 1.0 - dot(drg, drg);
             rg = rg * dz + drg * z * uBngDetail.z;
