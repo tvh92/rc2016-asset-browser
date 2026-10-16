@@ -723,6 +723,8 @@ class ModelViewport(_TkFrame):
 
     def _selected_surface(self, entry, level):
         if level == 2:
+            if entry.get('graph_rule_surface'):
+                return entry['graph_rule_surface'], entry['graph_rule_textures'], False
             static = (entry.get('experimental_preview') or {}).get('preview_contract') == 'static-packed-vector-preview-v1'
             eligible = self._static_vector_input_eligible()
             if (getattr(self,'experimental_materials',False) and (not static or eligible) and entry.get('experimental_preview')
@@ -769,6 +771,8 @@ class ModelViewport(_TkFrame):
         translation, textures, experimental = self._selected_surface(entry, level)
         if translation:
             srgb = {api: texture[1] for api, texture in textures.items()}
+            if translation.get('status') == 'partial_source_rule':
+                return self._shading.native_program(translation, srgb, instanced, scene=scene, rule_preview=True)
             if experimental:
                 return self._shading.native_program(translation, srgb, instanced, scene=scene, experimental=True)
             if scene:
@@ -790,6 +794,7 @@ class ModelViewport(_TkFrame):
             ids = list({entry[role][0] for entry in self._gl_textures.values()
                         for role in ("_c", "_g", "_n", "_pick", "_h", "_bng_detail", "_vehicle_p2", "_tint_detail") if entry.get(role)})
             ids.extend({texture[0] for entry in self._gl_textures.values() for texture in entry.get('native_textures', {}).values()})
+            ids.extend({texture[0] for entry in self._gl_textures.values() for texture in entry.get('graph_rule_textures', {}).values()})
             ids = list(set(ids))
             ids.extend(entry['_rock_volume'][0] for entry in self._gl_textures.values() if entry.get('_rock_volume'))
             if ids:
@@ -853,7 +858,7 @@ class ModelViewport(_TkFrame):
                 by_path[key] = (name, bool(texture.get("srgb"))) if name else None
             if by_path[key]:
                 uploaded[role] = by_path[key]
-        for receipt_key, texture_key in (('native_translation','native_textures'), ('experimental_preview','experimental_textures')):
+        for receipt_key, texture_key in (('native_translation','native_textures'), ('experimental_preview','experimental_textures'), ('graph_rule_surface','graph_rule_textures')):
             if not entry.get(receipt_key): continue
             receipt = entry[receipt_key]
             if receipt_key == 'experimental_preview' and hasattr(self, 'ground_preview_controls'):

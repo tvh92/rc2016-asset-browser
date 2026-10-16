@@ -12,7 +12,7 @@ from rc2016.shaders.bindings import PORTABLE_OPS
 from rc2016.shaders.ir import DAG, compute
 from rc2016.viewer.textures import TextureDiskCache
 
-EMITTER_VERSION = 6
+EMITTER_VERSION = 7
 # Reserve vertex bone matrices (3) and shared environment lighting (6).
 TEXTURE_UNITS = (0, 1, 2, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15)
 
@@ -24,7 +24,7 @@ def _literal(value):
     return text if '.' in text or 'e' in text else text + '.0'
 
 
-def emit_surface(translation, srgb=None, *, experimental=False):
+def emit_surface(translation, srgb=None, *, experimental=False, rule_preview=False):
     """Return declarations, body and sampler descriptors; reject unsupported inputs.
 
     srgb is keyed by native API and records the hardware image interpretation.
@@ -33,12 +33,17 @@ def emit_surface(translation, srgb=None, *, experimental=False):
     sample id, API and coordinates, exactly as shaders.nodes._frontend.
     """
     preview = experimental and translation.get('status') == 'experimental'
+    if rule_preview:
+        from rc2016.shaders.lava_surface import valid_contract
+        if not valid_contract(translation):
+            raise ValueError('Unknown partial source surface contract')
     if preview:
         from rc2016.viewer.experimental_materials import valid_contract
         if not valid_contract(translation):
             raise ValueError('Unknown experimental surface contract')
-    if translation.get('status') != 'ready' and not preview:
+    if translation.get('status') != 'ready' and not (preview or rule_preview):
         raise ValueError('Native surface requires a ready translation')
+    preview = preview or rule_preview
     # Viewports upload V-unflipped UV0 and top-down image rows. Relative to
     # nodes.py, both the input and each sample have already changed basis.
     srgb = srgb or {}
@@ -161,9 +166,9 @@ vec3 nativeTangentNormal(vec3 N, vec3 tangentNormal) {
 """
 
 
-def fragment_source(translation, srgb=None, *, experimental=False):
+def fragment_source(translation, srgb=None, *, experimental=False, rule_preview=False):
     from rc2016.viewer.shading import FRAGMENT
-    surface = emit_surface(translation, srgb, experimental=experimental)
+    surface = emit_surface(translation, srgb, experimental=experimental, rule_preview=rule_preview)
     # Reuse all shared lighting, tonemap and BRDF helpers. Unused hand-rule code
     # is eliminated by the GLSL compiler; only the material-value source changes.
     prefix = FRAGMENT.split('void main() {', 1)[0]
@@ -199,7 +204,7 @@ def evaluate_surface(translation, uv, sample, *, preview_inputs=None):
                 value = (preview_inputs or {}).get(n['name'], 1.)
             elif n.get('kind') == 'preview_ground_blend' and translation.get('status') == 'experimental':
                 value = (preview_inputs or {}).get(n['name'], 0.)
-            elif preview_inputs is not None and translation.get('status') == 'experimental':
+            elif preview_inputs is not None and translation.get('status') in ('experimental', 'partial_source_rule'):
                 value = preview_inputs[n['name']]
             else:
                 raise ValueError('Unbound frontend input '+n['name'])

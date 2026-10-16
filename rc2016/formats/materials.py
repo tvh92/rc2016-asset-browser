@@ -431,11 +431,11 @@ def classify_absent_texture(path, refs, material_data, graph_datas):
 # Viewer reading keys that change the result beyond the generic _g/self-lit front-end
 # ('screen' is the viewer's forward 'screen' entry; 'bng'/'bng_detail' the basic_normal_gloss variants).
 VIEWER_RULE_EXTRAS=('pick','tint','spec_tint','arch_sequence','vehicle','glow','two_color_metal','puddles',
-    'foliage','za_fresnel_power','screen','rock_blend','bng','bng_detail','facing_glow','bright_center','parallax','alpha_cut','leaf_colour','bright_glow','fresnel_tint','number_display','victor_reticle','flat_surface','eye_cornea','hair','skin','skin_detail','glass_basic','glass_cg02','glass_jn','liquid_flow','water')
+    'foliage','za_fresnel_power','screen','rock_blend','bng','bng_detail','facing_glow','bright_center','parallax','alpha_cut','leaf_colour','bright_glow','fresnel_tint','number_display','victor_reticle','flat_surface','eye_cornea','hair','skin','skin_detail','glass_basic','glass_cg02','glass_jn','liquid_flow','water','lava_surface')
 # Terms rc_game_shader.apply_viewer_graph_rule builds (same GLSL math as gl_shading.FRAGMENT/GLASS_FRAGMENT).
 VIEWER_RULE_BUILT=frozenset(VIEWER_RULE_EXTRAS)-{'parallax'}
 # Extra source images each term samples (texture_preview.material_texture_paths roles).
-VIEWER_TERM_ROLES=dict(water=('_water_height_a','_water_height_b','_n','_pick'),liquid_flow=('_c','_g'),pick=('_pick',),tint=('_h','_tint_detail','_tint_palette','_pick'),arch_sequence=('_h','_sequence','_pick'),
+VIEWER_TERM_ROLES=dict(lava_surface=tuple('_lava_surface_api%d' % api for api in range(5,9)),water=('_water_height_a','_water_height_b','_n','_pick'),liquid_flow=('_c','_g'),pick=('_pick',),tint=('_h','_tint_detail','_tint_palette','_pick'),arch_sequence=('_h','_sequence','_pick'),
     vehicle=('_pick','_vehicle_p2','_h'),glow=('_h','_glow_parallax'),puddles=('_puddle_noise','_puddle_ripple'),victor_reticle=('_reticle',),
     screen=('_screen_timeline','_c','_n','_pick','_g'),rock_blend=('_rock_mask','_rock_c2','_rock_g2','_rock_n2'),bng=('_h',),bng_detail=('_bng_detail',),number_display=('_c','_n','_pick','_g'),parallax=('_parallax_height',),leaf_colour=('_cma','_cmb'),eye_cornea=('_n',),skin_detail=('_bng_detail',))
 # Writers whose tangent normal z is 1-x*x-y*y (gl_shading.FRAGMENT), not sqrt(1-x*x-y*y).
@@ -466,7 +466,7 @@ def final_shader_status(build_status, rule, bound_paths, shader_translation, pro
                    bool(bound_paths) and rule.get('textures',{}).get('_reticle') in bound_paths)
     anchor=rule.get('textures',{}).get('_reticle' if reticle_ready else '_g' if 'arch_sequence' in rule.get('ported',()) else '_c')
     # The facing-glow writer (Qwark bulb) and the glow shell (93695188) sample no texture at all.
-    glass_ready=rule.get('applies') and any(key in rule.get('ported',()) for key in ('water','glass_basic','glass_cg02','glass_jn'))
+    glass_ready=rule.get('applies') and any(key in rule.get('ported',()) for key in ('water','glass_basic','glass_cg02','glass_jn','lava_surface'))
     flat=rule.get('terms',{}).get('flat_surface') or {}
     flat_ready=(rule.get('applies') and 'flat_surface' in rule.get('ported',()) and
         flat.get('model')=='basic_flat_color' and flat.get('writer')=='D169A814' and
@@ -475,7 +475,7 @@ def final_shader_status(build_status, rule, bound_paths, shader_translation, pro
         rule_coverage(list(graph_paths))[0]==EXACT)
     viewer_ready=((build_status.startswith('color_only_preview') or glass_ready or flat_ready or reticle_ready) and rule.get('applies') and
                   (anchor in bound_paths or any(key in rule.get('ported',()) for key in
-                   ('water','facing_glow','bright_glow','eye_cornea','flat_surface','number_display','glass_basic','glass_cg02','glass_jn')) or
+                   ('lava_surface','water','facing_glow','bright_glow','eye_cornea','flat_surface','number_display','glass_basic','glass_cg02','glass_jn')) or
                   bool(rule.get('terms',{}).get('bright_center',{}).get('albedo_white'))))
     translated=(shader_translation.get('status')=='ready' and not profile and
         not any(p.get('family') in ('skin_emissive','basic_skin','character_glass') for p in shader_preflights))
@@ -559,7 +559,7 @@ def viewer_graph_rule(archive, material_path, bound_paths=None):
         else:ported.append(key);continue
         unported.append(key)
     terms={key:paths[key] for key in ('pick','tint','spec_tint','arch_sequence','vehicle','glow','two_color_metal',
-        'puddles','za_fresnel_power','rock_blend','bng','facing_glow','bright_center','parallax','alpha_cut','leaf_colour','fresnel_tint','flat_surface','hair','skin','skin_detail','liquid_flow') if key in paths and key in present+['bng']}
+        'puddles','za_fresnel_power','rock_blend','bng','facing_glow','bright_center','parallax','alpha_cut','leaf_colour','fresnel_tint','flat_surface','hair','skin','skin_detail','liquid_flow','lava_surface') if key in paths and key in present+['bng']}
     if forward.get('kind')=='water' and forward.get('sampling'):terms['water']=forward
     if forward.get('kind')=='screen':terms['screen']=forward
     if forward.get('kind')=='bright_glow':terms['bright_glow']=forward

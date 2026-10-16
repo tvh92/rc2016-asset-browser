@@ -52,7 +52,7 @@ def _frontend(translation,images):
         links.new(socket,n.inputs[1]);return n.outputs[0]
     game_uv=[xy.outputs[0],flip_v(xy.outputs[1])]
     preview_inputs = {}
-    if translation.get('status') == 'experimental':
+    if translation.get('status') in ('experimental', 'partial_source_rule'):
         # Geometry is Blender world Z-up; the explicit preview adapter uses the
         # viewer's native Y-up basis (x,z,-y). This does not bind engine CB0.
         geometry = nodes.new('ShaderNodeNewGeometry');geometry.name='Experimental viewer geometry adapter'
@@ -112,7 +112,7 @@ def _frontend(translation,images):
                     front=nodes.new('ShaderNodeMath');front.operation='SUBTRACT';front.inputs[0].default_value=1
                     links.new(geometry.outputs['Backfacing'],front.inputs[1]);cache['front_facing']=front.outputs[0]
                 socket=cache['front_facing']
-            elif translation.get('status') == 'experimental' and (n.get('kind'),n.get('channel')) in preview_inputs:
+            elif translation.get('status') in ('experimental', 'partial_source_rule') and (n.get('kind'),n.get('channel')) in preview_inputs:
                 socket=preview_inputs[(n['kind'],n.get('channel'))]
             else:raise ValueError('Unbound Blender input '+n.get('name',''))
         elif op=='texture':

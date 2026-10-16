@@ -1109,7 +1109,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 14
+VIEWER_RULE_FRONTEND_VERSION = 15
 
 
 def _viewer_rule_images(nt):
@@ -1518,13 +1518,14 @@ def apply_viewer_graph_rule(mat, source):
     eye_cornea = 'eye_cornea' in ported and 'eye_cornea' in terms   # A36A97CB samples _n only
     number = 'number_display' in ported and 'number_display' in terms   # 8CEC816B / 37C85F4C sample the four number slots
     reticle = 'victor_reticle' in ported and 'victor_reticle' in terms # EB9C8254 source pass 0, exact graph identity
+    lava = 'lava_surface' in ported and 'lava_surface' in terms
     water = 'water' in ported and 'water' in terms
     flat = terms.get('flat_surface') if 'flat_surface' in ported else None   # constant albedo, F0 and gloss, no texture
     if number and not all(img(role) is not None for role in ('_c', '_n', '_pick', '_g')):
         return False
     glass = next((k for k in GLASS_VIEWER_KINDS if k in ported and k in terms), None)   # forward glass writers sample no _c
     bright_white = bool(terms.get('bright_center', {}).get('albedo_white')) and 'bright_center' in ported   # preview override: no _c
-    if c is None and not (arch and g is not None) and not facing and not bright_white and not glow_shell and not eye_cornea and not number and not reticle and not flat and not glass and not water:
+    if c is None and not (arch and g is not None) and not facing and not bright_white and not glow_shell and not eye_cornea and not number and not reticle and not flat and not glass and not water and not lava:
         return False
     for node in list(nt.nodes):   # keep every source image node (provenance and coverage reports)
         if node.type != 'TEX_IMAGE':
@@ -1551,6 +1552,34 @@ def apply_viewer_graph_rule(mat, source):
     if number:
         limits += _viewer_rule_number_display(mat, rule, img)
         _finish_viewer_rule(mat, rule, 'forward number display %s (t=0, unlit, opaque)' % terms['number_display']['params']['writer'], limits)
+        return True
+    if lava:
+        from rc2016.shaders.lava_surface import valid_contract
+        from rc2016.shaders.nodes import _frontend, tree_signature
+        receipt = terms['lava_surface']
+        if not valid_contract(receipt):
+            raise ValueError('Invalid partial lava source receipt')
+        source_images = {binding['path']: img('_lava_surface_api%d' % binding['api']).image
+                         for binding in receipt['texture_bindings']}
+        front = nt.nodes.new('ShaderNodeGroup'); front.node_tree = _frontend(receipt, source_images)
+        front.name = 'VR lava source surface'
+        brdf = nt.nodes.new('ShaderNodeGroup'); brdf.node_tree = build_group(); brdf.name = GROUP_NAME
+        for name, index in [('Albedo',0),('Emission multiplier',1),('F0',2),('Gloss',3),('Normal',4)]:
+            L.new(front.outputs[name], brdf.inputs[index])
+        for index in (5,6,7): brdf.inputs[index].default_value = 1
+        out = nt.nodes.new('ShaderNodeOutputMaterial'); out.is_active_output = True
+        surface = brdf.outputs[0]
+        if not receipt['two_sided']:
+            geometry = nt.nodes.new('ShaderNodeNewGeometry')
+            clear = nt.nodes.new('ShaderNodeBsdfTransparent')
+            cull = nt.nodes.new('ShaderNodeMixShader'); cull.name = 'VR cull back faces'
+            L.new(geometry.outputs['Backfacing'], cull.inputs[0])
+            L.new(surface, cull.inputs[1]); L.new(clear.outputs[0], cull.inputs[2])
+            surface = cull.outputs[0]
+        L.new(surface, out.inputs['Surface'])
+        mat.use_backface_culling = not receipt['two_sided']
+        _finish_viewer_rule(mat, rule, 'partial source lava ' + receipt['shader_id'], receipt['limitations'])
+        mat['rc_lava_surface_tree_sha256'] = tree_signature(nt)
         return True
     if water:
         water_limits = _viewer_rule_water(mat, rule, img)
@@ -2153,7 +2182,8 @@ def _finish_viewer_rule(mat, rule, frontend, limits):
     if rule.get('unported'):
         reasons = rule.get('unported_reasons') or {}
         notes.append('Not built: ' + ', '.join('%s (%s)' % (key, reasons.get(key, 'unported')) for key in rule['unported']))
-    notes.append('Exact sRGB decode in Blender where the viewer uses pow 2.2; Blender UV tangent frame instead of screen derivatives')
+    if 'lava_surface' not in rule.get('ported', ()):
+        notes.append('Exact sRGB decode in Blender where the viewer uses pow 2.2; Blender UV tangent frame instead of screen derivatives')
     mat['rc_shader_frontend_limitation'] = '; '.join(notes)
     mat['shader_preview_status'] = 'viewer_graph_rule_frontend'
     mat['game_equivalence'] = False

@@ -578,3 +578,5 @@ Data-dependent tests read the `RC2016_RESEARCH` environment variable and skip wi
 - Portable exports approximate materials; they are not game-accurate.
 - The Novalis glow mushroom graph's alternate writer `2f28ddb7` (exec-masked exports, alpha cut-out) is not translated. Its kill condition is decoded but gated by a per-draw buffer byte that is not in the material or graph, so the viewer and Blender draw only the opaque `F69ADC40` writer and the large mesh stays solid.
 - Native mouse input and the packaged executable's window have been checked by hand only, not by automated tests.
+
+Gaspar hazard pools using `gas_lava_ocean` have a hash-gated `lava_surface` rule in Shaded mode. It executes the decoded CE49C867 albedo/F0/gloss/emission DAG with native world X/Z mapping, frozen time, an explicitly substituted emission amplitude and black cube reflection. Geometry normals are used. It is a partial source rule and does not depend on the experimental-material switch. Other Gaspar lava graphs retain their existing coverage; the [liquid inventory](liquids.md#gaspar-level-selection-and-ocean-surface) distinguishes actual slot assignments from unmatched overrides.

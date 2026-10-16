@@ -44,7 +44,7 @@ def source_details(payload, used_by='', native_translation=True):
         entry = (payload.get('textures') or {}).get(m.get('index', i), {})
         forward = entry.get('forward') or {}
         sampling = forward.get('sampling') or {}
-        liquid = entry.get('liquid_flow') or sampling
+        liquid = entry.get('lava_surface') or entry.get('liquid_flow') or sampling
         notes = list(liquid.get('limitations') or ())
         if sampling:
             notes.insert(0, sampling['time_substitution'])

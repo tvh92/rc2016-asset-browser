@@ -804,6 +804,34 @@ def _validate_viewer_rule_material(source, material):
     assert output and output.inputs["Surface"].is_linked, "Viewer-rule material has no active surface output"
     sources = {row.get("path", "").lower() for row in source.get("textures", [])}
     has_n = bool(rule["textures"].get("_n")) and rule["textures"]["_n"].lower() in sources
+    if "lava_surface" in ported:
+        from rc2016.shaders.lava_surface import valid_contract
+        from rc2016.shaders.nodes import tree_signature
+        receipt = rule["terms"]["lava_surface"]
+        assert valid_contract(receipt), "Invalid partial lava source contract"
+        assert tree_signature(material.node_tree) == material.get("rc_lava_surface_tree_sha256"), "Lava source nodes or images changed"
+        front = nodes.get("VR lava source surface")
+        assert front and front.node_tree.get("translation_sha256") == receipt["translation_sha256"], "Lava source DAG identity changed"
+        upstream = _viewer_upstream(output.inputs["Surface"])
+        assert front in upstream, "Lava source surface disconnected"
+        assert material.use_backface_culling == (not receipt['two_sided']), "Lava source cull flag changed"
+        assert receipt['two_sided'] or any(n.name == 'VR cull back faces' for n in upstream), "Lava backface closure missing"
+        expected = {row["path"].lower(): row for row in source.get("textures", [])}
+        sampled = [n for n in front.node_tree.nodes if n.type == "TEX_IMAGE"]
+        for binding in receipt["texture_bindings"]:
+            images = [n.image for n in sampled if n.get("source_texture_path") == binding["path"]]
+            assert images, "Lava source texture absent"
+            original = expected[binding["path"].lower()]
+            for image in images:
+                assert image.packed_file, "Lava source image not packed"
+                assert image.get("source_texture_sha256") == original["dds_sha256"], "Lava source image hash changed"
+                assert image.alpha_mode == "CHANNEL_PACKED", "Lava alpha is not channel packed"
+                assert image.colorspace_settings.name == original["colorspace"], "Lava source colorspace changed"
+        assert material.get("game_equivalence") is False, "Partial lava rule claims game equivalence"
+        for limitation in receipt["limitations"]:
+            assert limitation in material.get("rc_shader_frontend_limitation", ""), "Lava limitation missing"
+        return dict(status="passed_viewer_graph_rule_frontend", terms=["lava_surface"],
+                    limitation=material.get("rc_shader_frontend_limitation"))
     if "water" in ported:
         return _validate_viewer_rule_water(source, material, rule, output, has_n)
     if "screen" in ported:

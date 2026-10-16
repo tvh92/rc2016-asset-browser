@@ -117,7 +117,8 @@ def restore_native_pixels(archive, entries, posted):
     reloaded = {}
     for entry in entries.values():
         for receipt_key, texture_key in (("native_translation", "native_textures"),
-                                         ("experimental_preview", "experimental_textures")):
+                                         ("experimental_preview", "experimental_textures"),
+                                         ("graph_rule_surface", "graph_rule_textures")):
             receipt, textures = entry.get(receipt_key), entry.get(texture_key)
             if not receipt or not textures:
                 continue

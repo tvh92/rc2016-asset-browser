@@ -20,6 +20,7 @@ import math
 from rc2016.formats.archive import asset_data, asset_references, decompress, lz4_block
 from rc2016.formats.index import references
 from rc2016.formats.texture import dds_bytes, parse_header, ps4_deswizzle_slices
+from rc2016.shaders.lava_surface import GRAPH_HASHES as LAVA_SURFACE_HASHES, prepare_rule as lava_surface_rule
 from rc2016.shaders.liquids import LAVA_FLOW_GRAPH, LAVA_FLOW_SHA256, liquid_flow_rule
 from rc2016.shaders.water import WATER_GRAPH, WATER_GRAPH_SHA256, GLOW_GRAPH, GLOW_GRAPH_SHA256, water_sampling_rule
 
@@ -334,6 +335,8 @@ GRAPH_RULES = (
     # DB75867B forward terminal, explicit viewer leaves; Materials/GroundPuddles/GROUND_PUDDLES_DECODE.md.
     ('materialgraph/environment/kalebo/jn_ground_puddles.',
      dict(g_mode='grey', self_lit_key=None, puddles=True)),
+    *((path.removesuffix('materialgraph'), dict(lava_surface=True, _graph_sha256=digest))
+      for path, digest in LAVA_SURFACE_HASHES.items()),
     # EA6006F6/BACB8758: source C/G UV transform and deferred surface at frozen time zero.
     (LAVA_FLOW_GRAPH.removesuffix('materialgraph'),
      dict(liquid_flow=True, _graph_sha256=LAVA_FLOW_SHA256, g_mode='grey', self_lit='g_blue', self_lit_key=None)),
@@ -645,6 +648,18 @@ def material_texture_paths(archive, material_path: str) -> dict:
         exact_path = rule.get('graph_path')
         if not exact_path or graph_hashes.get(exact_path) != rule['graph_sha256']:
             rule = {}
+    if rule.get('lava_surface'):
+        graph_path = rule['graph_path']
+        graph_ids = [i for i in archive.resolve(graph_path) if archive.entries[i]['type'] == 'materialgraph']
+        if len(graph_ids) != 1:
+            raise ValueError('Lava surface graph identity is ambiguous')
+        surface = lava_surface_rule(graph_path, asset_data(archive, graph_ids[0]), data)
+        for role in ('_c', '_g', '_n', '_h', '_pick'):
+            result.pop(role, None)
+        for binding in surface['texture_bindings']:
+            result['_lava_surface_api%d' % binding['api']] = binding['path']
+        result['lava_surface'] = surface
+        result['graph_identity'] = dict(path=graph_path, sha256=rule['graph_sha256'])
     if rule.get('liquid_flow'):
         graph_ids = [i for i in archive.resolve(LAVA_FLOW_GRAPH) if archive.entries[i]['type'] == 'materialgraph']
         if len(graph_ids) != 1:
@@ -1582,7 +1597,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             paths = {}
         entry.update(k=paths.get('k', 0.0), g_mode=paths.get('g_mode', 'colored'), self_lit=paths.get('self_lit', 'c_alpha'),
                      spec=paths.get('spec', 1.0), gloss=paths.get('gloss', 1.0))
-        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'bright_center', 'flat_surface', 'parallax', 'parallax_normal', 'hair', 'skin', 'skin_detail', 'fresnel_tint', 'liquid_flow'):
+        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'bright_center', 'flat_surface', 'parallax', 'parallax_normal', 'hair', 'skin', 'skin_detail', 'fresnel_tint', 'liquid_flow', 'lava_surface'):
             if paths.get(key):
                 entry[key] = paths[key]
         if paths.get('foliage'):
@@ -1661,6 +1676,16 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
                     entry['rock_blend'] = dict(entry['rock_blend'], unresolved_second_layer=True, volume_error=str(exc))
             else:
                 entry['rock_blend'] = dict(entry['rock_blend'], unresolved_second_layer=True)
+        if paths.get('lava_surface'):
+            surface = paths['lava_surface']
+            source_textures = {}
+            for binding in surface['texture_bindings']:
+                texture = _cached_texture(archive, cache, binding['path'], tolerate=False)
+                if not texture or texture.get('array_size', 1) != 1:
+                    raise ValueError('Lava source texture unavailable or not 2D: ' + binding['path'])
+                source_textures[binding['api']] = texture
+            entry['graph_rule_surface'] = surface
+            entry['graph_rule_textures'] = source_textures
         if material.get('path'):
             from rc2016.viewer.native_glsl import selected_translation
             try:
