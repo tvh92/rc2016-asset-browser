@@ -454,7 +454,7 @@ writes one transparent PNG per map (`rc2016/flash/planet_maps.py`).
 
 ## Details tab
 
-`source_details` describes the selected model from the game files: archive path, ID, actors that use it, static or skinned (with joint count), mesh records and looks, vertices and triangles of the shown look/LOD, every material slot with its material file and texture count, its animation sets and clip count (found through the output root's reference index), and the packed source hash. A model that fails to decode shows the decoder's reason.
+`source_details` describes the selected model from the game files: archive path, ID, actors that use it, static or skinned (with joint count), mesh records and looks, vertices and triangles of the shown look/LOD, every material slot with its material file and texture count, its animation sets and clip count (found through the output root's reference index), and the packed source hash. A model that fails to decode shows the decoder's reason. Liquid preview materials also list their frozen-time, unresolved-input and inferred-presentation limitations under the material slot in Details; these come from the loaded preview metadata and need no additional archive reads.
 
 When the output root holds a build of that model, its build and reopen status, integrity, limitations and clip support follow under "Build in the output root". COMPLETE there means delivery coverage, not game accuracy. Saved results are read only from the output root, reloaded when it changes and after each batch; large master and validation-report hashes are checked in a worker.
 

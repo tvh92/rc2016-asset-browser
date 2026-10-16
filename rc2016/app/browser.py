@@ -41,6 +41,18 @@ def source_details(payload, used_by='', native_translation=True):
             lines.append('      ' + rule_text(shown))
             for limitation in m.get('native_limitations', ()):
                 lines.append('        ' + limitation)
+        entry = (payload.get('textures') or {}).get(m.get('index', i), {})
+        forward = entry.get('forward') or {}
+        sampling = forward.get('sampling') or {}
+        liquid = entry.get('liquid_flow') or sampling
+        notes = list(liquid.get('limitations') or ())
+        if sampling:
+            notes.insert(0, sampling['time_substitution'])
+            notes.append('Water normal combination, body colour, opacity, F0 and gloss use inferred presentation values.')
+        elif forward.get('kind') == 'water':
+            notes.append('Water family fallback: frozen-time mapping, normal combination and shading are inferred presentation choices.')
+        for note in dict.fromkeys(notes):
+            lines.append('        Preview limitation: ' + note)
     textures = payload.get('texture_list') or []
     graph = sum(1 for t in textures if t.get('via_graph'))
     lines.append(f"Textures: {len(textures)}" + (f" ({graph} graph defaults)" if graph else '') + ' — listed in the Textures tab')
