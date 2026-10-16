@@ -1071,6 +1071,15 @@ class Compiler:
             for reg in itertools.islice(registers,len(positions),None):positions[reg]=len(positions)
         return [(reg,registers[reg]) for reg in sorted(keys,key=positions.__getitem__)]
 
+    @staticmethod
+    def export_note(instructions):
+        """Suffix for a loop diagnostic when the program is not a three-target deferred writer.
+        Loops seen so far are the forward-pass light-list loops of colour-only programs, which are
+        outside the deferred-writer contract whether or not their control flow could be translated."""
+        targets=sorted({i['fields']['target'] for i in instructions if i['kind']==15})
+        if {0,1,2}<=set(targets):return ''
+        return ' (forward-pass program: exports '+(', '.join(f'target {t}' for t in targets) or 'no target')+', not the three deferred targets)'
+
     def run(self,instructions):
         """Execute in address order; a taken backward branch re-runs its body under the
         taken predicate (bounded unrolling) and resumes after the branch when every
@@ -1087,7 +1096,8 @@ class Compiler:
                 if self.ir.value(taken)!=0:
                     iterations[target]+=1
                     if iterations[target]>MAX_LOOP_ITERATIONS:
-                        raise ValueError(f'Loop at {target} not shown to end within {MAX_LOOP_ITERATIONS} iterations')
+                        raise ValueError(f'Loop at {target} not shown to end within {MAX_LOOP_ITERATIONS} iterations'
+                                         +self.export_note(instructions))
                     if target not in index:raise ValueError(f'Branch target {target} is not an instruction')
                     after=i['relative']+i['length']
                     self.pending[after]=self.p_or(self.pending.get(after,self.ir.const(0.)),self.bp)
