@@ -651,8 +651,10 @@ class PipelineIndexScanner:
                      "rc2016/formats/index.py", "rc2016/common.py")
     STAMP_OUTPUTS = ("gui_model_index.json", "asset_index.json", "asset_references.sqlite")
 
-    def _input_stamp(self) -> dict[str, object]:
-        """Every file under the extracted root (size, mtime) plus the indexing code's hashes."""
+    def _input_stamp(self, walked: Callable[[int], None] | None = None) -> dict[str, object]:
+        """Every file under the extracted root (size, mtime) plus the indexing code's hashes.
+
+        ``walked(count)`` is called every few hundred files."""
         files = []
         for folder, dirs, names in os.walk(self.extracted_root):
             dirs.sort()
@@ -660,6 +662,8 @@ class PipelineIndexScanner:
                 path = Path(folder) / name
                 stat = path.stat()
                 files.append([path.relative_to(self.extracted_root).as_posix(), stat.st_size, stat.st_mtime_ns])
+                if walked and len(files) % 500 == 0:
+                    walked(len(files))
         code = {name: sha256_file(PROJECT_ROOT / name) for name in self.STAMP_SOURCES if (PROJECT_ROOT / name).is_file()}
         return dict(schema="gui-scan-stamp-v1", extracted_root=str(self.extracted_root),
                     output_root=str(self.output_root), files=files, code=code)
@@ -672,23 +676,33 @@ class PipelineIndexScanner:
             stamp.append([name, stat.st_size if stat else None, stat.st_mtime_ns if stat else None])
         return stamp
 
-    def scan(self, reuse: bool = True) -> list[PipelineModelCandidate]:
+    # Share of the progress bar: the file walk, then the CLI (up to its last event), then reading its result.
+    WALK_SHARE, CLI_START, CLI_END = 0.15, 0.2, 0.92
+
+    def scan(self, reuse: bool = True, progress: Callable[[float], None] | None = None) -> list[PipelineModelCandidate]:
         """List models through the pipeline CLI.
 
         With ``reuse``, an unchanged archive (same files, sizes and mtimes), unchanged
         indexing code and untouched index outputs reuse the previous scan's model list
-        instead of re-running the ~1.5 s CLI pass.
+        instead of re-running the ~1.5 s CLI pass. ``progress(fraction)`` (0 to 1, only
+        rising) reports the walk of the archive files and the CLI's own progress events.
         """
+        report = progress or (lambda _fraction: None)
         _require_source_interpreter(self.python_executable)
         self.output_root.mkdir(parents=True, exist_ok=True)
         reports = self.output_root / "reports"
         index_json = reports / "gui_model_index.json"
         stamp_path = reports / "gui_scan_stamp.json"
-        inputs = self._input_stamp()
         try:
             previous_stamp = json.loads(stamp_path.read_text(encoding="utf-8")) if reuse else None
         except (OSError, ValueError):
             previous_stamp = None
+        # The previous walk's file count is the best estimate of this one's length.
+        expected = len((previous_stamp or {}).get("inputs", {}).get("files", ())) or 0
+        report(0.0)
+        inputs = self._input_stamp(lambda count: report(self.WALK_SHARE * min(1.0, count / expected) if expected
+                                                         else self.WALK_SHARE * (1 - 1 / (1 + count / 20000))))
+        report(self.WALK_SHARE)
         reused = bool(previous_stamp) and previous_stamp.get("inputs") == inputs and \
             previous_stamp.get("outputs") == self._output_stamp(reports)
         if not reused:
@@ -697,14 +711,25 @@ class PipelineIndexScanner:
                        "--output-root", str(self.output_root),
                        "--blender", str(self.blender_executable),
                        "--list-models-json", str(index_json)]
+            report(self.CLI_START)
             # Run hidden: without this flag a windowless GUI gives the child its own
             # visible console, and closing that window aborts the scan.
-            result = subprocess.run(command, cwd=str(PROJECT_ROOT), capture_output=True,
-                                    text=True, encoding="utf-8", errors="replace",
-                                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            if result.returncode:
-                raise RuntimeError((result.stdout + result.stderr).strip() or
-                                    f"Archive index scan exited with code {result.returncode}")
+            process = subprocess.Popen(command, cwd=str(PROJECT_ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       text=True, encoding="utf-8", errors="replace",
+                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            tail: list[str] = []
+            for line in process.stdout:
+                tail = (tail + [line])[-200:]
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if event.get("event") == "actor_reference_index" and event.get("total"):
+                    report(self.CLI_START + (self.CLI_END - self.CLI_START) * min(1.0, event["completed"] / event["total"]))
+            returncode = process.wait()
+            if returncode:
+                raise RuntimeError("".join(tail).strip() or f"Archive index scan exited with code {returncode}")
+            report(self.CLI_END)
         payload = json.loads(index_json.read_text(encoding="utf-8"))
         if not reused:
             try:
@@ -713,6 +738,7 @@ class PipelineIndexScanner:
             except OSError:
                 pass   # only loses the reuse next time
         self.reused = reused
+        report(0.95)
         previous_path = self.output_root / "reports" / "manifest.json"
         previous = load_json(previous_path).get("models", {}) if previous_path.is_file() else {}
         users = actor_users(self.output_root)

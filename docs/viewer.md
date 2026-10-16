@@ -18,7 +18,7 @@ Module map:
 | `rc2016/app/batch.py` | Model discovery, output verification, `BatchRunner`, `PipelineBatchRunner`, `ExportBatchRunner`, `PipelineIndexScanner` |
 | `rc2016/app/theme.py`, `rc2016/app/settings.py` | Dark theme, tooltips, UI scale, Tk runtime bootstrap; settings file, project paths, Python/Blender discovery |
 | `rc2016/app/browser.py` | Model/Level/Flash UI views, 3D/Textures/Details notebook, model details |
-| `rc2016/app/gallery.py` | Gallery tab: virtualised thumbnail grid, selection and render-queue rules |
+| `rc2016/app/gallery.py` | Grid view of the model list: virtualised thumbnail grid, selection and render-queue rules |
 | `rc2016/app/thumbnails.py` | Thumbnail cache index, offscreen renderer and its CLI (`python -m rc2016.app.thumbnails`) |
 | `rc2016/app/catalog.py`, `rc2016/app/workers.py` | Read-only result catalog; coalesced background workers and owned-process cleanup |
 | `rc2016/viewer/loader.py` | `SourcePreviewLoader`: archive model to viewport payload |
@@ -52,12 +52,12 @@ The window opens maximised, follows Windows' app mode (light or dark, including 
 
 ## Asset types
 
-An **Asset type** selector (Model / Level / Flash UI) above the search row decides what the main area shows. Each type has a list on the left and a viewer on the right. Switching hides the other views without destroying them, so a loaded model, level or UI file stays loaded.
+An **Asset type** selector (Model / Level / Flash UI), on the status line under Scan archive and after its text, decides what the main area shows. Each type has a list on the left and a viewer on the right. Switching hides the other views without destroying them, so a loaded model, level or UI file stays loaded.
 
 | Type | Left | Right |
 |---|---|---|
-| Model (default) | Search/filter row and model tree | Notebook with **3D model**, **Textures**, **Details**, **Gallery** |
-| Level | The archive's levels; a typed `.level` or `.zone` path plus **Load** below the list | Zone toggles, view options, level viewport ([levels](levels.md)) |
+| Model (default) | Search/filter row and the model list, as a tree (**List**) or thumbnails (**Grid**) | Notebook with **3D model**, **Textures**, **Details** |
+| Level | The archive's levels; a typed `.level` or `.zone` path plus **Load** below the list | Level viewport on the left, view options and zone toggles on the right ([levels](levels.md)) |
 | Flash UI | The archive's 53 `.gfx`/`.swf` files | Symbol list, canvas, frame and export controls |
 
 The level list and the Flash UI list are read the first time their type is selected.
@@ -71,7 +71,7 @@ The Level tab and standalone level viewer include **Actors (source placements)**
 - The tree groups models by archive folder. A folder that holds one model and no subfolders is skipped (`folder_layout`). Selecting a folder selects every model inside it.
 - Models are named by the named actors whose files reference them (`actor_users()`, one level of parent actors included), read from `reports/asset_references.sqlite`. The numbered moby/tie/shrub assets of the first game's data carry no name anywhere in the game data (their own materials are numbered too), and almost none is used by a named actor.
 - The search box matches path, ID, actor names and animation-set names. Several words must all match.
-- The State filter (All, READY, EXPORTED, VERIFIED, STALE, NO ANIMSET, PREVIOUS) reflects saved builds in the output root; EXPORTED marks folders that hold an `export.json`. Browsing does not approve backend cache reuse.
+- The State filter reflects saved builds in the output root and offers only the states the backend produces: with the full archive pipeline All, READY, EXPORTED (a folder that holds an `export.json`) and PREVIOUS (an earlier research run recorded the model); with the transform-only backend All, READY, VERIFIED, STALE and NO ANIMSET. Browsing does not approve backend cache reuse.
 - The **Shading** filter (All, Native translation, Generic reading, Family fallback, No material graph, Exact rules only) sits next to State and uses the links table ([Rule coverage](#rule-coverage)).
 
 ## 3D view
@@ -390,9 +390,9 @@ See [animation](animation.md) for the clip and sample formats.
 - **This model:** every `.texture` referenced by the selected model's materials, directly or as material-graph defaults (marked "graph default"), with format, full size and material.
 - **Whole archive:** all 18,994 textures, including ones no model uses (UI art, loading screens, skies, VFX, environment probes). Format and size fill in when a texture is viewed. **Filter** matches every word against the path. At most 3,000 rows are shown (`TEXTURE_ROW_LIMIT`); the filter narrows the rest.
 
-Selecting a texture decodes it in a worker and previews it with a channel selector (RGB, RGBA over a checkerboard, R, G, B, Alpha). RGB is the default, because alpha is usually mask data such as the `_c` self-lit mask. The preview reuses the 3D view's decoded mip (at least 512 px). Array textures (38 in the corpus, mostly VFX `_3d` flipbooks) enable the **Slice** selector.
+The tab has the preview on the left and the list, export and Used by controls on the right; drag the sash between them to resize. Selecting a texture decodes it in a worker and previews it with a channel selector (RGB, RGBA over a checkerboard, R, G, B, Alpha). RGB is the default, because alpha is usually mask data such as the `_c` self-lit mask. The preview reuses the 3D view's decoded mip (at least 512 px). Array textures (38 in the corpus, mostly VFX `_3d` flipbooks) show the **Slice** selector, which is hidden for every other texture.
 
-**Export selected... / Export listed...** write any combination of these into a chosen folder. Export listed covers every filter match, not only the 3,000 rows shown, and asks for confirmation above 200 textures.
+**Export selected... / Export all listed...** write any combination of these into a chosen folder. Export all listed covers every filter match, not only the 3,000 rows shown, and asks for confirmation above 200 textures.
 
 - **Original .texture:** the decompressed built asset, plus `<name>.texture.stream` exactly as archived when the texture has a stream.
 - **DDS:** the original block-compressed largest top mip with a DX10 header.
@@ -532,7 +532,7 @@ For saved Blender scenes the output root can drive an isolated review (`rc2016/p
 
 ## Gallery and thumbnails
 
-The **Gallery** tab shows rendered thumbnails of the models selected in the tree (selecting a folder selects every model inside it) or, with nothing or one unlisted model selected, of the current search results (capped at 2000, with a note). A single click selects the model in the tree and loads it in the 3D view; double click or Enter also switches to the **3D model** tab. Arrow keys, Page Up/Down, Home/End and the wheel move through the grid. Hovering a tile shows its path, ID and, for a failed thumbnail, the reason. Without an Output folder the tab only asks for one.
+The **Grid** view of the model list (the **List / Grid** switch at the right of the search row) shows rendered thumbnails of the models selected in the tree (selecting a folder selects every model inside it) or, with nothing or one unlisted model selected, of the current search results (capped at 2000, with a note). A single click selects the model in the tree and loads it in the 3D view; double click or Enter also switches to the **3D model** tab. Arrow keys, Page Up/Down, Home/End and the wheel move through the grid. Hovering a tile shows its path, ID and, for a failed thumbnail, the reason. Without an Output folder the view only asks for one. Expand all, which only concerns folders, is hidden in the grid.
 
 - **Grid:** one Tk canvas that draws only the visible rows; decoded images sit in a 300-entry LRU. Tiles are the native 192 px image; spacing and labels follow the UI scale. The label is the first named actor that uses the model, else the file name.
 - **Renderer:** `rc2016/app/thumbnails.py` runs as one child process (never more than one), so the Tk thread and 3D view are not blocked and it can be cancelled. It draws the model in Shaded mode, Highest LOD, look 0, bind pose, with the same framing as **Reset view**, into an offscreen RGBA framebuffer (GL 3 or EXT framebuffer objects) at twice the size, then box-filters down by alpha weight. The background is transparent, so tiles suit light and dark themes. If framebuffer objects are unavailable it reads the window back buffer instead and the background is opaque grey. It skips the streamed HD texture mips (this process only; the interactive viewer is unchanged).

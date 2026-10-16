@@ -25,5 +25,17 @@ class BrowserControlsTest(unittest.TestCase):
         self.assertEqual(material_toggles({0: {'experimental_preview': {'x': 1}}}), (False, True))
 
 
+
+class StateFilterTests(unittest.TestCase):
+    def test_every_state_a_backend_produces_is_offered(self):
+        from pathlib import Path
+        from rc2016.app.batch import PipelineModelCandidate
+        from rc2016.app.window import STATE_FILTERS, AssetBrowserApp
+        pipeline = {AssetBrowserApp.record_status(PipelineModelCandidate("id", "a/b.model", previous), Path("out"), exported)[0]
+                    for previous in ("", "COMPLETE") for exported in (set(), {"b"})}
+        self.assertLessEqual(pipeline, set(STATE_FILTERS["pipeline"]))
+        self.assertEqual(set(STATE_FILTERS["pipeline"]) - {"All"}, pipeline)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -76,12 +76,22 @@ HELP = {
         "Without this, folders open by themselves for short lists and searches. "
         "chunk and bangle folders stay closed in that automatic mode."),
     "state": (
+        "READY: nothing recorded for this model in the output folder yet\n"
+        "EXPORTED: exported to the output folder (it holds an export.json)\n"
+        "PREVIOUS: an earlier research Blender run recorded this model"),
+    "state_transform": (
         "READY: not extracted yet\n"
-        "EXPORTED: exported to the output folder\n"
         "VERIFIED: already extracted and checked\n"
         "STALE: extracted before, but out of date\n"
-        "PREVIOUS: listed in an earlier run's report\n"
         "NO ANIMSET: no animation found for this model"),
+    "asset_type": (
+        "Model: the model list with the 3D view, textures and details.\n"
+        "Level: the game levels, in a 3D level viewer.\n"
+        "Flash UI: the menu and HUD movies."),
+    "list_view": (
+        "List: the model tree, with the output state of every model.\n"
+        "Grid: the same models as thumbnails (the selection, or else the search results). "
+        "Clicking a thumbnail loads the model in the 3D view."),
     "shading": (
         "Filter by the viewer shading rule of the model's materials (Details lists it per slot):\n"
         "Native translation: at least one material uses a bounded native deferred surface DAG.\n"
@@ -93,6 +103,9 @@ HELP = {
         "Exact rules only: every material has a decoded writer rule.\n\n"
         "The first use indexes the archive's asset links (about half a minute, once)."),
 }
+# Output states each backend can produce; the State filter offers only those.
+STATE_FILTERS = {"pipeline": ("All", "READY", "EXPORTED", "PREVIOUS"),
+                 "transform": ("All", "READY", "VERIFIED", "STALE", "NO ANIMSET")}
 SHADING_FILTERS = {"Native translation": "native translation", "Generic reading": "generic reading", "Family fallback": "family fallback",
                    "No material graph": "no material graph", "Exact rules only": None}
 
@@ -185,7 +198,7 @@ class AssetBrowserApp:
         self.export_summary_var = tk.StringVar()
         self.exported_names: set[str] = set()
         self.selection_var = tk.StringVar(value="0 models selected")
-        self.progress_var = tk.StringVar(value="Step 1: click Browse… next to 'Game folder' and pick your unpacked game folder (e.g. CUSA01073). Hover any field for help.")
+        self.progress_var = tk.StringVar(value="Step 1: Browse… next to 'Game folder', pick your unpacked game folder (CUSA01073).")
 
     def _build_ui(self) -> None:
         tk, ttk = self.tk, self.ttk
@@ -209,13 +222,26 @@ class AssetBrowserApp:
         actions = ttk.Frame(self.root)
         actions.grid(row=1, column=0, sticky="ew", padx=12, pady=6)
         actions.columnconfigure(1, weight=1)
+        # The bar and the three buttons stretch to the row's height (Extract selected is the tallest).
         scan_button = ttk.Button(actions, text="Scan archive", command=self.scan)
-        scan_button.grid(row=0, column=0, padx=(0, 8))
-        ttk.Label(actions, textvariable=self.progress_var).grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        # Sits in the gap between Scan archive and Extract selected; the 4 px right pad
-        # matches Extract's left pad so the bar is centred between the two buttons.
+        scan_button.grid(row=0, column=0, padx=(0, 8), sticky="ns")
+        # Status text, then the asset types. The text has a fixed width so the buttons stay put as it changes.
+        status_row = ttk.Frame(actions)
+        status_row.grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        ttk.Label(status_row, textvariable=self.progress_var, width=64, anchor="w").pack(side="left")
+        # Each asset type has its own list (left) and viewer (right); see AssetBrowser.show_asset_type.
+        self.asset_type_var = tk.StringVar(value="Model")
+        self.asset_type_buttons = {}
+        for kind in ("Model", "Level", "Flash UI"):
+            button = ttk.Radiobutton(status_row, text=kind, value=kind, variable=self.asset_type_var, style="Toolbutton",
+                                     command=lambda: self.browser.show_asset_type(self.asset_type_var.get()))
+            button.pack(side="left", padx=(0, 2))
+            self.asset_type_buttons[kind] = button
+        self._tip(HELP["asset_type"], *self.asset_type_buttons.values())
+        # A scan reports fractions of PROGRESS_STEPS; a batch counts models.
         self.progressbar = ttk.Progressbar(actions, mode="determinate", maximum=1, value=0)
-        self.progressbar.grid(row=0, column=1, sticky="new", padx=(0, 4))
+        # The 4 px right pad matches Extract's left pad, so the bar is centred between the two buttons.
+        self.progressbar.grid(row=0, column=1, sticky="nsew", padx=(0, 4))
         accent_bg, accent_active, accent_disabled = (("#3d6fb6", "#2f5a97", "#8ea6c9") if self.dark
                                                      else ("#2563eb", "#1d4ed8", "#c7d2fe"))
         self.start_button = tk.Button(actions, text="Extract selected", command=self.start_batch, state="disabled",
@@ -223,9 +249,9 @@ class AssetBrowserApp:
                                       cursor="hand2", foreground="#ffffff", disabledforeground=accent_disabled,
                                       background=accent_bg, activebackground=accent_active,
                                       activeforeground="#ffffff")
-        self.start_button.grid(row=0, column=2, padx=4)
+        self.start_button.grid(row=0, column=2, padx=4, sticky="ns")
         self.cancel_button = ttk.Button(actions, text="Cancel", command=self.cancel_batch, state="disabled")
-        self.cancel_button.grid(row=0, column=3, padx=(4, 0))
+        self.cancel_button.grid(row=0, column=3, padx=(4, 0), sticky="ns")
         self._tip(HELP["scan"], scan_button)
         self._tip(HELP["extract"], self.start_button)
         self._tip(HELP["cancel"], self.cancel_button)
@@ -236,18 +262,6 @@ class AssetBrowserApp:
         top.columnconfigure(0, weight=1)
         top.rowconfigure(1, weight=1)
         main.add(top, weight=6)
-
-        # Asset type: each type has its own list (left) and viewer (right); see AssetBrowser.show_asset_type.
-        type_row = ttk.Frame(top)
-        type_row.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        ttk.Label(type_row, text="Asset type").pack(side="left", padx=(0, 8))
-        self.asset_type_var = tk.StringVar(value="Model")
-        self.asset_type_buttons = {}
-        for kind in ("Model", "Level", "Flash UI"):
-            button = ttk.Radiobutton(type_row, text=kind, value=kind, variable=self.asset_type_var, style="Toolbutton",
-                                     command=lambda: self.browser.show_asset_type(self.asset_type_var.get()))
-            button.pack(side="left", padx=(0, 2))
-            self.asset_type_buttons[kind] = button
 
         # Model view: search/filters above the model list | review notebook.
         model_view = ttk.Frame(top)
@@ -268,10 +282,11 @@ class AssetBrowserApp:
         self.expand_button.grid(row=0, column=2, padx=(8, 0))
         state_label = ttk.Label(filters, text="State")
         state_label.grid(row=0, column=3, padx=(14, 8))
-        state = ttk.Combobox(filters, textvariable=self.state_var, state="readonly", values=("All", "READY", "EXPORTED", "VERIFIED", "STALE", "NO ANIMSET", "PREVIOUS"), width=14)
+        self.state_box = state = ttk.Combobox(filters, textvariable=self.state_var, state="readonly", width=14,
+                                              values=STATE_FILTERS["pipeline"])
         state.grid(row=0, column=4)
         self._tip(HELP["filter"], filter_label, filter_entry)
-        self._tip(HELP["state"], state_label, state)
+        self.state_tips = [_Tooltip(self.tk, widget, HELP["state"]) for widget in (state_label, state)]
         state.bind("<<ComboboxSelected>>", lambda _event: self.refresh_table())
         shading_label = ttk.Label(filters, text="Shading")
         shading_label.grid(row=0, column=5, padx=(14, 8))
@@ -283,11 +298,24 @@ class AssetBrowserApp:
         select_button.grid(row=0, column=7, padx=(14, 4))
         self._tip(HELP["tree"], select_button)
         ttk.Button(filters, text="Clear selection", command=self.clear_selection).grid(row=0, column=8)
+        view_box = ttk.Frame(filters)
+        view_box.grid(row=0, column=9, padx=(14, 0))
+        self.list_view_var = tk.StringVar(value="List")
+        for kind in ("List", "Grid"):
+            button = ttk.Radiobutton(view_box, text=kind, value=kind, variable=self.list_view_var, style="Toolbutton",
+                                     command=lambda: self.show_list_view(self.list_view_var.get()))
+            button.pack(side="left", padx=(0, 2))
+            self._tip(HELP["list_view"], button)
 
         browser_split = ttk.Panedwindow(model_view, orient="horizontal")
         browser_split.grid(row=1, column=0, sticky="nsew")
-        table_frame = ttk.Frame(browser_split)
-        browser_split.add(table_frame, weight=3)
+        # The model tree and the thumbnail grid share this cell; show_list_view swaps them.
+        self.list_host = list_host = ttk.Frame(browser_split)
+        browser_split.add(list_host, weight=3)
+        list_host.columnconfigure(0, weight=1)
+        list_host.rowconfigure(0, weight=1)
+        self.table_frame = table_frame = ttk.Frame(list_host)
+        table_frame.grid(row=0, column=0, sticky="nsew")
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
         self.table = ttk.Treeview(table_frame, columns=("model", "animset", "state", "details"), show="tree headings", selectmode="extended")
@@ -510,8 +538,18 @@ class AssetBrowserApp:
         if chosen:
             self.blender_var.set(chosen)
 
+    def _apply_backend_states(self) -> None:
+        """The State filter offers only the states the chosen backend produces."""
+        kind = "pipeline" if self.backend_var.get() == "Full archive pipeline" else "transform"
+        self.state_box.configure(values=STATE_FILTERS[kind])
+        for tip in self.state_tips:
+            tip.text = HELP["state" if kind == "pipeline" else "state_transform"]
+        if self.state_var.get() not in STATE_FILTERS[kind]:
+            self.state_var.set("All")
+
     def _backend_changed(self) -> None:
         self.state_var.set("All")
+        self._apply_backend_states()
         self.records = []
         widget_state = "disabled" if self.backend_var.get() == "Full archive pipeline" else "normal"
         self.prefix_entry.configure(state=widget_state)
@@ -542,8 +580,8 @@ class AssetBrowserApp:
             if not python.is_file():
                 self.messagebox.showerror("Python not found", "No Python 3 was found on this PC. Install it from python.org, then restart the extractor.")
                 return
-            self._set_busy(scanning=True)
-            self.progress_var.set("Building pipeline archive index…")
+            self._set_busy(scanning=True, measured=True)
+            self.progress_var.set("Reading the archive files…")
             self._append_log("Indexing archive models through the pipeline", "muted")
             self.worker = threading.Thread(target=self._pipeline_scan_worker,
                                            args=(source, output, python, blender), daemon=True)
@@ -565,7 +603,7 @@ class AssetBrowserApp:
     def _pipeline_scan_worker(self, source: Path, output: Path, python: Path, blender: Path) -> None:
         try:
             scanner = PipelineIndexScanner(source, output, python, blender)
-            records = scanner.scan()
+            records = scanner.scan(progress=lambda fraction: self.events.put(("scan_progress", {"fraction": fraction})))
             self.events.put(("scan_done", {"records": records, "reused": getattr(scanner, "reused", False)}))
         except Exception as error:
             self.events.put(("scan_error", {"message": str(error)}))
@@ -641,6 +679,19 @@ class AssetBrowserApp:
         self.progress_var.set(f"{len(self.records)} models found; {len(self.filtered_records)} visible"
                               + (" (reading material links…)" if shading_filter != "All" and coverage is None else ""))
         self._gallery_changed()
+
+    def show_list_view(self, kind: str) -> None:
+        """Show the model list as the tree (List) or as thumbnails (Grid); both follow the same search and selection."""
+        gallery = self.browser.gallery.frame
+        if kind == "Grid":
+            self.table_frame.grid_remove()
+            self.expand_button.grid_remove()   # folders only exist in the tree
+            gallery.grid(row=0, column=0, sticky="nsew")
+        else:
+            gallery.grid_remove()
+            self.table_frame.grid(row=0, column=0, sticky="nsew")
+            self.expand_button.grid()
+        self.list_view_var.set(kind)
 
     def _gallery_changed(self) -> None:
         """The selection or the visible model list changed: the Gallery tab refreshes when shown."""
@@ -911,15 +962,17 @@ class AssetBrowserApp:
             self.browser.close()
             self.root.destroy()
 
-    def _set_busy(self, scanning: bool = False, running: bool = False) -> None:
+    PROGRESS_STEPS = 1000
+
+    def _set_busy(self, scanning: bool = False, running: bool = False, measured: bool = False) -> None:
         self.scanning = scanning
-        # A scan has no known length, so show a moving bar; batches count models.
-        if scanning:
+        # The pipeline scan reports its progress; the loose-file scan cannot, so it gets a moving bar.
+        self.progressbar.stop()
+        if scanning and not measured:
             self.progressbar.configure(mode="indeterminate")
-            self.progressbar.start(12)
+            self.progressbar.start(25)
         else:
-            self.progressbar.stop()
-            self.progressbar.configure(mode="determinate")
+            self.progressbar.configure(mode="determinate", maximum=self.PROGRESS_STEPS, value=0)
         if scanning or running or (hasattr(self, "browser") and self.browser.review):
             self.start_button.configure(state="disabled")
             self.cancel_button.configure(state="normal" if running else "disabled")
@@ -946,7 +999,14 @@ class AssetBrowserApp:
         self.root.after(100, self._drain_events)
 
     def _handle_event(self, kind: str, values: dict[str, object]) -> None:
-        if kind == "scan_done":
+        if kind == "scan_progress":
+            if getattr(self, "scanning", False):
+                fraction = float(values["fraction"])
+                self.progressbar.configure(value=fraction * self.PROGRESS_STEPS)
+                phase = ("Reading the archive files" if fraction < PipelineIndexScanner.CLI_START
+                         else "Indexing the archive's models" if fraction < PipelineIndexScanner.CLI_END else "Reading the model list")
+                self.progress_var.set(f"{phase}… {fraction:.0%}")
+        elif kind == "scan_done":
             self.records = values["records"]  # type: ignore[assignment]
             self._scan_exported()
             self._set_busy()

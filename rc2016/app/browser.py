@@ -224,18 +224,26 @@ class AssetBrowser:
         textures=ttk.Frame(notebook,padding=6)
         notebook.add(view,text='3D model');notebook.add(textures,text='Textures')
         notebook.add(result,text='Details')
-        from rc2016.app.gallery import Gallery   # the Gallery tab: thumbnail grid of the selected or searched models
-        self.gallery=Gallery(self,notebook)
+        from rc2016.app.gallery import Gallery   # thumbnail grid of the selected or searched models: the list's Grid view
+        self.gallery=Gallery(self,app.list_host)
         self._build_texture_tab(textures)
         self._build_type_views(type_host if type_host is not None else parent.master,model_view if model_view is not None else parent)
-        # Portrait layout: the viewport is the tall left column (rows 0-8) and grows with the pane;
-        # the controls stack in column 1. Row 8 is the spare row that takes the extra height.
-        view.columnconfigure(0,weight=1);view.rowconfigure(8,weight=1)
-        self.viewport=ModelViewport(view,width=380,height=560)
-        self.viewport.grid(row=0,column=0,rowspan=9,sticky='nsew',padx=(0,8))
+        # Portrait layout: the viewport is the tall left pane and grows with the window; the controls stack in
+        # the right pane. Drag the sash between them to resize either. Row 8 of the controls is the spare row.
+        view.columnconfigure(0,weight=1);view.rowconfigure(0,weight=1)
+        self.view_split=split=ttk.Panedwindow(view,orient='horizontal');split.grid(row=0,column=0,sticky='nsew')
+        holder=ttk.Frame(split);holder.columnconfigure(0,weight=1);holder.rowconfigure(0,weight=1)
+        side=ttk.Frame(split,padding=(8,0,0,0));side.columnconfigure(0,weight=1);side.rowconfigure(8,weight=1)
+        split.add(holder,weight=1);split.add(side,weight=0)
+        self.viewport=ModelViewport(holder,width=380,height=560)
+        self.viewport.grid(row=0,column=0,sticky='nsew')
+        self.CONTROLS_WIDTH=430
+        def place_sash(_event=None):
+            if split.winfo_width()>1:split.sashpos(0,max(200,split.winfo_width()-self.CONTROLS_WIDTH))
+        app.root.after(300,place_sash)
         tip=app._tip
         # View: camera and draw mode.
-        viewrow=ttk.Frame(view);viewrow.grid(row=0,column=1,sticky='ew',pady=(6,4))
+        viewrow=ttk.Frame(side);viewrow.grid(row=0,column=0,sticky='ew',pady=(0,4))
         ttk.Label(viewrow,text='View').pack(side='left')
         self.view_mode=self.tk.StringVar(value='Shaded')
         self.mode_box=mode_box=ttk.Combobox(viewrow,textvariable=self.view_mode,values=self.viewport.MODES,state='readonly',width=16)
@@ -246,7 +254,7 @@ class AssetBrowser:
         tip('Shaded: the game BRDF (_c base colour, _g gloss, _n normals, self-lit) under the chosen lighting. It predicts the Blender review render, not game lighting.\nTextured: base colour only. Solid and Wireframe: geometry only.',mode_box)
         tip('Frame the whole model again.\nDrag orbits, right-drag pans, the wheel zooms.',reset_button)
         # Source: which meshes of the file are drawn. Shown only when the model has a choice (see _update_source_controls).
-        self.source_row=lodrow=ttk.Frame(view);lodrow.grid(row=1,column=1,sticky='ew',pady=(0,4))
+        self.source_row=lodrow=ttk.Frame(side);lodrow.grid(row=1,column=0,sticky='ew',pady=(0,4))
         self.native_look=self.tk.StringVar(value='0')
         self.native_look_label=ttk.Label(lodrow,text='Look')
         self.native_look_box=ttk.Combobox(lodrow,textvariable=self.native_look,values=(),state='disabled',width=4)
@@ -263,8 +271,8 @@ class AssetBrowser:
         # Shading: lighting, then the tonemap that turns its output into screen colours.
         self.lighting_var=self.tk.StringVar(value=self.viewport.LIGHTINGS[0])
         self.lighting_enabled_var=self.tk.BooleanVar(value=True)
-        lighting_group=ttk.LabelFrame(view,text='Shading',padding=(4,2))
-        lighting_group.grid(row=2,column=1,sticky='ew',pady=(0,4))
+        lighting_group=ttk.LabelFrame(side,text='Shading',padding=(4,2))
+        lighting_group.grid(row=2,column=0,sticky='ew',pady=(0,4))
         self.lighting_enabled_check=ttk.Checkbutton(
             lighting_group,text='Lighting',variable=self.lighting_enabled_var,
             command=lambda:self.viewport.set_lighting_enabled(self.lighting_enabled_var.get()))
@@ -285,8 +293,8 @@ class AssetBrowser:
         # Materials: only the toggles that change something for this model (see _update_source_controls).
         self.native_translation_var=self.tk.BooleanVar(value=True)
         self.experimental_materials_var=self.tk.BooleanVar(value=False)
-        self.materials_group=materials=ttk.LabelFrame(view,text='Materials',padding=(4,2))
-        materials.grid(row=3,column=1,sticky='ew',pady=(0,4))
+        self.materials_group=materials=ttk.LabelFrame(side,text='Materials',padding=(4,2))
+        materials.grid(row=3,column=0,sticky='ew',pady=(0,4))
         self.native_check=ttk.Checkbutton(materials,text='Native translation',variable=self.native_translation_var,
                                           command=self._native_translation_changed)
         self.experimental_check=ttk.Checkbutton(materials,text='Experimental previews',variable=self.experimental_materials_var,
@@ -297,7 +305,7 @@ class AssetBrowser:
         self.native_applicable=self.experimental_applicable=False
         self.viewport.set_lighting_enabled(self.lighting_enabled_var.get())
         self.viewport.set_experimental_materials(False)
-        anim=ttk.Frame(view);anim.grid(row=4,column=1,sticky='ew',pady=(0,6))
+        anim=ttk.Frame(side);anim.grid(row=4,column=0,sticky='ew',pady=(0,6))
         anim.columnconfigure(3,weight=1)
         ttk.Label(anim,text='Animation').grid(row=0,column=0,padx=(0,4))
         self.clip_choice=tk.StringVar(value=REST_POSE)
@@ -324,10 +332,10 @@ class AssetBrowser:
         self.animation=None;self.anim_frame=0;self.playing=False;self.play_job=None
         # Load errors and shader warnings only; the model's counts and ID are in Details.
         self.model_info=self.tk.StringVar(value='Select one source model. It loads directly; no Blender is needed.')
-        self.info_label=ttk.Label(view,textvariable=self.model_info,wraplength=400)
-        self.info_label.grid(row=5,column=1,sticky='ew')
+        self.info_label=ttk.Label(side,textvariable=self.model_info,wraplength=400)
+        self.info_label.grid(row=5,column=0,sticky='ew')
         self.model_info.trace_add('write',lambda *_a:self.info_label.grid() if self.model_info.get() else self.info_label.grid_remove())
-        ttk.Label(view,text='Drag: orbit · Right drag: pan · Wheel: zoom',foreground='#6b7280').grid(row=6,column=1,sticky='w',pady=5)
+        ttk.Label(side,text='Drag: orbit · Right drag: pan · Wheel: zoom',foreground='#6b7280').grid(row=6,column=0,sticky='w',pady=5)
         result.columnconfigure(0,weight=1);result.rowconfigure(0,weight=1)
         self.description=app.ScrolledText(result,height=8,wrap='word',state='disabled',font='TkDefaultFont')
         self.description.grid(row=0,column=0,sticky='nsew')
@@ -408,72 +416,101 @@ class AssetBrowser:
     TEXTURE_ROW_LIMIT=3000   # Treeview stays responsive; the filter narrows the rest
 
     def _build_texture_tab(self,tab):
-        tk,ttk=self.tk,self.ttk
+        """Preview (left) and the texture list with its export controls (right), like the 3D tab's layout."""
+        tk,ttk,tip=self.tk,self.ttk,self.app._tip
         self.texture_work=LatestWork();self.texture_list_work=LatestWork()
         self.texture_events=queue.Queue()
         self.model_texture_rows=[];self.archive_texture_rows=None;self.archive_texture_root=None
         self.texture_matches=[];self.texture_rows=[];self.texture_model=None
         self.texture_image=None;self.texture_facts=None;self.texture_photo=None
         self.texture_exporting=False;self.texture_filter_job=None
-        tab.columnconfigure(0,weight=1);tab.rowconfigure(2,weight=1)
-        top=ttk.Frame(tab);top.grid(row=0,column=0,sticky='ew',pady=(0,4))
-        top.columnconfigure(3,weight=1)
-        ttk.Label(top,text='Show').grid(row=0,column=0)
-        self.texture_mode=tk.StringVar(value=self.MODEL_TEXTURES)
-        mode=ttk.Combobox(top,textvariable=self.texture_mode,values=(self.MODEL_TEXTURES,self.ARCHIVE_TEXTURES),state='readonly',width=13)
-        mode.grid(row=0,column=1,padx=4);mode.bind('<<ComboboxSelected>>',lambda _e:self._texture_mode_changed())
-        ttk.Label(top,text='Filter').grid(row=0,column=2,padx=(8,4))
-        self.texture_filter=tk.StringVar()
-        ttk.Entry(top,textvariable=self.texture_filter).grid(row=0,column=3,sticky='ew')
-        self.texture_filter.trace_add('write',lambda *_a:self._schedule_texture_filter())
-        listing=ttk.Frame(tab);listing.grid(row=1,column=0,sticky='ew')
-        listing.columnconfigure(0,weight=1)
-        self.texture_tree=ttk.Treeview(listing,columns=('format','size','where'),height=7,selectmode='extended')
-        for column,text,width in [('#0','Texture',190),('format','Format',80),('size','Size',80),('where','Materials / folder',150)]:
-            self.texture_tree.heading(column,text=text);self.texture_tree.column(column,width=width,stretch=column in ('#0','where'))
-        self.texture_tree.grid(row=0,column=0,sticky='ew')
-        scroll=ttk.Scrollbar(listing,orient='vertical',command=self.texture_tree.yview);scroll.grid(row=0,column=1,sticky='ns')
-        self.texture_tree.configure(yscrollcommand=scroll.set)
-        self.texture_tree.bind('<<TreeviewSelect>>',lambda _e:self._texture_selected())
-        self.texture_canvas=tk.Canvas(tab,width=420,height=240,background='#2b2b2b',highlightthickness=0)
-        self.texture_canvas.grid(row=2,column=0,sticky='nsew',pady=4)
+        tab.columnconfigure(0,weight=1);tab.rowconfigure(0,weight=1)
+        split=self.texture_split=ttk.Panedwindow(tab,orient='horizontal');split.grid(row=0,column=0,sticky='nsew')
+        left=ttk.Frame(split);left.columnconfigure(0,weight=1);left.rowconfigure(0,weight=1)
+        right=ttk.Frame(split,padding=(8,0,0,0));right.columnconfigure(0,weight=1);right.rowconfigure(1,weight=1)
+        split.add(left,weight=1);split.add(right,weight=0)
+        # Left: the image, how to read it, and what it is.
+        self.texture_canvas=tk.Canvas(left,width=380,height=300,background='#2b2b2b',highlightthickness=0)
+        self.texture_canvas.grid(row=0,column=0,sticky='nsew')
         self.texture_canvas.bind('<Configure>',lambda _e:self._draw_texture())
-        options=ttk.Frame(tab);options.grid(row=3,column=0,sticky='ew')
-        ttk.Label(options,text='Channels').pack(side='left')
+        options=ttk.Frame(left);options.grid(row=1,column=0,sticky='ew',pady=(4,0))
+        channels_label=ttk.Label(options,text='Channels');channels_label.pack(side='left')
         # RGB by default: alpha is usually mask data (e.g. the _c self-lit mask), not transparency.
         self.texture_channels=tk.StringVar(value='RGB')
         box=ttk.Combobox(options,textvariable=self.texture_channels,values=('RGBA','RGB','R','G','B','Alpha'),state='readonly',width=6)
         box.pack(side='left',padx=4);box.bind('<<ComboboxSelected>>',lambda _e:self._draw_texture())
         self.texture_flip=tk.BooleanVar(value=False)
-        ttk.Checkbutton(options,text='Flip vertically',variable=self.texture_flip,command=self._draw_texture).pack(side='left',padx=8)
-        ttk.Label(options,text='Slice').pack(side='left')
+        flip=ttk.Checkbutton(options,text='Flip vertically',variable=self.texture_flip,command=self._draw_texture);flip.pack(side='left',padx=8)
+        # Only multi-slice textures (arrays, cube maps, volumes) have a slice to pick: hidden otherwise.
+        self.texture_slice_frame=ttk.Frame(options)
+        ttk.Label(self.texture_slice_frame,text='Slice').pack(side='left')
         self.texture_slice=tk.StringVar(value='1')
-        self.texture_slice_box=ttk.Spinbox(options,textvariable=self.texture_slice,from_=1,to=1,width=4,state='disabled',
+        self.texture_slice_box=ttk.Spinbox(self.texture_slice_frame,textvariable=self.texture_slice,from_=1,to=1,width=4,state='disabled',
                                            command=self._texture_slice_changed)
         self.texture_slice_box.pack(side='left',padx=4)
         self.texture_slice_box.bind('<Return>',lambda _e:self._texture_slice_changed())
-        export=ttk.Frame(tab);export.grid(row=4,column=0,sticky='ew',pady=(4,0))
-        ttk.Label(export,text='Export as').pack(side='left')
+        self.texture_info=tk.StringVar(value='Select a source model to list its textures, or show the whole archive.')
+        ttk.Label(left,textvariable=self.texture_info,wraplength=400).grid(row=2,column=0,sticky='ew',pady=(4,0))
+        # Right: which textures, then export, then who uses the selected one.
+        top=ttk.Frame(right);top.grid(row=0,column=0,sticky='ew',pady=(0,4))
+        top.columnconfigure(3,weight=1)
+        show_label=ttk.Label(top,text='Show');show_label.grid(row=0,column=0)
+        self.texture_mode=tk.StringVar(value=self.MODEL_TEXTURES)
+        mode=ttk.Combobox(top,textvariable=self.texture_mode,values=(self.MODEL_TEXTURES,self.ARCHIVE_TEXTURES),state='readonly',width=13)
+        mode.grid(row=0,column=1,padx=4);mode.bind('<<ComboboxSelected>>',lambda _e:self._texture_mode_changed())
+        filter_label=ttk.Label(top,text='Filter');filter_label.grid(row=0,column=2,padx=(8,4))
+        self.texture_filter=tk.StringVar()
+        filter_entry=ttk.Entry(top,textvariable=self.texture_filter);filter_entry.grid(row=0,column=3,sticky='ew')
+        self.texture_filter.trace_add('write',lambda *_a:self._schedule_texture_filter())
+        listing=ttk.Frame(right);listing.grid(row=1,column=0,sticky='nsew')
+        listing.columnconfigure(0,weight=1);listing.rowconfigure(0,weight=1)
+        self.texture_tree=ttk.Treeview(listing,columns=('format','size','where'),height=10,selectmode='extended')
+        for column,text,width in [('#0','Texture',190),('format','Format',80),('size','Size',80),('where','Materials / folder',150)]:
+            self.texture_tree.heading(column,text=text);self.texture_tree.column(column,width=width,stretch=column in ('#0','where'))
+        self.texture_tree.grid(row=0,column=0,sticky='nsew')
+        scroll=ttk.Scrollbar(listing,orient='vertical',command=self.texture_tree.yview);scroll.grid(row=0,column=1,sticky='ns')
+        self.texture_tree.configure(yscrollcommand=scroll.set)
+        self.texture_tree.bind('<<TreeviewSelect>>',lambda _e:self._texture_selected())
+        export=ttk.LabelFrame(right,text='Export',padding=(4,2));export.grid(row=2,column=0,sticky='ew',pady=(6,0))
         self.export_formats={'texture':tk.BooleanVar(value=False),'dds':tk.BooleanVar(value=False),'png':tk.BooleanVar(value=True)}
+        formats=ttk.Frame(export);formats.grid(row=0,column=0,sticky='w')
         for key,text in [('texture','Original .texture'),('dds','DDS'),('png','PNG')]:
-            ttk.Checkbutton(export,text=text,variable=self.export_formats[key]).pack(side='left',padx=3)
-        self.export_selected_button=ttk.Button(export,text='Export selected…',command=lambda:self._export_textures(False),state='disabled')
-        self.export_selected_button.pack(side='left',padx=(8,2))
-        self.export_all_button=ttk.Button(export,text='Export listed…',command=lambda:self._export_textures(True),state='disabled')
-        self.export_all_button.pack(side='left',padx=2)
-        users=ttk.Frame(tab);users.grid(row=5,column=0,sticky='ew',pady=(4,0));users.columnconfigure(1,weight=1)
-        ttk.Label(users,text='Used by').grid(row=0,column=0,padx=(0,4))
+            ttk.Checkbutton(formats,text=text,variable=self.export_formats[key]).pack(side='left',padx=(0,8))
+        buttons=ttk.Frame(export);buttons.grid(row=1,column=0,sticky='w',pady=(4,0))
+        self.export_selected_button=ttk.Button(buttons,text='Export selected…',command=lambda:self._export_textures(False),state='disabled')
+        self.export_selected_button.pack(side='left',padx=(0,4))
+        self.export_all_button=ttk.Button(buttons,text='Export all listed…',command=lambda:self._export_textures(True),state='disabled')
+        self.export_all_button.pack(side='left')
+        users=ttk.Frame(right);users.grid(row=3,column=0,sticky='ew',pady=(6,0));users.columnconfigure(1,weight=1)
+        users_label=ttk.Label(users,text='Used by');users_label.grid(row=0,column=0,padx=(0,4))
         self.texture_users_var=tk.StringVar(value='');self.texture_user_paths=[]
         self.texture_users_box=ttk.Combobox(users,textvariable=self.texture_users_var,state='disabled')
         self.texture_users_box.grid(row=0,column=1,sticky='ew')
         self.texture_open_button=ttk.Button(users,text='Open model',state='disabled',
                                             command=lambda:self._open_texture_user())
         self.texture_open_button.grid(row=0,column=2,padx=(4,0))
-        self.texture_info=tk.StringVar(value='Select a source model to list its textures, or show the whole archive.')
-        ttk.Label(tab,textvariable=self.texture_info,wraplength=410).grid(row=6,column=0,sticky='ew',pady=(4,0))
-        ttk.Label(tab,text='Unflipped = as stored in the game, top row first. The model builds do not flip images; they flip UV V instead.\n'
-                  'Flip applies to the preview and PNG export. Original .texture and DDS are written unchanged, at full size.',
-                  foreground='#6b7280',wraplength=410).grid(row=7,column=0,sticky='w',pady=4)
+        def place_sash(_event=None):
+            if split.winfo_width()>1:split.sashpos(0,max(200,split.winfo_width()-520))
+        self.app.root.after(300,place_sash)
+        tip('This model: the textures its materials reference.\nWhole archive: every texture in the game, with or without a model.',show_label,mode)
+        tip('Words that must all appear in the texture path.',filter_label,filter_entry)
+        tip('Click a texture to preview it. Ctrl/Shift-click selects several for export.',self.texture_tree)
+        tip('RGB: colour without alpha. In the game alpha is usually mask data (for _c textures the self-lit mask), not transparency.\nRGBA: alpha over a checkerboard.\nR, G, B, Alpha: that one channel in grey.',channels_label,box)
+        tip('Unflipped is as the game stores it, top row first. The model builds do not flip images; they flip the UV V coordinate instead.\nApplies to the preview and PNG export. Original .texture and DDS files are written unchanged.',flip)
+        tip('Original .texture: the game file, unchanged.\nDDS: the game image as a .dds file, unchanged, full size.\nPNG: a decoded 8-bit image; honours Flip vertically.',formats)
+        tip('Export the textures selected in the list.',self.export_selected_button)
+        tip('Export every texture the list shows, after the Filter. In Whole archive that can be thousands.',self.export_all_button)
+        tip('The models whose materials reference the selected texture (uses the asset-links index, built once).',users_label,self.texture_users_box)
+        tip('Show the chosen model in the Model asset type.',self.texture_open_button)
+
+    def _set_texture_slices(self,count):
+        """Show the Slice spinbox only for a texture with more than one slice."""
+        if count>1:
+            self.texture_slice_frame.pack(side='left')
+            self.texture_slice_box.configure(to=count,state='normal')
+        else:
+            self.texture_slice_frame.pack_forget()
+            self.texture_slice_box.configure(state='disabled')
 
     # Listing
     def _archive_mode(self):
@@ -522,7 +559,7 @@ class AssetBrowser:
             self.texture_tree.insert('','end',iid=str(i),text=Path(row['path']).name,values=self._texture_row_values(row,archive))
         self.texture_work.submit(lambda:None)
         self.texture_image=None;self.texture_facts=None;self._draw_texture()
-        self.texture_slice_box.configure(state='disabled');self.texture_slice.set('1')
+        self._set_texture_slices(1);self.texture_slice.set('1')
         idle=not self.texture_exporting
         self.export_all_button.configure(state='normal' if self.texture_matches and idle else 'disabled')
         self.export_selected_button.configure(state='disabled')
@@ -620,7 +657,7 @@ class AssetBrowser:
         slices=f" · slice {f['slice']+1} of {f['array_size']}" if f['array_size']>1 else ''
         self.texture_info.set(f"{f['path']}\n{f['format_name']} (DXGI {f['format']}, {'sRGB' if f['srgb'] else 'linear / Non-Color'}) · "
                               f"{f['full_size'][0]}×{f['full_size'][1]}{preview}{slices} · mode {self.texture_image.mode}")
-        self.texture_slice_box.configure(to=f['array_size'],state='normal' if f['array_size']>1 else 'disabled')
+        self._set_texture_slices(f['array_size'])
         self.texture_slice.set(str(f['slice']+1))
         for i,row in enumerate(self.texture_rows):   # fill in facts the archive listing lacks
             if row['path']==f['path'] and not row.get('width'):

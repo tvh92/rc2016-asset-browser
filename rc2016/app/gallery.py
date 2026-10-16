@@ -178,11 +178,12 @@ def photo_from_image(image, master):
 
 # Tk view ---------------------------------------------------------------------
 class Gallery:
-    """The Gallery notebook tab. All Tk work happens on the UI thread; the renderer is a child process."""
+    """The thumbnail grid: the Grid view of the model list (AssetBrowserApp.show_list_view). All Tk work happens on the UI thread; the renderer is a child process."""
 
     THUMB = DEFAULT_SIZE
 
-    def __init__(self, browser, notebook):
+    def __init__(self, browser, parent):
+        """``parent``: the frame the app places ``self.frame`` in (the cell shared with the model tree)."""
         import tkinter.font as tkfont
         self.browser, self.app, self.tk, self.ttk = browser, browser.app, browser.tk, browser.ttk
         tk, ttk = self.tk, self.ttk
@@ -217,15 +218,14 @@ class Gallery:
         self._visible = (0, 0)
         self.total_done_logged = 0
 
-        self.frame = ttk.Frame(notebook, padding=6)
-        notebook.add(self.frame, text='Gallery')
+        self.frame = ttk.Frame(parent)   # placed (and hidden) by the app
         self.frame.columnconfigure(0, weight=1)
         self.frame.rowconfigure(1, weight=1)
         bar = ttk.Frame(self.frame)
         bar.grid(row=0, column=0, columnspan=2, sticky='ew', pady=(0, 4))
         bar.columnconfigure(0, weight=1)
         self.info_var = tk.StringVar(value='')
-        ttk.Label(bar, textvariable=self.info_var, wraplength=360).grid(row=0, column=0, sticky='ew')
+        ttk.Label(bar, textvariable=self.info_var, wraplength=520).grid(row=0, column=0, sticky='ew')
         self.render_all_button = ttk.Button(bar, text='Render all thumbnails', command=self.render_all)
         self.render_all_button.grid(row=0, column=1, padx=(6, 2))
         self.cancel_button = ttk.Button(bar, text='Cancel', command=self.cancel_render, state='disabled')
