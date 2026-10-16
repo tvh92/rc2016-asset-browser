@@ -216,6 +216,8 @@ def apply_translated_material(material,source, *, experimental=False):
 
 def validate_translated_material(source,material, *, experimental=False):
     expected=source['shader_experimental_preview' if experimental else 'shader_translation']
+    from rc2016.shaders.bindings import validate_source_preview_inputs
+    validate_source_preview_inputs(expected)
     stored=json.loads(material.get('rc_shader_translation','{}'))
     assert stored==expected,'Persisted native translation receipt changed'
     signature=tree_signature(material.node_tree)

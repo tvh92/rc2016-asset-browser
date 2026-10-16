@@ -133,7 +133,8 @@ def material_row(archive, path):
                     for t in textures if archive.resolve(t)]
         profile = M.validated_profile(path, sha(data))
         status = M.shader_build_status(profile, M.graph_semantics(graphs), bindings, preflights)
-        translation = prepare_translation(graph_datas, data, instance)
+        translation = prepare_translation(graph_datas, data, instance,
+            source_graph_paths=graphs,source_material_path=path)
         rule = M.viewer_graph_rule(archive, path, {b['path'] for b in bindings})
         status = M.final_shader_status(status, rule, {b['path'] for b in bindings}, translation, profile, preflights, graphs)
         prefix = next((p for p, _r in T.GRAPH_RULES for g in graphs if g.startswith(p)), None)

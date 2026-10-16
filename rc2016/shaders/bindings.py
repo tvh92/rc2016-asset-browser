@@ -14,6 +14,7 @@ from functools import lru_cache
 from rc2016.shaders.ir import DAG, bits
 from rc2016.shaders.translator import compile_graph, lower_deferred, sampler_mode_hits, sections
 from rc2016.shaders.families import graph_parameter_tables
+from rc2016.common import asset_path
 
 PORTABLE_OPS={'const','texture','input','add','sub','mul','div','neg','abs','min',
               'max','sqrt','rsqrt','rcp','log2','exp2','pow','sat','sin','cos',
@@ -346,7 +347,7 @@ def _lowered(program):
     return dict(cached,limitations=list(cached['limitations']))
 
 
-def _bind(program,contract,material_data,instance,world_position=False,normal_attributes=(),stream_channels=None,static_attributes=()):
+def _bind(program,contract,material_data,instance,world_position=False,normal_attributes=(),stream_channels=None,static_attributes=(),source_preview_policy=None):
     from rc2016.formats.materials import texture_slot_records, MATERIAL_TEXTURE_SLOTS
     overrides={}
     for row in texture_slot_records(material_data,MATERIAL_TEXTURE_SLOTS):
@@ -370,6 +371,27 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
     if normal:roots+=normal['xyz']
     substitutions={i:ir.const(values[n['dword']]) for i,n in enumerate(list(ir.nodes))
         if n['op']=='input' and n.get('kind')=='cb' and n['api']==2 and n['dword'] in values}
+    if source_preview_policy:
+        preview_input=source_preview_policy['input']
+        substitutions.update({i:ir.const(preview_input['value']) for i,n in enumerate(list(ir.nodes))
+            if n['op']=='input' and n.get('kind')==preview_input['kind'] and
+               n.get('api')==preview_input['api'] and n.get('dword')==preview_input['dword']})
+        if not any(n['op']=='input' and n.get('kind')==preview_input['kind'] and
+                   n.get('api')==preview_input['api'] and n.get('dword')==preview_input['dword']
+                   for n in ir.nodes):
+            raise ValueError('Exact source preview input is absent from the matched writer')
+        selector=source_preview_policy['selector']
+        selector_row=next((row for row in receipt if row.get('key_hash')==selector['key_hash']),None)
+        if not selector_row or selector_row.get('values')!=[selector['value']] or selector_row.get('source')!='graph_default':
+            raise ValueError('Constructor Button source selector differs from its graph default')
+        lowered['limitations'].append(
+            'Constructor Bot chest-button source preview: CB0[99] is frozen at 0 as a time/phase presentation input; '
+            'the engine upload and runtime value are unverified. The serialized source selector 0x2A40709D is 1.0; '
+            'the graph compares it with 0.5 and selects the source false branch.')
+        lowered['limitations'].append(
+            'Constructor Bot chest-button MRT0 alpha comes from TBUFFER_LOAD_FORMAT_X and is omitted; its semantics '
+            'are unknown and it is not interpreted as opacity. MRT0 RGB contains a front-face-polarized encoded '
+            'attribute normal, but this preview uses geometry normals because tangent-frame reconstruction is unproven.')
     replaced=ir.replace(roots,substitutions);adapted=0;neutral_masks=[];static_used=set()
     if world_position:
         # Explicit review input for the decoded rock Blend Mask slot. An empty
@@ -567,8 +589,59 @@ COLOUR_SEMANTIC=5
 # Serialized slot identity of the decoded scalar rock Blend Mask.
 BLEND_MASK_SLOT=(0x3404C763,0x49A7866B)
 
+# One bounded source preview for the Constructor Bot chest button. The graph's
+# deferred writer is exact and portable after substituting the unbound phase
+# input. CB0[99] is not established as a runtime upload; its zero is a named
+# preview value. Every identity below is required, so this policy cannot leak
+# to another graph/material or a source-identical shader in another graph.
+CONSTRUCTO_BUTTON_SOURCE_PREVIEW=dict(
+    graph_path='materialgraph/character/enemy/enm_constructo_bot_chest_button/enm_constructo_bot_chest_button.materialgraph',
+    graph_sha256='353744cf5d88b461cefeb3e5c6e9fd6f77e6d3361db72ceaa76857d4137e10df',
+    material_path='material/character/enemy/enm_constructo_bot_chest_button/enm_constructo_bot_chest_button.material',
+    material_sha256='db3cc6657e9a29766542fb582297d4209c6964f52137603417e30ae805d62cea',
+    shader_id='0x7322f86e',
+    code_sha256='c2d7c69aa85d6820347b4f9e65020d94751452bd7c200b236292c5ea20264edb',
+    input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
+    selector=dict(key_hash=0x2A40709D,dword=0,value=1.0))
 
-def prepare_translation(graph_datas,material_data,instance,world_position=False,*,static_vector=False):
+
+def _source_preview_policy(graph_paths, graph_sha256, material_path, material_sha256, program):
+    """Return a source-preview input only for the exact audited material/writer."""
+    rule=CONSTRUCTO_BUTTON_SOURCE_PREVIEW
+    if not isinstance(graph_paths,(list,tuple)) or len(graph_paths)!=1:return None
+    try:
+        normalized_graph=asset_path(str(graph_paths[0]))
+        normalized_material=asset_path(str(material_path or ''))
+    except ValueError:
+        return None
+    if (normalized_graph!=rule['graph_path'] or graph_sha256!=rule['graph_sha256'] or
+        normalized_material!=rule['material_path'] or material_sha256!=rule['material_sha256'] or
+        program.get('shader_id')!=rule['shader_id'] or program.get('code_sha256')!=rule['code_sha256']):
+        return None
+    return dict(rule)
+
+
+def validate_source_preview_inputs(translation):
+    """Reject edited or stale source-preview input receipts before Blender acceptance."""
+    rows=translation.get('source_preview_inputs',[])
+    if not rows:return True
+    rule=CONSTRUCTO_BUTTON_SOURCE_PREVIEW
+    expected=dict(name=rule['input']['name'],kind=rule['input']['kind'],api=rule['input']['api'],
+        dword=rule['input']['dword'],value=rule['input']['value'],graph_path=rule['graph_path'],
+        graph_sha256=rule['graph_sha256'],material_path=rule['material_path'],
+        material_sha256=rule['material_sha256'],shader_id=rule['shader_id'],
+        code_sha256=rule['code_sha256'],
+        meaning='time/phase-like source input; runtime upload/value unverified',
+        selector_key_hash='0x%08X'%rule['selector']['key_hash'],selector_value=rule['selector']['value'])
+    if rows != [expected] or translation.get('shader_id')!=rule['shader_id'] or \
+            translation.get('code_sha256')!=rule['code_sha256'] or \
+            translation.get('graph_sha256')!=rule['graph_sha256']:
+        raise ValueError('Source preview input receipt does not match the exact Constructor Bot chest-button source')
+    return True
+
+
+def prepare_translation(graph_datas,material_data,instance,world_position=False,*,static_vector=False,
+                        source_graph_paths=None,source_material_path=None):
     """Bound portable translation. world_position=True builds the experimental
     receipt that adapts inferred world position or source-proven squared colour
     channels. Paint-only writers require no position or normal substitution;
@@ -578,6 +651,7 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False,
         result['diagnostics'].append('Translation requires one unambiguous source graph');return result
     if static_vector and not world_position:raise ValueError('Static vector inputs require experimental binding')
     data=bytes(graph_datas[0]);graph=compiled(data,allow_independent_samplers=world_position)
+    material_sha256=hashlib.sha256(bytes(material_data)).hexdigest()
     # The stream analysis (seconds on a large graph) is asked for per matched program below: most
     # graphs a level offers for previews have no program that compiles, and never need it.
     normal_attributes=set();stream_channels={}
@@ -608,13 +682,16 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False,
                     result.setdefault('independent_sampler_candidates',[]).append(dict(
                         shader_id=program['shader_id'],code_sha256=program['code_sha256'],
                         source_shader_record=contract['source_shader_record'],samples=split))
-            try:bound=_bind(program,contract,material_data,instance,world_position,normal_attributes,stream_channels,static_attributes)
+            preview_policy=None if world_position else _source_preview_policy(
+                source_graph_paths,graph['graph_sha256'],source_material_path,material_sha256,program)
+            try:bound=_bind(program,contract,material_data,instance,world_position,normal_attributes,
+                stream_channels,static_attributes,preview_policy)
             except ValueError as exc:
                 result['diagnostics'].append(dict(shader_id=program['shader_id'],contract=contract['index'],reason=str(exc)));continue
             if static_proof:bound['static_vector_evidence']=static_proof
             signature=json.dumps({k:bound[k] for k in ('nodes','outputs','normal','texture_bindings')},sort_keys=True)
             candidates.append(dict(bound=bound,program=program,signature=signature,
-                surface_signature=surface_signature(bound)))
+                surface_signature=surface_signature(bound),source_preview_policy=preview_policy))
     if not candidates:
         result['diagnostics'].append('No portable deferred writer with a bounded source pass contract');return result
     signatures={c['surface_signature'] for c in candidates}
@@ -629,11 +706,21 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False,
     candidate=candidates[0];program=candidate['program']
     result.update(candidate['bound'],status='ready',graph_sha256=graph['graph_sha256'],
         code_sha256=program['code_sha256'],code_offset=program['code_offset'],shader_id=program['shader_id'],
-        equivalent_candidates=len(candidates),translator_version=graph['translator_version'],binding_version=8,
+        equivalent_candidates=len(candidates),translator_version=graph['translator_version'],binding_version=9,
         surface_sha256=candidate['surface_signature'],candidate_sources=[dict(
             shader_id=c['program']['shader_id'],code_sha256=c['program']['code_sha256'],
             pass_contract_index=c['bound']['pass_contract_index'],
             **({'source_shader_record':c['bound']['source_shader_record']} if 'source_shader_record' in c['bound'] else {})) for c in candidates])
+    if candidate['source_preview_policy']:
+        rule=candidate['source_preview_policy']
+        result['source_preview_inputs']=[dict(name=rule['input']['name'],kind=rule['input']['kind'],
+            api=rule['input']['api'],dword=rule['input']['dword'],value=rule['input']['value'],
+            graph_path=rule['graph_path'],graph_sha256=rule['graph_sha256'],
+            material_path=rule['material_path'],material_sha256=rule['material_sha256'],
+            shader_id=rule['shader_id'],code_sha256=rule['code_sha256'],
+            meaning='time/phase-like source input; runtime upload/value unverified',
+            selector_key_hash='0x%08X'%rule['selector']['key_hash'],
+            selector_value=rule['selector']['value'])]
     result['limitations']=list(dict.fromkeys(
         limitation for c in candidates for limitation in c['bound']['limitations']))
     result['limitations']+=graph['limitations']+[

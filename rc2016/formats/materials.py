@@ -646,7 +646,8 @@ def prepare_materials(archive, model_geometry, output_dir, export_textures, log,
             texture_paths,unbound_texture_references,slot_roles=resolve_texture_slots(
                 data,graph_datas,shader_preflights,texture_paths,texture_references)
             from rc2016.shaders.bindings import prepare_translation
-            shader_translation=prepare_translation(graph_datas,data,instance_parameters)
+            shader_translation=prepare_translation(graph_datas,data,instance_parameters,
+                source_graph_paths=graph_paths,source_material_path=canonical)
             bindings=[];texture_errors=[]
             for texture_path in texture_paths:
                 decoded=texture_cache.get(texture_path)

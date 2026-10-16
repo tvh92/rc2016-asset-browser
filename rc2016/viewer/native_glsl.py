@@ -369,10 +369,12 @@ def prepare_material_translation(archive, path):
             material = asset_data(archive, material_id)
             graphs = list(dict.fromkeys(r['path'] for r in asset_references(archive, material_id) if r['path'].endswith('.materialgraph')))
             graph_datas = [bytes(asset_data(archive, entry(g, 'materialgraph'))) for g in graphs]
-            key = disk.key(bytes(material), graph_datas) if disk is not None else None
+            context='source-path:'+path.replace('\\','/').lower()+'|graphs:'+','.join(g.replace('\\','/').lower() for g in graphs)
+            key = disk.key(bytes(material), graph_datas, variant=context) if disk is not None else None
             result = disk.get(key) if key else None
             if result is None:
-                result = prepare_translation(graph_datas, material, extract_material_parameters(material))
+                result = prepare_translation(graph_datas, material, extract_material_parameters(material),
+                    source_graph_paths=graphs,source_material_path=path)
                 if key:
                     disk.put(key, result)
         except (ValueError, KeyError, IndexError, OSError) as exc:

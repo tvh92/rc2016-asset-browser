@@ -76,8 +76,8 @@ class TranslationDiskCacheTests(unittest.TestCase):
     def test_a_new_session_reuses_the_stored_translation(self):
         calls = []
 
-        def prepare(graphs, material, instance):
-            calls.append((graphs, material))
+        def prepare(graphs, material, instance, **context):
+            calls.append((graphs, material, context))
             return translation()
         with patch('rc2016.formats.archive.asset_data', side_effect=lambda archive, i: b'material' if i == 1 else b'graph'), \
              patch('rc2016.formats.archive.asset_references', return_value=[dict(path='g.materialgraph')]), \
@@ -87,7 +87,8 @@ class TranslationDiskCacheTests(unittest.TestCase):
                 archive = Archive()
                 archive.translation_disk_cache = self.disk
                 self.assertEqual(prepare_material_translation(archive, 'm.material'), translation())
-        self.assertEqual(calls, [([b'graph'], b'material')])
+        self.assertEqual(calls, [([b'graph'], b'material',dict(
+            source_graph_paths=['g.materialgraph'],source_material_path='m.material'))])
 
     def test_world_position_translation_is_reused_across_sessions(self):
         from rc2016.viewer.experimental_materials import world_position_translation
