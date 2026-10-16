@@ -567,7 +567,7 @@ def viewer_graph_rule(archive, material_path, bound_paths=None):
     if forward.get('kind')=='victor_reticle':terms['victor_reticle']=forward
     if forward.get('kind')=='eye_cornea':terms['eye_cornea']=forward
     if forward.get('kind') in ('glass_basic','glass_cg02','glass_jn'):terms[forward['kind']]=forward
-    linear_z=bool(bng) or any(key in present for key in VIEWER_LINEAR_Z_TERMS) or bool((paths.get('tint') or {}).get('variant')) or bool((paths.get('leaf_colour') or {}).get('mapped_fresnel'))
+    linear_z=bool(bng) or bool(paths.get('linear_z')) or any(key in present for key in VIEWER_LINEAR_Z_TERMS) or bool((paths.get('tint') or {}).get('variant')) or bool((paths.get('leaf_colour') or {}).get('mapped_fresnel'))
     rule=dict(applies=True,schema='rcps4-viewer-graph-rule-v2',
         source='rc2016/viewer/textures.py material_texture_paths',
         g_mode=paths.get('g_mode','colored'),self_lit=paths.get('self_lit','c_alpha'),

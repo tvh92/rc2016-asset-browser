@@ -233,7 +233,7 @@ GRAPH_RULES = (
     # Cached SPIR-V 63EEBF51 (ID in the graph's OrbShdr): coloured F0 = P*_g.rgb, gloss = sqrt(Q*_g.a^2), no self-lit;
     # Materials/BasicColoredSpec/BASIC_COLORED_SPEC_DECODE.md. Exact graph only; 1BC3FDDF/F8FBB38F are undecoded.
     ('materialgraph/global/basic_colored_spec/basic_colored_spec.',
-     dict(g_mode='colored', self_lit_key=None)),
+     dict(g_mode='colored', self_lit_key=None, linear_z=True)),   # 63EEBF51 normal z = 1 - x*x - y*y (no square root)
     # basic_colored_spec_emmisive_in_c_alpha_swap, pass-0 writer 63278DBA (pass 1 is D1DDEB45, the same surface without the
     # normal map). CB2: rate 0xAF5BEBBC, K 0xF8C61683 (graph default 5), P 0x62835AF9, Q 0x24F4CA4C, swap weight 0xBB8D619C
     # (graph default 0). Albedo mix(_c, _c2, W), F0 = P mix(_g, _g2) rgb, gloss = sqrt(sat(Q mix(_g.a^2, _g2.a^2))),
@@ -688,6 +688,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
     if 'g_switch' in rule:
         result['g_mode'] = 'colored' if value(rule['g_switch'], 0.0) >= 0.5 else 'grey'
     result['self_lit'] = rule.get('self_lit', 'c_alpha')
+    if rule.get('linear_z'):
+        result['linear_z'] = True
     if 'za_fresnel_key' in rule:
         result['za_fresnel_power'] = value(rule['za_fresnel_key'], 8.0)
     if 'self_lit_key' in rule:
@@ -1608,6 +1610,8 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
                 entry[key] = paths[key]
         if paths.get('foliage'):
             entry['foliage'] = True
+        if paths.get('linear_z'):
+            entry['linear_z'] = True
         if paths.get('alpha_cut'):
             entry['alpha_cut'] = float(paths['alpha_cut'])
         if 'za_fresnel_power' in paths:

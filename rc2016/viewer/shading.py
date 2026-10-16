@@ -276,6 +276,7 @@ uniform bool uHair; uniform vec3 uHairA; uniform vec3 uHairB; uniform vec4 uHair
 // uSkinB = (albedo, gloss, spec, gloss2), uSkinC = (spec2, detail UV scale, detail blend, unused).
 uniform int uSkinKind; uniform vec4 uSkinA; uniform vec4 uSkinB; uniform vec4 uSkinC;
 uniform sampler2D uTexCma; uniform bool uHasCma; uniform bool uSrgbCma;
+uniform bool uLinearZ; // basic_colored_spec 63EEBF51: normal z = 1 - x*x - y*y
 uniform bool uZaFresnel; uniform float uZaFresnelPower; // za_basic_normal_gloss geometry-normal rim suppression
 uniform bool uSelfLitG;       // self-lit mask from _g.B instead of _c.a
 uniform float uK;
@@ -603,7 +604,7 @@ void main() {
         if (uHair) rg *= uHairP.w;   // 94CE8CCE: x, y = 0.3 (2 RG - 1) at the close-range fade s = 1
         float z = sqrt(max(0.0, 1.0 - dot(rg, rg)));
         if (uTwoColorMetal) z = 1.0 - dot(rg, rg); // 1012E99D: source fade 2, not a square root
-        if (uBngKind > 0) z = 1.0 - dot(rg, rg);
+        if (uBngKind > 0 || uLinearZ) z = 1.0 - dot(rg, rg);
         if (uSkinKind > 0) z = 1.0 - dot(rg, rg); // forward skin shaders F0CD85FF/BED06840: z = 1 - x*x - y*y
         if (uGlowKind > 0) z = 1.0 - dot(rg, rg); // 2685144F / CA81B14F normal z weight
         if (uGlowKind == 1) { // geometry TBN, before the normal map; close-range fade s=2
@@ -1132,7 +1133,7 @@ OPAQUE_UNIFORMS = (
     "uFresnelTint", "uFresnelC", "uFresnelE", "uLiquidFlow", "uLiquidUV", "uFlatSurface", "uFlatColour", "uFlatSpec", "uBasicFlatColor", "uBasicFlatEmissionScale", "uVictorReticle", "uTexReticle", "uHasReticle", "uReticleP", "uReticleF0",
     "uHair", "uHairA", "uHairB", "uHairP",
     "uSkinKind", "uSkinA", "uSkinB", "uSkinC",
-    "uZaFresnel", "uZaFresnelPower",
+    "uLinearZ", "uZaFresnel", "uZaFresnelPower",
     "uGlowKind", "uGlowColour", "uGlowP", "uTexGlowParallax", "uHasGlowParallax", "uSrgbGlowParallax", "uSrgbGlowMask",
     "uVehicle", "uTexVehicleP2", "uHasVehicleP2", "uSrgbVehicleP2", "uVehicleA", "uVehicleB", "uVehicleP",
     "uBngKind", "uBngColour", "uBngP", "uBngDetail", "uTexBngDetail", "uHasBngDetail",

@@ -249,6 +249,22 @@ class ProjectileGraphTests(unittest.TestCase):
         self.assertEqual(rule.get('unported'), [])
 
 
+class ColoredSpecLinearZTests(unittest.TestCase):
+    GRAPH = 'materialgraph/global/basic_colored_spec/basic_colored_spec.materialgraph'
+
+    def test_exact_graph_uses_linear_normal_z(self):
+        defaults = {tp.SPECULAR_SCALE_KEY: 1.0, tp.GLOSS_SCALE_KEY: 1.0}
+        archive, got = extract(self.GRAPH, defaults)
+        self.assertTrue(got.get('linear_z'))
+        self.assertEqual(viewer_graph_rule(archive, 'm/x.material', set()).get('normal_z'), '1-x*x-y*y')
+        self.assertIn('uBngKind > 0 || uLinearZ', FRAGMENT)
+
+    def test_other_graphs_keep_the_square_root(self):
+        defaults = {tp.SPECULAR_SCALE_KEY: 1.0, tp.GLOSS_SCALE_KEY: 1.0}
+        archive, got = extract(SWAP, {**defaults, 0xAF5BEBBC: 0.0, 0xF8C61683: 5.0, 0xBB8D619C: 0.0})
+        self.assertNotIn('linear_z', got)
+
+
 class NumberDisplayTests(unittest.TestCase):
     def test_forward_entry_and_uniforms(self):
         archive, got = extract(SHIV, {})
