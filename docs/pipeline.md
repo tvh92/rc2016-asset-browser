@@ -267,7 +267,7 @@ Members are not re-validated by the group step; each keeps the checks of its own
 
 ## Shader node layout
 
-Before the candidate `.blend` is saved, every material's node tree and every node group is arranged in columns by `rc2016/pipeline/node_layout.py`: a node sits left of everything it feeds, and each column is stacked top to bottom in creation order. The layout is part of the pipeline, not a Blender add-on, so a file built on any machine opens the same way. Weapon merges and the group `.blend` keep the positions they set. Node positions carry no game data and are not validated.
+Before the candidate `.blend` is saved, every material's node tree and every node group is arranged in columns by `rc2016/pipeline/node_layout.py`: a node sits left of everything it feeds, and each column starts stacked top to bottom in creation order, then a few passes move every node toward the middle of the nodes it links to, so wires stay short and cross less. The layout is part of the pipeline, not a Blender add-on, so a file built on any machine opens the same way. Weapon merges and the group `.blend` keep the positions they set. Node positions carry no game data and are not validated.
 
 ## Cache reuse and the implementation hash
 

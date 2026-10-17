@@ -15,6 +15,7 @@ DEFAULT_WIDTH = 240.0
 MIN_HEIGHT = 120.0
 SOCKET_HEIGHT = 22.0     # rough height per socket row, to size nodes that report no height
 HEADER_HEIGHT = 40.0
+SWEEPS = 8               # passes that move nodes toward their links (see layout_positions)
 
 
 def layout_positions(node_ids, links, sizes):
@@ -46,17 +47,46 @@ def layout_positions(node_ids, links, sizes):
         columns[depth[node]].append(node)
     width_of = {node: sizes.get(node, (DEFAULT_WIDTH, MIN_HEIGHT))[0] for node in node_ids}
     column_width = {column: max(width_of[node] for node in members) for column, members in columns.items()}
-    positions = {}
     x_right = 0.0
     x_edge = {}
     for column in sorted(columns):
         x_edge[column] = x_right - column_width[column]
         x_right = x_edge[column] - COLUMN_GAP
-    for column, members in columns.items():
+    heights = {node: sizes.get(node, (DEFAULT_WIDTH, MIN_HEIGHT))[1] for node in node_ids}
+    # Start from a plain stack, then sweep the columns: each node moves toward the middle of the nodes
+    # it is linked to, and each column is packed again in that order. Wires get shorter and fewer cross.
+    tops = {}
+    for members in columns.values():
         y = 0.0
         for node in members:
-            positions[node] = (x_edge[column], y)
-            y -= sizes.get(node, (DEFAULT_WIDTH, MIN_HEIGHT))[1] + ROW_GAP
+            tops[node] = y
+            y -= heights[node] + ROW_GAP
+    neighbours = defaultdict(set)
+    for source, target in links:
+        if source in order and target in order and source != target:
+            neighbours[source].add(target)
+            neighbours[target].add(source)
+    ordered_columns = sorted(columns)
+    for sweep in range(SWEEPS):
+        for column in (ordered_columns if sweep % 2 == 0 else reversed(ordered_columns)):
+            members = columns[column]
+            centre = {node: tops[node] - heights[node] / 2 for node in members}
+            for node in members:
+                linked = [tops[other] - heights[other] / 2 for other in neighbours[node]]
+                if linked:
+                    centre[node] = sum(linked) / len(linked)
+            bottom = None
+            for node in sorted(members, key=lambda n: centre[n], reverse=True):
+                top = centre[node] + heights[node] / 2
+                if bottom is not None:
+                    top = min(top, bottom - ROW_GAP)
+                tops[node] = top
+                bottom = top - heights[node]
+    highest = max(tops.values())
+    positions = {}
+    for column, members in columns.items():
+        for node in members:
+            positions[node] = (x_edge[column], tops[node] - highest)
     return positions
 
 
