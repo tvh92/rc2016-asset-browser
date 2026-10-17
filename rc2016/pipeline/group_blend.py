@@ -10,6 +10,7 @@ it, exactly as a single-model build does.
 import argparse
 import json
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -44,8 +45,29 @@ def _extent(points, axis):
     return min(values), max(values)
 
 
+def _base_name(name):
+    """Blender appends ``.001`` to a datablock whose name is taken; the source name is the part before it."""
+    return re.sub(r"\.\d{3}$", "", name)
+
+
+def _load_materials(path, names):
+    """Append the named materials from another member's .blend; returns {source name: material}."""
+    before = set(bpy.data.materials)
+    with bpy.data.libraries.load(str(path), link=False) as (source, target):
+        target.materials = [name for name in names if name in source.materials]
+    loaded = {}
+    for material in bpy.data.materials:
+        if material not in before and _base_name(material.name) in names:
+            loaded[_base_name(material.name)] = material
+    return loaded
+
+
 def _load_member(member, label):
-    """Append one member's meshes and armatures into a collection named after it; returns all of them."""
+    """Append one member's meshes and armatures into a collection named after it; returns all of them.
+
+    ``member["pose"]`` keeps the action and pose the member was built with. ``member["materials"]`` (``blend``,
+    ``names``) replaces the named material slots with the same-named materials of another member's .blend, which
+    is how a texture set (captain, chrome, flame) is put on a suit without another mesh."""
     path = Path(member["blend"])
     if file_hash(path) != member["sha256"]:
         raise RuntimeError("Member changed since it was delivered: %s" % path)
@@ -60,7 +82,7 @@ def _load_member(member, label):
         if obj.type not in ("MESH", "ARMATURE"):  # cameras, lights and diagnostic empties are not part of the group
             bpy.data.objects.remove(obj, do_unlink=True)
             continue
-        if obj.type == "ARMATURE":
+        if obj.type == "ARMATURE" and not member.get("pose"):
             # Bind pose: no action, no NLA strips, and every pose bone back at its rest transform.
             obj.animation_data_clear()
             for bone in obj.pose.bones:
@@ -71,6 +93,18 @@ def _load_member(member, label):
         obj[MEMBER_KEY] = label
         collection.objects.link(obj)
         kept.append(obj)
+    swap = member.get("materials")
+    if swap:
+        replacements = _load_materials(swap["blend"], swap["names"])
+        missing = sorted(set(swap["names"]) - set(replacements))
+        if missing:
+            raise RuntimeError("Texture set %s lacks materials: %s" % (swap["blend"], ", ".join(missing)))
+        for obj in kept:
+            if obj.type != "MESH":
+                continue
+            for slot in obj.material_slots:
+                if slot.material and _base_name(slot.material.name) in replacements:
+                    slot.material = replacements[_base_name(slot.material.name)]
     return kept
 
 
@@ -95,7 +129,14 @@ def assemble(job):
     right = Euler(tuple(math.radians(v) for v in CAMERA_EULER_DEGREES)).to_matrix() @ Vector((1.0, 0.0, 0.0))
     members = []
     for index, member in enumerate(job["members"]):
-        members.append(_load_member(member, member["name"]))
+        objects = _load_member(member, member["name"])
+        # An offset moves a whole member sideways, along the camera's right axis, so repeated suits sit side by side.
+        offset = float(member.get("offset", 0.0))
+        if offset:
+            for obj in objects:
+                if obj.parent is None:
+                    obj.location = obj.location + right * offset
+        members.append(objects)
         print("GROUP member", index + 1, len(job["members"]), member["name"], flush=True)
     layout = _layout(members, right)
     camera_data = bpy.data.cameras.new("Group review camera")
