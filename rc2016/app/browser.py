@@ -11,6 +11,7 @@ from rc2016.common import remember_var
 from rc2016.app.layout import SplitLayout, Splitter, regrid
 from rc2016.viewer.loader import SourcePreviewLoader
 from rc2016.viewer.viewport import ModelViewport
+from rc2016.app.texture_grid import TextureGrid
 from rc2016.app.workers import LatestWork, ReviewProcess, open_local, review_command
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -446,6 +447,9 @@ class AssetBrowser:
     MODEL_TEXTURES,ARCHIVE_TEXTURES='This model','Whole archive'
     TEXTURE_ROW_LIMIT=3000   # Treeview stays responsive; the filter narrows the rest
     ZOOM_STEPS=('Fit','50%','100%','200%','400%','800%')
+    LIST_VIEW,GRID_VIEW='List','Grid'
+    ALL_CHANNELS='All four'      # Channels choice: R, G, B and A side by side (Fit only, no pixel readout)
+    DEFAULT_HIDDEN_MAPS=('_g','_n')   # Whole archive hides these suffixes until the Maps menu unticks them
 
     def _build_texture_tab(self,tab):
         """Preview (left) and the texture list with its export controls (right), like the 3D tab's layout."""
@@ -458,6 +462,8 @@ class AssetBrowser:
         self.texture_exporting=False;self.texture_filter_job=None
         self.texture_zoom=tk.StringVar(value='Fit');self.texture_centre=[0.5,0.5];self.texture_drag=None
         self.texture_layout=None;self.texture_view_path=None;self.texture_pixel=tk.StringVar(value='')
+        self.texture_view=tk.StringVar(value=self.LIST_VIEW);self.hidden_maps=set(self.DEFAULT_HIDDEN_MAPS);self.map_vars={}
+        self.texture_preview_buttons=[]
         tab.columnconfigure(0,weight=1);tab.rowconfigure(0,weight=1)
         split=self.texture_split=Splitter(tab,side=520,stacked=330);split.grid(row=0,column=0,sticky='nsew')
         self.layout.register(split)
@@ -478,7 +484,7 @@ class AssetBrowser:
         channels_label=ttk.Label(options,text='Channels');channels_label.pack(side='left')
         # RGB by default: alpha is usually mask data (e.g. the _c self-lit mask), not transparency.
         self.texture_channels=tk.StringVar(value='RGB')
-        box=ttk.Combobox(options,textvariable=self.texture_channels,values=('RGBA','RGB','R','G','B','Alpha'),state='readonly',width=6)
+        box=ttk.Combobox(options,textvariable=self.texture_channels,values=('RGBA','RGB','R','G','B','Alpha',self.ALL_CHANNELS),state='readonly',width=9)
         box.pack(side='left',padx=4);box.bind('<<ComboboxSelected>>',lambda _e:self._draw_texture())
         self.texture_flip=tk.BooleanVar(value=False)
         flip=ttk.Checkbutton(options,text='Flip vertically',variable=self.texture_flip,command=self._draw_texture);flip.pack(side='left',padx=8)
@@ -498,6 +504,14 @@ class AssetBrowser:
         self.texture_info=tk.StringVar(value='Select a source model to list its textures, or show the whole archive.')
         ttk.Label(left,textvariable=self.texture_info,wraplength=400).grid(row=2,column=0,sticky='ew',pady=(4,0))
         ttk.Label(left,textvariable=self.texture_pixel,wraplength=400).grid(row=3,column=0,sticky='ew',pady=(2,0))
+        actions=ttk.Frame(left);actions.grid(row=4,column=0,sticky='w',pady=(4,0))
+        save_preview=ttk.Button(actions,text='Save PNG…',command=self._save_texture_preview,state='disabled')
+        save_preview.pack(side='left')
+        copy_preview=ttk.Button(actions,text='Copy image',command=self._copy_texture_preview,state='disabled')
+        copy_preview.pack(side='left',padx=(4,0))
+        self.texture_preview_buttons=[save_preview,copy_preview]
+        tip('Saves the texture as the preview shows its Channels and Flip, at full size. The zoom is not applied.',save_preview)
+        tip('Puts the same image on the clipboard, to paste into another program.',copy_preview)
         # Right: which textures, then export, then who uses the selected one.
         top=ttk.Frame(right);top.grid(row=0,column=0,sticky='ew',pady=(0,4))
         top.columnconfigure(3,weight=1)
@@ -509,15 +523,26 @@ class AssetBrowser:
         self.texture_filter=tk.StringVar()
         filter_entry=ttk.Entry(top,textvariable=self.texture_filter);filter_entry.grid(row=0,column=3,sticky='ew')
         self.texture_filter.trace_add('write',lambda *_a:self._schedule_texture_filter())
+        view_label=ttk.Label(top,text='View');view_label.grid(row=1,column=0,pady=(4,0))
+        view=ttk.Combobox(top,textvariable=self.texture_view,values=(self.LIST_VIEW,self.GRID_VIEW),state='readonly',width=13)
+        view.grid(row=1,column=1,padx=4,pady=(4,0));view.bind('<<ComboboxSelected>>',lambda _e:self._texture_view_changed())
+        self.texture_maps_button=ttk.Menubutton(top,text='');self.texture_maps_button.grid(row=1,column=2,columnspan=2,sticky='w',padx=(8,0),pady=(4,0))
+        self.texture_maps_menu=tk.Menu(self.texture_maps_button,tearoff=False);self.texture_maps_button.configure(menu=self.texture_maps_menu)
+        self._update_map_button()
         listing=ttk.Frame(right);listing.grid(row=1,column=0,sticky='nsew')
         listing.columnconfigure(0,weight=1);listing.rowconfigure(0,weight=1)
-        self.texture_tree=ttk.Treeview(listing,columns=('format','size','where'),height=10,selectmode='extended')
+        tree_frame=self.texture_tree_frame=ttk.Frame(listing);tree_frame.grid(row=0,column=0,sticky='nsew')
+        tree_frame.columnconfigure(0,weight=1);tree_frame.rowconfigure(0,weight=1)
+        self.texture_tree=ttk.Treeview(tree_frame,columns=('format','size','where'),height=10,selectmode='extended')
         for column,text,width in [('#0','Texture',190),('format','Format',80),('size','Size',80),('where','Materials / folder',150)]:
             self.texture_tree.heading(column,text=text);self.texture_tree.column(column,width=width,stretch=column in ('#0','where'))
         self.texture_tree.grid(row=0,column=0,sticky='nsew')
-        scroll=ttk.Scrollbar(listing,orient='vertical',command=self.texture_tree.yview);scroll.grid(row=0,column=1,sticky='ns')
+        scroll=ttk.Scrollbar(tree_frame,orient='vertical',command=self.texture_tree.yview);scroll.grid(row=0,column=1,sticky='ns')
         self.texture_tree.configure(yscrollcommand=scroll.set)
         self.texture_tree.bind('<<TreeviewSelect>>',lambda _e:self._texture_selected())
+        grid_frame=self.texture_grid_frame=ttk.Frame(listing);grid_frame.grid(row=0,column=0,sticky='nsew')
+        self.texture_grid=TextureGrid(grid_frame,lambda path:self.source_loader.texture_thumbnail(path),self._texture_grid_changed,self.app.root)
+        grid_frame.grid_remove()
         export=ttk.LabelFrame(right,text='Export',padding=(4,2));export.grid(row=2,column=0,sticky='ew',pady=(6,0))
         self.export_formats={'texture':tk.BooleanVar(value=False),'dds':tk.BooleanVar(value=False),'png':tk.BooleanVar(value=True)}
         formats=ttk.Frame(export);formats.grid(row=0,column=0,sticky='w')
@@ -537,9 +562,14 @@ class AssetBrowser:
                                             command=lambda:self._open_texture_user())
         self.texture_open_button.grid(row=0,column=2,padx=(4,0))
         tip('This model: the textures its materials reference.\nWhole archive: every texture in the game, with or without a model.',show_label,mode)
-        tip('Words that must all appear in the texture path.',filter_label,filter_entry)
+        tip('Words that must all appear in the texture path. A word with a leading - must not appear, e.g. -planet.',filter_label,filter_entry)
+        tip('List: one row per texture with its format and size. Grid: a thumbnail per texture, drawn only where it is on screen.\n'
+            'Arrow keys move, Shift extends, Ctrl-click toggles, Ctrl+A selects all, Escape clears.',view_label,view)
+        tip('Whole archive only: textures whose name ends in a ticked suffix are hidden (the part after the last _ in the name). '
+            '_g and _n are hidden by default; the count is how many archive textures have that suffix.',self.texture_maps_button)
         tip('Click a texture to preview it. Ctrl/Shift-click selects several for export.',self.texture_tree)
-        tip('RGB: colour without alpha. In the game alpha is usually mask data (for _c textures the self-lit mask), not transparency.\nRGBA: alpha over a checkerboard.\nR, G, B, Alpha: that one channel in grey.',channels_label,box)
+        tip('RGB: colour without alpha. In the game alpha is usually mask data (for _c textures the self-lit mask), not transparency.\nRGBA: alpha over a checkerboard.\nR, G, B, Alpha: that one channel in grey.\n'
+            'All four: R, G, B and A side by side to compare. Always fitted to the frame, so zoom and the pixel readout do not apply.',channels_label,box)
         tip('Unflipped is as the game stores it, top row first. The model builds do not flip images; they flip the UV V coordinate instead.\nApplies to the preview and PNG export. Original .texture and DDS files are written unchanged.',flip)
         tip('Original .texture: the game file, unchanged.\nDDS: the game image as a .dds file, unchanged, full size.\nPNG: a decoded 8-bit image; honours Flip vertically.',formats)
         tip('Export the textures selected in the list.',self.export_selected_button)
@@ -592,15 +622,40 @@ class AssetBrowser:
         self.texture_filter_job=None
         self._fill_texture_tree()
 
-    def _fill_texture_tree(self,message=None):
-        archive=self._archive_mode()
-        source=(self.archive_texture_rows or []) if archive else self.model_texture_rows
+    def _grid_view(self):
+        return self.texture_view.get()==self.GRID_VIEW
+
+    def _texture_view_changed(self):
+        if self._grid_view():
+            self.texture_tree_frame.grid_remove();self.texture_grid_frame.grid()
+        else:
+            self.texture_grid_frame.grid_remove();self.texture_tree_frame.grid()
+        self._fill_texture_tree()
+
+    def _texture_grid_changed(self):
+        self._texture_selected()
+
+    def _filter_words(self):
+        """(words that must appear, words that must not) from the Filter box; a leading - means must not."""
         words=self.texture_filter.get().lower().split()
-        self.texture_matches=[r for r in source if all(w in r['path'].lower() for w in words)]
-        self.texture_rows=self.texture_matches[:self.TEXTURE_ROW_LIMIT]
+        excluded=[w[1:] for w in words if w.startswith('-') and len(w)>1]
+        return [w for w in words if not (w.startswith('-') and len(w)>1)],excluded
+
+    def _fill_texture_tree(self,message=None):
+        archive=self._archive_mode();grid=self._grid_view()
+        source=(self.archive_texture_rows or []) if archive else self.model_texture_rows
+        include,excluded=self._filter_words()
+        hidden=self.hidden_maps if archive else set()
+        self.texture_matches=[r for r in source if r.get('suffix','') not in hidden
+                              and all(w in r['path'].lower() for w in include)
+                              and not any(w in r['path'].lower() for w in excluded)]
+        # The grid draws only what is on screen, so it lists every match; the tree keeps its row limit.
+        self.texture_rows=self.texture_matches if grid else self.texture_matches[:self.TEXTURE_ROW_LIMIT]
         self.texture_tree.delete(*self.texture_tree.get_children())
-        for i,row in enumerate(self.texture_rows):
-            self.texture_tree.insert('','end',iid=str(i),text=Path(row['path']).name,values=self._texture_row_values(row,archive))
+        if not grid:
+            for i,row in enumerate(self.texture_rows):
+                self.texture_tree.insert('','end',iid=str(i),text=Path(row['path']).name,values=self._texture_row_values(row,archive))
+        self.texture_grid.set_rows(self.texture_rows if grid else [])
         self.texture_work.submit(lambda:None)
         self.texture_image=None;self.texture_facts=None;self._draw_texture()
         self._set_texture_slices(1);self.texture_slice.set('1')
@@ -610,15 +665,42 @@ class AssetBrowser:
         if message:self.texture_info.set(message);return
         shown='' if len(self.texture_matches)<=len(self.texture_rows) else f' Showing the first {len(self.texture_rows):,}; type in Filter to narrow.'
         if archive:
-            text=f'{len(self.texture_matches):,} of {len(source):,} archive textures match.{shown}' if words else f'{len(source):,} textures in the archive, with or without a model.{shown}'
+            hiding=sum(1 for r in source if r.get('suffix','') in hidden)
+            maps=f' {hiding:,} hidden as maps (Maps menu).' if hiding else ''
+            text=(f'{len(self.texture_matches):,} of {len(source):,} archive textures match.{shown}{maps}' if include or excluded
+                  else f'{len(source):,} textures in the archive, with or without a model.{shown}{maps}')
         elif self.texture_model is None:
             text='Select a source model to list its textures, or show the whole archive.'
         elif not source:
             text='This model\'s materials reference no textures.'
         else:
-            text=(f'{len(self.texture_matches)} of {len(source)} model textures match.' if words else
+            text=(f'{len(self.texture_matches)} of {len(source)} model textures match.' if include or excluded else
                   f'{len(source)} textures referenced by this model\'s materials.')+' Ctrl/Shift-click to select several.'
         self.texture_info.set(text)
+
+    def _rebuild_map_menu(self):
+        """One tick box per suffix in the archive (most common first), with its texture count."""
+        from collections import Counter
+        counts=Counter(r.get('suffix','') for r in self.archive_texture_rows or [])
+        suffixes=[s for s,_n in counts.most_common(40)]
+        suffixes+=[s for s in sorted(self.hidden_maps) if s not in suffixes]
+        menu=self.texture_maps_menu;menu.delete(0,'end');self.map_vars={}
+        for suffix in suffixes:
+            var=self.tk.BooleanVar(value=suffix in self.hidden_maps);self.map_vars[suffix]=var
+            menu.add_checkbutton(label=f"{suffix or '(no suffix)'}   {counts.get(suffix,0):,}",variable=var,command=self._map_toggled)
+        menu.add_separator();menu.add_command(label='Show all',command=self._show_all_maps)
+
+    def _map_toggled(self):
+        self.hidden_maps={s for s,var in self.map_vars.items() if var.get()}
+        self._update_map_button();self._schedule_texture_filter()
+
+    def _show_all_maps(self):
+        for var in self.map_vars.values():var.set(False)
+        self._map_toggled()
+
+    def _update_map_button(self):
+        hidden=len(self.hidden_maps)
+        self.texture_maps_button.configure(text=f'Maps: {hidden} suffix{"es" if hidden!=1 else ""} hidden' if hidden else 'Maps: none hidden')
 
     @staticmethod
     def _texture_row_values(row,archive):
@@ -628,15 +710,25 @@ class AssetBrowser:
         return (row.get('format_name',''),size,where)
 
     # Viewing
+    def _texture_selection(self):
+        """Indices into texture_rows of the selected textures, in the view that is showing."""
+        if self._grid_view():return self.texture_grid.selected_indices()
+        return [int(i) for i in self.texture_tree.selection()]
+
+    def _texture_focus(self):
+        if self._grid_view():return self.texture_grid.focus
+        focus=self.texture_tree.focus()
+        return int(focus) if focus else None
+
     def _selected_texture_paths(self):
-        return [self.texture_rows[int(i)]['path'] for i in self.texture_tree.selection()]
+        return [self.texture_rows[i]['path'] for i in self._texture_selection()]
 
     def _texture_selected(self):
         paths=self._selected_texture_paths()
         self.export_selected_button.configure(state='normal' if paths and not self.texture_exporting else 'disabled')
-        focus=self.texture_tree.focus()
-        if not focus:return
-        path=self.texture_rows[int(focus)]['path']
+        focus=self._texture_focus()
+        if focus is None:return
+        path=self.texture_rows[focus]['path']
         if self.texture_facts and self.texture_facts['path']==path:return
         self._show_texture_users(path)
         self.texture_slice.set('1')
@@ -649,8 +741,8 @@ class AssetBrowser:
         self.texture_users_box.configure(values=(),state='disabled');self.texture_open_button.configure(state='disabled')
         self.texture_users_var.set('Reading asset links…')
         def show(links):
-            focus=self.texture_tree.focus()
-            if not focus or self.texture_rows[int(focus)]['path']!=path:return   # another texture was chosen meanwhile
+            focus=self._texture_focus()
+            if focus is None or self.texture_rows[focus]['path']!=path:return   # another texture was chosen meanwhile
             if links is None:
                 self.texture_users_var.set(self.links.message);return
             users=links.texture_users(path)
@@ -708,28 +800,98 @@ class AssetBrowser:
         for i,row in enumerate(self.texture_rows):   # fill in facts the archive listing lacks
             if row['path']==f['path'] and not row.get('width'):
                 row.update(format_name=f['format_name'],width=f['full_size'][0],height=f['full_size'][1])
-                self.texture_tree.item(str(i),values=self._texture_row_values(row,self._archive_mode()))
+                if not self._grid_view():self.texture_tree.item(str(i),values=self._texture_row_values(row,self._archive_mode()))
         self._draw_texture()
+
+    def _channel_image(self,image,channels):
+        """The texture as the Channels choice shows it, before Flip and zoom."""
+        from PIL import Image
+        bands=image.getbands()
+        if channels in ('R','G','B','Alpha'):
+            band={'Alpha':'A'}.get(channels,channels)
+            if image.mode=='L':return image.copy()
+            if band in bands:return image.getchannel(band)
+            return Image.new('L',image.size,255 if band=='A' else 0)
+        if channels=='RGB' or 'A' not in bands:return image.convert('RGB')
+        return image.convert('RGBA')
+
+    @staticmethod
+    def _channel_sheet(source,flip,cell_w,cell_h):
+        """R, G, B and A of the texture side by side in a 2×2 sheet, each in grey, labelled and fitted to its cell."""
+        from PIL import Image, ImageDraw
+        gap=8
+        sheet=Image.new('RGB',(2*cell_w+gap,2*cell_h+gap),(43,43,43))
+        draw=ImageDraw.Draw(sheet)
+        rgb=source.convert('RGB')
+        alpha=source.getchannel('A') if 'A' in source.getbands() else Image.new('L',source.size,255)
+        for number,(name,channel) in enumerate([('R',rgb.getchannel('R')),('G',rgb.getchannel('G')),
+                                                ('B',rgb.getchannel('B')),('A',alpha)]):
+            if flip:channel=channel.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+            iw,ih=channel.size
+            scale=min(cell_w/iw,cell_h/ih)
+            size=(max(1,round(iw*scale)),max(1,round(ih*scale)))
+            tile=channel.resize(size,Image.Resampling.NEAREST if scale>1 else Image.Resampling.LANCZOS)
+            x,y=(number%2)*(cell_w+gap),(number//2)*(cell_h+gap)
+            sheet.paste(tile.convert('RGB'),(x+(cell_w-size[0])//2,y+(cell_h-size[1])//2))
+            draw.text((x+6,y+4),name,fill=(255,255,255))
+        return sheet
+
+    def _preview_export_image(self):
+        """The texture as the preview shows its Channels and Flip, at full size (zoom is not applied)."""
+        from PIL import Image
+        source=self.texture_image
+        if self.texture_channels.get()==self.ALL_CHANNELS:
+            return self._channel_sheet(source,self.texture_flip.get(),*source.size)
+        image=self._channel_image(source,self.texture_channels.get())
+        if self.texture_flip.get():image=image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+        return image
+
+    def _save_texture_preview(self):
+        if self.texture_image is None:return
+        path=self.texture_facts['path'] if self.texture_facts else 'texture'
+        suggested=f"{Path(path).stem}_{self.texture_channels.get().lower().replace(' ','_')}.png"
+        target=self.app.filedialog.asksaveasfilename(title='Save the texture preview as PNG',initialfile=suggested,
+                                                     defaultextension='.png',filetypes=[('PNG image','*.png')])
+        if not target:return
+        try:self._preview_export_image().save(target,format='PNG')
+        except OSError as error:
+            self.texture_info.set(f'Cannot save the preview: {error}');return
+        self.texture_info.set(f'Saved the preview to {target}.')
+
+    def _copy_texture_preview(self):
+        """Put the preview on the Windows clipboard as an image (through PowerShell, which owns the clipboard API)."""
+        if self.texture_image is None:return
+        import subprocess, tempfile, os
+        handle,temp=tempfile.mkstemp(suffix='.png');os.close(handle)
+        try:
+            self._preview_export_image().save(temp,format='PNG')
+            literal=temp.replace("'","''")
+            script=("Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
+                    f"$bytes=[System.IO.File]::ReadAllBytes('{literal}');"
+                    "$stream=New-Object System.IO.MemoryStream(,$bytes);"
+                    "[System.Windows.Forms.Clipboard]::SetImage([System.Drawing.Image]::FromStream($stream))")
+            subprocess.run(['powershell','-NoProfile','-STA','-Command',script],check=True,timeout=60,
+                           creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+            self.texture_info.set('Copied the preview to the clipboard.')
+        except (OSError,subprocess.SubprocessError) as error:
+            self.texture_info.set(f'Cannot copy the preview: {error}')
+        finally:
+            try:os.remove(temp)
+            except OSError:pass
 
     def _draw_texture(self):
         canvas=self.texture_canvas
         canvas.delete('all')
         width,height=max(1,canvas.winfo_width()),max(1,canvas.winfo_height())
         self.texture_layout=None
+        self.texture_save_buttons_state('normal' if self.texture_image is not None else 'disabled')
         if self.texture_image is None:
             self.texture_photo=None;return
         from PIL import Image
-        import base64, io
-        image=self.texture_image
-        channels=self.texture_channels.get()
-        bands=image.getbands()
-        if channels in ('R','G','B','Alpha'):
-            band={'Alpha':'A'}.get(channels,channels)
-            if image.mode=='L':image=image.copy()
-            elif band in bands:image=image.getchannel(band)
-            else:image=Image.new('L',image.size,255 if band=='A' else 0)
-        elif channels=='RGB' or 'A' not in bands:image=image.convert('RGB')
-        else:image=image.convert('RGBA')
+        if self.texture_channels.get()==self.ALL_CHANNELS:
+            sheet=self._channel_sheet(self.texture_image,self.texture_flip.get(),max(1,(width-8)//2),max(1,(height-8)//2))
+            self._show_texture_photo(sheet,width,height);return
+        image=self._channel_image(self.texture_image,self.texture_channels.get())
         if self.texture_flip.get():image=image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
         iw,ih=image.size
         if self.texture_zoom.get()=='Fit':
@@ -746,6 +908,12 @@ class AssetBrowser:
         image=image.resize(size,Image.Resampling.NEAREST if scale>1 else Image.Resampling.LANCZOS)
         # Where the picture sits on the canvas, for the pixel readout and the pointer maths.
         self.texture_layout=dict(box=box,scale=scale,origin=(width//2-size[0]//2,height//2-size[1]//2),size=(iw,ih))
+        self._show_texture_photo(image,width,height)
+
+    def _show_texture_photo(self,image,width,height):
+        """Draw a Pillow image centred on the preview canvas; RGBA is composited over a checkerboard."""
+        from PIL import Image
+        import base64, io
         if image.mode=='RGBA':
             # Composite over a checkerboard so transparent areas are visible.
             cell=8
@@ -757,7 +925,10 @@ class AssetBrowser:
             checker.paste(image,(0,0),image);image=checker
         buffer=io.BytesIO();image.save(buffer,format='PNG')
         self.texture_photo=self.tk.PhotoImage(data=base64.b64encode(buffer.getvalue()),format='png')
-        canvas.create_image(width//2,height//2,image=self.texture_photo,anchor='center')
+        self.texture_canvas.create_image(width//2,height//2,image=self.texture_photo,anchor='center')
+
+    def texture_save_buttons_state(self,state):
+        for button in self.texture_preview_buttons:button.configure(state=state)
 
     def _texture_point(self,x,y):
         """Canvas position -> (x, y) in the displayed image's pixels, or None off the picture."""
@@ -795,6 +966,9 @@ class AssetBrowser:
     def _texture_wheel(self,event):
         try:under=self.app.root.winfo_containing(event.x_root,event.y_root)
         except Exception:return
+        if under is self.texture_grid.canvas:
+            if self._grid_view():self.texture_grid.wheel(event.delta)
+            return
         if under is not self.texture_canvas or self.texture_image is None:return
         point=self._texture_point(event.x,event.y)
         if point is not None:   # zoom towards the pointer
@@ -845,6 +1019,7 @@ class AssetBrowser:
                     if self._archive_mode():self._fill_texture_tree('Cannot read the archive\'s textures: '+error)
                 elif payload is not None:
                     self.archive_texture_root,self.archive_texture_rows=payload
+                    self.texture_grid.forget_thumbnails();self._rebuild_map_menu()
                     if self._archive_mode():self._fill_texture_tree()
         except queue.Empty:pass
         try:
@@ -864,7 +1039,7 @@ class AssetBrowser:
                     continue
                 self.texture_exporting=False
                 self.export_all_button.configure(state='normal' if self.texture_matches else 'disabled')
-                self.export_selected_button.configure(state='normal' if self.texture_tree.selection() else 'disabled')
+                self.export_selected_button.configure(state='normal' if self._texture_selection() else 'disabled')
                 if kind=='error':
                     self.texture_info.set('Export failed: '+value);self.app._append_log('Texture export failed: '+value,'error');continue
                 folder,rows=value
@@ -1429,7 +1604,7 @@ class AssetBrowser:
         self.playing=False
         if self.play_job is not None:self.app.root.after_cancel(self.play_job);self.play_job=None
         self.meta_work.close();self.detail_work.close();self.artifact_work.close();self.source_work.close();self.anim_work.close();self.clip_list_work.close()
-        self.texture_work.close();self.texture_list_work.close();self.flash_tab.close();self.level_panel.close()
+        self.texture_work.close();self.texture_list_work.close();self.texture_grid.close();self.flash_tab.close();self.level_panel.close()
         self.gallery.close()
         self.links.close()
         self.cancel_review()

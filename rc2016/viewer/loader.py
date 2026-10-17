@@ -179,6 +179,8 @@ class SourcePreviewLoader:
         self._recent_identity=None
         # Model loads and clip decodes run on different worker threads.
         self.lock=threading.Lock()
+        # Texture reads from the list, the grid's thumbnails and the preview share the archive's file handle.
+        self.texture_lock=threading.Lock()
 
     def pose(self, clip_index):
         with self.lock:
@@ -208,7 +210,8 @@ class SourcePreviewLoader:
             archive=self._ensure_archive(source_root)
         paths=sorted({e['path'] for e in archive.entries.values()
                       if e['type']=='texture' and e['built_path'].lower().endswith('.built')})
-        return [dict(path=p,suffix='',materials=[],via_graph=False) for p in paths]
+        from rc2016.viewer.textures import _suffix
+        return [dict(path=p,suffix=_suffix(p),materials=[],via_graph=False) for p in paths]
 
     # Flash UI (.gfx/.swf) ---------------------------------------------------
     def ui_files(self, source_root):
@@ -285,13 +288,25 @@ class SourcePreviewLoader:
         if archive is None:raise ValueError('No source archive is loaded')
         texture=self.texture_cache.get(texture_path)
         if texture is None:
-            texture=load_texture(archive,texture_path)
+            with self.texture_lock:texture=load_texture(archive,texture_path)
             self.texture_cache[texture_path]=texture
         index=min(max(0,index),texture.get('array_size',1)-1)
         facts=dict(path=texture_path,format=texture['format'],format_name=FORMAT_NAMES.get(texture['format'],str(texture['format'])),
                    preview_size=(texture['width'],texture['height']),full_size=texture['full_size'],srgb=texture['srgb'],
                    array_size=texture.get('array_size',1),slice=index)
         return to_image(texture,index),facts
+
+    def texture_thumbnail(self, texture_path, size=96):
+        """RGB Pillow thumbnail (at most size px) of a texture's top mip, for the texture grid."""
+        from PIL import Image
+        from rc2016.viewer.textures import load_texture, to_image
+        archive=self.archive
+        if archive is None:raise ValueError('No source archive is loaded')
+        with self.texture_lock:
+            image=to_image(load_texture(archive,texture_path),0)
+        image=image.convert('RGB')
+        image.thumbnail((size,size),Image.Resampling.LANCZOS)
+        return image
 
     def export_textures(self, paths, folder, formats, flip=False, progress=None):
         from rc2016.viewer.textures import export_textures
