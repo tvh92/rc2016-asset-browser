@@ -570,6 +570,15 @@ class GLTF:
         return doc, bytes(blob)
 
 
+MODEL_TAG = 'rc2016_model'   # glTF node extras: the model a node belongs to, read back by the Blender import (model_collections)
+
+
+def tag_model(document, model):
+    """Tag every node that has no model yet, so a .blend, FBX or USD built from the file groups them per model."""
+    for node in document.get('nodes', []):
+        node.setdefault('extras', {}).setdefault(MODEL_TAG, model)
+
+
 def write_glb(path, doc, blob):
     text = json.dumps(doc, separators=(',', ':')).encode('utf-8')
     text += b' ' * (-len(text) % 4)
@@ -939,6 +948,7 @@ class ModelExporter:
         """GLB -> FBX/USD/.blend in a background Blender with factory settings and a private user folder."""
         with tempfile.TemporaryDirectory(prefix='rcps4-export-') as tmp:
             glb = Path(tmp) / f'{stem}.glb'
+            tag_model(doc, stem)
             write_glb(glb, doc, blob)
             targets = {f: folder / f'{stem}{FORMATS[f][1]}' for f in formats}
             command = [str(blender), '--background', '--factory-startup', '--python-exit-code', '1', '--python', str(BLENDER_SCRIPT), '--',

@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 import struct
 
-from rc2016.export.models import write_glb
+from rc2016.export.models import tag_model, write_glb
 
 GLB_MAGIC, JSON_CHUNK, BIN_CHUNK = 0x46546C67, 0x4E4F534A, 0x004E4942
 SHIFTED_LISTS = ('accessors', 'bufferViews', 'meshes', 'materials', 'images', 'textures', 'samplers', 'nodes',
@@ -71,6 +71,7 @@ def merge_glb(paths, out_path):
     binary = bytearray()
     for path in paths:
         document, data = read_glb(path)
+        tag_model(document, Path(path).stem)   # the model each of its nodes belongs to
         base = {key: len(merged[key]) for key in SHIFTED_LISTS}
         while len(binary) % 4:
             binary.append(0)

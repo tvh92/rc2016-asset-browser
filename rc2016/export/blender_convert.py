@@ -23,6 +23,9 @@ args = args.parse_args(sys.argv[sys.argv.index('--') + 1:])
 bpy.ops.wm.read_factory_settings(use_empty=True)
 # No bone-display Icosphere: FBX/USD would export it as a mesh.
 bpy.ops.import_scene.gltf(filepath=args.glb, disable_bone_shape=True)
+# One collection per model (named after it), so a combined file's models can be shown or hidden as a group.
+from rc2016.export.model_collections import group_by_model
+group_by_model(bpy.context.scene)
 actions = list(bpy.data.actions)
 for action in actions:
     action.use_fake_user = True   # every clip stays in the file, not only the active one
