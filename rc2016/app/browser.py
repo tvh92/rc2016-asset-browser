@@ -445,6 +445,7 @@ class AssetBrowser:
     # Texture viewer ------------------------------------------------------
     MODEL_TEXTURES,ARCHIVE_TEXTURES='This model','Whole archive'
     TEXTURE_ROW_LIMIT=3000   # Treeview stays responsive; the filter narrows the rest
+    ZOOM_STEPS=('Fit','50%','100%','200%','400%','800%')
 
     def _build_texture_tab(self,tab):
         """Preview (left) and the texture list with its export controls (right), like the 3D tab's layout."""
@@ -455,6 +456,8 @@ class AssetBrowser:
         self.texture_matches=[];self.texture_rows=[];self.texture_model=None
         self.texture_image=None;self.texture_facts=None;self.texture_photo=None
         self.texture_exporting=False;self.texture_filter_job=None
+        self.texture_zoom=tk.StringVar(value='Fit');self.texture_centre=[0.5,0.5];self.texture_drag=None
+        self.texture_layout=None;self.texture_view_path=None;self.texture_pixel=tk.StringVar(value='')
         tab.columnconfigure(0,weight=1);tab.rowconfigure(0,weight=1)
         split=self.texture_split=Splitter(tab,side=520,stacked=330);split.grid(row=0,column=0,sticky='nsew')
         self.layout.register(split)
@@ -464,6 +467,13 @@ class AssetBrowser:
         self.texture_canvas=tk.Canvas(left,width=380,height=300,background='#2b2b2b',highlightthickness=0)
         self.texture_canvas.grid(row=0,column=0,sticky='nsew')
         self.texture_canvas.bind('<Configure>',lambda _e:self._draw_texture())
+        self.texture_canvas.bind('<ButtonPress-1>',self._texture_press)
+        self.texture_canvas.bind('<B1-Motion>',self._texture_drag)
+        self.texture_canvas.bind('<Double-Button-1>',lambda _e:self._texture_toggle_fit())
+        self.texture_canvas.bind('<Motion>',self._texture_hover)
+        self.texture_canvas.bind('<Leave>',lambda _e:self.texture_pixel.set(''))
+        # The wheel goes to the widget under the pointer (Windows sends it to the focused one), so listen application-wide.
+        self.app.root.bind_all('<MouseWheel>',self._texture_wheel,add='+')
         options=ttk.Frame(left);options.grid(row=1,column=0,sticky='ew',pady=(4,0))
         channels_label=ttk.Label(options,text='Channels');channels_label.pack(side='left')
         # RGB by default: alpha is usually mask data (e.g. the _c self-lit mask), not transparency.
@@ -472,6 +482,11 @@ class AssetBrowser:
         box.pack(side='left',padx=4);box.bind('<<ComboboxSelected>>',lambda _e:self._draw_texture())
         self.texture_flip=tk.BooleanVar(value=False)
         flip=ttk.Checkbutton(options,text='Flip vertically',variable=self.texture_flip,command=self._draw_texture);flip.pack(side='left',padx=8)
+        zoom_label=ttk.Label(options,text='Zoom');zoom_label.pack(side='left',padx=(4,0))
+        zoom=ttk.Combobox(options,textvariable=self.texture_zoom,values=self.ZOOM_STEPS,state='readonly',width=6)
+        zoom.pack(side='left',padx=4);zoom.bind('<<ComboboxSelected>>',lambda _e:self._texture_zoom_changed())
+        tip('Fit: the whole texture in the frame. 50% to 800%: that many screen pixels per texture pixel, showing the middle of the texture.\n'
+            'Drag to pan, mouse wheel to zoom at the cursor, double-click to switch between Fit and 100%.',zoom_label,zoom)
         # Only multi-slice textures (arrays, cube maps, volumes) have a slice to pick: hidden otherwise.
         self.texture_slice_frame=ttk.Frame(options)
         ttk.Label(self.texture_slice_frame,text='Slice').pack(side='left')
@@ -482,6 +497,7 @@ class AssetBrowser:
         self.texture_slice_box.bind('<Return>',lambda _e:self._texture_slice_changed())
         self.texture_info=tk.StringVar(value='Select a source model to list its textures, or show the whole archive.')
         ttk.Label(left,textvariable=self.texture_info,wraplength=400).grid(row=2,column=0,sticky='ew',pady=(4,0))
+        ttk.Label(left,textvariable=self.texture_pixel,wraplength=400).grid(row=3,column=0,sticky='ew',pady=(2,0))
         # Right: which textures, then export, then who uses the selected one.
         top=ttk.Frame(right);top.grid(row=0,column=0,sticky='ew',pady=(0,4))
         top.columnconfigure(3,weight=1)
@@ -681,6 +697,8 @@ class AssetBrowser:
     def _show_texture(self,payload):
         self.texture_image,self.texture_facts=payload
         f=self.texture_facts
+        if f['path']!=self.texture_view_path:   # a different texture starts in Fit, centred
+            self.texture_view_path=f['path'];self.texture_centre=[0.5,0.5]
         preview='' if f['preview_size']==f['full_size'] else f" (preview {f['preview_size'][0]}×{f['preview_size'][1]})"
         slices=f" · slice {f['slice']+1} of {f['array_size']}" if f['array_size']>1 else ''
         self.texture_info.set(f"{f['path']}\n{f['format_name']} (DXGI {f['format']}, {'sRGB' if f['srgb'] else 'linear / Non-Color'}) · "
@@ -697,6 +715,7 @@ class AssetBrowser:
         canvas=self.texture_canvas
         canvas.delete('all')
         width,height=max(1,canvas.winfo_width()),max(1,canvas.winfo_height())
+        self.texture_layout=None
         if self.texture_image is None:
             self.texture_photo=None;return
         from PIL import Image
@@ -712,9 +731,21 @@ class AssetBrowser:
         elif channels=='RGB' or 'A' not in bands:image=image.convert('RGB')
         else:image=image.convert('RGBA')
         if self.texture_flip.get():image=image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
-        scale=min(width/image.size[0],height/image.size[1])
-        size=(max(1,int(image.size[0]*scale)),max(1,int(image.size[1]*scale)))
+        iw,ih=image.size
+        if self.texture_zoom.get()=='Fit':
+            scale=min(width/iw,height/ih);box=(0,0,iw,ih)
+        else:
+            # A window onto the texture at the chosen zoom, centred on texture_centre and kept inside the image.
+            scale=int(self.texture_zoom.get().rstrip('%'))/100
+            view_w,view_h=min(iw,width/scale),min(ih,height/scale)
+            left=min(max(self.texture_centre[0]*iw-view_w/2,0),iw-view_w)
+            top=min(max(self.texture_centre[1]*ih-view_h/2,0),ih-view_h)
+            box=(int(left),int(top),min(iw,int(left)+max(1,round(view_w))),min(ih,int(top)+max(1,round(view_h))))
+        image=image.crop(box)
+        size=(max(1,round(image.size[0]*scale)),max(1,round(image.size[1]*scale)))
         image=image.resize(size,Image.Resampling.NEAREST if scale>1 else Image.Resampling.LANCZOS)
+        # Where the picture sits on the canvas, for the pixel readout and the pointer maths.
+        self.texture_layout=dict(box=box,scale=scale,origin=(width//2-size[0]//2,height//2-size[1]//2),size=(iw,ih))
         if image.mode=='RGBA':
             # Composite over a checkerboard so transparent areas are visible.
             cell=8
@@ -727,6 +758,61 @@ class AssetBrowser:
         buffer=io.BytesIO();image.save(buffer,format='PNG')
         self.texture_photo=self.tk.PhotoImage(data=base64.b64encode(buffer.getvalue()),format='png')
         canvas.create_image(width//2,height//2,image=self.texture_photo,anchor='center')
+
+    def _texture_point(self,x,y):
+        """Canvas position -> (x, y) in the displayed image's pixels, or None off the picture."""
+        layout=self.texture_layout
+        if not layout:return None
+        left,top,right,bottom=layout['box']
+        sx=left+(x-layout['origin'][0])/layout['scale'];sy=top+(y-layout['origin'][1])/layout['scale']
+        if left<=sx<right and top<=sy<bottom:return sx,sy
+        return None
+
+    def _texture_hover(self,event):
+        point=self._texture_point(event.x,event.y)
+        image=self.texture_image
+        if point is None or image is None:
+            self.texture_pixel.set('');return
+        ix,iy=int(point[0]),int(point[1])
+        if self.texture_flip.get():iy=image.size[1]-1-iy   # the readout reports the stored, unflipped row
+        value=image.getpixel((ix,iy))
+        values=value if isinstance(value,tuple) else (value,)
+        bands=' '.join(f'{name} {number}' for name,number in zip(image.getbands(),values))
+        self.texture_pixel.set(f'Pixel x {ix}, y {iy} of {image.size[0]}×{image.size[1]}: {bands}')
+
+    def _texture_press(self,event):
+        if self.texture_zoom.get()!='Fit':self.texture_drag=(event.x,event.y,list(self.texture_centre))
+
+    def _texture_drag(self,event):
+        layout=self.texture_layout
+        if not self.texture_drag or not layout:return
+        x0,y0,centre=self.texture_drag
+        iw,ih=layout['size']
+        dx=(event.x-x0)/layout['scale']/iw;dy=(event.y-y0)/layout['scale']/ih
+        self.texture_centre=[min(max(centre[0]-dx,0),1),min(max(centre[1]-dy,0),1)]
+        self._draw_texture()
+
+    def _texture_wheel(self,event):
+        try:under=self.app.root.winfo_containing(event.x_root,event.y_root)
+        except Exception:return
+        if under is not self.texture_canvas or self.texture_image is None:return
+        point=self._texture_point(event.x,event.y)
+        if point is not None:   # zoom towards the pointer
+            iw,ih=self.texture_layout['size']
+            self.texture_centre=[point[0]/iw,point[1]/ih]
+        steps=self.ZOOM_STEPS.index(self.texture_zoom.get())+(1 if event.delta>0 else -1)
+        steps=min(max(steps,0),len(self.ZOOM_STEPS)-1)
+        self.texture_zoom.set(self.ZOOM_STEPS[steps])
+        if steps==0:self.texture_centre=[0.5,0.5]
+        self._draw_texture()
+
+    def _texture_zoom_changed(self):
+        if self.texture_zoom.get()=='Fit':self.texture_centre=[0.5,0.5]
+        self._draw_texture()
+
+    def _texture_toggle_fit(self):
+        self.texture_zoom.set('100%' if self.texture_zoom.get()=='Fit' else 'Fit')
+        self._texture_zoom_changed()
 
     # Export
     def _export_textures(self,everything):
