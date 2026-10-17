@@ -22,6 +22,8 @@ QUEUE_HEAD = 80             # visible tiles must be within this many pending mod
 QUEUE_LIMIT = 1500          # models handed to the renderer in one run
 RESTART_DELAY_MS = 450      # debounce for scroll and selection changes
 RESTART_MIN_SECONDS = 1.5   # never respawn faster than this
+SHIFT_MASK = 0x0001         # Tk event.state bits for a click or key
+CONTROL_MASK = 0x0004
 
 
 # Layout maths ----------------------------------------------------------------
@@ -204,6 +206,8 @@ class Gallery:
         self.live = {}                 # id -> (status, reason) learned from renderer events this session
         self.item_by_id = {}
         self.current_id = None
+        self.anchor = None             # tile index a Shift-click or Shift+arrow extends from
+        self.picked_here = None        # (model ids, filtered list) of the last selection made in this grid
         self.proc = None
         self.proc_pending = []         # ids still queued in the running renderer, in order
         self.mode = 'view'             # 'view' (visible first) or 'all' (Render all thumbnails)
@@ -244,15 +248,20 @@ class Gallery:
         self.canvas.bind('<Double-Button-1>', self._double_click)
         self.canvas.bind('<Motion>', self._motion)
         self.canvas.bind('<Leave>', lambda _e: self._hide_tip())
-        for key, step in (('<Left>', -1), ('<Right>', 1)):
-            self.canvas.bind(key, lambda _e, s=step: self._move(s))
+        for key, step in (('Left', -1), ('Right', 1)):
+            self.canvas.bind(f'<{key}>', lambda _e, s=step: self._move(s))
+            self.canvas.bind(f'<Shift-{key}>', lambda _e, s=step: self._move(s, extend=True))
         self.canvas.bind('<Up>', lambda _e: self._move(-self.columns))
         self.canvas.bind('<Down>', lambda _e: self._move(self.columns))
+        self.canvas.bind('<Shift-Up>', lambda _e: self._move(-self.columns, extend=True))
+        self.canvas.bind('<Shift-Down>', lambda _e: self._move(self.columns, extend=True))
         self.canvas.bind('<Prior>', lambda _e: self._move(-self.columns * self._page_rows()))
         self.canvas.bind('<Next>', lambda _e: self._move(self.columns * self._page_rows()))
         self.canvas.bind('<Home>', lambda _e: self._move_to(0))
         self.canvas.bind('<End>', lambda _e: self._move_to(len(self.records) - 1))
         self.canvas.bind('<Return>', lambda _e: self._open_current())
+        self.canvas.bind('<Control-a>', lambda _e: self._select_all())
+        self.canvas.bind('<Escape>', lambda _e: self._clear())
         self.canvas.bind('<Enter>', lambda _e: self.canvas.focus_set())
         # Windows delivers the wheel to the focused widget, so listen application-wide.
         self.canvas.bind_all('<MouseWheel>', self._wheel, add='+')
@@ -297,7 +306,11 @@ class Gallery:
             self.blocked = ''
         self.item_by_id = {getattr(r, 'model_id', None): item for item, r in app.item_by_record.items()}
         selected = app._selected_records()
-        records, kind, total = choose_records(selected, app.filtered_records, self.ids)
+        picked = {getattr(r, 'model_id', None) for r in selected} - {None}
+        if self.picked_here is not None and self.picked_here == (picked, app.filtered_records):
+            records, kind, total = None, 'keep', 0      # the grid made this selection: keep its list
+        else:
+            records, kind, total = choose_records(selected, app.filtered_records, self.ids)
         if len(selected) == 1:
             self.current_id = getattr(selected[0], 'model_id', None)
         if kind != 'keep':
@@ -489,11 +502,12 @@ class Gallery:
         placeholder = '#2b2d31' if dark else '#e5e7eb'
         accent = '#3d6fb6'
         width = self.cell_w - 2 * self.pad
+        picked = set(self.app.table.selection())
         for number in range(first, last):
             record = self.records[number]
             x = self.margin + (number % self.columns) * self.cell_w
             y = (number // self.columns) * self.cell_h
-            selected = record.model_id == self.current_id
+            selected = self.item_by_id.get(record.model_id) in picked
             if selected:
                 canvas.create_rectangle(x + 2, y + 2, x + self.cell_w - 2, y + self.cell_h - 2, fill=accent, outline='')
             status, _reason = self.status_of(record.model_id)
@@ -525,14 +539,71 @@ class Gallery:
         self.canvas.focus_set()
         self._hide_tip()
         index = self._event_index(event)
-        if index is not None:
-            self.select(index)
+        if index is None:
+            return
+        if event.state & SHIFT_MASK and self.anchor is not None and self.anchor < len(self.records):
+            low, high = sorted((self.anchor, index))
+            self._pick(range(low, high + 1), index, keep=bool(event.state & CONTROL_MASK))
+        elif event.state & CONTROL_MASK:
+            # Ctrl-click toggles one tile and leaves the rest of the selection alone.
+            item = self.item_by_id.get(self.records[index].model_id)
+            if item is None or not self.app.table.exists(item):
+                return
+            items = set(self.app.table.selection())
+            items.symmetric_difference_update({item})
+            self._set_items(sorted(items), index)
+            self.anchor = index
+        else:
+            self._pick([index], index)
+            self.anchor = index
 
     def _double_click(self, event):
         index = self._event_index(event)
         if index is not None:
             self.select(index)
+            self.anchor = index
             self._open_current()
+
+    def _tile_items(self, indices):
+        table = self.app.table
+        items = []
+        for number in indices:
+            item = self.item_by_id.get(self.records[number].model_id)
+            if item is not None and table.exists(item):
+                items.append(item)
+        return items
+
+    def _pick(self, indices, focus, keep=False):
+        """Select the tiles in ``indices`` (added to the current selection when ``keep``), focusing ``focus``."""
+        items = self._tile_items(indices)
+        if keep:
+            items = list(set(self.app.table.selection()) | set(items))
+        self._set_items(items, focus)
+
+    def _set_items(self, items, focus):
+        """Make ``items`` (tree item ids) the model selection, mirror it in the tree and redraw the grid."""
+        table = self.app.table
+        table.selection_set(items)
+        record = self.records[focus] if 0 <= focus < len(self.records) else None
+        if record is not None:
+            self.current_id = record.model_id
+            item = self.item_by_id.get(record.model_id)
+            if item is not None and table.exists(item):
+                table.focus(item)
+                table.see(item)
+        # The selection made here stays in this grid, even though it is no longer the whole search result.
+        self.picked_here = ({getattr(r, 'model_id', None) for r in self.app._selected_records()} - {None},
+                            self.app.filtered_records)
+        self.redraw()
+
+    def _select_all(self):
+        self._set_items(self._tile_items(range(len(self.records))), self._current_index() or 0)
+        return 'break'
+
+    def _clear(self):
+        self.app.clear_selection()
+        self.anchor = None
+        return 'break'
 
     def select(self, index, show=False):
         """Select tile ``index`` in the model tree (which loads it in the 3D view)."""
@@ -558,14 +629,28 @@ class Gallery:
                 return number
         return None
 
-    def _move(self, step):
+    def _move(self, step, extend=False):
         if not self.records:
             return 'break'
         current = self._current_index()
         target = 0 if current is None else max(0, min(len(self.records) - 1, current + step))
-        self.select(target, show=True)
+        if extend:
+            # Shift+arrow selects from the anchor to the new tile; the anchor stays where it was.
+            anchor = self.anchor if self.anchor is not None and self.anchor < len(self.records) else (current or 0)
+            self.anchor = anchor
+            low, high = sorted((anchor, target))
+            self._pick(range(low, high + 1), target)
+            self._show(target)
+        else:
+            self.select(target, show=True)
+            self.anchor = target
         self.schedule_render()
         return 'break'
+
+    def _show(self, index):
+        offset = scroll_to_show(index, self._offset(), self.canvas.winfo_height(), self.cell_h, self.columns)
+        rows = max(1, row_count(len(self.records), self.columns) * self.cell_h)
+        self.canvas.yview_moveto(offset / rows)
 
     def _move_to(self, target):
         if self.records:
