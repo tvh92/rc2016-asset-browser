@@ -1459,11 +1459,30 @@ GROUP_STATUSES=('COMPLETE_MESH_MATERIALS_ANIMATIONS','COMPLETE_MESH_ANIMATIONS_M
 
 
 def group_member_labels(paths):
-    """Short collection label per group member: its file name, e.g. ``hero_ratchet_bangle_boot_grind.model``.
+    """Short collection label per group member, e.g. ``grind.model`` for ``hero_ratchet_bangle_boot_grind.model``.
 
-    Two members that share a file name keep their full archive paths, so every label stays unique."""
-    shorts=[Path(path).name for path in paths]
-    return [full if shorts.count(short)>1 else short for short,full in zip(shorts,paths)]
+    Several members lose the underscore-words they all share at the start of the file name, always keeping
+    the last word of each name. A label that still repeats falls back to the full file name, then to the full
+    archive path, so every label stays unique. A single member keeps its whole file name."""
+    names = [Path(path).name for path in paths]
+    if len(names) < 2:
+        return names
+    words = [name[:-len('.model')].split('_') if name.endswith('.model') else name.split('_') for name in names]
+    shared = 0
+    while all(len(w) > shared + 1 and w[shared] == words[0][shared] for w in words):
+        shared += 1
+    def label(name, w):
+        suffix = '.model' if name.endswith('.model') else ''
+        return '_'.join(w[shared:]) + suffix
+    short = [label(n, w) for n, w in zip(names, words)]
+    labels = []
+    for index, (name, text) in enumerate(zip(names, short)):
+        if short.count(text) > 1:
+            text = name
+            if names.count(name) > 1:
+                text = paths[index]
+        labels.append(text)
+    return labels
 
 
 def assemble_group_blend(selection,manifest,args,log):
