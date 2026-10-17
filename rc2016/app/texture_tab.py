@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import io
 import queue
+import threading
 from pathlib import Path
 
 from PIL import Image
