@@ -569,6 +569,11 @@ def build(job):
                 space=area.spaces.active;space.lock_camera=True
                 space.region_3d.view_perspective='CAMERA'
     bpy.context.view_layer.update()
+    # Columns in the shader editor (rc2016/pipeline/node_layout.py): built in, so no Blender add-on is needed.
+    from rc2016.pipeline.node_layout import arrange_tree
+    for material in bpy.data.materials:
+        if material.use_nodes and material.node_tree:arrange_tree(material.node_tree)
+    for group in bpy.data.node_groups:arrange_tree(group)
     assert not audit_scene(scene, selected_lighting=job.get('shared_lighting'))['mismatches'],audit_scene(scene, selected_lighting=job.get('shared_lighting'))['mismatches']
     embed('Structural baseline.json',structural_snapshot(scene))
     if not (job.get('game_lighting') or job.get('veldin_look')):

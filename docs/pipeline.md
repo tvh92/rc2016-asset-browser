@@ -265,6 +265,10 @@ Every delivered render is at 100% of the 3840 x 2560 output. `fit_render_size` p
 
 Members are not re-validated by the group step; each keeps the checks of its own build. Models with a limited status are included when their `.blend` was delivered.
 
+## Shader node layout
+
+Before the candidate `.blend` is saved, every material's node tree and every node group is arranged in columns by `rc2016/pipeline/node_layout.py`: a node sits left of everything it feeds, and each column is stacked top to bottom in creation order. The layout is part of the pipeline, not a Blender add-on, so a file built on any machine opens the same way. Weapon merges and the group `.blend` keep the positions they set. Node positions carry no game data and are not validated.
+
 ## Cache reuse and the implementation hash
 
 The runner hashes every `.py` file under `rc2016/formats`, `rc2016/shaders` and `rc2016/pipeline` (weapons included), plus `rc2016/common.py`, `rc2016/viewer/textures.py` (the viewer's per-graph material reading), `third_party/opengnm/gcn_types.h`, `rc2016/pipeline/material_flags.json.gz`, and every JSON in `model_profiles` and `material_profiles`. The per-file hashes are stored as `implementation_sha256` in `reports/manifest.json`; their combined hash is the code term of each model's fingerprint.
