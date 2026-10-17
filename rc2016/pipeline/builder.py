@@ -416,9 +416,8 @@ def make_rig(job):
     for row in rows:
         source.data.bones[row['name']]['source_joint_hash']=row['hash']
     rig=make_bake_rig(source,rows,'Source animation rig')
-    # Keep the animated armature in the scene for Actions and modifier evaluation,
-    # while hiding the skeleton display in saved Blender files by default.
-    rig.hide_set(True);rig.hide_render=True;rig.show_in_front=True
+    # The animated armature stays visible in saved Blender files, so its bones can be selected and inspected.
+    rig.show_in_front=True
     helpers=rig.data.collections.new('Affine helpers')
     for bone in rig.data.bones:
         if bone.name.startswith('__sample__'):

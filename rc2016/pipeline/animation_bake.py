@@ -53,7 +53,6 @@ def make_bake_rig(source_rig, rows, name):
     bpy.ops.object.mode_set(mode='OBJECT')
     for b in rig.data.bones:
         b.inherit_scale = 'FULL'; b.use_inherit_rotation = True; b.use_local_location = True
-    rig.hide_set(True)
     return rig
 
 

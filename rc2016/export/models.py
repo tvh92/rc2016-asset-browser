@@ -62,6 +62,7 @@ class ExportOptions:
     cinematic: bool = False          # also offer the real-time cutscene shots that cover the whole model
     cinematic_only: bool = False     # only those shots (no animset clips, no reference index needed)
     file_suffix: str = ''            # appended to the model stem in file names, e.g. '_cutscenes'
+    skeleton: bool = True            # False: static meshes, no joints or skin weights, so no animations either
 
     def key(self):
         d = asdict(self)
@@ -70,6 +71,8 @@ class ExportOptions:
         for name in ('cinematic', 'cinematic_only', 'file_suffix'):   # absent from keys of exports that predate them
             if not d[name]:
                 d.pop(name)
+        if d['skeleton']:   # the default is left out, so keys of exports that predate the option still match
+            d.pop('skeleton')
         return d
 
 
@@ -680,7 +683,7 @@ class ModelExporter:
         self.log(f'Decoding {source_path}')
         index_root = self.index_root if (self.index_root / 'reports' / 'asset_references.sqlite').is_file() else None
         gltf_based = any(f in options.formats for f in ('glb', 'gltf', 'fbx', 'usd', 'blend'))
-        load_animation = options.animations != 'none' and gltf_based   # OBJ is the static rest pose only
+        load_animation = options.animations != 'none' and options.skeleton and gltf_based   # OBJ is the static rest pose only
         cutscenes = (options.cinematic or options.cinematic_only) and load_animation
         animset_root = index_root if load_animation and not options.cinematic_only else None
         self.loader.load(self.source_root, model_id, source_path, options.lod, options.look,
@@ -692,7 +695,7 @@ class ModelExporter:
         if load_animation and decoded['joint_count'] and animset_root is None and not options.cinematic_only:
             notes.append('Animations skipped: scan the archive into this output folder first (its reference index links models to animation sets).')
         joint_count = decoded['joint_count'] if library is not None and library.rows else 0
-        if decoded['joint_count'] and not joint_count:
+        if options.skeleton and decoded['joint_count'] and not joint_count:
             # Skeleton still exported for rigging even without a clip library.
             from rc2016.viewer.animation import AnimationLibrary
             library = AnimationLibrary(archive, self.loader._recent[self.loader.identity]['data'], [])

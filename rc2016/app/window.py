@@ -53,6 +53,9 @@ HELP = {
     "combine": ("Portable export only. After the selected models are exported, their .glb files are merged into one "
                 "file under groups/: every model keeps its own nodes, skins and animations, at its native place. "
                 "Needs GLB among the formats; FBX, USD or .blend are then made from the combined file by Blender."),
+    "skeleton": ("Keeps the joints and skin weights, so the model can be posed and animated. Off exports the meshes only, "
+                 "as static geometry, and no animations are written.\n\nUseful for props or for a model that is only "
+                 "needed for its shape."),
     "skip": "Don't redo models that were already exported with the same options. Leave this on.",
     "scan": "Re-read the game folder and list every model it contains.",
     "extract": (
@@ -215,6 +218,7 @@ class AssetBrowserApp:
         self.export_textures_var = remember_var(tk.BooleanVar(value=True), "export.textures")
         self.export_dds_var = remember_var(tk.BooleanVar(value=False), "export.dds")
         self.export_animations_var = remember_var(tk.StringVar(value="all"), "export.animations", ("all", "none"))
+        self.export_skeleton_var = remember_var(tk.BooleanVar(value=True), "export.skeleton")
         self.export_lod_var = remember_var(tk.StringVar(value="Highest"), "export.lod", ("Highest", "Lowest", "All"))
         self.full_pipeline_var = remember_var(tk.BooleanVar(value=False), "export.full_pipeline")
         self.blend_only_var = remember_var(tk.BooleanVar(value=False), "export.blend_only")
@@ -437,16 +441,23 @@ class AssetBrowserApp:
                         variable=self.export_textures_var).grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
         ttk.Checkbutton(include, text="Also the original game textures (.dds, unchanged)",
                         variable=self.export_dds_var).grid(row=1, column=0, columnspan=3, sticky="w", pady=2)
-        ttk.Label(include, text="Animations").grid(row=2, column=0, sticky="w", pady=(6, 2))
-        ttk.Radiobutton(include, text="All", value="all", variable=self.export_animations_var).grid(row=2, column=1, sticky="w", padx=8, pady=(6, 2))
-        ttk.Radiobutton(include, text="None", value="none", variable=self.export_animations_var).grid(row=2, column=2, sticky="w", pady=(6, 2))
+        skeleton = ttk.Checkbutton(include, text="Skeleton (joints and skin weights; off exports static meshes)",
+                                   variable=self.export_skeleton_var)
+        skeleton.grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 2))
+        self._tip(HELP["skeleton"], skeleton)
+        ttk.Label(include, text="Animations").grid(row=3, column=0, sticky="w", pady=(6, 2))
+        all_radio = ttk.Radiobutton(include, text="All", value="all", variable=self.export_animations_var)
+        all_radio.grid(row=3, column=1, sticky="w", padx=8, pady=(6, 2))
+        none_radio = ttk.Radiobutton(include, text="None", value="none", variable=self.export_animations_var)
+        none_radio.grid(row=3, column=2, sticky="w", pady=(6, 2))
+        self.animation_radios = (all_radio, none_radio)
         ttk.Label(include, text="To export one clip, pick it under the 3D view and tick 'Export only this clip'.",
-                  foreground=muted).grid(row=3, column=0, columnspan=3, sticky="w")
-        ttk.Label(include, text="Detail level (LOD)").grid(row=4, column=0, sticky="w", pady=(6, 2))
+                  foreground=muted).grid(row=4, column=0, columnspan=3, sticky="w")
+        ttk.Label(include, text="Detail level (LOD)").grid(row=5, column=0, sticky="w", pady=(6, 2))
         ttk.Combobox(include, textvariable=self.export_lod_var, values=("Highest", "Lowest", "All"), state="readonly",
-                     width=10).grid(row=4, column=1, columnspan=2, sticky="w", padx=8, pady=(6, 2))
+                     width=10).grid(row=5, column=1, columnspan=2, sticky="w", padx=8, pady=(6, 2))
         skip = ttk.Checkbutton(include, text="Skip models already exported with these options", variable=self.skip_verified_var)
-        skip.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        skip.grid(row=6, column=0, columnspan=3, sticky="w", pady=(6, 0))
         self._tip(HELP["skip"], skip)
 
         programs = ttk.LabelFrame(window, text="Programs", padding=8)
@@ -514,7 +525,7 @@ class AssetBrowserApp:
         self._tip(HELP["reset"], reset)
 
         for variable in (*self.export_format_vars.values(), self.export_textures_var, self.export_dds_var,
-                         self.export_animations_var, self.export_lod_var, self.full_pipeline_var, self.blend_only_var,
+                         self.export_animations_var, self.export_skeleton_var, self.export_lod_var, self.full_pipeline_var, self.blend_only_var,
                          self.backend_var, self.group_blend_var, self.combine_var):
             variable.trace_add("write", lambda *_args: self._options_changed())
         self._options_changed()
@@ -551,6 +562,9 @@ class AssetBrowserApp:
         return tuple(key for key, variable in self.export_format_vars.items() if variable.get())
 
     def _options_changed(self) -> None:
+        # Without a skeleton there is nothing to animate, so the animation choice is switched off.
+        for radio in self.animation_radios:
+            radio.configure(state="normal" if self.export_skeleton_var.get() else "disabled")
         full_research = self.backend_var.get() == "Full archive pipeline" and self.full_pipeline_var.get()
         self.blend_only_check.configure(state="normal" if full_research else "disabled")
         group_state = "normal" if full_research else "disabled"
@@ -566,7 +580,10 @@ class AssetBrowserApp:
             formats = [FORMATS[key][1] for key in self._export_formats()] or ["no format chosen"]
             parts = [", ".join(formats)]
             parts.append("textures" if self.export_textures_var.get() else "no textures")
-            parts.append("all animations" if self.export_animations_var.get() == "all" else "no animations")
+            if self.export_skeleton_var.get():
+                parts.append("all animations" if self.export_animations_var.get() == "all" else "no animations")
+            else:
+                parts.append("no skeleton or animations")
             if self.export_lod_var.get() != "Highest":
                 parts.append(f"{self.export_lod_var.get()} LOD")
             text = "Export: " + " · ".join(parts)
@@ -576,6 +593,7 @@ class AssetBrowserApp:
         from rc2016.export.models import ExportOptions
         return ExportOptions(formats=self._export_formats(), textures=self.export_textures_var.get(),
                              source_textures=self.export_dds_var.get(), animations=self.export_animations_var.get(),
+                             skeleton=self.export_skeleton_var.get(),
                              lod=self.export_lod_var.get(), blender=self.blender_var.get().strip(),
                              skip_existing=self.skip_verified_var.get())
 
