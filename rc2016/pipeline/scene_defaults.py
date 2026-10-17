@@ -31,12 +31,6 @@ REGION_PADDING_SIDE = 0.25
 # Build camera: the exact orientation of the hand-framed reference npc_grimroth.blend (Euler XYZ, degrees).
 # Every pipeline build keeps this angle and only dollies the camera along its view axis.
 CAMERA_EULER_DEGREES = (77.90851178661542, -1.7045135013369456e-05, 21.765396705411746)
-# The model's longer screen axis fills this fraction of the frame; the Render Region crop then adds
-# the padding, so the padded box stays inside the frame.
-CAMERA_FILL_LONG_AXIS = 1.0 / (1.0 + REGION_PADDING_LONG)
-# Horizontally the crop may add the larger side padding, so a model whose width decides the
-# distance fills less of the frame width.
-CAMERA_FILL_HORIZONTAL = 1.0 / (1.0 + max(REGION_PADDING_LONG, REGION_PADDING_SIDE))
 
 
 def load_shared_lighting(path: Optional[Any] = None) -> Dict[str, Any]:
@@ -286,22 +280,31 @@ def apply_shared_lighting(scene: Any, lighting: Optional[Any] = None, hdri_path:
     return settings
 
 
+def region_paddings(width_px: float, height_px: float, long_padding: float = REGION_PADDING_LONG,
+                    short_padding: float = REGION_PADDING_SHORT, side_padding: float = REGION_PADDING_SIDE) -> tuple:
+    """(pad_x, pad_y) fractions for a model box of ``width_px`` x ``height_px`` on screen.
+
+    The longer screen axis (judged in pixels) takes ``long_padding``, the shorter takes ``short_padding``,
+    and the horizontal padding is raised to at least ``side_padding``.  The camera fit and the Render
+    Region both use this rule, so the axis that decides the camera distance is the one the crop pads."""
+    if height_px >= width_px:  # taller than wide: vertical gets the long padding
+        pad_x, pad_y = short_padding, long_padding
+    else:
+        pad_x, pad_y = long_padding, short_padding
+    return max(pad_x, side_padding), pad_y
+
+
 def padded_region(bounds: Any, pixel_size: Any, long_padding: float = REGION_PADDING_LONG,
                   short_padding: float = REGION_PADDING_SHORT, side_padding: float = REGION_PADDING_SIDE) -> tuple:
     """Render Region fractions (min_x, min_y, max_x, max_y) around a model box.
 
     ``bounds`` is (x0, y0, x1, y1) in normalised camera-frame coordinates (origin bottom-left).
-    Each padding is a fraction of the model's own size on that screen axis: the longer axis
-    (in pixels) takes ``long_padding`` and the shorter axis takes ``short_padding``; the horizontal
-    padding is raised to at least ``side_padding``.  The result is clamped to the frame."""
+    Each padding is a fraction of the model's own size on that screen axis (see ``region_paddings``).
+    The result is clamped to the frame."""
     x0, y0, x1, y1 = (float(v) for v in bounds)
     width_px = (x1 - x0) * float(pixel_size[0])
     height_px = (y1 - y0) * float(pixel_size[1])
-    if height_px >= width_px:  # taller than wide: vertical gets the long padding
-        pad_x, pad_y = short_padding, long_padding
-    else:
-        pad_x, pad_y = long_padding, short_padding
-    pad_x = max(pad_x, side_padding)
+    pad_x, pad_y = region_paddings(width_px, height_px, long_padding, short_padding, side_padding)
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     half_w, half_h = (x1 - x0) * (1 + pad_x) / 2, (y1 - y0) * (1 + pad_y) / 2
     return (max(0.0, cx - half_w), max(0.0, cy - half_h), min(1.0, cx + half_w), min(1.0, cy + half_h))
@@ -366,232 +369,16 @@ def fit_render_region(scene: Any, long_padding: float = REGION_PADDING_LONG,
             "padding_long": long_padding, "padding_short": short_padding}
 
 
-# --- Render size rule -------------------------------------------------------------------------
-# Characters whose textures are smaller than the frame resolution look blurry when rendered at
-# full size, so the render size follows the texture detail.  The metric is the screen-area weighted
-# median linear texel density (base-colour texels per render pixel) of the visible mesh at 100%
-# size; the resolution percentage is the smallest one that brings that median to about one texel
-# per pixel.  Resolution X/Y never change, so the Render Region fractions stay valid.
-RENDER_SIZE_MIN_PERCENT = 25
-RENDER_SIZE_MAX_PERCENT = 100
-# Base-colour images up to this edge length are placeholders (the 2x2 default colour) with no detail.
-PLACEHOLDER_TEXTURE_EDGE = 4
-# Ray tests for occlusion run on at most this many triangles (an even stride through the mesh).
-MAX_VISIBILITY_TRIANGLES = 40000
-
-
-def weighted_median(values: Any, weights: Any) -> Optional[float]:
-    """Weighted median of ``values`` (the smallest value whose cumulative weight reaches half the
-    total); None for no positive weight.  Pure numpy."""
-    import numpy as np  # type: ignore
-
-    values = np.asarray(values, dtype=np.float64).ravel()
-    weights = np.asarray(weights, dtype=np.float64).ravel()
-    keep = np.isfinite(values) & np.isfinite(weights) & (weights > 0)
-    if not keep.any():
-        return None
-    values, weights = values[keep], weights[keep]
-    order = np.argsort(values, kind="stable")
-    cumulative = np.cumsum(weights[order])
-    index = int(np.searchsorted(cumulative, cumulative[-1] / 2.0))
-    return float(values[order][min(index, len(order) - 1)])
-
-
-def triangle_texel_density(uv: Any, screen: Any, texture_size: Any) -> tuple:
-    """Linear texel density of triangles as (density, pixel_area, front_facing).
-
-    ``uv`` is N x 3 x 2 (UV0 corners), ``screen`` is N x 3 x 2 corner positions in render pixels
-    (y up, so counter-clockwise triangles face the camera) and ``texture_size`` is N x 2 (width,
-    height in texels).  Density is sqrt(UV area x width x height / pixel area): texels along one
-    screen pixel.  Degenerate screen triangles get density 0 and pixel area 0.  Pure numpy."""
-    import numpy as np  # type: ignore
-
-    uv = np.asarray(uv, dtype=np.float64).reshape(-1, 3, 2)
-    screen = np.asarray(screen, dtype=np.float64).reshape(-1, 3, 2)
-    size = np.asarray(texture_size, dtype=np.float64).reshape(-1, 2)
-
-    def area2(points: Any) -> Any:  # signed double area
-        a, b, c = points[:, 0], points[:, 1], points[:, 2]
-        return (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (c[:, 0] - a[:, 0]) * (b[:, 1] - a[:, 1])
-
-    signed = area2(screen)
-    pixel_area = np.abs(signed) / 2.0
-    texel_area = np.abs(area2(uv)) / 2.0 * size[:, 0] * size[:, 1]
-    drawn = pixel_area > 1e-12
-    with np.errstate(divide="ignore", invalid="ignore"):
-        density = np.where(drawn, np.sqrt(texel_area / np.where(drawn, pixel_area, 1.0)), 0.0)
-    return density, np.where(drawn, pixel_area, 0.0), signed > 0
-
-
-def render_percentage_for_density(metric: Optional[float], minimum: int = RENDER_SIZE_MIN_PERCENT,
-                                  maximum: int = RENDER_SIZE_MAX_PERCENT) -> int:
-    """Resolution percentage for a texel density metric: ``ceil(100 x metric)`` clamped to
-    ``minimum``..``maximum``.  A metric of 1 or more (or none) keeps ``maximum`` (never upscales)."""
-    if metric is None or not math.isfinite(metric) or metric >= 1.0:
-        return maximum
-    return int(min(maximum, max(minimum, math.ceil(round(100.0 * metric, 9)))))
-
-
-def visible_texel_density(scene: Any, max_rays: int = MAX_VISIBILITY_TRIANGLES) -> Dict[str, Any]:
-    """Texel density samples of the visible meshes through the scene camera at 100% size.
-
-    Every front-facing triangle of the evaluated meshes at the current frame that the camera sees
-    (its centroid is the first surface along the ray from the camera) contributes: UV0 area x the
-    width x height of the material's base-colour image, over its projected area in render pixels
-    (resolution X x Y).  Triangles of materials without a detailed base-colour image are skipped.
-    Returns ``density``, ``weight`` (pixel area) and ``material`` (index into ``materials``) arrays."""
-    import bpy  # type: ignore
-    import numpy as np  # type: ignore
-    from mathutils import Vector  # type: ignore
-    from mathutils.bvhtree import BVHTree  # type: ignore
-    from rc2016.pipeline.game_shader import _find_textures
-
-    camera = scene.camera
-    render = scene.render
-    bpy.context.view_layer.update()
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-    to_clip = np.array(camera.calc_matrix_camera(depsgraph, x=render.resolution_x, y=render.resolution_y)
-                       @ camera.matrix_world.inverted())
-    half = np.array([render.resolution_x, render.resolution_y], dtype=np.float64) / 2.0
-    sizes: Dict[str, Any] = {}
-
-    def base_colour_size(material: Any) -> tuple:
-        if material is None:
-            return (0, 0)
-        if material.name not in sizes:
-            image = None
-            if getattr(material, "node_tree", None) is not None:
-                node = _find_textures(material).get("c")
-                image = node.image if node is not None else None
-            width, height = (int(image.size[0]), int(image.size[1])) if image is not None else (0, 0)
-            if max(width, height) <= PLACEHOLDER_TEXTURE_EDGE:
-                width = height = 0
-            sizes[material.name] = (width, height)
-        return sizes[material.name]
-
-    materials: List[str] = []
-    world_chunks, tri_chunks, uv_chunks, size_chunks, mat_chunks = [], [], [], [], []
-    offset = 0
-    for obj in scene.objects:
-        if obj.type != "MESH" or obj.hide_render or not len(obj.material_slots):
-            continue
-        evaluated = obj.evaluated_get(depsgraph)
-        mesh = evaluated.to_mesh()
-        try:
-            corner_tris = getattr(mesh, "corner_tris", None)
-            if corner_tris is None:
-                corner_tris = mesh.loop_triangles
-            count, vertex_count = len(corner_tris), len(mesh.vertices)
-            if not count or not vertex_count or not len(mesh.uv_layers):
-                continue
-            co = np.empty(vertex_count * 3, dtype=np.float64)
-            mesh.vertices.foreach_get("co", co)
-            tri_vertices = np.empty(count * 3, dtype=np.int64)
-            corner_tris.foreach_get("vertices", tri_vertices)
-            tri_loops = np.empty(count * 3, dtype=np.int64)
-            corner_tris.foreach_get("loops", tri_loops)
-            tri_polygon = np.empty(count, dtype=np.int64)
-            corner_tris.foreach_get("polygon_index", tri_polygon)
-            poly_material = np.zeros(len(mesh.polygons), dtype=np.int32)
-            mesh.polygons.foreach_get("material_index", poly_material)
-            uv_layer = mesh.uv_layers.active or mesh.uv_layers[0]
-            loop_uv = np.empty(len(mesh.loops) * 2, dtype=np.float64)
-            if hasattr(uv_layer, "uv"):  # Blender 5.0
-                uv_layer.uv.foreach_get("vector", loop_uv)
-            else:
-                uv_layer.data.foreach_get("uv", loop_uv)
-        finally:
-            evaluated.to_mesh_clear()
-        slot_sizes, slot_ids = [], []
-        for slot in obj.material_slots:
-            slot_sizes.append(base_colour_size(slot.material))
-            name = slot.material.name if slot.material else ""
-            if name not in materials:
-                materials.append(name)
-            slot_ids.append(materials.index(name))
-        world = np.c_[co.reshape(-1, 3), np.ones(vertex_count)] @ np.array(evaluated.matrix_world).T
-        tri_slot = np.minimum(poly_material[tri_polygon], len(slot_sizes) - 1)
-        world_chunks.append(world[:, :3])
-        tri_chunks.append(tri_vertices.reshape(-1, 3) + offset)
-        uv_chunks.append(loop_uv.reshape(-1, 2)[tri_loops].reshape(-1, 3, 2))
-        size_chunks.append(np.array(slot_sizes, dtype=np.float64)[tri_slot])
-        mat_chunks.append(np.array(slot_ids, dtype=np.int64)[tri_slot])
-        offset += vertex_count
-    result = {"density": np.empty(0), "weight": np.empty(0), "material": np.empty(0, dtype=np.int64),
-              "materials": materials, "triangles": 0}
-    if not world_chunks:
-        return result
-    world = np.vstack(world_chunks)
-    triangles = np.vstack(tri_chunks)
-    uv = np.vstack(uv_chunks)
-    size = np.vstack(size_chunks)
-    material = np.concatenate(mat_chunks)
-    result["triangles"] = int(len(triangles))
-    clip = np.c_[world, np.ones(len(world))] @ to_clip.T
-    in_front = (clip[triangles, 3] > 1e-9).all(axis=1)
-    screen = (clip[:, :2] / np.where(clip[:, 3:4] > 1e-9, clip[:, 3:4], 1.0)) * half  # pixels, y up
-    density, pixel_area, facing = triangle_texel_density(uv, screen[triangles], size)
-    candidates = np.flatnonzero(in_front & facing & (pixel_area > 0) & (size[:, 0] > 0))
-    if not len(candidates):
-        return result
-    if len(candidates) > max_rays:
-        candidates = candidates[np.linspace(0, len(candidates) - 1, max_rays).astype(np.int64)]
-    bvh = BVHTree.FromPolygons(world.tolist(), triangles.tolist(), all_triangles=True)
-    origin = camera.matrix_world.translation.copy()
-    centroid = world[triangles[candidates]].mean(axis=1)
-    visible = np.zeros(len(candidates), dtype=bool)
-    for slot, (index, point) in enumerate(zip(candidates, centroid)):
-        direction = Vector(point.tolist()) - origin
-        distance = direction.length
-        if distance <= 0.0:
-            continue
-        direction /= distance
-        hit = bvh.ray_cast(origin, direction, distance * 1.001)
-        visible[slot] = hit[0] is None or hit[2] == index or hit[3] >= distance * (1 - 1e-4)
-    candidates = candidates[visible]
-    result.update(density=density[candidates], weight=pixel_area[candidates], material=material[candidates])
-    return result
+# --- Render size -------------------------------------------------------------------------------
+# Every delivered render is at 100 % of the output resolution. Resolution X/Y and the Render Region
+# fractions are fitted once, so the render keeps the full pixel size.
+RENDER_PERCENTAGE = 100
 
 
 def fit_render_size(scene: Any) -> Dict[str, Any]:
-    """Set ``render.resolution_percentage`` from the visible mesh's texel density and return the receipt.
-
-    Call it after ``frame_camera_zoom`` and ``fit_render_region``: the density is measured through
-    the scene camera at the current frame.  The percentage is ``ceil(100 x metric)`` clamped to
-    25..100 (see ``render_percentage_for_density``); it stays 100 when the median is already one
-    texel per pixel or more, or when no visible mesh carries a detailed base-colour image.
-    Resolution X/Y and the Render Region fractions are untouched."""
-    render = scene.render
-    camera = getattr(scene, "camera", None)
-    if camera is None or camera.type != "CAMERA":
-        raise RuntimeError("Render size fitting needs a scene camera")
-    samples = visible_texel_density(scene)
-    density, weight, material = samples["density"], samples["weight"], samples["material"]
-    metric = weighted_median(density, weight)
-    percentage = render_percentage_for_density(metric)
-    render.resolution_percentage = percentage
-    total = float(weight.sum())
-    breakdown = []
-    for index in sorted(set(material.tolist()), key=lambda i: -float(weight[material == i].sum())):
-        chosen = material == index
-        breakdown.append({"material": samples["materials"][index],
-                          "screen_share": round(float(weight[chosen].sum()) / total, 4),
-                          "median_texel_per_pixel": round(float(weighted_median(density[chosen], weight[chosen])), 4)})
-    if metric is None:
-        status = "full_size_no_textured_mesh"
-    elif metric >= 1.0:
-        status = "full_size_texel_density_at_least_1"
-    elif 100.0 * metric < RENDER_SIZE_MIN_PERCENT:
-        status = "scaled_to_minimum"
-    else:
-        status = "scaled"
-    return {"status": status, "resolution_percentage": percentage, "metric_texel_per_pixel_at_100": metric,
-            "metric": "screen-area weighted median of sqrt(UV0 area x base-colour width x height / projected pixel area) "
-                      "over visible front-facing triangles at 100% size",
-            "texel_per_pixel_after": None if metric is None else metric * 100.0 / percentage,
-            "min_percentage": RENDER_SIZE_MIN_PERCENT, "max_percentage": RENDER_SIZE_MAX_PERCENT,
-            "triangles_measured": int(len(density)), "triangles_total": samples["triangles"],
-            "screen_pixels_at_100": total, "materials": breakdown[:12]}
+    """Set ``render.resolution_percentage`` to RENDER_PERCENTAGE and return the receipt."""
+    scene.render.resolution_percentage = RENDER_PERCENTAGE
+    return {"status": "full_size", "resolution_percentage": RENDER_PERCENTAGE}
 
 
 def camera_distance_for_fill(points: Any, centre: Any, rotation: Any, projection: Any, axis: int, fill: float) -> float:
@@ -663,11 +450,14 @@ def visible_mesh_points(scene: Any) -> Any:
 
 def frame_camera_zoom(scene: Any, points: Any = None) -> Dict[str, Any]:
     """Set the scene camera to the reference angle (CAMERA_EULER_DEGREES) and dolly it along its
-    view axis, so the model fills CAMERA_FILL_LONG_AXIS of the frame on its longer screen axis
-    (CAMERA_FILL_HORIZONTAL when its width decides the distance).
+    view axis so the model, plus the Render Region padding, exactly reaches the frame edge on one axis.
 
-    ``points`` defaults to the visible mesh vertices.  The camera's lens and sensor are unchanged;
-    only its rotation and location are set.  Call ``fit_render_region`` afterwards to crop."""
+    The padding per axis comes from ``region_paddings`` on the projected box, the same rule the crop
+    uses; the axis that needs the larger distance is the one that touches the frame, so the render is
+    as large as the model allows (neither axis left with slack).  The camera is slid sideways to centre
+    the model on screen and the distance is refitted at that position, repeated until both settle.
+    ``points`` defaults to the visible mesh vertices.  The camera's lens and sensor are unchanged; only
+    its rotation and location are set.  Call ``fit_render_region`` afterwards to crop."""
     import bpy  # type: ignore
     import numpy as np  # type: ignore
 
@@ -686,35 +476,40 @@ def frame_camera_zoom(scene: Any, points: Any = None) -> Dict[str, Any]:
     depsgraph = bpy.context.evaluated_depsgraph_get()
     projection = np.array(camera.calc_matrix_camera(depsgraph, x=render.resolution_x, y=render.resolution_y))
     centre = (points.min(axis=0) + points.max(axis=0)) / 2
-    horizontal = camera_distance_for_fill(points, centre, rotation, projection, 0, CAMERA_FILL_HORIZONTAL)
-    vertical = camera_distance_for_fill(points, centre, rotation, projection, 1, CAMERA_FILL_LONG_AXIS)
-    # The axis that needs the larger distance is the one the model fills most, i.e. its longer screen axis.
-    distance = max(horizontal, vertical)
-    dominant = "horizontal" if horizontal >= vertical else "vertical"
-    location = centre + rotation[:, 2] * distance
+    right, up, back = rotation[:, 0], rotation[:, 1], rotation[:, 2]
+    pixels = np.array([render.resolution_x, render.resolution_y], dtype=np.float64)
 
-    def screen_centre(at: Any) -> Any:
-        # Centre of the model's projected box in normalised -1..1 coordinates.
-        cam = (points - at) @ rotation
+    def projected(location: Any) -> Any:
+        # Model vertices in -1..1 clip-space units (frame edges at -1 and 1) seen from ``location``.
+        cam = (points - location) @ rotation
         clip = np.c_[cam, np.ones(len(cam))] @ projection.T
-        ndc = clip[:, :2] / clip[:, 3:4]
-        return (ndc.min(axis=0) + ndc.max(axis=0)) / 2
+        return clip[:, :2] / clip[:, 3:4]
 
-    # Slide the camera (rotation untouched) until the model is centred on screen, so the padded
-    # Render Region is not clipped by the frame edge.  A camera-space shift of d * ndc / projection.
-    for _ in range(4):
-        offset = screen_centre(location)
-        if np.allclose(offset, 0.0, atol=1e-6):
+    pads = (REGION_PADDING_SIDE, REGION_PADDING_LONG)
+    lateral = np.zeros(3)  # sideways slide of the optical axis that centres the model on screen
+    for _ in range(12):
+        axis_point = centre + lateral
+        horizontal = camera_distance_for_fill(points, axis_point, rotation, projection, 0, 1.0 / (1.0 + pads[0]))
+        vertical = camera_distance_for_fill(points, axis_point, rotation, projection, 1, 1.0 / (1.0 + pads[1]))
+        distance = max(horizontal, vertical)
+        location = axis_point + back * distance
+        ndc = projected(location)
+        offset = (ndc.min(axis=0) + ndc.max(axis=0)) / 2
+        size = (ndc.max(axis=0) - ndc.min(axis=0)) / 2 * pixels  # model size in pixels, as the crop measures it
+        settled = region_paddings(float(size[0]), float(size[1]))
+        if settled == pads and np.allclose(offset, 0.0, atol=1e-6):
             break
-        location = location + rotation[:, 0] * (offset[0] * distance / projection[0, 0]) \
-            + rotation[:, 1] * (offset[1] * distance / projection[1, 1])
+        pads = settled
+        lateral = lateral + right * (offset[0] * distance / projection[0, 0]) + up * (offset[1] * distance / projection[1, 1])
+    dominant = "horizontal" if horizontal >= vertical else "vertical"
+    fill = 1.0 / (1.0 + pads[0 if dominant == "horizontal" else 1])
     camera.location = tuple(float(v) for v in location)
     bpy.context.view_layer.update()
-    return {"dominant_axis": dominant, "distance": float(distance),
-            "fill": CAMERA_FILL_HORIZONTAL if dominant == "horizontal" else CAMERA_FILL_LONG_AXIS,
+    return {"dominant_axis": dominant, "distance": float(distance), "padding": [float(v) for v in pads],
+            "fill": fill,
             "location": [float(v) for v in camera.location],
             "rotation_degrees": [float(v) for v in CAMERA_EULER_DEGREES],
-            "screen_centre_offset": [float(v) for v in screen_centre(location)]}
+            "screen_centre_offset": [float(v) for v in offset]}
 
 
 def _configure_optix_gpu(bpy: Any) -> None:
@@ -733,28 +528,6 @@ def _configure_optix_gpu(bpy: Any) -> None:
             device.use = getattr(device, "type", "") == "OPTIX"
     except (KeyError, RuntimeError, TypeError, ValueError) as exc:
         raise RuntimeError("Could not configure the Cycles OptiX GPU") from exc
-
-
-def expected_render_percentage(region_receipt_text: Optional[str]) -> Optional[int]:
-    """Resolution percentage a scene must have, from its embedded ``Render region.json`` text.
-
-    100 when the scene has no receipt or the receipt has no ``render_size`` record (delivered scenes
-    built before the render size rule, weapon scenes); the recorded percentage when it is an integer
-    in RENDER_SIZE_MIN_PERCENT..RENDER_SIZE_MAX_PERCENT; None for a malformed record."""
-    if not region_receipt_text:
-        return RENDER_SIZE_MAX_PERCENT
-    try:
-        receipt = json.loads(region_receipt_text)
-    except ValueError:
-        return None
-    record = receipt.get("render_size") if isinstance(receipt, dict) else None
-    if record is None:
-        return RENDER_SIZE_MAX_PERCENT
-    value = record.get("resolution_percentage") if isinstance(record, dict) else None
-    if isinstance(value, bool) or not isinstance(value, int) \
-            or not RENDER_SIZE_MIN_PERCENT <= value <= RENDER_SIZE_MAX_PERCENT:
-        return None
-    return value
 
 
 def _lighting_file_differs(recorded: Dict[str, Any], selected: Optional[Dict[str, Any]] = None) -> bool:
@@ -836,13 +609,9 @@ def audit_scene(scene: Any = None, check_gpu: bool = True,
         "world": None if scene.world is None else scene.world.name,
         "gpu": gpu,
     }
-    region_text = bpy.data.texts.get("Render region.json")
-    percentage = expected_render_percentage(region_text.as_string() if region_text else None)
     expected = {
         "engine": "CYCLES",
-        # Resolution X/Y are fixed; the percentage is 100 unless the Render region receipt records the
-        # render size rule's choice (a malformed record never matches).
-        "resolution": (OUTPUT_WIDTH, OUTPUT_HEIGHT, -1 if percentage is None else percentage),
+        "resolution": (OUTPUT_WIDTH, OUTPUT_HEIGHT, RENDER_PERCENTAGE),
         "file_format": "PNG",
         "color_mode": "RGBA",
         "png_compression": 100,
