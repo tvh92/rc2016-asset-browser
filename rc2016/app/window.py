@@ -5,6 +5,7 @@ from dataclasses import replace
 import os
 from pathlib import Path
 import queue
+import re
 import threading
 
 from rc2016.app.batch import (
@@ -159,12 +160,8 @@ class AssetBrowserApp:
         self.ui_scale_var = tk.StringVar(value=scale if scale in UI_SCALES else "100%")
         apply_ui_scale(self.root, ttk, int(self.ui_scale_var.get().rstrip("%")))
         self.root.protocol("WM_DELETE_WINDOW", self._close)
-        self.root.geometry("1420x980")
         self.root.minsize(min(1480, self.root.winfo_screenwidth()), 900)
-        try:
-            self.root.state("zoomed")   # open maximised: the 3D view needs the room
-        except Exception:
-            pass
+        self._restore_window()
         self.events: queue.Queue[tuple[str, dict[str, object]]] = queue.Queue()
         self.records: list[ModelCandidate | PipelineModelCandidate] = []
         self.filtered_records: list[ModelCandidate | PipelineModelCandidate] = []
@@ -339,7 +336,7 @@ class AssetBrowserApp:
         model_view.columnconfigure(0, weight=1)
         model_view.rowconfigure(0, weight=1)
 
-        browser_split = ttk.Panedwindow(model_view, orient="horizontal")
+        browser_split = self.browser_split = ttk.Panedwindow(model_view, orient="horizontal")
         browser_split.grid(row=0, column=0, sticky="nsew")
         # The model tree and the thumbnail grid share this cell; show_list_view swaps them.
         self.list_host = list_host = ttk.Frame(browser_split)
@@ -373,7 +370,7 @@ class AssetBrowserApp:
 
         from rc2016.app.browser import AssetBrowser
         self.browser = AssetBrowser(self, browser_split, type_host=top, model_view=model_view)
-        self.root.after(200, lambda: browser_split.sashpos(0, int(self.root.winfo_width() * 0.53)))
+        self.root.after(200, lambda: browser_split.sashpos(0, int(self.root.winfo_width() * self._saved_split())))
         self.prefix_entry.configure(state="disabled")
 
         bottom = ttk.Frame(main)
@@ -1015,8 +1012,40 @@ class AssetBrowserApp:
             self._append_log("Cancellation requested…", "muted")
             self.runner.cancel()
 
+    def _restore_window(self) -> None:
+        """Last size and place, and whether it was maximised; the defaults on a first start or when the saved
+        place is off the screen. Maximised is the default: the 3D view needs the room."""
+        saved = _load_settings()
+        match = re.fullmatch(r"(\d+)x(\d+)\+(\d+)\+(\d+)", saved.get("window.geometry", ""))
+        on_screen = match and int(match[3]) < self.root.winfo_screenwidth() and int(match[4]) < self.root.winfo_screenheight()
+        self.root.geometry(match.group(0) if on_screen else "1420x980")
+        if saved.get("window.zoomed", "1") == "1":
+            try:
+                self.root.state("zoomed")
+            except Exception:
+                pass
+
+    def _saved_split(self) -> float:
+        """Fraction of the window width that the Browser's list pane had last time."""
+        try:
+            return min(0.9, max(0.1, float(_load_settings().get("window.split", "0.53"))))
+        except ValueError:
+            return 0.53
+
+    def _remember_window(self) -> None:
+        """Size, place, maximised state and the Browser split, restored at the next start."""
+        zoomed = self.root.state() == "zoomed"
+        values = {"window.zoomed": "1" if zoomed else "0"}
+        if not zoomed:   # keep the last normal size while maximised
+            values["window.geometry"] = self.root.geometry()
+        width = self.root.winfo_width()
+        if width > 1 and self.browser_split is not None:
+            values["window.split"] = f"{self.browser_split.sashpos(0) / width:.4f}"
+        _save_settings({**_load_settings(), **values})
+
     def _close(self) -> None:
         self._remember_settings()
+        self._remember_window()
         self.browser.cancel_review()
         if self.browser.review or self.runner:
             self._append_log("Closing after the active extractor stops…", "muted")
