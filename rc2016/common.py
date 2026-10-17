@@ -18,6 +18,45 @@ def settings_dir():
     return folder
 
 
+def _settings_file():
+    return settings_dir() / 'settings.json'
+
+
+def _read_settings_file():
+    try:
+        data = json.loads(_settings_file().read_text(encoding='utf-8'))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def remember_var(variable, key, allowed=None):
+    """Restore a Tk variable from the settings file and save every later change under key.
+
+    Booleans are stored as "1"/"0"; a stored text outside allowed is ignored, so the variable keeps
+    its default.  Reading and writing the settings file are best-effort and never raise."""
+    is_flag = isinstance(variable.get(), bool)
+    stored = _read_settings_file().get(key)
+    if isinstance(stored, str):
+        value = stored == '1' if is_flag else stored
+        if is_flag or allowed is None or value in allowed:
+            variable.set(value)
+
+    def save(*_args):
+        value = variable.get()
+        data = _read_settings_file()
+        data[key] = ('1' if value else '0') if is_flag else str(value)
+        try:
+            path = _settings_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+        except OSError:
+            pass
+
+    variable.trace_add('write', save)
+    return variable
+
+
 def extended(path):
     p = os.path.abspath(path)
     if os.name != 'nt' or p.startswith('\\\\?\\'):

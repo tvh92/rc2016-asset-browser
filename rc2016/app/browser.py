@@ -7,6 +7,7 @@ import queue
 import threading
 import uuid
 from rc2016.app import catalog
+from rc2016.common import remember_var
 from rc2016.app.layout import SplitLayout, Splitter, regrid
 from rc2016.viewer.loader import SourcePreviewLoader
 from rc2016.viewer.viewport import ModelViewport
@@ -279,8 +280,8 @@ class AssetBrowser:
         tip('Source look: a model can hold several alternative mesh sets. Only shown when it does.',self.native_look_label,self.native_look_box)
         lodrow.grid_remove()
         # Shading: lighting, then the tonemap that turns its output into screen colours.
-        self.lighting_var=self.tk.StringVar(value=self.viewport.LIGHTINGS[0])
-        self.lighting_enabled_var=self.tk.BooleanVar(value=True)
+        self.lighting_var=remember_var(self.tk.StringVar(value=self.viewport.LIGHTINGS[0]),'model.lighting',self.viewport.LIGHTINGS)
+        self.lighting_enabled_var=remember_var(self.tk.BooleanVar(value=True),'model.lighting_enabled')
         self.lighting_group=lighting_group=ttk.LabelFrame(side,text='Shading',padding=(4,2))
         lighting_group.grid(row=2,column=0,sticky='ew',pady=(0,4))
         self.lighting_enabled_check=ttk.Checkbutton(
@@ -289,7 +290,7 @@ class AssetBrowser:
         self.lighting_enabled_check.grid(row=0,column=0,sticky='w')
         self.lighting_controls=ttk.Frame(lighting_group)
         self.lighting_controls.grid(row=0,column=1,sticky='w')
-        self.tonemap_var=self.tk.StringVar(value=self.viewport.TONEMAPS[0])
+        self.tonemap_var=remember_var(self.tk.StringVar(value=self.viewport.TONEMAPS[0]),'model.tonemap',self.viewport.TONEMAPS)
         lighting_note_row=ttk.Frame(lighting_group);lighting_note_row.grid(row=1,column=0,columnspan=4,sticky='w')
         lighting_box=lighting_controls(ttk,self.lighting_controls,self.viewport,self.lighting_var,self.tonemap_var,note_parent=lighting_note_row)
         tonemap_label=ttk.Label(lighting_group,text='Tonemap')
@@ -301,8 +302,8 @@ class AssetBrowser:
         tip('Viewer rig: fixed key, fill and sky light that turns with the camera (what the gallery thumbnails use).\nShared HDRI: the shared review HDRI, as the Blender review render uses. Choosing it also selects Khronos PBR Neutral.',lighting_box)
         tip('Maps the lit HDR result to screen colours.\nACES fit: filmic, desaturates highlights (gallery thumbnails).\nKhronos PBR Neutral: keeps base colours accurate until highlights.',tonemap_label,tonemap_box)
         # Materials: only the toggles that change something for this model (see _update_source_controls).
-        self.native_translation_var=self.tk.BooleanVar(value=True)
-        self.experimental_materials_var=self.tk.BooleanVar(value=False)
+        self.native_translation_var=remember_var(self.tk.BooleanVar(value=True),'model.native_translation')
+        self.experimental_materials_var=remember_var(self.tk.BooleanVar(value=False),'model.experimental_materials')
         self.materials_group=materials=ttk.LabelFrame(side,text='Materials',padding=(4,2))
         materials.grid(row=3,column=0,sticky='ew',pady=(0,4))
         self.native_check=ttk.Checkbutton(materials,text='Native translation',variable=self.native_translation_var,
@@ -314,6 +315,7 @@ class AssetBrowser:
         materials.grid_remove()
         self.native_applicable=self.experimental_applicable=False
         self.viewport.set_lighting_enabled(self.lighting_enabled_var.get())
+        self.viewport.set_native_translation(self.native_translation_var.get())
         self.viewport.set_experimental_materials(False)
         self.anim_box=anim=ttk.Frame(side);anim.grid(row=4,column=0,sticky='ew',pady=(0,6))
         anim.columnconfigure(1,weight=1)
@@ -406,7 +408,7 @@ class AssetBrowser:
         self.level_view.add(level_list,weight=1);self.level_view.add(level_right,weight=4)
         level_right.columnconfigure(0,weight=1);level_right.rowconfigure(0,weight=1)
         self.level_panel=LevelPanel(level_right,tk,ttk,lambda:app.source_var.get().strip(),list_parent=level_list,
-                                    on_open_model=self.open_model,layout=self.layout)
+                                    on_open_model=self.open_model,layout=self.layout,remember=True)
         self.level_panel.frame.grid(row=0,column=0,sticky='nsew')
         # Flash UI (flash_tab.py): the .gfx/.swf list on the left; reads the list on first show.
         from rc2016.flash.tab import FlashTab

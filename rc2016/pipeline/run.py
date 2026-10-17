@@ -440,11 +440,11 @@ def geometry_game_equivalence(native_sources, mesh_manifest, validation):
                     if equivalent else 'Structural validation does not prove source semantic equivalence; every relevant UV0, normal, and tangent semantic must be explicitly proven.'))
 
 
-def blender(args,job,validate,log):
+def blender(args,job,validate,log,script='builder.py'):
     name=Path(job).stem+('_validate' if validate else '_build')
     output=args.output_root/'reports/logs'/(name+'.log')
     command=[args.blender,'--background','--factory-startup','--disable-autoexec','--python-exit-code','1',
-        '--python',str(Path(__file__).with_name('builder.py')),'--','--job',str(job)]
+        '--python',str(Path(__file__).with_name(script)),'--','--job',str(job)]
     if validate:command.append('--validate')
     env=os.environ.copy();env['PYTHONDONTWRITEBYTECODE']='1';env['TEMP']=str(args.output_root/'work/tmp');env['TMP']=env['TEMP']
     env['BLENDER_USER_RESOURCES']=str(args.output_root/'work/blender_user')
@@ -1454,6 +1454,45 @@ def assemble_source_linked_combuster(selection,manifest,index,args,code_hash,pre
         dump(args.output_root/'reports/manifest.json',manifest);log('combuster_assembly_complete',final=str(final),sha256=fh)
 
 
+GROUP_STATUSES=('COMPLETE_MESH_MATERIALS_ANIMATIONS','COMPLETE_MESH_ANIMATIONS_MATERIAL_LIMITATION',
+    'COMPLETE_MESH_ANIMATIONS_TEXTURE_LIMITATION','ARMATURE_ANIMATIONS_ONLY')
+
+
+def assemble_group_blend(selection,manifest,args,log):
+    """One .blend holding every delivered selected model, framed by one camera (rc2016/pipeline/group_blend.py).
+
+    Runs after the per-model builds, so each member is its own finished, validated .blend. A failure is
+    recorded and reported, and never discards the per-model results."""
+    name=safe_name(args.group_blend)
+    members=[]
+    for key in selection:
+        result=manifest['models'].get(key,{})
+        final=result.get('final')
+        if result.get('status') in GROUP_STATUSES and final and Path(final).is_file():
+            members.append(dict(name=result.get('model',key),blend=final,sha256=file_hash(final)))
+    if not members:
+        manifest['group_blend']=dict(status='skipped',name=name,reason='no selected model was delivered')
+        log('group_blend_skipped',name=name);return
+    final=args.output_root/'groups'/(name+'.blend')
+    candidate=args.output_root/'blender'/(name+'_group_candidate.blend')
+    job_path=args.output_root/'work'/(name+'_group_job.json')
+    try:
+        final.parent.mkdir(parents=True,exist_ok=True)
+        dump(job_path,dict(members=members,candidate=str(candidate),hdri=str(args.hdri) if args.hdri else None,
+            shared_lighting=args.shared_lighting))
+        blender(args,job_path,False,log,'group_blend.py')
+        blender(args,job_path,True,log,'group_blend.py')
+        promote(candidate,final,force=True)
+        manifest['group_blend']=dict(status='delivered',name=name,final=str(final),final_sha256=file_hash(final),
+            members=[member['name'] for member in members])
+        log('group_blend_delivered',final=str(final),members=len(members))
+    except Exception as exc:
+        error=dict(group=name,error=str(exc),traceback=traceback.format_exc())
+        manifest['errors'].append(error)
+        manifest['group_blend']=dict(status='FAILED',name=name,error=str(exc))
+        log('group_blend_failed',**error)
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--extracted-root',type=Path,required=True);parser.add_argument('--output-root',type=Path,required=True)
@@ -1477,6 +1516,7 @@ def main():
         help='Exact selector (as --clip) of the one baked clip left as the active Action in the saved file, and framed by the review camera; default: the sequential overview of every clip')
     parser.add_argument('--borrow-animset',action='append',default=[],
         help='Also offer this animset (archive path) when the game pairs it with another model whose rest rig matches the selected model; repeat for several')
+    parser.add_argument('--group-blend',default='',help='Also write one .blend under groups/ holding every selected model that was delivered, framed by one camera. Names the file.')
     parser.add_argument('--blend-only',action='store_true',help='After a fully successful run, keep only the delivered .blend files and the viewer animation index: delete reports, meshes, textures, caches and validation')
     parser.add_argument('--lighting-source',choices=('veldin','novalis','hdri'),default='hdri',
         help='hdri (default): the shared review lighting from --lighting-config; veldin: opt-in captured Veldin key light, ambient, exposure and RC PS4 Game tonemap; novalis: decoded probe')
@@ -1592,6 +1632,8 @@ def main():
             assemble_source_linked_pyrocitor(selection,manifest,index,args,code_hash,previous,log)
             assemble_source_linked_proton_drum(selection,manifest,index,args,code_hash,previous,log)
             assemble_source_linked_combuster(selection,manifest,index,args,code_hash,previous,log)
+        if args.group_blend:
+            assemble_group_blend(selection,manifest,args,log)
         index.save()
         validations={};unresolved={};unsupported={};geometry_models={}
         for key,result in manifest['models'].items():

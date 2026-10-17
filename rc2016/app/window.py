@@ -11,6 +11,7 @@ from rc2016.app.batch import (
     BatchRunner, ExportBatchRunner, ModelCandidate, PipelineBatchRunner, PipelineIndexScanner,
     PipelineModelCandidate, discover_models, ensure_disjoint, folder_layout, parse_prefixes, status_for)
 from rc2016.app.settings import _default_blender, _default_interpreter, _load_settings, _save_settings
+from rc2016.common import remember_var
 from rc2016.app.theme import (
     UI_SCALES, _Tooltip, _configure_tk_runtime, apply_dark_theme, apply_ui_scale,
     themed_scrolled_text_class, windows_prefers_dark)
@@ -42,6 +43,9 @@ HELP = {
         "the model list works without it."),
     "scale": "Make all text and controls bigger or smaller. Remembered for next time.",
     "prefixes": "Transform-only mode: only extract clips whose names start with these words.",
+    "group": ("Full research pipeline only. After the selected models are built, they are also placed side by side "
+              "in one .blend under groups/, with one camera and one Render Region framing them all. Each model keeps "
+              "its own .blend as well."),
     "skip": "Don't redo models that were already exported with the same options. Leave this on.",
     "scan": "Re-read the game folder and list every model it contains.",
     "extract": (
@@ -186,23 +190,25 @@ class AssetBrowserApp:
         self.output_var = tk.StringVar(value=saved.get("output", "") if remembered("source") else "")
         self.interpreter_var = tk.StringVar(value=remembered("python") or str(_default_interpreter()))
         self.blender_var = tk.StringVar(value=remembered("blender") or _default_blender())
-        self.backend_var = tk.StringVar(value="Full archive pipeline")
+        self.backend_var = remember_var(tk.StringVar(value="Full archive pipeline"), "export.backend",
+                                        ("Transform only", "Full archive pipeline"))
         self.filter_var = tk.StringVar()
         self.folder_mode = "auto"  # "auto", "expanded" or "collapsed"; see toggle_expand_all
         self.state_var = tk.StringVar(value="All")
         self.shading_var = tk.StringVar(value="All")
-        self.prefix_var = tk.StringVar()
-        self.skip_verified_var = tk.BooleanVar(value=True)
-        # Export options (Options… window), remembered in the settings file.
+        self.prefix_var = remember_var(tk.StringVar(), "export.prefixes")
+        self.skip_verified_var = remember_var(tk.BooleanVar(value=True), "export.skip_verified")
+        # Export options (Options… window): every option is restored from, and saved to, the settings file on change.
         from rc2016.export.models import FORMATS
-        chosen = set((saved.get("export_formats") or "glb").split(","))
-        self.export_format_vars = {key: tk.BooleanVar(value=key in chosen) for key in FORMATS}
-        self.export_textures_var = tk.BooleanVar(value=saved.get("export_textures", "1") == "1")
-        self.export_dds_var = tk.BooleanVar(value=saved.get("export_dds", "0") == "1")
-        self.export_animations_var = tk.StringVar(value=saved.get("export_animations", "all") if saved.get("export_animations") in ("all", "none") else "all")
-        self.export_lod_var = tk.StringVar(value=saved.get("export_lod", "Highest") if saved.get("export_lod") in ("Highest", "Lowest", "All") else "Highest")
-        self.full_pipeline_var = tk.BooleanVar(value=False)
-        self.blend_only_var = tk.BooleanVar(value=False)
+        self.export_format_vars = {key: remember_var(tk.BooleanVar(value=key == "glb"), f"export.format.{key}") for key in FORMATS}
+        self.export_textures_var = remember_var(tk.BooleanVar(value=True), "export.textures")
+        self.export_dds_var = remember_var(tk.BooleanVar(value=False), "export.dds")
+        self.export_animations_var = remember_var(tk.StringVar(value="all"), "export.animations", ("all", "none"))
+        self.export_lod_var = remember_var(tk.StringVar(value="Highest"), "export.lod", ("Highest", "Lowest", "All"))
+        self.full_pipeline_var = remember_var(tk.BooleanVar(value=False), "export.full_pipeline")
+        self.blend_only_var = remember_var(tk.BooleanVar(value=False), "export.blend_only")
+        self.group_blend_var = remember_var(tk.BooleanVar(value=False), "export.group_blend")
+        self.group_name_var = remember_var(tk.StringVar(value="Selected models"), "export.group_name")
         self.export_summary_var = tk.StringVar()
         self.exported_names: set[str] = set()
         self.selection_var = tk.StringVar(value="0 models selected")
@@ -459,6 +465,16 @@ class AssetBrowserApp:
         self.prefix_entry.grid(row=3, column=1, sticky="ew", padx=6, pady=4)
         ttk.Label(advanced, text="transform only; comma-separated", foreground=muted).grid(row=3, column=2, sticky="w")
         self._tip(HELP["prefixes"], self.prefix_label, self.prefix_entry)
+        self.group_check = ttk.Checkbutton(advanced, text="Also put the selected models into one .blend, framed by one camera",
+                                           variable=self.group_blend_var)
+        self.group_check.grid(row=4, column=0, columnspan=3, sticky="w", padx=(22, 0), pady=(6, 2))
+        self._tip(HELP["group"], self.group_check)
+        self.group_name_label = ttk.Label(advanced, text="Group file name")
+        self.group_name_label.grid(row=5, column=0, sticky="w", pady=4)
+        self.group_name_entry = ttk.Entry(advanced, textvariable=self.group_name_var)
+        self.group_name_entry.grid(row=5, column=1, sticky="ew", padx=6, pady=4)
+        ttk.Label(advanced, text="saved under groups/", foreground=muted).grid(row=5, column=2, sticky="w")
+        self._tip(HELP["group"], self.group_name_label, self.group_name_entry)
 
         display = ttk.Frame(window, padding=(12, 6))
         display.grid(row=4, column=0, sticky="ew")
@@ -472,7 +488,7 @@ class AssetBrowserApp:
 
         for variable in (*self.export_format_vars.values(), self.export_textures_var, self.export_dds_var,
                          self.export_animations_var, self.export_lod_var, self.full_pipeline_var, self.blend_only_var,
-                         self.backend_var):
+                         self.backend_var, self.group_blend_var):
             variable.trace_add("write", lambda *_args: self._options_changed())
         self._options_changed()
 
@@ -496,6 +512,10 @@ class AssetBrowserApp:
     def _options_changed(self) -> None:
         full_research = self.backend_var.get() == "Full archive pipeline" and self.full_pipeline_var.get()
         self.blend_only_check.configure(state="normal" if full_research else "disabled")
+        group_state = "normal" if full_research else "disabled"
+        self.group_check.configure(state=group_state)
+        self.group_name_entry.configure(state=group_state)
+        self.group_name_label.configure(state=group_state)
         if self.backend_var.get() != "Full archive pipeline":
             text = "Transform only: animation data from loose files"
         elif self.full_pipeline_var.get():
@@ -543,10 +563,7 @@ class AssetBrowserApp:
     def _remember_settings(self) -> None:
         _save_settings({**_load_settings(), "source": self.source_var.get().strip(), "output": self.output_var.get().strip(),
                         "python": self.interpreter_var.get().strip(), "blender": self.blender_var.get().strip(),
-                        "ui_scale": self.ui_scale_var.get(), "export_formats": ",".join(self._export_formats()),
-                        "export_textures": "1" if self.export_textures_var.get() else "0",
-                        "export_dds": "1" if self.export_dds_var.get() else "0",
-                        "export_animations": self.export_animations_var.get(), "export_lod": self.export_lod_var.get()})
+                        "ui_scale": self.ui_scale_var.get()})
 
     def _ui_scale_changed(self) -> None:
         apply_ui_scale(self.root, self.ttk, int(self.ui_scale_var.get().rstrip("%")))
@@ -965,10 +982,20 @@ class AssetBrowserApp:
             if clip_only:
                 path = next(r.archive_path for r in selected if getattr(r, "model_id", None) == clip_only[0])
                 research_clip = (path, clip_only[1])
+            group_name = ""
+            if self.group_blend_var.get():
+                group_name = self.group_name_var.get().strip()
+                if not group_name:
+                    self.messagebox.showerror("Group file name", "Type a name for the one-.blend file under Options….")
+                    self.show_options()
+                    self._set_busy()
+                    self.runner = None
+                    return
             self.runner = PipelineBatchRunner(
                 selectors, Path(self.source_var.get()), output, interpreter, blender,
                 skip_verified=self.skip_verified_var.get(), blend_only=self.blend_only_var.get(),
-                event=lambda kind, **values: self.events.put((kind, values)), clip_only=research_clip)
+                event=lambda kind, **values: self.events.put((kind, values)), clip_only=research_clip,
+                group_blend=group_name)
         else:
             self.runner = BatchRunner(
                 [record for record in selected if isinstance(record, ModelCandidate)], output, interpreter,
@@ -989,6 +1016,7 @@ class AssetBrowserApp:
             self.runner.cancel()
 
     def _close(self) -> None:
+        self._remember_settings()
         self.browser.cancel_review()
         if self.browser.review or self.runner:
             self._append_log("Closing after the active extractor stops…", "muted")
