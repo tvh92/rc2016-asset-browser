@@ -44,12 +44,14 @@ def _extent(points, axis):
 
 
 def _load_member(member, label):
-    """Append one member's meshes and armatures; returns all of them."""
+    """Append one member's meshes and armatures into a collection named after it; returns all of them."""
     path = Path(member["blend"])
     if file_hash(path) != member["sha256"]:
         raise RuntimeError("Member changed since it was delivered: %s" % path)
     with bpy.data.libraries.load(str(path), link=False) as (source, target):
         target.objects = list(source.objects)
+    collection = bpy.data.collections.new(label)
+    bpy.context.scene.collection.children.link(collection)
     kept = []
     for obj in target.objects:
         if obj is None:
@@ -66,7 +68,7 @@ def _load_member(member, label):
                 bone.rotation_euler = (0.0, 0.0, 0.0)
                 bone.scale = (1.0, 1.0, 1.0)
         obj[MEMBER_KEY] = label
-        bpy.context.scene.collection.objects.link(obj)
+        collection.objects.link(obj)
         kept.append(obj)
     return kept
 
