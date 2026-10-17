@@ -592,8 +592,10 @@ class ExportBatchRunner:
     Blender format is chosen); same events as the other runners."""
 
     def __init__(self, records: Sequence[PipelineModelCandidate], extracted_root: Path, output_root: Path,
-                 options, clip_only: tuple[str, str] | None = None, event: Callable[..., None] | None = None):
+                 options, clip_only: tuple[str, str] | None = None, event: Callable[..., None] | None = None,
+                 combine_name: str = ""):
         self.records = list(records)
+        self.combine_name = combine_name.strip()   # also write the exported models as one file under groups/
         self.extracted_root = extracted_root.expanduser().resolve()
         self.output_root = output_root.expanduser().resolve()
         self.options = options
@@ -612,6 +614,7 @@ class ExportBatchRunner:
         from rc2016.export.models import Cancelled, ModelExporter
         summary = {"total": len(self.records), "exported": 0, "skipped": 0, "failed": 0, "cancelled": False}
         self.event("batch_started", total=len(self.records))
+        parts = []   # glb files of the models that exported or were already there
         self.exporter = ModelExporter(self.extracted_root, self.output_root,
                                       log=lambda message: self.event("log", level="output", message=message),
                                       cancelled=self.cancel_requested.is_set)
@@ -627,6 +630,9 @@ class ExportBatchRunner:
             try:
                 result = self.exporter.export(record.model_id, record.archive_path, options)
                 summary[result["status"]] += 1
+                if result["status"] in ("exported", "skipped") and self.combine_name and "glb" in self.options.formats:
+                    stem = safe_name(Path(record.archive_path).stem) + self.options.file_suffix
+                    parts.append(Path(result["folder"]) / f"{stem}.glb")
                 for note in result.get("notes", []):
                     self.event("log", level="output", message="  " + note)
                 self.event("model_done", model=record.archive_path, status=result["status"],
@@ -638,8 +644,27 @@ class ExportBatchRunner:
             except Exception as error:   # one failed model must not stop the batch
                 summary["failed"] += 1
                 self.event("model_done", model=record.archive_path, status="failed", message=str(error))
+        if parts and not summary["cancelled"]:
+            summary["combined"] = str(self._combine(parts))
         self.event("batch_done", summary=summary)
         return summary
+
+    def _combine(self, parts):
+        """One glTF of every exported model (their own nodes, skins and animations), then FBX/USD/.blend from it
+        through Blender when those are chosen."""
+        from rc2016.export.merge_glb import merge_glb, read_glb
+        from rc2016.export.models import FORMATS
+        groups = self.output_root / "groups"
+        groups.mkdir(parents=True, exist_ok=True)
+        name = safe_name(self.combine_name)
+        target = groups / f"{name}.glb"
+        merge_glb(parts, target)
+        self.event("log", level="output", message=f"Combined {len(parts)} model(s) into {target}")
+        blender_formats = [f for f in self.options.formats if FORMATS[f][2] and f != 'glb']
+        if blender_formats and self.options.blender:
+            document, blob = read_glb(target)
+            self.exporter._blender_convert(groups, name, document, blob, blender_formats, self.options.blender)
+        return target
 
 
 class PipelineIndexScanner:

@@ -515,6 +515,8 @@ One folder per model in the output root:
 
 **Single clip:** pick a clip under the 3D view (the Animation button opens the searchable list) and tick **Export only this clip**; it applies to the model shown there.
 
+**Combined file (Options, portable export):** with GLB among the formats, the exported models can also be merged into one `groups/NAME.glb` (`rc2016/export/merge_glb.py`). Each model keeps its own nodes, skins, materials and animations, every glTF index is shifted, and the models sit at their native places, so they overlap when they share an origin. FBX, USD or `.blend` are then converted from the combined file by Blender.
+
 ## Research Blender build and viewer rules
 
 Options -> Advanced selects the full research Blender scene (`PipelineBatchRunner`; backend "Full archive pipeline"), which runs the pipeline in [pipeline](pipeline.md) and needs Blender. With **Keep only the .blend files** ticked, a fully successful run deletes everything else in the output folder (reports, meshes, textures, caches); every run then rebuilds, since nothing is left to reuse. With **Export only this clip** ticked, the shown model gets its own CLI run with `--clip name:<clip>` and the other selected models run without it.
@@ -555,7 +557,7 @@ The **Grid** view of the model list (the **List / Grid** switch at the left of t
 
 ## Settings and caches
 
-- Settings: `%APPDATA%/RC2016 Asset Browser/settings.json` (source and output folders, UI scale, export options, Blender and Python paths). Settings saved under the former name `PS4 Animation Extractor` are copied once.
+- Settings: `%APPDATA%/RC2016 Asset Browser/settings.json` (source and output folders, UI scale, export options, Blender and Python paths, the window's size, place and maximised state, and the Browser split). Settings saved under the former name `PS4 Animation Extractor` are copied once.
 - `<repo>/.cache/shared_index`: parsed `layout.csv` and the shared index sidecar.
 - `<repo>/.cache/source_preview`: the viewer's archive working cache.
 - `<repo>/.cache/texture_preview`: decoded texture top mips for the model and level viewers (at most 2 GB).

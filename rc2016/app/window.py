@@ -47,6 +47,9 @@ HELP = {
     "group": ("Full research pipeline only. After the selected models are built, they are also placed side by side "
               "in one .blend under groups/, with one camera and one Render Region framing them all. Each model keeps "
               "its own .blend as well."),
+    "combine": ("Portable export only. After the selected models are exported, their .glb files are merged into one "
+                "file under groups/: every model keeps its own nodes, skins and animations, at its native place. "
+                "Needs GLB among the formats; FBX, USD or .blend are then made from the combined file by Blender."),
     "skip": "Don't redo models that were already exported with the same options. Leave this on.",
     "scan": "Re-read the game folder and list every model it contains.",
     "extract": (
@@ -206,6 +209,8 @@ class AssetBrowserApp:
         self.blend_only_var = remember_var(tk.BooleanVar(value=False), "export.blend_only")
         self.group_blend_var = remember_var(tk.BooleanVar(value=False), "export.group_blend")
         self.group_name_var = remember_var(tk.StringVar(value="Selected models"), "export.group_name")
+        self.combine_var = remember_var(tk.BooleanVar(value=False), "export.combine")
+        self.combine_name_var = remember_var(tk.StringVar(value="Selected models"), "export.combine_name")
         self.export_summary_var = tk.StringVar()
         self.exported_names: set[str] = set()
         self.selection_var = tk.StringVar(value="0 models selected")
@@ -472,6 +477,16 @@ class AssetBrowserApp:
         self.group_name_entry.grid(row=5, column=1, sticky="ew", padx=6, pady=4)
         ttk.Label(advanced, text="saved under groups/", foreground=muted).grid(row=5, column=2, sticky="w")
         self._tip(HELP["group"], self.group_name_label, self.group_name_entry)
+        self.combine_check = ttk.Checkbutton(advanced, text="Also write the selected models as one combined file",
+                                             variable=self.combine_var)
+        self.combine_check.grid(row=6, column=0, columnspan=3, sticky="w", padx=(22, 0), pady=(6, 2))
+        self._tip(HELP["combine"], self.combine_check)
+        self.combine_name_label = ttk.Label(advanced, text="Combined file name")
+        self.combine_name_label.grid(row=7, column=0, sticky="w", pady=4)
+        self.combine_name_entry = ttk.Entry(advanced, textvariable=self.combine_name_var)
+        self.combine_name_entry.grid(row=7, column=1, sticky="ew", padx=6, pady=4)
+        ttk.Label(advanced, text="saved under groups/", foreground=muted).grid(row=7, column=2, sticky="w")
+        self._tip(HELP["combine"], self.combine_name_label, self.combine_name_entry)
 
         display = ttk.Frame(window, padding=(12, 6))
         display.grid(row=4, column=0, sticky="ew")
@@ -485,7 +500,7 @@ class AssetBrowserApp:
 
         for variable in (*self.export_format_vars.values(), self.export_textures_var, self.export_dds_var,
                          self.export_animations_var, self.export_lod_var, self.full_pipeline_var, self.blend_only_var,
-                         self.backend_var, self.group_blend_var):
+                         self.backend_var, self.group_blend_var, self.combine_var):
             variable.trace_add("write", lambda *_args: self._options_changed())
         self._options_changed()
 
@@ -956,6 +971,11 @@ class AssetBrowserApp:
         if not pipeline_mode and any(not isinstance(record, ModelCandidate) or record.animset is None for record in selected):
             self.messagebox.showerror("Selection", "One or more selected models have no exact same-directory animset. Deselect them or choose paired models.")
             return
+        if self.combine_var.get() and not self.full_pipeline_var.get() and pipeline_mode:
+            if "glb" not in self._export_formats() or not self.combine_name_var.get().strip():
+                self.messagebox.showinfo("Combined file", "Tick GLB among the export formats and type a name for the combined file under Options….")
+                self.show_options()
+                return
         self._append_log(f"Batch started: {len(selected)} model(s)", "success")
         self._set_busy(running=True)
         self.progress_done = 0
@@ -966,7 +986,8 @@ class AssetBrowserApp:
             self.runner = ExportBatchRunner(
                 [record for record in selected if isinstance(record, PipelineModelCandidate)],
                 Path(self.source_var.get()), output, options, clip_only,
-                event=lambda kind, **values: self.events.put((kind, values)))
+                event=lambda kind, **values: self.events.put((kind, values)),
+                combine_name=self.combine_name_var.get() if self.combine_var.get() else "")
         elif pipeline_mode:
             blender = Path(self.blender_var.get().strip())
             if not blender.is_file():
