@@ -574,8 +574,10 @@ def _import_native_descriptor(job,rig,descriptor):
             obj['source_degenerate_triangles_dropped']=json.dumps(dropped,sort_keys=True)
             obj['source_triangle_count']=len(section['triangles'])
         obj['source_mesh_flags']=section['flags'];obj['source_look_lod_membership']=json.dumps(section['memberships'])
-        if any(w is not None for w in section['weights']):
-            if not rig:raise ValueError('Skinned mesh has no model armature')
+        if any(w is not None for w in section['weights']) and rig is None:
+            # Static export (--no-skeleton): no armature exists, so the skin is left out and the mesh stays at its bind position.
+            obj['source_skin_weights_omitted']=True
+        elif any(w is not None for w in section['weights']):
             groups={name:obj.vertex_groups.new(name=name) for name in dict.fromkeys(x for x in joint_names if x)}
             # One REPLACE add per (joint, weight) instead of per vertex and influence.
             batches,errors=weight_batches(section['weights'],joint_names)

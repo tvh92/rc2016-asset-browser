@@ -537,6 +537,10 @@ def process_model(key,index,args,code_hash,previous,log):
         # fallback descriptor, not the geometry selected by builder.py.
         model['profile']['geometry']['fbx_reference']=geometry
         model['profile']['geometry']['fbx_reference_status']='available_for_numerical_comparison_or_fallback'
+    no_skeleton=bool(getattr(args,'no_skeleton',False))
+    if no_skeleton:
+        # Static export: no joints, skin weights or clips. The builder takes its static-geometry path.
+        model['skeleton']=[]
     dump(report_dir/'model.json',model)
     dump(report_dir/'model_profile.json',model['profile'])
     # Preserve the small authoritative descriptors. Model variants and bulk payloads
@@ -550,10 +554,10 @@ def process_model(key,index,args,code_hash,previous,log):
     archive.checkpoint()
     entries=[];action_entries=[];animset_errors=[]
     # Referenced animsets first; then the opt-in sources (borrowed animsets, cutscene clips).
-    sources=[dict(asset_id=animset,source_type='animset') for animset in related['animsets']]
-    for borrowed in getattr(args,'borrow_animset',None) or ():
+    sources=[] if no_skeleton else [dict(asset_id=animset,source_type='animset') for animset in related['animsets']]
+    for borrowed in [] if no_skeleton else getattr(args,'borrow_animset',None) or ():
         sources.append(borrowed_animset(archive,index.graph,borrowed,model['skeleton'],key))
-    if getattr(args,'cinematic_clips',False):
+    if getattr(args,'cinematic_clips',False) and not no_skeleton:
         found,errors=cinematic_sources(archive,model['skeleton'])
         animset_errors.extend(dict(animset=e['path'],reason=e['reason'],status='unreadable_cutscene') for e in errors)
         sources.extend(dict(asset_id=f['asset_id'],source_type=CINEMATIC_SOURCE,limitation=CINEMATIC_LIMITATION,
@@ -671,7 +675,7 @@ def process_model(key,index,args,code_hash,previous,log):
         textures={x['path']:(x['built_sha256'],x.get('stream_sha256')) for x in material_library['textures']},
         import_lod=args.import_lod,export_textures=args.export_textures,
         experimental_ambiguous_inheritance=args.experimental_ambiguous_inheritance,
-        animation_selection=selection_identity,active_clip=active_clip_index,
+        animation_selection=selection_identity,active_clip=active_clip_index,skeleton='none' if no_skeleton else 'joints',
         animation_sources=dict(cinematic_clips=bool(getattr(args,'cinematic_clips',False)),
             borrowed_animsets=list(getattr(args,'borrow_animset',None) or ())),
         lighting=(dict(source='novalis',probe=args.game_lighting['source_sha256'],faces=[x['sha256'] for x in args.game_lighting['faces']],
@@ -1550,9 +1554,12 @@ def main():
     parser.add_argument('--lighting-source',choices=('veldin','novalis','hdri'),default='hdri',
         help='hdri (default): the shared review lighting from --lighting-config; veldin: opt-in captured Veldin key light, ambient, exposure and RC PS4 Game tonemap; novalis: decoded probe')
     parser.add_argument('--novalis-atmosphere-sun',action='store_true',help='Add the source-valued Novalis RGB96 Sun candidate; runtime field names remain pending')
+    parser.add_argument('--no-skeleton',action='store_true',help='Export static meshes only: no joints, skin weights, rig or animation. Mirrors the viewer export option Skeleton off.')
     args=parser.parse_args()
     if bool(args.list_models_json) == bool(args.model or args.all_models):
         parser.error('Choose exactly one of --model/--all-models or --list-models-json')
+    if args.no_skeleton and (args.clip or args.active_clip or args.cinematic_clips or args.borrow_animset):
+        parser.error('--no-skeleton exports no animation; drop --clip, --active-clip, --cinematic-clips and --borrow-animset')
     args.extracted_root,args.output_root=ensure_separate(args.extracted_root,args.output_root)
     if not args.extracted_root.is_dir():parser.error('ExtractedRoot is not a directory')
     from rc2016.pipeline.scene_defaults import load_shared_lighting

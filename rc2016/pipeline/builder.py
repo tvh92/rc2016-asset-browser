@@ -197,7 +197,8 @@ def validate_reopened_native_descriptor(descriptor,objects,joint_names=None):
                 np.asarray(section['tangents'],dtype=np.float64).reshape(-1,3))<=1e-6,('Native decoded tangent changed',index)
             decoded_tangent_state='matches_fresh_decode'
         source_weights=section['weights']
-        if source_weights and any(weights is not None for weights in source_weights):
+        # A static (--no-skeleton) mesh keeps no skin, so there are no weights to compare with the source.
+        if source_weights and any(weights is not None for weights in source_weights) and not obj.get('source_skin_weights_omitted'):
             names=joint_names or descriptor.get('joint_names')
             assert names,'Native source weights have no source joint-name mapping'
             name_to_groups={}
