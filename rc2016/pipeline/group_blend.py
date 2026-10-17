@@ -2,9 +2,10 @@
 
 Run by ``run.py --group-blend NAME`` inside Blender (``blender --background --python group_blend.py -- --job JOB``;
 ``--validate`` reopens the candidate).  Each member is a finished per-model .blend: its meshes and armature are
-appended and centred on one spot along the reference camera's right axis, so the members overlap, with the animation cleared so every
-member stands in its bind pose.  The scene then uses the shared review lighting, one camera dollied to fit the
-whole group and one Render Region around it, exactly as a single-model build does.
+appended at the position they have in that .blend, so a part built as part of a larger model (a glove of a suit)
+overlaps the model it belongs to exactly.  The animation is cleared so every member stands in its bind pose.  The
+scene then uses the shared review lighting, one camera dollied to fit the whole group and one Render Region around
+it, exactly as a single-model build does.
 """
 import argparse
 import json
@@ -74,19 +75,16 @@ def _load_member(member, label):
 
 
 def _layout(members, right):
-    """Centre every member on the origin along ``right``, so the members overlap in the same place.
+    """Record each member's visible extent along ``right`` without moving it.
 
-    The extent is measured on the member's visible meshes; only root objects move, and their children follow."""
+    Members keep the position they have in their own .blend: every per-model build shares one source frame, so
+    a glove exported as part of its suit already sits on the suit. Moving members would break that overlap."""
     bpy.context.view_layer.update()
     layout = []
     for objects in members:
         meshes = [obj for obj in objects if obj.type == "MESH" and not obj.hide_render]
         low, high = _extent(_world_corners(meshes), right)
-        shift = -(low + high) / 2
-        for obj in objects:
-            if obj.parent is None:
-                obj.location = obj.location + right * shift
-        layout.append(dict(width=float(high - low), shift=float(shift)))
+        layout.append(dict(low=float(low), high=float(high)))
     return layout
 
 
@@ -119,7 +117,7 @@ def assemble(job):
     _embed("Camera zoom.json", camera_receipt)
     _embed("Render region.json", region_receipt)
     _embed("Group members.json", dict(members=[dict(name=m["name"], sha256=m["sha256"]) for m in job["members"]],
-                                      layout=layout, placement="overlapping", camera_right_axis=list(right)))
+                                      layout=layout, placement="original", camera_right_axis=list(right)))
     bpy.data.orphans_purge(do_local_ids=True, do_linked_ids=False, do_recursive=True)
     bpy.ops.wm.save_as_mainfile(filepath=job["candidate"], compress=True)
     print("GROUP built", job["candidate"], flush=True)
