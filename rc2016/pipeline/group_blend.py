@@ -2,7 +2,7 @@
 
 Run by ``run.py --group-blend NAME`` inside Blender (``blender --background --python group_blend.py -- --job JOB``;
 ``--validate`` reopens the candidate).  Each member is a finished per-model .blend: its meshes and armature are
-appended and laid out side by side along the reference camera's right axis, with the animation cleared so every
+appended and centred on one spot along the reference camera's right axis, so the members overlap, with the animation cleared so every
 member stands in its bind pose.  The scene then uses the shared review lighting, one camera dollied to fit the
 whole group and one Render Region around it, exactly as a single-model build does.
 """
@@ -25,8 +25,6 @@ from rc2016.pipeline.scene_defaults import (  # noqa: E402
     CAMERA_EULER_DEGREES, OUTPUT_HEIGHT, OUTPUT_WIDTH, apply_new_scene_defaults, check_shared_lighting,
     fit_render_region, fit_render_size, frame_camera_zoom, visible_mesh_points)
 
-# Members are laid out with this gap between their horizontal extents, as a fraction of the widest member.
-GAP_FRACTION = 0.1
 MEMBER_KEY = "group_member"
 
 
@@ -74,29 +72,20 @@ def _load_member(member, label):
 
 
 def _layout(members, right):
-    """Shift each member along ``right`` so the members sit side by side, centred on the origin.
+    """Centre every member on the origin along ``right``, so the members overlap in the same place.
 
     The extent is measured on the member's visible meshes; only root objects move, and their children follow."""
     bpy.context.view_layer.update()
-    extents = []
+    layout = []
     for objects in members:
         meshes = [obj for obj in objects if obj.type == "MESH" and not obj.hide_render]
         low, high = _extent(_world_corners(meshes), right)
-        extents.append((low, high))
-    widths = [high - low for low, high in extents]
-    gap = GAP_FRACTION * max(widths)
-    centres, cursor = [], 0.0
-    for index, width in enumerate(widths):
-        if index:
-            cursor += (widths[index - 1] + width) / 2 + gap
-        centres.append(cursor)
-    offset = (centres[0] + centres[-1]) / 2
-    for objects, (low, high), centre in zip(members, extents, centres):
-        shift = (centre - offset) - (low + high) / 2
+        shift = -(low + high) / 2
         for obj in objects:
             if obj.parent is None:
                 obj.location = obj.location + right * shift
-    return [dict(width=width, centre=float(centre - offset)) for width, centre in zip(widths, centres)]
+        layout.append(dict(width=float(high - low), shift=float(shift)))
+    return layout
 
 
 def assemble(job):
@@ -128,7 +117,7 @@ def assemble(job):
     _embed("Camera zoom.json", camera_receipt)
     _embed("Render region.json", region_receipt)
     _embed("Group members.json", dict(members=[dict(name=m["name"], sha256=m["sha256"]) for m in job["members"]],
-                                      layout=layout, gap_fraction=GAP_FRACTION, camera_right_axis=list(right)))
+                                      layout=layout, placement="overlapping", camera_right_axis=list(right)))
     bpy.data.orphans_purge(do_local_ids=True, do_linked_ids=False, do_recursive=True)
     bpy.ops.wm.save_as_mainfile(filepath=job["candidate"], compress=True)
     print("GROUP built", job["candidate"], flush=True)
