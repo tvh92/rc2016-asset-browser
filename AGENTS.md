@@ -28,6 +28,8 @@ Read the doc for the subsystem before changing it: [viewer](docs/viewer.md), [le
 - Paths such as `Other models/...`, `Research/...` or `*_DECODE.md` in code comments and in recorded evidence strings cite the private research notes. They are provenance, not files in this repository; do not link them from docs.
 - Never present an inferred shader or lighting value as decoded game data. Keep unknown parameters, runtime tints, time-driven terms and VFX as visible limitations.
 - Runtime output goes to the user's output root, caches to `.cache/` (ignored), settings to `%APPDATA%/RC2016 Asset Browser/`. Nothing writes into the source folders.
+- Scripts, smoke tests and manual runs must pass an explicit temporary `--output-root` (or `APPDATA`) under the session scratchpad. Never rely on the default output root, and never let a check write into the repository.
+- Line endings are per file: `window.py`, `gallery.py` and `docs/viewer.md` are CRLF, most other files are LF. Check with `grep -c $'\r' <file>` before editing and keep the file's existing endings. Never convert a file's line endings. Before committing, `git diff --stat` must show only the lines you meant to change; a whole-file diff means the endings were rewritten.
 
 ## Shading and textures
 
@@ -51,7 +53,13 @@ Read the doc for the subsystem before changing it: [viewer](docs/viewer.md), [le
 python -m unittest discover -s tests -t .
 ```
 
-Run from the repository root. Tests that need game files read the `RC2016_RESEARCH` environment variable (the private research workspace) and skip without it. For changes to decoding, rendering, export or the pipeline, also check against the real game archive: an archive scan (`python rc2016/pipeline/run.py --extracted-root <game> --output-root <new folder> --blender <blender.exe> --list-models-json <file>`), the affected models in the viewer or exporter, and for pipeline changes a research build that passes reopen validation. Blender-side modules (`builder.py`, `game_shader.py`, weapon merges) only import inside Blender.
+Run from the repository root. Before committing, also run the lint check (install once with `python -m pip install ruff`):
+
+```bash
+python -m ruff check rc2016 tests
+```
+
+`ruff.toml` selects the undefined-name rule (F821), which catches a missing import or a name lost in a code splice before anything runs. It must report no errors. Headless GUI smoke tests (Tkinter, background workers) must run under a timeout, must not set the `'source'` setting (it starts a scan that can stall the run), and must use a temporary `APPDATA`. Tests that need game files read the `RC2016_RESEARCH` environment variable (the private research workspace) and skip without it. For changes to decoding, rendering, export or the pipeline, also check against the real game archive: an archive scan (`python rc2016/pipeline/run.py --extracted-root <game> --output-root <new folder> --blender <blender.exe> --list-models-json <file>`), the affected models in the viewer or exporter, and for pipeline changes a research build that passes reopen validation. Blender-side modules (`builder.py`, `game_shader.py`, weapon merges) only import inside Blender.
 
 ## Git and GitHub
 

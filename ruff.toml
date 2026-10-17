@@ -1,0 +1,8 @@
+# Lint: the checked-in rule set for `python -m ruff check`.
+# Only undefined names (F821) are enforced; other pyflakes findings are
+# reported on demand with `python -m ruff check --select F rc2016 tests`.
+# third_party/ holds vendored code that is not linted.
+exclude = ["third_party"]
+
+[lint]
+select = ["F821"]
