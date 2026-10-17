@@ -12,7 +12,7 @@ from rc2016.app.batch import (
     BatchRunner, ExportBatchRunner, ModelCandidate, PipelineBatchRunner, PipelineIndexScanner,
     PipelineModelCandidate, discover_models, ensure_disjoint, folder_layout, parse_prefixes, status_for)
 from rc2016.app.settings import _default_blender, _default_interpreter, _load_settings, _save_settings
-from rc2016.common import remember_var
+from rc2016.common import remember_var, reset_remembered
 from rc2016.app.theme import (
     UI_SCALES, _Tooltip, _configure_tk_runtime, apply_dark_theme, apply_ui_scale,
     themed_scrolled_text_class, windows_prefers_dark)
@@ -43,6 +43,9 @@ HELP = {
         "Found automatically when installed in the default place. Browsing "
         "the model list works without it."),
     "scale": "Make all text and controls bigger or smaller. Remembered for next time.",
+    "reset": ("Put every option, toggle and window setting back to its first-start value: Vertical layout, 100% text size, "
+              "the window maximised and the Browser split in its default place. The game folder, output folder, Python and "
+              "Blender paths are kept. No files are deleted."),
     "prefixes": "Transform-only mode: only extract clips whose names start with these words.",
     "group": ("Full research pipeline only. After the selected models are built, they are also placed side by side "
               "in one .blend under groups/, with one camera and one Render Region framing them all. Each model keeps "
@@ -498,6 +501,9 @@ class AssetBrowserApp:
         scale_box.bind("<<ComboboxSelected>>", lambda _event: self._ui_scale_changed())
         self._tip(HELP["scale"], scale_label, scale_box)
         ttk.Button(display, text="Close", command=self._close_options).pack(side="right")
+        reset = ttk.Button(display, text="Reset to defaults", command=self._reset_to_defaults)
+        reset.pack(side="right", padx=(0, 8))
+        self._tip(HELP["reset"], reset)
 
         for variable in (*self.export_format_vars.values(), self.export_textures_var, self.export_dds_var,
                          self.export_animations_var, self.export_lod_var, self.full_pipeline_var, self.blend_only_var,
@@ -514,6 +520,20 @@ class AssetBrowserApp:
         window.geometry(f"+{x}+{y}")
         window.lift()
         window.focus_set()
+
+    def _reset_to_defaults(self) -> None:
+        """Every option, toggle and window setting back to its first-start value. The folder and program paths stay."""
+        from rc2016.app.layout import VERTICAL
+        reset_remembered()
+        window_keys = ("window.geometry", "window.zoomed", "window.split", "ui_scale")
+        _save_settings({key: value for key, value in _load_settings().items() if key not in window_keys})
+        self.set_layout(VERTICAL)
+        self.ui_scale_var.set("100%")
+        self._ui_scale_changed()
+        self.root.state("normal")
+        self.root.geometry("1420x980")
+        self.root.state("zoomed")
+        self.root.after(200, lambda: self.browser_split.sashpos(0, int(self.root.winfo_width() * self._saved_split())))
 
     def _close_options(self) -> None:
         self.options_window.withdraw()

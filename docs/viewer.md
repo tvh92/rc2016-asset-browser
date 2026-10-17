@@ -59,7 +59,7 @@ One toolbar row sits under the Scan archive row. Its **Asset type** buttons (Mod
 | Model (default) | The model list (search and filters are in the toolbar), as a tree (**List**) or thumbnails (**Grid**) | Notebook with **3D model**, **Textures**, **Details** |
 | Level | The archive's levels; a typed `.level` or `.zone` path plus **Load** below the list | Level viewport on the left, view options and zone toggles on the right ([levels](levels.md)) |
 | Flash UI | The archive's 53 `.gfx`/`.swf` files | Symbol list, canvas, frame and export controls |
-| Texture | The whole archive's textures: **Filter**, **View** and **Maps** | Preview, texture list and export, with its own state (the same viewer as the Model's Textures tab) |
+| Texture | The whole archive's textures: a folder tree, **Filter**, **View** and **Maps** | Folders and texture list on the left, the chosen texture's preview, export and Used by on the right, as the Model list sits beside its model (the same viewer as the Model's Textures tab, with its own state) |
 
 The level, Flash UI and texture lists are read the first time their type is selected.
 
@@ -400,7 +400,7 @@ The whole archive is its own asset type, **Texture**: all 18,994 textures, inclu
 
 **View** switches the list between **List** (a tree, at most 3,000 rows: `TEXTURE_ROW_LIMIT`; the filter narrows the rest) and **Grid** (a thumbnail per texture, every match). The grid is virtual: only tiles on screen are drawn, and their thumbnails are decoded one at a time on a worker thread, visible tiles first, from the same decoder as the preview (`SourcePreviewLoader.texture_thumbnail`; the decoded mips are on disk). Click selects, Ctrl-click toggles, Shift extends, the arrow keys move, Ctrl+A selects all and Escape clears. The grid is `rc2016/app/texture_grid.py`.
 
-The tab has the preview on the left and the list, export and Used by controls on the right; drag the sash between them to resize. Selecting a texture decodes it in a worker and previews it with a channel selector (RGB, RGBA over a checkerboard, R, G, B, Alpha, or **All four**: R, G, B and A side by side, each labelled, fitted to the frame). RGB is the default, because alpha is usually mask data such as the `_c` self-lit mask. The preview reuses the 3D view's decoded mip (at least 512 px). Array textures (38 in the corpus, mostly VFX `_3d` flipbooks) show the **Slice** selector, which is hidden for every other texture.
+The Model's tab has the preview on the left and the list, export and Used by controls on the right; drag the sash between them to resize. The **Texture** type swaps the sides, as the Model list does: the folder tree and the list are on the left, and the preview with Export and Used by on the right. The folders are collapsible (the top level opens at start). Selecting one lists the textures in it and its sub-folders, and each folder's count includes them; **All textures** lists the whole archive again. Filter and Maps apply inside the chosen folder. Selecting a texture decodes it in a worker and previews it with a channel selector (RGB, RGBA over a checkerboard, R, G, B, Alpha, or **All four**: R, G, B and A side by side, each labelled, fitted to the frame). RGB is the default, because alpha is usually mask data such as the `_c` self-lit mask. The preview reuses the 3D view's decoded mip (at least 512 px). Array textures (38 in the corpus, mostly VFX `_3d` flipbooks) show the **Slice** selector, which is hidden for every other texture.
 
 **Export selected... / Export all listed...** write any combination of these into a chosen folder. Export all listed covers every filter match, not only the 3,000 rows shown, and asks for confirmation above 200 textures.
 
@@ -512,6 +512,8 @@ One folder per model in the output root:
 - This is a portable approximation, not game equivalence.
 
 **Options...** (in the main window) holds the formats, textures, game DDS, animations (all/none), LOD, skip-existing (keeps a folder whose `export.json` matches source and options), Python and Blender paths, the advanced research-build switch, backend and clip prefixes, and UI scale. Export choices are saved in the settings file.
+
+**Reset to defaults** (bottom of the Options window) puts every option and toggle, the Vertical layout, the 100% UI scale and the window and Browser split back to their first-start values. The game folder, output folder, Python and Blender paths are kept.
 
 **Single clip:** pick a clip under the 3D view (the Animation button opens the searchable list) and tick **Export only this clip**; it applies to the model shown there.
 

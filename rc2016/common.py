@@ -30,12 +30,16 @@ def _read_settings_file():
         return {}
 
 
+_REMEMBERED = {}   # settings key -> (variable, its value before any saved value was restored), for reset_remembered
+
+
 def remember_var(variable, key, allowed=None):
     """Restore a Tk variable from the settings file and save every later change under key.
 
     Booleans are stored as "1"/"0"; a stored text outside allowed is ignored, so the variable keeps
     its default.  Reading and writing the settings file are best-effort and never raise."""
     is_flag = isinstance(variable.get(), bool)
+    _REMEMBERED[key] = (variable, variable.get())
     stored = _read_settings_file().get(key)
     if isinstance(stored, str):
         value = stored == '1' if is_flag else stored
@@ -55,6 +59,22 @@ def remember_var(variable, key, allowed=None):
 
     variable.trace_add('write', save)
     return variable
+
+
+def reset_remembered():
+    """Every remember_var variable back to its default, with its saved value removed; other settings stay.
+    Setting a variable saves its default again, so the file then holds the defaults."""
+    data = _read_settings_file()
+    for key in _REMEMBERED:
+        data.pop(key, None)
+    try:
+        path = _settings_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+    except OSError:
+        pass
+    for variable, default in _REMEMBERED.values():
+        variable.set(default)
 
 
 def extended(path):

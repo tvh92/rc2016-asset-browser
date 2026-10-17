@@ -18,6 +18,7 @@ class RememberVarTests(unittest.TestCase):
         except Exception as error:  # no Tk runtime or no display
             self.skipTest(f"Tk unavailable: {error}")
         self.tk = tk
+        common._REMEMBERED.clear()   # variables of earlier tests belong to roots that are gone
         self.tmp = tempfile.TemporaryDirectory()
         self.appdata = patch.dict(os.environ, {"APPDATA": self.tmp.name})
         self.appdata.start()
@@ -50,6 +51,26 @@ class RememberVarTests(unittest.TestCase):
         (folder / "settings.json").write_text('{"source": "D:/game"}', encoding="utf-8")
         common.remember_var(self.tk.BooleanVar(value=False), "test.flag").set(True)
         self.assertEqual(self.settings()["source"], "D:/game")
+
+    def test_reset_puts_every_remembered_variable_back_to_its_default(self):
+        flag = common.remember_var(self.tk.BooleanVar(value=True), "test.flag")
+        choice = common.remember_var(self.tk.StringVar(value="a"), "test.choice", ("a", "b"))
+        flag.set(False)
+        choice.set("b")
+        common.reset_remembered()
+        self.assertTrue(flag.get())
+        self.assertEqual(choice.get(), "a")
+        self.assertEqual(self.settings()["test.flag"], "1")
+        self.assertEqual(self.settings()["test.choice"], "a")
+
+    def test_reset_keeps_settings_that_are_not_remembered_variables(self):
+        folder = Path(self.tmp.name) / "RC2016 Asset Browser"
+        folder.mkdir(parents=True)
+        (folder / "settings.json").write_text('{"source": "D:/game", "window.split": "0.4"}', encoding="utf-8")
+        common.remember_var(self.tk.BooleanVar(value=False), "test.flag")
+        common.reset_remembered()
+        self.assertEqual(self.settings()["source"], "D:/game")
+        self.assertEqual(self.settings()["window.split"], "0.4")
 
 
 if __name__ == "__main__":

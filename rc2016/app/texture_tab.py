@@ -39,6 +39,7 @@ class TextureTab:
         self.texture_layout=None;self.texture_view_path=None;self.texture_pixel=tk.StringVar(value='')
         self.texture_view=tk.StringVar(value=self.LIST_VIEW);self.hidden_maps=set(self.DEFAULT_HIDDEN_MAPS);self.map_vars={}
         self.texture_preview_buttons=[];self.texture_maps_button=None
+        self.texture_folder='';self.texture_folder_tree=None   # archive viewer: the folder whose textures are listed ('' = all)
         self._build(host)
 
     def _build(self,tab):
@@ -47,8 +48,10 @@ class TextureTab:
         tab.columnconfigure(0,weight=1);tab.rowconfigure(0,weight=1)
         split=self.texture_split=Splitter(tab,side=520,stacked=330);split.grid(row=0,column=0,sticky='nsew')
         self.layout.register(split)
-        left=split.first;left.columnconfigure(0,weight=1);left.rowconfigure(0,weight=1)
-        right=split.second;right.configure(padding=(8,0,0,0));right.columnconfigure(0,weight=1);right.rowconfigure(1,weight=1)
+        # Model: preview left, list right. Archive: folders and list left, the chosen texture on the right, as the Model list does.
+        left,right=(split.second,split.first) if self.archive else (split.first,split.second)
+        left.columnconfigure(0,weight=1);left.rowconfigure(0,weight=1)
+        split.second.configure(padding=(8,0,0,0));right.columnconfigure(0,weight=1);right.rowconfigure(1,weight=1)
         # Left: the image, how to read it, and what it is.
         self.texture_canvas=tk.Canvas(left,width=380,height=300,background='#2b2b2b',highlightthickness=0)
         self.texture_canvas.grid(row=0,column=0,sticky='nsew')
@@ -111,8 +114,11 @@ class TextureTab:
             tip('Textures whose name ends in a ticked suffix are hidden (the part after the last _ in the name). '
                 '_g and _n are hidden by default; the count is how many archive textures have that suffix.',self.texture_maps_button)
         listing=ttk.Frame(right);listing.grid(row=1,column=0,sticky='nsew')
-        listing.columnconfigure(0,weight=1);listing.rowconfigure(0,weight=1)
-        tree_frame=self.texture_tree_frame=ttk.Frame(listing);tree_frame.grid(row=0,column=0,sticky='nsew')
+        listing.rowconfigure(0,weight=1)
+        content=1 if self.archive else 0   # the archive's folder tree takes column 0
+        listing.columnconfigure(content,weight=1)
+        if self.archive:self._build_folder_tree(listing)
+        tree_frame=self.texture_tree_frame=ttk.Frame(listing);tree_frame.grid(row=0,column=content,sticky='nsew')
         tree_frame.columnconfigure(0,weight=1);tree_frame.rowconfigure(0,weight=1)
         self.texture_tree=ttk.Treeview(tree_frame,columns=('format','size','where'),height=10,selectmode='extended')
         for column,text,width in [('#0','Texture',190),('format','Format',80),('size','Size',80),('where','Materials / folder',150)]:
@@ -121,10 +127,12 @@ class TextureTab:
         scroll=ttk.Scrollbar(tree_frame,orient='vertical',command=self.texture_tree.yview);scroll.grid(row=0,column=1,sticky='ns')
         self.texture_tree.configure(yscrollcommand=scroll.set)
         self.texture_tree.bind('<<TreeviewSelect>>',lambda _e:self._texture_selected())
-        grid_frame=self.texture_grid_frame=ttk.Frame(listing);grid_frame.grid(row=0,column=0,sticky='nsew')
+        grid_frame=self.texture_grid_frame=ttk.Frame(listing);grid_frame.grid(row=0,column=content,sticky='nsew')
         self.texture_grid=TextureGrid(grid_frame,lambda path:self.browser.source_loader.texture_thumbnail(path),self._texture_grid_changed,self.app.root)
         grid_frame.grid_remove()
-        export=ttk.LabelFrame(right,text='Export',padding=(4,2));export.grid(row=2,column=0,sticky='ew',pady=(6,0))
+        # Export and Used by follow the chosen texture: under the list in the Model viewer, under the preview in the Texture type.
+        chosen,chosen_row=(left,5) if self.archive else (right,2)
+        export=ttk.LabelFrame(chosen,text='Export',padding=(4,2));export.grid(row=chosen_row,column=0,sticky='ew',pady=(6,0))
         self.export_formats={'texture':tk.BooleanVar(value=False),'dds':tk.BooleanVar(value=False),'png':tk.BooleanVar(value=True)}
         formats=ttk.Frame(export);formats.grid(row=0,column=0,sticky='w')
         for key,text in [('texture','Original .texture'),('dds','DDS'),('png','PNG')]:
@@ -134,7 +142,7 @@ class TextureTab:
         self.export_selected_button.pack(side='left',padx=(0,4))
         self.export_all_button=ttk.Button(buttons,text='Export all listed…',command=lambda:self._export_textures(True),state='disabled')
         self.export_all_button.pack(side='left')
-        users=ttk.Frame(right);users.grid(row=3,column=0,sticky='ew',pady=(6,0));users.columnconfigure(1,weight=1)
+        users=ttk.Frame(chosen);users.grid(row=chosen_row+1,column=0,sticky='ew',pady=(6,0));users.columnconfigure(1,weight=1)
         users_label=ttk.Label(users,text='Used by');users_label.grid(row=0,column=0,padx=(0,4))
         self.texture_users_var=tk.StringVar(value='');self.texture_user_paths=[]
         self.texture_users_box=ttk.Combobox(users,textvariable=self.texture_users_var,state='disabled')
@@ -163,10 +171,11 @@ class TextureTab:
         self.texture_list_work.submit(lambda r=root:(r,self.browser.source_loader.archive_textures(r)))
 
     def _texture_reset(self):
-        """Back to the starting view. The archive viewer also clears its Filter, returns to List view and restores the default Maps."""
+        """Back to the starting view. The archive viewer also lists every folder again, clears its Filter, returns to List view and restores the default Maps."""
         self.texture_channels.set('RGB');self.texture_flip.set(False);self.texture_drag=None
         self.texture_zoom.set('Fit');self._texture_zoom_changed()
         if self._archive_mode():
+            self.texture_folder_tree.selection_set('all')   # its selection event lists every texture again
             self.texture_view.set(self.LIST_VIEW);self._texture_view_changed()
             self.hidden_maps=set(self.DEFAULT_HIDDEN_MAPS)
             for suffix,var in self.map_vars.items():var.set(suffix in self.hidden_maps)
@@ -174,6 +183,46 @@ class TextureTab:
             self.texture_filter.set('')   # its trace refreshes the list after the usual short delay
         self.texture_slice.set('1');self._texture_slice_changed()
         self._draw_texture()
+
+    def _build_folder_tree(self,listing):
+        """The archive's folders, collapsible as in the Model list. Selecting one lists the textures under it."""
+        ttk=self.ttk
+        frame=ttk.Frame(listing);frame.grid(row=0,column=0,sticky='nsew',padx=(0,6))
+        frame.columnconfigure(0,weight=1);frame.rowconfigure(0,weight=1)
+        tree=self.texture_folder_tree=ttk.Treeview(frame,show='tree',selectmode='browse',height=10)
+        tree.column('#0',width=200,stretch=True)
+        tree.grid(row=0,column=0,sticky='nsew')
+        scroll=ttk.Scrollbar(frame,orient='vertical',command=tree.yview);scroll.grid(row=0,column=1,sticky='ns')
+        tree.configure(yscrollcommand=scroll.set)
+        tree.bind('<<TreeviewSelect>>',lambda _e:self._folder_selected())
+        self.app._tip('Folders of the archive\'s textures. Click a folder\'s arrow to open it; selecting one lists the textures in it and below it. '
+                      'All textures is the whole archive.',tree)
+
+    def _rebuild_folder_tree(self):
+        """Folders of the archive's texture paths; each folder's count includes the textures in its sub-folders."""
+        if not self.archive:return
+        tree=self.texture_folder_tree;rows=self.archive_texture_rows or []
+        counts={}
+        for row in rows:
+            parts=row['path'].replace('\\','/').split('/')[:-1]
+            for depth in range(1,len(parts)+1):
+                folder='/'.join(parts[:depth]);counts[folder]=counts.get(folder,0)+1
+        tree.delete(*tree.get_children())
+        tree.insert('','end',iid='all',text=f'All textures  ({len(rows):,})',open=True)
+        for folder in sorted(counts,key=str.casefold):   # a parent path sorts before its children, so it exists when they are inserted
+            parent=folder.rpartition('/')[0]
+            tree.insert(f'dir:{parent}' if parent else 'all','end',iid=f'dir:{folder}',
+                        text=f"{folder.rpartition('/')[2]}  ({counts[folder]:,})",open='/' not in folder)
+        self.texture_folder=''
+        tree.selection_set('all')
+
+    def _folder_selected(self):
+        selection=self.texture_folder_tree.selection()
+        iid=selection[0] if selection else 'all'
+        folder='' if iid=='all' else iid[len('dir:'):]
+        if folder==self.texture_folder:return
+        self.texture_folder=folder
+        self._fill_texture_tree()
 
     def close(self):
         self.texture_work.close();self.texture_list_work.close();self.texture_grid.close()
@@ -236,7 +285,9 @@ class TextureTab:
         source=(self.archive_texture_rows or []) if archive else self.model_texture_rows
         include,excluded=self._filter_words()
         hidden=self.hidden_maps if archive else set()
+        prefix=self.texture_folder+'/' if archive and self.texture_folder else ''
         self.texture_matches=[r for r in source if r.get('suffix','') not in hidden
+                              and (not prefix or r['path'].replace('\\','/').startswith(prefix))
                               and all(w in r['path'].lower() for w in include)
                               and not any(w in r['path'].lower() for w in excluded)]
         # The grid draws only what is on screen, so it lists every match; the tree keeps its row limit.
@@ -257,7 +308,8 @@ class TextureTab:
         if archive:
             hiding=sum(1 for r in source if r.get('suffix','') in hidden)
             maps=f' {hiding:,} hidden as maps (Maps menu).' if hiding else ''
-            text=(f'{len(self.texture_matches):,} of {len(source):,} archive textures match.{shown}{maps}' if include or excluded
+            where=f' in {self.texture_folder}' if prefix else ''
+            text=(f'{len(self.texture_matches):,} of {len(source):,} archive textures match{where}.{shown}{maps}' if include or excluded or prefix
                   else f'{len(source):,} textures in the archive, with or without a model.{shown}{maps}')
         elif self.texture_model is None:
             text='Select a source model to list its textures, or show the whole archive.'
@@ -579,7 +631,7 @@ class TextureTab:
                     if self._archive_mode():self._fill_texture_tree('Cannot read the archive\'s textures: '+error)
                 elif payload is not None:
                     self.archive_texture_root,self.archive_texture_rows=payload
-                    self.texture_grid.forget_thumbnails();self._rebuild_map_menu()
+                    self.texture_grid.forget_thumbnails();self._rebuild_map_menu();self._rebuild_folder_tree()
                     if self._archive_mode():self._fill_texture_tree()
         except queue.Empty:pass
         try:
