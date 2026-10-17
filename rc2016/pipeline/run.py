@@ -1458,18 +1458,28 @@ GROUP_STATUSES=('COMPLETE_MESH_MATERIALS_ANIMATIONS','COMPLETE_MESH_ANIMATIONS_M
     'COMPLETE_MESH_ANIMATIONS_TEXTURE_LIMITATION','ARMATURE_ANIMATIONS_ONLY')
 
 
+def group_member_labels(paths):
+    """Short collection label per group member: its file name, e.g. ``hero_ratchet_bangle_boot_grind.model``.
+
+    Two members that share a file name keep their full archive paths, so every label stays unique."""
+    shorts=[Path(path).name for path in paths]
+    return [full if shorts.count(short)>1 else short for short,full in zip(shorts,paths)]
+
+
 def assemble_group_blend(selection,manifest,args,log):
     """One .blend holding every delivered selected model, framed by one camera (rc2016/pipeline/group_blend.py).
 
     Runs after the per-model builds, so each member is its own finished, validated .blend. A failure is
     recorded and reported, and never discards the per-model results."""
     name=safe_name(args.group_blend)
-    members=[]
+    delivered=[]
     for key in selection:
         result=manifest['models'].get(key,{})
         final=result.get('final')
         if result.get('status') in GROUP_STATUSES and final and Path(final).is_file():
-            members.append(dict(name=result.get('model',key),blend=final,sha256=file_hash(final)))
+            delivered.append((result.get('model',key),final))
+    labels=group_member_labels([path for path,_ in delivered])
+    members=[dict(name=label,blend=final,sha256=file_hash(final)) for label,(_,final) in zip(labels,delivered)]
     if not members:
         manifest['group_blend']=dict(status='skipped',name=name,reason='no selected model was delivered')
         log('group_blend_skipped',name=name);return
