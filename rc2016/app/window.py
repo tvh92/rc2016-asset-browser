@@ -95,7 +95,8 @@ HELP = {
     "asset_type": (
         "Model: the model list with the 3D view, textures and details.\n"
         "Level: the game levels, in a 3D level viewer.\n"
-        "Flash UI: the menu and HUD movies.\n\n"
+        "Flash UI: the menu and HUD movies.\n"
+        "Texture: every texture in the archive, with or without a model.\n\n"
         "The search, filters and List/Grid switch belong to the model list and show only for Model."),
     "layout": (
         "Vertical: each viewer has its viewport on the left and its controls on the right.\n"
@@ -281,7 +282,7 @@ class AssetBrowserApp:
         # Each asset type has its own list (left) and viewer (right); see AssetBrowser.show_asset_type.
         self.asset_type_var = tk.StringVar(value="Model")
         self.asset_type_buttons = {}
-        for kind in ("Model", "Level", "Flash UI"):
+        for kind in ("Model", "Level", "Flash UI", "Texture"):
             button = ttk.Radiobutton(types, text=kind, value=kind, variable=self.asset_type_var, style="Segment.Toolbutton", width=9,
                                      command=lambda: self.browser.show_asset_type(self.asset_type_var.get()))
             button.pack(side="left", padx=(0, 2))

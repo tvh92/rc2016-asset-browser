@@ -52,15 +52,16 @@ The window opens maximised, follows Windows' app mode (light or dark, including 
 
 ## Asset types
 
-One toolbar row sits under the Scan archive row. Its **Asset type** buttons (Model / Level / Flash UI) decide what the main area shows; for Model it continues with the **List / Grid** switch, the search, **Expand all**, the **State** and **Shading** filters, and at the far right the **Layout** switch. **Select visible** and **Clear selection** sit beside the selection count under the log. The status text and the progress bar are in the Scan row. Each type has a list on the left and a viewer on the right. Switching hides the other views without destroying them, so a loaded model, level or UI file stays loaded.
+One toolbar row sits under the Scan archive row. Its **Asset type** buttons (Model / Level / Flash UI / Texture) decide what the main area shows; for Model it continues with the **List / Grid** switch, the search, **Expand all**, the **State** and **Shading** filters, and at the far right the **Layout** switch. **Select visible** and **Clear selection** sit beside the selection count under the log. The status text and the progress bar are in the Scan row. Each type has a list on the left and a viewer on the right. Switching hides the other views without destroying them, so a loaded model, level or UI file stays loaded.
 
 | Type | Left | Right |
 |---|---|---|
 | Model (default) | The model list (search and filters are in the toolbar), as a tree (**List**) or thumbnails (**Grid**) | Notebook with **3D model**, **Textures**, **Details** |
 | Level | The archive's levels; a typed `.level` or `.zone` path plus **Load** below the list | Level viewport on the left, view options and zone toggles on the right ([levels](levels.md)) |
 | Flash UI | The archive's 53 `.gfx`/`.swf` files | Symbol list, canvas, frame and export controls |
+| Texture | The whole archive's textures: **Filter**, **View** and **Maps** | Preview, texture list and export, with its own state (the same viewer as the Model's Textures tab) |
 
-The level list and the Flash UI list are read the first time their type is selected.
+The level, Flash UI and texture lists are read the first time their type is selected.
 
 ### Layout
 
@@ -393,10 +394,9 @@ See [animation](animation.md) for the clip and sample formats.
 
 ## Textures tab
 
-**Show** switches between two listings:
+The Model's **Textures** tab lists every `.texture` referenced by the selected model's materials, directly or as material-graph defaults (marked "graph default"), with format, full size and material. **Filter** matches every word against the path; a word with a leading `-` must not appear.
 
-- **This model:** every `.texture` referenced by the selected model's materials, directly or as material-graph defaults (marked "graph default"), with format, full size and material.
-- **Whole archive:** all 18,994 textures, including ones no model uses (UI art, loading screens, skies, VFX, environment probes). Format and size fill in when a texture is viewed. **Filter** matches every word against the path; a word with a leading `-` must not appear (`-planet`). **Maps** hides textures by suffix, the part after the last `_` of the name, in Whole archive only: `_g` and `_n` are hidden by default, and each suffix in the archive is listed with its count (**Show all** clears them).
+The whole archive is its own asset type, **Texture**: all 18,994 textures, including ones no model uses (UI art, loading screens, skies, VFX, environment probes). Format and size fill in when a texture is viewed. It has the same Filter and View, and its **Maps** menu hides textures by suffix, the part after the last `_` of the name: `_g` and `_n` are hidden by default, and each suffix is listed with its count (**Show all** clears them). Its preview and list are separate from the Model's, so a filter or a selection in one does not change the other.
 
 **View** switches the list between **List** (a tree, at most 3,000 rows: `TEXTURE_ROW_LIMIT`; the filter narrows the rest) and **Grid** (a thumbnail per texture, every match). The grid is virtual: only tiles on screen are drawn, and their thumbnails are decoded one at a time on a worker thread, visible tiles first, from the same decoder as the preview (`SourcePreviewLoader.texture_thumbnail`; the decoded mips are on disk). Click selects, Ctrl-click toggles, Shift extends, the arrow keys move, Ctrl+A selects all and Escape clears. The grid is `rc2016/app/texture_grid.py`.
 
@@ -412,7 +412,7 @@ Name collisions get a `__2`, `__3` suffix. A failed texture is logged and does n
 
 **Flip vertically** is off by default and affects only the preview and PNG output. Unflipped means as stored (top row first). The pipeline's Blender builds never flip images; the decoder flips UV V instead (`v_blender = 1 - v_game`). Original and DDS output is never flipped.
 
-**Zoom** is **Fit** (the whole texture in the frame) or a fixed 50% to 800%, which shows the middle of the texture. At a fixed zoom, drag the picture to pan (the view stays inside the texture), turn the mouse wheel to zoom towards the pointer, and double-click to switch between Fit and 100%. A different texture always opens in Fit. **Save PNG…** writes the preview as it shows its Channels and Flip, at full size; **Copy image** puts the same image on the Windows clipboard. Neither applies the zoom. The line under the preview reads the texture pixel under the pointer: its x and y in the stored image (counted from the top row, so Flip vertically is accounted for) and every band's value. Previews of very large textures are decoded at reduced size, so the readout then refers to that preview.
+**Zoom** is **Fit** (the whole texture in the frame) or a fixed 50% to 800%, which shows the middle of the texture. At a fixed zoom, drag the picture to pan (the view stays inside the texture), turn the mouse wheel to zoom towards the pointer, and double-click to switch between Fit and 100%. A different texture always opens in Fit. **Copy image** puts the preview on the Windows clipboard as it shows its Channels and Flip, without the zoom. The PNG export under Export does the same at full size, so there is no separate Save button. **Reset** returns zoom, channels, flip and slice to their defaults; in the Texture type it also clears the Filter, returns to List view and restores the default Maps. The line under the preview reads the texture pixel under the pointer: its x and y in the stored image (counted from the top row, so Flip vertically is accounted for) and every band's value. Previews of very large textures are decoded at reduced size, so the readout then refers to that preview.
 
 Pillow has no BC1-BC3 sRGB decoder, so those blocks decode as their identical UNORM twins; no colourspace conversion is applied either way.
 
@@ -515,7 +515,7 @@ One folder per model in the output root:
 
 **Single clip:** pick a clip under the 3D view (the Animation button opens the searchable list) and tick **Export only this clip**; it applies to the model shown there.
 
-**Combined file (Options, portable export):** with GLB among the formats, the exported models can also be merged into one `groups/NAME.glb` (`rc2016/export/merge_glb.py`). Each model keeps its own nodes, skins, materials and animations, every glTF index is shifted, and the models sit at their native places, so they overlap when they share an origin. FBX, USD or `.blend` are then converted from the combined file by Blender.
+**Combined file (Options, portable export):** with GLB among the formats, the exported models can also be merged into one `groups/NAME.glb` (`rc2016/export/merge_glb.py`). Each model keeps its own nodes, skins, materials and animations, every glTF index is shifted, and the models sit at their native places, so they overlap when they share an origin. FBX, USD or `.blend` are then converted from the combined file by Blender. In a .blend, FBX or USD made from it, each model is a collection named after its file (`rc2016/export/model_collections.py`), so a model can be hidden or moved as a group; the tag that says which model a node belongs to is glTF extras (`rc2016_model`).
 
 ## Research Blender build and viewer rules
 
