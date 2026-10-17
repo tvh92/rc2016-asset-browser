@@ -101,12 +101,13 @@ class TextureTab:
         self.texture_filter=tk.StringVar()
         filter_entry=ttk.Entry(top,textvariable=self.texture_filter);filter_entry.grid(row=0,column=1,sticky='ew')
         self.texture_filter.trace_add('write',lambda *_a:self._schedule_texture_filter())
-        view_label=ttk.Label(top,text='View');view_label.grid(row=1,column=0,sticky='w',padx=(0,4),pady=(4,0))
-        view=ttk.Combobox(top,textvariable=self.texture_view,values=(self.LIST_VIEW,self.GRID_VIEW),state='readonly',width=13)
-        view.grid(row=1,column=1,sticky='w',pady=(4,0));view.bind('<<ComboboxSelected>>',lambda _e:self._texture_view_changed())
+        view_box=ttk.Frame(top);view_box.grid(row=1,column=0,columnspan=2,sticky='w',pady=(4,0))
+        for kind in (self.LIST_VIEW,self.GRID_VIEW):   # the same List | Grid segments as the Model list
+            ttk.Radiobutton(view_box,text=kind,value=kind,variable=self.texture_view,style='Segment.Toolbutton',width=6,
+                            command=self._texture_view_changed).pack(side='left',padx=(0,2))
         tip('Words that must all appear in the texture path. A word with a leading - must not appear, e.g. -planet.',filter_label,filter_entry)
         tip('List: one row per texture with its format and size. Grid: a thumbnail per texture, drawn only where it is on screen.\n'
-            'Arrow keys move, Shift extends, Ctrl-click toggles, Ctrl+A selects all, Escape clears.',view_label,view)
+            'Arrow keys move, Shift extends, Ctrl-click toggles, Ctrl+A selects all, Escape clears.',view_box)
         if self.archive:
             self.texture_maps_button=ttk.Menubutton(top,text='');self.texture_maps_button.grid(row=1,column=2,sticky='w',padx=(8,0),pady=(4,0))
             self.texture_maps_menu=tk.Menu(self.texture_maps_button,tearoff=False);self.texture_maps_button.configure(menu=self.texture_maps_menu)

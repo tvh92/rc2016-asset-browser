@@ -305,8 +305,10 @@ class Gallery:
             self.stop_renderer()
             self.blocked = ''
         self.item_by_id = {getattr(r, 'model_id', None): item for item, r in app.item_by_record.items()}
-        selected = app._selected_records()
-        picked = {getattr(r, 'model_id', None) for r in selected} - {None}
+        everything = app._selected_records()
+        picked = {getattr(r, 'model_id', None) for r in everything} - {None}
+        shown = {getattr(r, 'model_id', None) for r in app.filtered_records}
+        selected = [r for r in everything if getattr(r, 'model_id', None) in shown]   # a selection in another folder does not replace this one
         if self.picked_here is not None and self.picked_here == (picked, app.filtered_records):
             records, kind, total = None, 'keep', 0      # the grid made this selection: keep its list
         else:

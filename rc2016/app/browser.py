@@ -458,7 +458,7 @@ class AssetBrowser:
         app.asset_type_var.set('Model');self.show_asset_type('Model')
         item=next((i for i,r in app.item_by_record.items() if r is record),None)
         if item is None:
-            app.filter_var.set('');app.state_var.set('All')
+            app.filter_var.set('');app.state_var.set('All');app.folder_scope=''
             if hasattr(app,'shading_var'):app.shading_var.set('All')
             app.refresh_table()
             item=next((i for i,r in app.item_by_record.items() if r is record),None)

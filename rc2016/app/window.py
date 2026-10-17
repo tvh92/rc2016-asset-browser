@@ -79,11 +79,15 @@ HELP = {
         "(for example 'hydro harvester' or 'enm_'). Several words must all match.\n\n"
         "Numbered rc1 mobys (moby-1964 etc.) have no name in the game data; where a named "
         "actor uses one, it shows in the 'Used by' column and is searchable."),
+    "folder_tree": (
+        "The folders of the game's models. Select one to list the models inside it, sub-folders included; "
+        "All models lists every model the search and filters show.\n\n"
+        "Click a folder's arrow to open or close it."),
     "tree": (
-        "Models are grouped by their folder in the game. Click a folder's arrow to open it.\n\n"
-        "Selecting a folder selects every model inside it for extraction."),
+        "The models in the selected folder, with their output state. Ctrl-click or Shift-click selects several for "
+        "extraction. The selection stays when you choose another folder."),
     "expand": (
-        "Opens every folder in the list, or closes them all again.\n\n"
+        "Opens every folder on the left, or closes them all again.\n\n"
         "Without this, folders open by themselves for short lists and searches. "
         "chunk and bangle folders stay closed in that automatic mode."),
     "state": (
@@ -106,11 +110,11 @@ HELP = {
         "Horizontal: the viewport on top and the controls below it, in columns.\n"
         "Applies to the 3D model, textures, level and Flash UI viewers. Drag the divider to resize; "
         "each layout remembers its own sizes."),
-    "select_visible": "Select every model the search and filters currently show (all of them when nothing is filtered).",
+    "select_visible": "Select every model the search, filters and chosen folder show (all of them when nothing is filtered).",
     "clear_selection": "Deselect every model.",
     "list_view": (
-        "List: the model tree, with the output state of every model.\n"
-        "Grid: the same models as thumbnails (the selection, or else the search results). "
+        "List: the models of the selected folder as rows, with the output state of each.\n"
+        "Grid: the same models as thumbnails, beside the same folder list. "
         "Clicking a thumbnail loads the model in the 3D view."),
     "shading": (
         "Filter by the viewer shading rule of the model's materials (Details lists it per slot):\n"
@@ -198,6 +202,9 @@ class AssetBrowserApp:
                                         ("Transform only", "Full archive pipeline"))
         self.filter_var = tk.StringVar()
         self.folder_mode = "auto"  # "auto", "expanded" or "collapsed"; see toggle_expand_all
+        self.folder_scope = ""     # "" lists every model; otherwise the folder, and the folders in it, the list shows
+        self.selected_map: dict = {}  # record key -> record, for every selected model, including those the list hides
+        self._rebuilding = False   # True while the folder tree and the list are refilled; their selection events are ignored
         self.state_var = tk.StringVar(value="All")
         self.shading_var = tk.StringVar(value="All")
         self.prefix_var = remember_var(tk.StringVar(), "export.prefixes")
@@ -347,17 +354,18 @@ class AssetBrowserApp:
 
         browser_split = self.browser_split = ttk.Panedwindow(model_view, orient="horizontal")
         browser_split.grid(row=0, column=0, sticky="nsew")
-        # The model tree and the thumbnail grid share this cell; show_list_view swaps them.
+        # The folder tree stays on the left; the model list and the thumbnail grid share the right cell (show_list_view swaps them).
         self.list_host = list_host = ttk.Frame(browser_split)
         browser_split.add(list_host, weight=3)
-        list_host.columnconfigure(0, weight=1)
+        list_host.columnconfigure(1, weight=1)
         list_host.rowconfigure(0, weight=1)
+        self._build_folder_tree(list_host)
         self.table_frame = table_frame = ttk.Frame(list_host)
-        table_frame.grid(row=0, column=0, sticky="nsew")
+        table_frame.grid(row=0, column=1, sticky="nsew")
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
         self.table = ttk.Treeview(table_frame, columns=("model", "animset", "state", "details"), show="tree headings", selectmode="extended")
-        self.table.heading("#0", text="Folder / model")
+        self.table.heading("#0", text="Model")
         self.table.heading("model", text="Used by (actor)")
         self.table.heading("animset", text="Asset ID / animset")
         self.table.heading("state", text="Output state")
@@ -702,8 +710,8 @@ class AssetBrowserApp:
         except Exception as error:
             self.events.put(("scan_error", {"message": str(error)}))
 
+
     def refresh_table(self) -> None:
-        source = Path(self.source_var.get()).expanduser() if self.source_var.get().strip() else None
         output = Path(self.output_var.get()).expanduser() if self.output_var.get().strip() else None
         needle = self.filter_var.get().casefold().strip()
         state_filter = self.state_var.get()
@@ -716,12 +724,11 @@ class AssetBrowserApp:
                 # Built on a worker once; the table refreshes when it is ready (or says why not).
                 links.request(lambda ready: self.refresh_table() if ready is not None else self.progress_var.set(links.message),
                               key="shading filter")
-        selected_models = {self._record_key(record) for record in self._selected_records()} if hasattr(self, "table") else set()
-        open_folders = {item for item in self._folder_items() if self.table.item(item, "open")} if hasattr(self, "table") else set()
+        self._sync_selection()   # selected models stay selected, even the ones this list is about to hide
+        open_folders = {item for item in self._folder_items() if self.folder_tree.item(item, "open")} if hasattr(self, "folder_tree") else set()
         terms = needle.split()
-        self.filtered_records = []
         self._cancel_pending_refresh()
-        statuses: list[tuple[str, str]] = []
+        matched, statuses = [], []
         for record in self.records:
             is_pipeline = isinstance(record, PipelineModelCandidate)
             relative_model = record.archive_path if is_pipeline else record.relative_model
@@ -729,7 +736,7 @@ class AssetBrowserApp:
                         else " " + (record.relative_animset or ""))).casefold()
             if terms and not all(term in haystack for term in terms):
                 continue
-            state, _reason = self._record_status(record, output)   # once per record; reused for the row
+            state, reason = self._record_status(record, output)   # once per record; reused for the row
             if state_filter != "All" and state != state_filter:
                 continue
             if shading_filter != "All":
@@ -737,55 +744,91 @@ class AssetBrowserApp:
                 wanted = SHADING_FILTERS[shading_filter]
                 if not kinds or (kinds != {"exact rule"} if wanted is None else wanted not in kinds):
                     continue
-            self.filtered_records.append(record)
-            statuses.append((state, _reason))
-        for child in self.table.get_children():
-            self.table.delete(child)
-        self.item_by_record.clear()
-        self.item_by_path.clear()
-        paths = [self._record_path(record) for record in self.filtered_records]
-        parents = folder_layout(paths)
-        # Open everything for a search or a short list; otherwise keep what was open.
-        expand = bool(terms) or len(self.filtered_records) <= 150
-        if self.folder_mode != "auto":
-            open_folders = set()
+            matched.append(record)
+            statuses.append((state, reason))
+        # The folder tree lists the folders of every match; the list shows the models of the chosen folder.
+        parents = folder_layout([self._record_path(record) for record in matched])
         counts: dict[str, int] = {}
         for parent in parents:
             folder = parent
             while folder:
                 counts[folder] = counts.get(folder, 0) + 1
                 folder = folder.rpartition("/")[0]
-        for number, (record, parent, (state, reason)) in enumerate(zip(self.filtered_records, parents, statuses)):
-            item = f"model-{number}"
-            self.item_by_record[item] = record
-            self.item_by_path[self._record_path(record)] = item
-            self.table.insert(self._ensure_folder(parent, counts, open_folders, expand), "end", iid=item,
-                              text=Path(self._record_path(record)).stem, values=(
-                record.used_by if isinstance(record, PipelineModelCandidate) else "",
-                record.model_id if isinstance(record, PipelineModelCandidate) else record.relative_animset or "—",
-                state,
-                reason,
-            ))
-            if self._record_key(record) in selected_models:
-                self.table.selection_add(item)
+        if self.folder_scope and self.folder_scope not in counts:
+            self.folder_scope = ""   # that folder holds no match any more
+        scope = self.folder_scope
+        self.filtered_records, rows = [], []
+        for record, parent, (state, reason) in zip(matched, parents, statuses):
+            if scope and parent != scope and not parent.startswith(scope + "/"):
+                continue
+            self.filtered_records.append(record)
+            rows.append((record, state, reason))
+        self._rebuilding = True
+        try:
+            self._fill_folder_tree(counts, len(matched), open_folders, bool(terms) or len(matched) <= 150)
+            self.table.delete(*self.table.get_children())
+            self.item_by_record.clear()
+            self.item_by_path.clear()
+            for number, (record, state, reason) in enumerate(rows):
+                item = f"model-{number}"
+                self.item_by_record[item] = record
+                self.item_by_path[self._record_path(record)] = item
+                self.table.insert("", "end", iid=item, text=Path(self._record_path(record)).stem, values=(
+                    record.used_by if isinstance(record, PipelineModelCandidate) else "",
+                    record.model_id if isinstance(record, PipelineModelCandidate) else record.relative_animset or "—",
+                    state,
+                    reason,
+                ))
+                if self._record_key(record) in self.selected_map:
+                    self.table.selection_add(item)
+        finally:
+            self._rebuilding = False
         self.update_selection_label()
         self.start_button.configure(state="normal" if self.records and self.runner is None and not getattr(self, "scanning", False) and not self.browser.review else "disabled")
-        self.progress_var.set(f"{len(self.records)} models found; {len(self.filtered_records)} visible"
+        where = f" in {scope}" if scope else ""
+        self.progress_var.set(f"{len(self.records)} models found; {len(self.filtered_records)} visible{where}"
                               + (" (reading material links…)" if shading_filter != "All" and coverage is None else ""))
         self._gallery_changed()
 
+
     def show_list_view(self, kind: str) -> None:
-        """Show the model list as the tree (List) or as thumbnails (Grid); both follow the same search and selection."""
+        """List: the folder's models as rows. Grid: the same models as thumbnails. The folder tree stays on the left in both."""
         gallery = self.browser.gallery.frame
         if kind == "Grid":
             self.table_frame.grid_remove()
-            self.expand_button.grid_remove()   # folders only exist in the tree
-            gallery.grid(row=0, column=0, sticky="nsew")
+            gallery.grid(row=0, column=1, sticky="nsew")
         else:
             gallery.grid_remove()
-            self.table_frame.grid(row=0, column=0, sticky="nsew")
-            self.expand_button.grid()
+            self.table_frame.grid(row=0, column=1, sticky="nsew")
         self.list_view_var.set(kind)
+
+    def _build_folder_tree(self, parent) -> None:
+        """The model folders, beside both List and Grid. Selecting one lists the models in it and below it."""
+        ttk = self.ttk
+        frame = self.folder_frame = ttk.Frame(parent)
+        frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+        tree = self.folder_tree = ttk.Treeview(frame, show="tree", selectmode="browse", height=10)
+        tree.column("#0", width=210, stretch=True)
+        tree.grid(row=0, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=scroll.set)
+        tree.bind("<<TreeviewSelect>>", lambda _event: self._folder_selected())
+        self._tip(HELP["folder_tree"], tree)
+
+    def _folder_selected(self) -> None:
+        if self._rebuilding:
+            return
+        selection = self.folder_tree.selection()
+        iid = selection[0] if selection else "all"
+        folder = "" if iid == "all" else iid[len("dir:"):]
+        if folder == self.folder_scope:
+            return
+        self.folder_scope = folder
+        self.refresh_table()
+
 
     def _gallery_changed(self) -> None:
         """The selection or the visible model list changed: the Gallery tab refreshes when shown."""
@@ -837,13 +880,16 @@ class AssetBrowserApp:
         self.expand_button.configure(text="Expand all" if self.folder_mode == "collapsed" else "Collapse all")
         self.refresh_table()
 
-    def _ensure_folder(self, folder: str, counts: dict[str, int], open_folders: set[str], expand: bool) -> str:
-        if not folder:
-            return ""
-        item = "dir:" + folder
-        if not self.table.exists(item):
-            parent = self._ensure_folder(folder.rpartition("/")[0], counts, open_folders, expand)
-            name = folder.rpartition('/')[2]
+
+    def _fill_folder_tree(self, counts: dict[str, int], total: int, open_folders: set[str], expand: bool) -> None:
+        """Folders of the matches, each count including its sub-folders; the chosen folder stays selected."""
+        tree = self.folder_tree
+        tree.delete(*tree.get_children())
+        tree.insert("", "end", iid="all", text=f"All models  ({total})", open=True)
+        for folder in sorted(counts, key=str.casefold):   # a parent path sorts before its children, so it exists when they are inserted
+            parent = folder.rpartition("/")[0]
+            name = folder.rpartition("/")[2]
+            item = "dir:" + folder
             if self.folder_mode == "expanded":
                 is_open = True
             elif self.folder_mode == "collapsed":
@@ -851,13 +897,15 @@ class AssetBrowserApp:
             else:
                 # chunk/bangle folders always hold a complete model, so they stay collapsed in auto mode.
                 is_open = (expand or item in open_folders) and name.casefold() not in ALWAYS_COLLAPSED_FOLDERS
-            self.table.insert(parent, "end", iid=item, text=f"{name}  ({counts.get(folder, 0)})",
-                              open=is_open, tags=("folder",))
-        return item
+            tree.insert(f"dir:{parent}" if parent else "all", "end", iid=item, text=f"{name}  ({counts[folder]})", open=is_open)
+        tree.selection_set("dir:" + self.folder_scope if self.folder_scope else "all")
 
-    def _folder_items(self, parent: str = "") -> list[str]:
+
+    def _folder_items(self, parent: str = "all") -> list[str]:
         found = []
-        for child in self.table.get_children(parent):
+        if not self.folder_tree.exists(parent):   # the tree is empty until the first refresh
+            return found
+        for child in self.folder_tree.get_children(parent):
             if child.startswith("dir:"):
                 found.append(child)
                 found.extend(self._folder_items(child))
@@ -867,34 +915,39 @@ class AssetBrowserApp:
     def _record_path(record: ModelCandidate | PipelineModelCandidate) -> str:
         return record.archive_path if isinstance(record, PipelineModelCandidate) else record.relative_model.replace("\\", "/")
 
+
     def _selected_records(self) -> list[ModelCandidate | PipelineModelCandidate]:
-        """Selected models; a selected folder stands for every model inside it."""
+        """The selected models. A selection survives moving to another folder or search, so it may hide models the list shows."""
+        self._sync_selection()
+        return list(self.selected_map.values())
 
-        records, seen = [], set()
-
-        def add(item: str) -> None:
-            if item in self.item_by_record:
-                if item not in seen:
-                    seen.add(item)
-                    records.append(self.item_by_record[item])
-            else:
-                for child in self.table.get_children(item):
-                    add(child)
-
+    def _sync_selection(self) -> None:
+        """Fold the table's selection into selected_map; models the list does not show keep their place in it."""
+        if self._rebuilding or not hasattr(self, "table"):
+            return
+        visible = {self._record_key(record) for record in self.item_by_record.values()}
+        chosen = {}
         for item in self.table.selection():
-            add(item)
-        return records
+            record = self.item_by_record.get(item)
+            if record is not None:
+                chosen[self._record_key(record)] = record
+        kept = {key: record for key, record in self.selected_map.items() if key not in visible}
+        self.selected_map = {**kept, **chosen}
 
     def _table_double_click(self, event) -> None:
         # Double-clicking a folder just opens/closes it (Tk's default).
         if self.table.identify_row(event.y) in self.item_by_record:
             self._show_selected_details()
 
+
     def select_visible(self) -> None:
         self.table.selection_set(list(self.item_by_record))
+        self._sync_selection()
         self.update_selection_label()
 
+
     def clear_selection(self) -> None:
+        self.selected_map = {}
         self.table.selection_remove(self.table.selection())
         self.update_selection_label()
 
