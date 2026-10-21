@@ -347,7 +347,22 @@ def _lowered(program):
     return dict(cached,limitations=list(cached['limitations']))
 
 
-def _bind(program,contract,material_data,instance,world_position=False,normal_attributes=(),stream_channels=None,static_attributes=(),source_preview_policy=None):
+VERTEX_FRAME_KINDS=('vertex_normal','vertex_tangent','vertex_handedness')
+
+
+def _handedness_sign(ir,i):
+    """True when node i depends on attribute3.w alone: the integer sign chain of the bitangent handedness."""
+    names,stack,seen=set(),[i],set()
+    while stack:
+        j=stack.pop()
+        if j in seen:continue
+        seen.add(j);n=ir.nodes[j]
+        if n['op']=='input':names.add(n.get('name'))
+        stack.extend(n['args'])
+    return names=={'attribute3.3'}
+
+
+def _bind(program,contract,material_data,instance,world_position=False,normal_attributes=(),stream_channels=None,static_attributes=(),source_preview_policy=None,vertex_frame=False):
     from rc2016.formats.materials import texture_slot_records, MATERIAL_TEXTURE_SLOTS
     overrides={}
     for row in texture_slot_records(material_data,MATERIAL_TEXTURE_SLOTS):
@@ -462,6 +477,24 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
             if normal_adapted:lowered['limitations'].append('Experimental: interpolants '+', '.join(f'attribute{a}.xyz' for a in sorted(normal_attributes))+' are, in every traced vertex program and flag path, per-draw words times one vertex stream (a transformed stream, optionally normalised) and are read as the geometry normal; that the stream is the normal and the matrix object-to-world is inferred, and the packed vertex frame is not reconstructed.')
         if static_used:lowered['limitations'].append('Experimental ordinary-static vector input: source vertex producers in the exact pass prove M*(2*semantic1.xyz-1) under material-derived static flags. The raw packed model word at vertex+8 supplies recentered UNORM xyz without normalization, and the source CPU axis-length classifier selects the per-instance matrix. Fetch identity and absence of alternate/deformed streams are inferred; runtime pass choice is unverified. Skinned and alternate-codec geometry are excluded. Shader colour layers and blend arithmetic are retained.')
         if adapted:lowered['limitations'].append(f'Experimental: {adapted} expressions of the form CB0[28..30] + (CB0[92..95] + CB0[100..103]*POS_Y + POS_X*(CB0[96..99] + CB0[104..107]*POS_Y)) * POS_W are read as world position and replaced by viewer world position. This engine meaning is inferred from the expression shape, not decoded from the game.')
+    if vertex_frame:
+        # Vertex normal (attribute2.xyz) and tangent (attribute3.xyz) are the decoded per-vertex words; the
+        # bitangent handedness sign(attribute3.w) is the integer select/u_sub/i2f chain. The archive does not
+        # store the handedness (docs/pipeline.md), so the caller supplies it from the UV winding: inferred.
+        frame={}
+        for i in ir.reachable(replaced):
+            n=ir.nodes[i]
+            if n['op']=='input' and n.get('kind')=='attribute' and n.get('attribute')==2 and n.get('channel') in (0,1,2):
+                frame[i]=ir.node('input',name=f"vertex_normal.{n['channel']}",kind='vertex_normal',channel=n['channel'])
+            elif n['op']=='input' and n.get('kind')=='attribute' and n.get('attribute')==3 and n.get('channel') in (0,1,2):
+                frame[i]=ir.node('input',name=f"vertex_tangent.{n['channel']}",kind='vertex_tangent',channel=n['channel'])
+            elif n['op']=='i2f' and _handedness_sign(ir,i):
+                frame[i]=ir.node('input',name='vertex_handedness',kind='vertex_handedness')
+        if frame:
+            replaced=ir.replace(replaced,frame)
+            lowered['limitations'].append('Vertex frame: attribute2.xyz and attribute3.xyz are the decoded vertex normal and tangent '
+                '(native +8/+12 words). The bitangent handedness sign(attribute3.w) is the viewer-inferred sign of the UV winding; '
+                'the game handedness is not stored in the vertex record and is not game-proven.')
     replaced,zero_guards=guard_source_zero_powers(ir,replaced)
     replaced,front_face=bind_front_face(ir,replaced)
     if front_face:
@@ -475,6 +508,7 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
         n=ir.nodes[i]
         if n['op'] not in PORTABLE_OPS:errors.append(dict(node=i,reason=n.get('reason',n['op'])))
         elif n['op']=='input' and not (n.get('kind')=='attribute' and n.get('attribute')==0 and n.get('channel') in (0,1)) and n.get('kind')!='front_facing' \
+                and not (vertex_frame and n.get('kind') in VERTEX_FRAME_KINDS) \
                 and not (world_position and n.get('kind') in (('preview_position','preview_normal') if adapted else ()) + ('preview_vertex_alpha_squared','preview_ground_blend','preview_static_vector')):
             errors.append(dict(node=i,reason='Unbound engine/interpolant input '+n['name']))
         elif n['op']=='texture' and not bound.get(n['api'],{}).get('path'):
@@ -801,7 +835,7 @@ def validate_source_preview_inputs(translation):
 
 
 def prepare_translation(graph_datas,material_data,instance,world_position=False,*,static_vector=False,
-                        source_graph_paths=None,source_material_path=None):
+                        source_graph_paths=None,source_material_path=None,vertex_frame=False):
     """Bound portable translation. world_position=True builds the experimental
     receipt that adapts inferred world position or source-proven squared colour
     channels. Paint-only writers require no position or normal substitution;
@@ -845,7 +879,7 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False,
             preview_policy=None if world_position else _source_preview_policy(
                 source_graph_paths,graph['graph_sha256'],source_material_path,material_sha256,program)
             try:bound=_bind(program,contract,material_data,instance,world_position,normal_attributes,
-                stream_channels,static_attributes,preview_policy)
+                stream_channels,static_attributes,preview_policy,vertex_frame=vertex_frame)
             except ValueError as exc:
                 result['diagnostics'].append(dict(shader_id=program['shader_id'],contract=contract['index'],reason=str(exc)));continue
             if static_proof:bound['static_vector_evidence']=static_proof
