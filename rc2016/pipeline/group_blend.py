@@ -16,7 +16,7 @@ from pathlib import Path
 
 import bpy  # type: ignore
 import numpy as np  # type: ignore
-from mathutils import Euler, Vector  # type: ignore
+from mathutils import Euler, Matrix, Vector  # type: ignore
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -62,12 +62,19 @@ def _load_materials(path, names):
     return loaded
 
 
+def _mesh_key(obj):
+    """The part name of a mesh object: the last ``|`` field of ``<model> | subset NNN | <part>``, without ``.001``."""
+    return _base_name(obj.name).split("|")[-1].strip()
+
+
 def _load_member(member, label):
     """Append one member's meshes and armatures into a collection named after it; returns all of them.
 
     ``member["pose"]`` keeps the action and pose the member was built with. ``member["materials"]`` (``blend``,
     ``names``) replaces the named material slots with the same-named materials of another member's .blend, which
-    is how a texture set (captain, chrome, flame) is put on a suit without another mesh."""
+    is how a texture set (captain, chrome, flame) is put on a suit without another mesh. ``member["exclude"]`` lists
+    part names (see ``_mesh_key``) that are left out of the group. ``member["hide_armature"]`` hides the member's
+    armatures in the view and in renders while keeping their pose, so the animation still drives the meshes."""
     path = Path(member["blend"])
     if file_hash(path) != member["sha256"]:
         raise RuntimeError("Member changed since it was delivered: %s" % path)
@@ -75,11 +82,15 @@ def _load_member(member, label):
         target.objects = list(source.objects)
     collection = bpy.data.collections.new(label)
     bpy.context.scene.collection.children.link(collection)
+    excluded = set(member.get("exclude", []))
     kept = []
     for obj in target.objects:
         if obj is None:
             continue
         if obj.type not in ("MESH", "ARMATURE"):  # cameras, lights and diagnostic empties are not part of the group
+            bpy.data.objects.remove(obj, do_unlink=True)
+            continue
+        if obj.type == "MESH" and _mesh_key(obj) in excluded:
             bpy.data.objects.remove(obj, do_unlink=True)
             continue
         if obj.type == "ARMATURE" and not member.get("pose"):
@@ -92,6 +103,9 @@ def _load_member(member, label):
                 bone.scale = (1.0, 1.0, 1.0)
         obj[MEMBER_KEY] = label
         collection.objects.link(obj)
+        if obj.type == "ARMATURE" and member.get("hide_armature"):
+            obj.hide_set(True)
+            obj.hide_render = True
         kept.append(obj)
     swap = member.get("materials")
     if swap:
@@ -136,6 +150,16 @@ def assemble(job):
             for obj in objects:
                 if obj.parent is None:
                     obj.location = obj.location + right * offset
+        # ``x`` places a member on the world X axis (its own origin, so equal spacing gives equal gaps), and
+        # ``rotate_z_degrees`` turns it about the world Z axis through that origin, before the placement.
+        turn = float(member.get("rotate_z_degrees", 0.0))
+        if turn or "x" in member:
+            place = Matrix.Translation((float(member.get("x", 0.0)), 0.0, 0.0)) @ Matrix.Rotation(
+                math.radians(turn), 4, "Z")
+            for obj in objects:
+                if obj.parent is None:
+                    # matrix_basis, not matrix_world: appended objects have no evaluated world matrix yet.
+                    obj.matrix_basis = place @ obj.matrix_basis
         members.append(objects)
         print("GROUP member", index + 1, len(job["members"]), member["name"], flush=True)
     layout = _layout(members, right)
