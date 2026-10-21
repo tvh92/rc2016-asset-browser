@@ -48,11 +48,12 @@ def override_summary(overrides):
             + (f" ({skipped:,} entries not applied)" if skipped else ""))
 
 
-def load_sky(archive, zones):
-    """level_sky for the level's full zone list, with its dome and noise textures loaded, or None."""
+def load_sky(archive, zones, probe_position=None):
+    """level_sky for the level's full zone list, with its dome and noise textures loaded, or None.
+    ``probe_position`` (native Y-up) selects the reflection volume that contains it (``sky.level_sky``)."""
     from rc2016.levels.sky import level_sky
     from rc2016.viewer.textures import load_texture
-    sky = level_sky(archive, zones)
+    sky = level_sky(archive, zones, probe_position=probe_position)
     if sky:
         sky["textures"] = {}
         for path in {p for dome in sky["domes"] for p in (dome["dome_texture"], dome["noise_texture"])}:
@@ -67,7 +68,7 @@ def load_sky(archive, zones):
                 maps = level_environment(archive, sky)
                 try:
                     from rc2016.levels.lightgrid import level_lightgrid
-                    maps["lightgrid"] = level_lightgrid(archive, zones)   # None for levels without a decoded lighting zone
+                    maps["lightgrid"] = level_lightgrid(archive, zones, night=sky.get("night", False))   # None without a lighting zone
                 except Exception as exc:   # keep the single-probe ambient and say why
                     maps["lightgrid"] = None
                     print(f"lightgrid unavailable: {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -199,7 +200,7 @@ class MaterialJobs:
             drop_uploaded_pixels(self.cache, entries, self.uploaded)
 
 
-def load_level(get_archive, level_path, out, cancel, zone_filter=None, workers=None):
+def load_level(get_archive, level_path, out, cancel, zone_filter=None, workers=None, probe_position=None):
     """Background loader. Posts, in order: ('zones', paths), ('zone', scene summary) per zone,
     ('bounds', native bounds), ('sky', level_sky result or None) for a .level, ('model', path, geometry, hidden, [(zone, groups)]) per model with
     groups keyed by (mirrored, effective material changes), ('overrides', running totals) after each
@@ -255,7 +256,7 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None, workers=N
     out.put(("bounds", level_scene.core_bounds(points)))
     if level_path.endswith(".level"):
         try:
-            out.put(("sky", load_sky(archive, all_zones)))
+            out.put(("sky", load_sky(archive, all_zones, probe_position)))
         except Exception as exc:
             out.put(("error", "sky", f"{type(exc).__name__}: {exc}"))
     workers = workers or LOAD_WORKERS
@@ -412,11 +413,14 @@ class LevelPanel:
 
     def __init__(self, parent, tk, ttk, source_root, level=None, mode="Shaded", zone_filter=None, on_done=None,
                  list_parent=None, on_open_model=None, material_overrides=True, sky=True, native_translation=True, actors=True, spawn_preview=False,
-                 experimental_materials=False, layout=None, remember=False):
+                 experimental_materials=False, layout=None, remember=False, probe_position=None):
         """``list_parent``: a separate frame for the level list (the asset browser's left pane);
         by default the list sits at the top of the panel's own side column (standalone window).
-        ``on_open_model(model path)``: open a picked model elsewhere (the browser's Model tab)."""
+        ``on_open_model(model path)``: open a picked model elsewhere (the browser's Model tab).
+        ``probe_position``: native Y-up point whose reflection volume the Level atmosphere probe should be
+        (``sky.level_sky``); None takes the level's default volume."""
         self.tk, self.ttk, self.source_root = tk, ttk, source_root
+        self.probe_position = probe_position
         self.zone_filter, self.on_done, self.on_open_model = zone_filter, on_done, on_open_model
         self.archive, self.archive_root, self.archive_lock = None, None, threading.Lock()
         self.events, self.cancel, self.generation = queue.Queue(), threading.Event(), 0
@@ -740,7 +744,7 @@ class LevelPanel:
         self.relay, self.material_paths, self.preview_paths = relay, {}, set()
         root = str(self.source_root() or "")
         threading.Thread(target=load_level, args=(lambda: self._archive(root), level, relay, cancel, self.zone_filter),
-                         daemon=True).start()
+                         kwargs=dict(probe_position=self.probe_position), daemon=True).start()
 
     def _lighting_enabled_changed(self):
         self.view.set_lighting_enabled(self.lighting_enabled_var.get())

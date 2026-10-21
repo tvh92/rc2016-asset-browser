@@ -61,6 +61,9 @@ def main(argv=None):
     parser.add_argument("--mode", default="Shaded", choices=LevelViewport.MODES)
     parser.add_argument("--capture")
     parser.add_argument("--camera", type=lambda s: tuple(float(x) for x in s.split(",")))
+    parser.add_argument("--probe-position", type=lambda s: tuple(float(x) for x in s.split(",")),
+                        help="x,y,z (presentation space, as --camera): the Level atmosphere probe is the reflection volume "
+                             "containing it; default the --camera position, else the level's default volume")
     parser.add_argument("--no-material-overrides", action="store_true",
                         help="draw instances without their per-instance material overrides")
     parser.add_argument("--experimental-spawns", action="store_true",
@@ -112,7 +115,10 @@ def main(argv=None):
                 root.destroy()
             capture()
 
-    panel = LevelPanel(root, tk, ttk, source.get, level=args.level or settings["level"], mode=args.mode,
+    probe = args.probe_position or (args.camera[:3] if args.camera else None)
+    if probe is not None:
+        probe = (probe[0], probe[2], -probe[1])   # presentation (x, y, z) -> native Y-up (x, z, -y), the inverse of BASIS
+    panel = LevelPanel(root, tk, ttk, source.get, level=args.level or settings["level"], mode=args.mode, probe_position=probe,
                        zone_filter=args.zones, on_done=finished if (args.capture or args.camera) else None,
                        material_overrides=not args.no_material_overrides, sky=not args.no_sky,
                        native_translation=not args.no_native_translation, actors=not args.no_actors, spawn_preview=args.experimental_spawns,

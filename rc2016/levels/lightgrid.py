@@ -242,23 +242,87 @@ def _location(entry):
     return '|'.join(f"{r['archive']}:{r['offset']}:{r['size']}" for r in entry['occurrences'] if r['available'])
 
 
-def level_lightgrid(archive, zone_paths, workers=None):
-    """The LightGrid of the level, or None when its zones list no supported lighting zone (only Novalis' is decoded).
+def zone_grid_map(data, resolve):
+    """Grid rows of any lighting zone's tables (sections ``0x3E36401D`` paths and ``0xD6E15BC0`` coordinates), in the
+    shape of the pipeline's Novalis decoder: [{'index', 'path', 'coordinates', 'asset_id'}]. Every path must be a
+    ``grid_<x>_<y>_<z>.lightgrid`` of one region folder, agree with its stored coordinate, resolve to one archive
+    asset and be unique; otherwise ValueError. ``resolve`` maps a path to archive entry ids."""
+    import math
+    import struct
+    from rc2016.common import asset_path
+    from rc2016.levels.zone_format import sections
+    from rc2016.pipeline.lighting import ZONE_GRID_COORDINATES, ZONE_GRID_PATHS, grid_coordinates, level_region
+    found = sections(data)
+    if ZONE_GRID_PATHS not in found or ZONE_GRID_COORDINATES not in found:
+        raise ValueError('lighting zone lacks the grid path and coordinate tables')
+    (path_start, path_size), (coord_start, coord_size) = found[ZONE_GRID_PATHS], found[ZONE_GRID_COORDINATES]
+    if path_size % 4 or coord_size % 16 or path_size // 4 != coord_size // 16:
+        raise ValueError('lighting zone grid tables have inconsistent sizes')
+    rows, regions = [], set()
+    for index, offset in enumerate(struct.unpack_from(f'<{path_size // 4}I', data, path_start)):
+        end = data.find(b'\0', offset) if 0 <= offset < len(data) else -1
+        if end < 0:
+            raise ValueError('lighting zone grid string is outside the file or unterminated')
+        path = asset_path(data[offset:end].decode('utf-8'))
+        x, y, z, ordinal = struct.unpack_from('<3fI', data, coord_start + 16 * index)
+        coordinates = grid_coordinates(path)
+        if coordinates is None or ordinal != index or not all(math.isfinite(v) and v.is_integer() for v in (x, y, z)) \
+                or coordinates != (int(x), int(y), int(z)):
+            raise ValueError(f'lighting zone grid record {index} disagrees with its path {path}')
+        regions.add(level_region(path))
+        ids = resolve(path)
+        if len(ids) != 1:
+            raise ValueError(f'lighting zone grid path does not resolve uniquely: {path}')
+        rows.append(dict(index=index, path=path, coordinates=list(coordinates), asset_id=ids[0]))
+    if len(regions) > 1 or len({r['path'] for r in rows}) != len(rows) or len({tuple(r['coordinates']) for r in rows}) != len(rows):
+        raise ValueError('lighting zone grid table mixes regions or repeats a path or coordinate')
+    return rows
+
+
+def day_lighting_zone(zone_paths, night=False):
+    """The one lighting zone to read among a level's zone paths: the Novalis zone when listed (its grid is the
+    validated one), else the single zone whose stem is ``lighting`` or ``lgt`` and whose night-ness equals ``night``
+    (``sky.is_night``). None when there is not exactly one."""
+    from rc2016.levels import sky
+    from rc2016.pipeline.lighting import NOVALIS_LIGHTING_ZONE
+    wanted = [p.replace('\\', '/').lstrip('?/') for p in zone_paths]
+    if NOVALIS_LIGHTING_ZONE in {p.lower() for p in wanted}:
+        return NOVALIS_LIGHTING_ZONE
+    candidates = [p for p in wanted if sky.is_lighting_zone(p) and sky.is_night(p) == night]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def level_lightgrid(archive, zone_paths, workers=None, night=False):
+    """The LightGrid of the level, or None when it has no lighting zone to read (``day_lighting_zone``).
+
+    Novalis' lighting zone goes through the pipeline decoder it was validated with; any other level reads the
+    single day (or, with ``night``, night) lighting zone through ``zone_grid_map``, whose paths must share one
+    region folder. The layout is the same; only Novalis and Veldin were byte-checked against a capture.
 
     The packed tiles are cached under .cache/lightgrid by the grid assets' archive locations and the version, so a
     warm load reads one file instead of decoding every asset."""
     import numpy as np
     from rc2016.pipeline.lighting import NOVALIS_LIGHTING_ZONE, _decode_lighting_zone_grid_map
     from rc2016.levels.scene import asset_bytes
-    wanted = {p.replace('\\', '/').lstrip('?').lower() for p in zone_paths}
-    if NOVALIS_LIGHTING_ZONE not in wanted:
+    zone = day_lighting_zone(zone_paths, night)
+    if zone is None:
         return None
-    rows = _decode_lighting_zone_grid_map(asset_bytes(archive, NOVALIS_LIGHTING_ZONE), archive.resolve)['grids']
+    if zone == NOVALIS_LIGHTING_ZONE:
+        rows = _decode_lighting_zone_grid_map(asset_bytes(archive, zone), archive.resolve)['grids']
+        prefix = 'novalis'
+    else:
+        data = asset_bytes(archive, zone)
+        from rc2016.levels.zone_format import sections
+        from rc2016.pipeline.lighting import ZONE_GRID_COORDINATES, ZONE_GRID_PATHS
+        if not {ZONE_GRID_PATHS, ZONE_GRID_COORDINATES} <= set(sections(data)):
+            return None     # a lighting zone without a lightgrid (Deplanetizer exterior)
+        rows = zone_grid_map(data, archive.resolve)
+        prefix = 'zone'
     digest = hashlib.sha256()
     digest.update(f'{LIGHTGRID_VERSION}'.encode())
     for row in rows:
         digest.update(f"{row['path']}|{_location(archive.entries[row['asset_id']])}\n".encode())
-    cache = CACHE_DIR / f'novalis_{digest.hexdigest()[:16]}.npz'
+    cache = CACHE_DIR / f'{prefix}_{digest.hexdigest()[:16]}.npz'
     coordinates = np.array([row['coordinates'] for row in rows], np.int64)
     if cache.is_file():
         try:

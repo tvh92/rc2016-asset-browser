@@ -195,27 +195,99 @@ def clear_sky_profile(archive, texture_path):
     return _profile_from_faces(faces)
 
 
-def level_sky(archive, zone_paths, profile=True):
-    """The sky of a level, from its zone list: {'atmosphere', 'sun_ray', 'domes', 'unsupported',
-    'sun_rgb', 'clear_sky', 'fog' (authored height-fog profile or None), 'grade' (colour-grade LUT bytes or None), 'reflection', 'notes'}, or None when no atmosphere zone names an atmosphere.
+NIGHT = re.compile(r'night', re.IGNORECASE)
+LIGHTING_STEM = re.compile(r'(lighting|lgt)(_night)?')   # file stems of the zones that hold a region's lightgrid and reflection volumes
+
+
+def zone_stem(zone_path):
+    """Lower-case file stem of a zone path (``atm_lgt`` for ``levels/Veldin/atm_lgt.zone``)."""
+    return zone_path.replace('\\', '/').rsplit('/', 1)[-1].rsplit('.', 1)[0].lower()
+
+
+def is_atmosphere_zone(zone_path):
+    """Whether a zone is read for its atmosphere: its stem contains ``atmosphere`` (Novalis ``atmosphere.zone``) or
+    starts with ``atm_`` (Veldin ``atm_lgt.zone``, ``atm_lgt_night.zone``); ``_imposter`` twins are not."""
+    stem = zone_stem(zone_path)
+    return 'imposter' not in stem and ('atmosphere' in stem or stem.startswith('atm_'))
+
+
+def is_night(path):
+    """Whether a zone or atmosphere path names the night variant: ``night`` in the file name (``lgt_night``,
+    ``atm_Veldin_Night_Darker``). Only the file name counts, not the folders."""
+    return bool(NIGHT.search(path.replace('\\', '/').rsplit('/', 1)[-1]))
+
+
+def is_lighting_zone(zone_path):
+    """Whether a zone is a region's lighting zone (stem ``lighting`` or ``lgt``, with ``_night`` for the night variant; ``_imposter`` twins are not)."""
+    return LIGHTING_STEM.fullmatch(zone_stem(zone_path)) is not None
+
+
+def choose_atmosphere(found):
+    """The level's atmosphere from ``found`` = {atmosphere path: [atmosphere zone paths naming it]}.
+
+    One atmosphere is used as is. Several (Veldin names a day and a night one) resolve to the day one: an
+    atmosphere is night when its file name or any zone naming it has ``night`` in the file name. Exactly one day
+    atmosphere must remain, otherwise this raises ValueError. Returns (atmosphere, is_night)."""
+    if len(found) == 1:
+        atmosphere = next(iter(found))
+        return atmosphere, is_night(atmosphere) or all(is_night(z) for z in found[atmosphere])
+    day = sorted(a for a, zones in found.items() if not is_night(a) and not any(is_night(z) for z in zones))
+    if len(day) != 1:
+        raise ValueError(f'atmosphere zones name {len(found)} atmospheres, {len(day)} of them not night: {sorted(found)}')
+    return day[0], False
+
+
+def lighting_reflection(archive, zone_paths, night=False, position=None):
+    """The reflection capture chosen from the volume records of the level's lighting zones, or None:
+    {'path', 'id', 'zone', 'candidates'}. Only zones whose night-ness equals ``night`` count (day zones by
+    default); ``rc2016.levels.volumes.choose_reflection`` picks among the volumes whose capture resolves to one
+    archive asset: the one containing ``position`` (a native Y-up point), else the one covering most of the
+    lightgrid. ``candidates`` lists every volume id considered."""
+    from rc2016.levels import volumes
+    rows, centres = [], []
+    for zone in sorted(z for z in zone_paths if is_lighting_zone(z) and is_night(z) == night):
+        data = asset_bytes(archive, zone)
+        rows.extend(dict(volume, zone=zone) for volume in volumes.reflection_volumes(data))
+        centres.extend(volumes.grid_centres(data))
+    rows = [r for r in rows if len(archive.resolve(r['path'])) == 1]
+    chosen = volumes.choose_reflection(rows, centres, position)
+    if chosen is None:
+        return None
+    return dict(path=chosen['path'], id=chosen['id'], zone=chosen['zone'], candidates=[r['id'] for r in rows],
+                candidate_paths=[r['path'] for r in rows])
+
+
+def level_sky(archive, zone_paths, profile=True, probe_position=None):
+    """The sky of a level, from its zone list: {'atmosphere', 'night', 'sun_ray', 'domes', 'unsupported',
+    'sun_rgb', 'clear_sky', 'fog' (authored height-fog profile or None), 'grade' (colour-grade LUT bytes or None),
+    'reflection', 'reflection_source', 'notes'}, or None when no atmosphere zone names an atmosphere.
+
+    Atmosphere zones are found by name (``is_atmosphere_zone``); several atmospheres resolve to the day one
+    (``choose_atmosphere``). The reflection capture is the single one the chosen atmosphere's zones name
+    ('reflection_source' is 'atmosphere zone'), else the one chosen from the lighting zones' volume records
+    ('lighting volume', ``lighting_reflection``, with ``reflection_volume`` its description; ``probe_position``
+    is a native Y-up point that selects the volume containing it), else None.
 
     Each dome: {'model', 'geometry' (model_geometry), 'spans': [(first triangle, count)], 'material',
     'constants' (23 floats), 'dome_texture', 'noise_texture', 'stars'}. Textures come from the graph's
     slots with the material's slot overrides (NOISE_SLOT, DOME_SLOTS)."""
-    atmospheres, reflections = set(), set()
+    found, captures, unnamed = {}, {}, set()
     for zone in zone_paths:
-        if 'atmosphere' not in zone.lower() or 'imposter' in zone.lower():
+        if not is_atmosphere_zone(zone):
             continue
-        found, captures = atmosphere_zone_assets(asset_bytes(archive, zone))
-        atmospheres.update(found); reflections.update(captures)
-    if not atmospheres:
+        names, reflections = atmosphere_zone_assets(asset_bytes(archive, zone))
+        if not names:
+            unnamed.update(reflections)   # a capture in a zone that names no atmosphere belongs to the level
+        for name in names:
+            found.setdefault(name, []).append(zone)
+            captures.setdefault(name, set()).update(reflections)
+    if not found:
         return None
-    if len(atmospheres) != 1:
-        raise ValueError(f'atmosphere zones name {len(atmospheres)} atmospheres: {sorted(atmospheres)}')
-    atmosphere = atmospheres.pop()
+    atmosphere, night = choose_atmosphere(found)
+    reflections = captures[atmosphere] | unnamed
     data = asset_bytes(archive, atmosphere)
-    result = dict(atmosphere=atmosphere, sun_ray=sun_ray(data), sun_rgb=sun_colour(data), domes=[], unsupported=[],
-                  notes=[], clear_sky=None, reflection=None, fog=fog_profile(data), grade=colour_grade(data))
+    result = dict(atmosphere=atmosphere, night=night, sun_ray=sun_ray(data), sun_rgb=sun_colour(data), domes=[], unsupported=[],
+                  notes=[], clear_sky=None, reflection=None, reflection_source=None, fog=fog_profile(data), grade=colour_grade(data))
     for model in [r['path'] for r in references(data) if r['path'].endswith('.model')]:
         geometry = model_geometry(archive, model)
         slots = {}
@@ -251,10 +323,24 @@ def level_sky(archive, zone_paths, profile=True):
     if any(d['stars'] for d in result['domes']):
         result['notes'].append('stars term (constant dword 22) is not ported')
     if len(reflections) == 1:
-        result['reflection'] = next(iter(reflections))
+        result['reflection'], result['reflection_source'] = next(iter(reflections)), 'atmosphere zone'
+    else:
+        volume = lighting_reflection(archive, zone_paths, night, probe_position)
+        if volume:
+            result['reflection'], result['reflection_source'], result['reflection_volume'] = volume['path'], 'lighting volume', volume
     if profile and result['reflection']:
-        try:
-            result['clear_sky'] = clear_sky_profile(archive, result['reflection'])
-        except (ImportError, ValueError, OSError) as exc:
-            result['notes'].append(f'clear sky profile unavailable: {exc}')
+        # A volume capture is a local probe that may see no sky (Veldin's capture camera sits in one that does not);
+        # the clear-sky profile then comes from the first other volume of the level that does.
+        order = [result['reflection']] + [p for p in (result.get('reflection_volume') or {}).get('candidate_paths', [])
+                                           if p != result['reflection']]
+        for path in order:
+            try:
+                result['clear_sky'] = clear_sky_profile(archive, path)
+            except (ImportError, ValueError, OSError) as exc:
+                result['notes'].append(f'clear sky profile unavailable: {exc}')
+                break
+            if result['clear_sky']:
+                if path != result['reflection']:
+                    result['notes'].append(f'clear sky profile sampled from {path}')
+                break
     return result
