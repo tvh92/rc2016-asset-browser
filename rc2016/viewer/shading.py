@@ -176,6 +176,7 @@ LIGHTING_UNIFORMS = (*SCENE_UNIFORMS, "uLighting", "uLightingEnabled", "uLightFr
 # (texcoord 1, which the shader never reads).
 ATTRIBUTES = {"aJoints0": 1, "aJoints1": 6, "aWeights0": 7, "aWeights1": 9}
 STATIC_VECTOR_ATTRIBUTE = 4
+TANGENT_ATTRIBUTE = 5   # decoded vertex tangent (unaliased fog-coordinate slot, as 4 is for the static vector)
 BONE_TEXTURE_UNIT = 3
 ROCK_TEXTURE_UNIT = 15   # RockBlend sole new sampler, four tiled source slices
 ROCK_ALPHA_ATTRIBUTE = 14
@@ -207,6 +208,7 @@ varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm;
 attribute float aRockAlpha; varying float vRockAlpha;
 attribute vec3 aGroundBlend; varying vec3 vGroundBlend;
 attribute vec3 aStaticPackedVector; varying vec3 vStaticPackedVector;
+attribute vec3 aTangent; varying vec3 vTangent;   // zero when the mesh has no decoded tangent
 // Rows of joint j's row-major skin matrix, as the columns of its transpose.
 mat4 boneT(float j) {
     float x = j * 4.0 + 0.5;
@@ -216,7 +218,7 @@ mat4 boneT(float j) {
                 texture2DLod(uBoneTex, vec2((x + 3.0) / uBoneWidth, 0.5), 0.0));
 }
 void main() {
-    vec4 p = gl_Vertex; vec3 n = gl_Normal;
+    vec4 p = gl_Vertex; vec3 n = gl_Normal; vec3 tn = aTangent;
     vRockAlpha = aRockAlpha * aRockAlpha;
     vGroundBlend = vec3(aGroundBlend.xy * aGroundBlend.xy * aGroundBlend.z, aGroundBlend.z);
     // This opt-in source input is supplied separately from the unit shading normal.
@@ -229,8 +231,9 @@ void main() {
                + boneT(aJoints1.x) * aWeights1.x + boneT(aJoints1.y) * aWeights1.y
                + boneT(aJoints1.z) * aWeights1.z + boneT(aJoints1.w) * aWeights1.w;
         // v * transpose(M) == M * v
-        p = gl_Vertex * t; n = (vec4(gl_Normal, 0.0) * t).xyz;
+        p = gl_Vertex * t; n = (vec4(gl_Normal, 0.0) * t).xyz; tn = (vec4(aTangent, 0.0) * t).xyz;
     }
+    vTangent = gl_NormalMatrix * tn;
     vTintWorldPos = vec3(p.x, p.z, -p.y); vTintWorldNrm = vec3(n.x, n.z, -n.y);
     vec4 view = gl_ModelViewMatrix * p;
     vPos = view.xyz; vNrm = gl_NormalMatrix * n; vUV = gl_MultiTexCoord0.xy;
@@ -307,7 +310,7 @@ uniform float uArchPhase; // t=0; instance interpolants frozen to zero
 uniform bool uFacingGlow; uniform vec4 uFacingGlowP; uniform vec3 uFacingGlowQ; // amplitude, exponent, a scale, a offset; bias, g scale
 uniform bool uBrightCentre; uniform bool uBrightWhite; uniform vec3 uBrightEdge; uniform vec3 uBrightColour; uniform vec4 uBrightP; // D14A48D7: exponent, weight, F0, gloss^2
 varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
-varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm;
+varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm; varying vec3 vTangent;
 const float PI = 3.14159265;
 vec3 linear(vec3 c) { return pow(max(c, 0.0), vec3(2.2)); }
 // @lighting
@@ -599,6 +602,14 @@ void main() {
         vec3 p2 = cross(dp2, N), p1 = cross(N, dp1);
         vec3 T = p2 * du1.x + p1 * du2.x, B = p2 * du1.y + p1 * du2.y;
         float scale = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-20));
+        if (uBngKind == 8 && dot(vTangent, vTangent) > 0.0) {
+            // 76C79AA4 reads the vertex tangent. The stored word has no handedness: the bitangent sign is the one the UV derivative frame has (UV winding), as in bindings.py.
+            vec3 Tv = vTangent - N * dot(N, vTangent);
+            if (dot(Tv, Tv) > 1e-12) {
+                vec3 Bv = cross(N, normalize(Tv));
+                T = normalize(Tv); B = dot(Bv, B) < 0.0 ? -Bv : Bv; scale = 1.0;
+            }
+        }
         vec2 rg = texture2D(uTexN, materialUV).rg * 2.0 - 1.0;
         if (uTwoColorMetal) rg *= clamp(uMetalP.w, 0.0, 1.0);
         if (uHair) rg *= uHairP.w;   // 94CE8CCE: x, y = 0.3 (2 RG - 1) at the close-range fade s = 1
@@ -1192,7 +1203,9 @@ varying vec3 vGroundBlend;
 varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
 varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm;
 varying float vRockAlpha; varying vec3 vStaticPackedVector;
+varying vec3 vTangent;   // the level viewer draws no tangent stream: zero keeps the derivative frame
 void main() {
+    vTangent = vec3(0.0);
     vRockAlpha = aRockAlpha * aRockAlpha; // zone position-keyed colour alpha (inferred), else 1
     vGroundBlend = vec3(aGroundBlend.xy * aGroundBlend.xy * aGroundBlend.z, aGroundBlend.z);
     vec3 a = aInst0.xyz, b = aInst1.xyz, c = aInst2.xyz;
@@ -1521,7 +1534,7 @@ class Shading:
             raise ShaderError(f"{joints} joints exceed the {MAX_JOINTS}-joint preview limit")
         size = MAX_JOINTS
         if size not in self.programs:
-            self.programs[size] = (*self._link(VERTEX, FRAGMENT, dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE, aGroundBlend=GROUND_BLEND_ATTRIBUTE, aStaticPackedVector=STATIC_VECTOR_ATTRIBUTE), OPAQUE_UNIFORMS), size)
+            self.programs[size] = (*self._link(VERTEX, FRAGMENT, dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE, aGroundBlend=GROUND_BLEND_ATTRIBUTE, aStaticPackedVector=STATIC_VECTOR_ATTRIBUTE, aTangent=TANGENT_ATTRIBUTE), OPAQUE_UNIFORMS), size)
         return self.programs[size]
 
     def native_program_key(self, translation, srgb, instanced=False, scene=False, experimental=False, rule_preview=False):
@@ -1537,7 +1550,7 @@ class Shading:
         if key not in self.programs:
             surface = fragment_source(translation, srgb, experimental=experimental, rule_preview=rule_preview)
             names = (*OPAQUE_UNIFORMS, *(s['uniform'] for s in surface['samplers']))
-            attributes = INSTANCE_ATTRIBUTES if instanced else dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE, aGroundBlend=GROUND_BLEND_ATTRIBUTE, aStaticPackedVector=STATIC_VECTOR_ATTRIBUTE)
+            attributes = INSTANCE_ATTRIBUTES if instanced else dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE, aGroundBlend=GROUND_BLEND_ATTRIBUTE, aStaticPackedVector=STATIC_VECTOR_ATTRIBUTE, aTangent=TANGENT_ATTRIBUTE)
             source=surface['source'].replace('#version 120', '#version 120\n#define RC_SCENE_EFFECTS 1',1) if scene else surface['source']
             self.programs[key] = self._link(vertex, source, attributes, names)
         return self.programs[key]
@@ -1547,7 +1560,7 @@ class Shading:
         if "glass" not in self.programs:
             attributes = dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE,
                               aGroundBlend=GROUND_BLEND_ATTRIBUTE,
-                              aStaticPackedVector=STATIC_VECTOR_ATTRIBUTE)
+                              aStaticPackedVector=STATIC_VECTOR_ATTRIBUTE, aTangent=TANGENT_ATTRIBUTE)
             self.programs["glass"] = self._link(VERTEX, GLASS_FRAGMENT, attributes, GLASS_UNIFORMS)
         return self.programs["glass"]
 

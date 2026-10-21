@@ -286,12 +286,18 @@ def _prepare_viewport_numpy(payload, np):
                 raw_array = floats(raw_values)
         except (TypeError, ValueError):
             raw_array = None
+    tangent_values = payload.get("tangents")
+    tangent_array = None
+    if tangent_values is not None:
+        tangent_values = np.asarray(tangent_values, dtype=np.float64).reshape(-1, 3)
+        if tangent_values.shape == vertices.shape and np.isfinite(tangent_values).all():
+            tangent_array = floats(tangent_values)
     arrays = (floats(vertices), floats(normals),
               (ctypes.c_uint * triangles.size).from_buffer_copy(np.ascontiguousarray(triangles, dtype=np.uint32)),
               uv_array,
               floats(np.asarray(joints, dtype=np.float64)) if skinned else None,
               floats(np.asarray(weights, dtype=np.float64)) if skinned else None,
-              raw_array)
+              raw_array, tangent_array)
     low, high = vertices.min(axis=0), vertices.max(axis=0)
     center = (low + high) * 0.5
     offset = vertices - center
@@ -1140,7 +1146,7 @@ class ModelViewport(_TkFrame):
                 self._arrays = ((ctypes.c_float * len(flat_vertices))(*flat_vertices),
                                 (ctypes.c_float * len(flat_normals))(*flat_normals),
                                 (ctypes.c_uint * len(flat_indices))(*flat_indices), None, None, None, None)
-            vertex_array, normal_array, index_array, uv_array, joint_array, weight_array, raw_vector_array = (tuple(self._arrays) + (None,) * 7)[:7]
+            vertex_array, normal_array, index_array, uv_array, joint_array, weight_array, raw_vector_array, tangent_array = (tuple(self._arrays) + (None,) * 8)[:8]
             self._sync_buffers()
             gl.glEnableClientState(self.GL_VERTEX_ARRAY); gl.glEnableClientState(self.GL_NORMAL_ARRAY)
             gl.glVertexPointer(3, self.GL_FLOAT, 0, self._vptr(vertex_array))
@@ -1154,7 +1160,7 @@ class ModelViewport(_TkFrame):
             drawn = False
             if self._shading is not None and not self.shading_error:
                 try:
-                    self._draw_shaded(index_array, uv_array, joint_array, weight_array, batches, raw_vector_array)
+                    self._draw_shaded(index_array, uv_array, joint_array, weight_array, batches, raw_vector_array, tangent_array)
                     drawn = True
                 except Exception as exc:   # keep the fixed-function view working
                     self.shading_error = f"Shaded view unavailable: {exc}"
@@ -1261,9 +1267,9 @@ class ModelViewport(_TkFrame):
             gl.glPolygonMode(self.GL_FRONT_AND_BACK, self.GL_FILL)
             gl.glEnable(self.GL_LIGHTING)
 
-    def _draw_shaded(self, index_array, uv_array, joint_array, weight_array, batches, raw_vector_array=None):
+    def _draw_shaded(self, index_array, uv_array, joint_array, weight_array, batches, raw_vector_array=None, tangent_array=None):
         """GLSL path for every mode: GPU skinning, base colour, and the game BRDF."""
-        from rc2016.viewer.shading import TINT_DETAIL_TEXTURE_UNIT, ATTRIBUTES, STATIC_VECTOR_ATTRIBUTE, BONE_TEXTURE_UNIT, PICK_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, ARCH_SEQUENCE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT, GLOW_PARALLAX_TEXTURE_UNIT, PARALLAX_HEIGHT_TEXTURE_UNIT
+        from rc2016.viewer.shading import TINT_DETAIL_TEXTURE_UNIT, ATTRIBUTES, STATIC_VECTOR_ATTRIBUTE, TANGENT_ATTRIBUTE, BONE_TEXTURE_UNIT, PICK_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, ARCH_SEQUENCE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT, GLOW_PARALLAX_TEXTURE_UNIT, PARALLAX_HEIGHT_TEXTURE_UNIT
         gl, sh = self._gl, self._shading
         self.shading_warning = None
         program, u, size = sh.program(self._bone_count or 1)
@@ -1305,6 +1311,12 @@ class ModelViewport(_TkFrame):
         else:
             sh.glDisableVertexAttribArray(STATIC_VECTOR_ATTRIBUTE)
             sh.glVertexAttrib4f(STATIC_VECTOR_ATTRIBUTE, 0.0, 0.0, 0.0, 0.0)
+        if tangent_array is not None:
+            sh.glEnableVertexAttribArray(TANGENT_ATTRIBUTE)
+            sh.glVertexAttribPointer(TANGENT_ATTRIBUTE, 3, self.GL_FLOAT, 0, 0, self._vptr(tangent_array))
+        else:
+            sh.glDisableVertexAttribArray(TANGENT_ATTRIBUTE)
+            sh.glVertexAttrib4f(TANGENT_ATTRIBUTE, 0.0, 0.0, 0.0, 0.0)
         alpha = getattr(self,'_rock_alpha',None)
         if alpha is not None:
             sh.glEnableVertexAttribArray(14); sh.glVertexAttribPointer(14,1,self.GL_FLOAT,0,0,self._vptr(alpha))
@@ -1363,6 +1375,7 @@ class ModelViewport(_TkFrame):
         self._unbind_material_units()
         sh.glDisableVertexAttribArray(14)
         sh.glDisableVertexAttribArray(STATIC_VECTOR_ATTRIBUTE)
+        sh.glDisableVertexAttribArray(TANGENT_ATTRIBUTE)
         for location in ATTRIBUTES.values():
             sh.glDisableVertexAttribArray(location)
         sh.glUseProgram(0)

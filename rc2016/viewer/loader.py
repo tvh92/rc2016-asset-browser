@@ -47,11 +47,14 @@ def _mesh_payload_arrays(decoded, meshes, selected):
     as numpy arrays (viewport.prepare_viewport takes them as-is); uvs, skin and rock alpha as the
     same flat lists as the list path, since the viewport tests those for truth."""
     vertices,normals,raw_vectors,triangles,uvs,batches,joints,weights,alpha,alpha_sources=[],[],[],[],[],[],[],[],[],[]
+    tangents=[]
     raw_vector_eligible = True
     base=triangle_total=0
     for mesh in meshes:
         positions=np.asarray(mesh['positions'],dtype=np.float64).reshape(-1,3);count=len(positions)
         vertices.append(_basis_array(positions));normals.append(_basis_array(mesh['normals']))
+        tangent=mesh.get('tangents')
+        if tangent is not None and len(tangent)==count:tangents.append(_basis_array(tangent))
         raw = _static_raw_vectors(mesh, count)
         if raw is None:
             raw_vector_eligible = False
@@ -81,6 +84,7 @@ def _mesh_payload_arrays(decoded, meshes, selected):
     return dict(vertices=np.concatenate(vertices),normals=np.concatenate(normals),
                 raw_vectors=np.concatenate(raw_vectors) if raw_vector_eligible and len(raw_vectors)==len(vertices) else None,
                 static_vector_eligible=bool(raw_vector_eligible and len(raw_vectors)==len(vertices)),
+                tangents=np.concatenate(tangents) if len(tangents)==len(vertices) else None,
                 triangles=np.concatenate(triangles),
                 uvs=np.concatenate(uvs).tolist() if uvs is not None else None,batches=batches,
                 skin_joints=np.concatenate(joints).ravel().tolist(),skin_weights=np.concatenate(weights).ravel().tolist(),
@@ -96,6 +100,7 @@ def mesh_payload(decoded, lod='Highest', look=0):
     if chosen and all(isinstance(m['positions'],np.ndarray) for m in chosen):
         return _mesh_payload_arrays(decoded,chosen,selected)
     vertices,normals,raw_vectors,triangles,uvs,batches=[],[],[],[],[],[]
+    tangents=[]
     raw_vector_eligible = True
     # Up to 8 skin influences per vertex as flat (joint, weight) lists; all-zero
     # weights mean "not skinned" and the vertex keeps its rest position.
@@ -107,6 +112,8 @@ def mesh_payload(decoded, lod='Highest', look=0):
         # presentation_basis inlined: these loops dominate large models.
         vertices.extend([(x,-z,y) for x,y,z in mesh['positions']])
         normals.extend([(x,-z,y) for x,y,z in mesh['normals']])
+        if mesh.get('tangents') is not None and len(mesh['tangents'])==len(mesh['positions']):
+            tangents.extend([(float(x),-float(z),float(y)) for x,y,z in mesh['tangents']])
         raw = _static_raw_vectors(mesh, len(mesh['positions']))
         if raw is None:
             raw_vector_eligible = False
@@ -130,6 +137,7 @@ def mesh_payload(decoded, lod='Highest', look=0):
     if not vertices or not triangles:raise ValueError('Selected source look/LOD has no geometry')
     eligible = bool(raw_vector_eligible and len(raw_vectors)==len(vertices))
     return dict(vertices=vertices,normals=normals,raw_vectors=raw_vectors if eligible else None,
+                tangents=tangents if len(tangents)==len(vertices) else None,
                 static_vector_eligible=eligible,triangles=triangles,uvs=uvs,batches=batches,
                 skin_joints=skin_joints,skin_weights=skin_weights,rock_alpha=rock_alpha,rock_alpha_sources=rock_alpha_sources,
                 source_sha256=decoded['source_sha256'],selected_mesh_indices=sorted(selected),
