@@ -389,6 +389,8 @@ GLASS_CONSTANTS = {
     "glass_jn": ("tint", "rim bias", "colour", "weight", "gloss", "f0 base", "rim exp", "alpha scale"),
     "glass_cg02": ("rim colour", "gloss", "body", "tint scale", "tint", "env scale", "rim exp", "rim mult", "rim cap",
                    "alpha floor", "env exp", "alpha exp"),
+    "glass_thumper": ("tint", "rim bias", "body", "tiling", "f0 base", "gloss", "normal strength", "rim exp", "glow colour",
+                      "amplitude"),
 }
 
 
@@ -497,7 +499,7 @@ def _viewer_expected_constants(rule):
                   "cornea fresnel bias": p["fresnel_bias"], "cornea fresnel power": p["fresnel_power"],
                   "cornea reflect base": p["reflect_base"], "cornea alpha bias": p["alpha_bias"],
                   "cornea reflect weight": p["reflect_weight"]})
-    for key in ("glass_basic", "glass_cg02", "glass_jn"):
+    for key in ("glass_basic", "glass_cg02", "glass_jn", "glass_thumper"):
         if key in ported:
             p = terms[key]["params"]
             e.update({"glass " + name: p[name.replace(" ", "_")] for name in GLASS_CONSTANTS[key]})
@@ -626,7 +628,7 @@ def _viewer_required(rule, has_n):
         names += ["cornea fresnel normal scale", "cornea env normal scale", "cornea fresnel bias", "cornea fresnel power",
                   "cornea reflect base", "cornea alpha bias", "cornea reflect weight"]
         req("_n")
-    for key in ("glass_basic", "glass_cg02", "glass_jn"):
+    for key in ("glass_basic", "glass_cg02", "glass_jn", "glass_thumper"):
         if key in ported:
             glass = terms[key]
             names += ["glass " + name for name in GLASS_CONSTANTS[key]
@@ -634,6 +636,10 @@ def _viewer_required(rule, has_n):
                               name in (("alpha floor",) if key == "glass_cg02" else ("rim bias", "alpha scale")))]
             if key == "glass_cg02" and tex.get("_n"):
                 names += ["glass normal u", "glass normal v"]; req("_n")
+            if key == "glass_thumper":
+                if not tex.get("_n"):
+                    names.remove("glass normal strength")
+                req("_n", "_pick")
     if "screen" in ported:
         names += ["screen alpha base", "screen mask strength", "screen colour A", "screen colour B", "screen intensity A",
                   "screen intensity B"] + (["screen grid"] if tex.get("_n") else [])
@@ -866,7 +872,7 @@ def _validate_viewer_rule_material(source, material):
         constants = _viewer_check_constants_and_images(source, material, rule, upstream, has_n)
         return dict(status="passed_viewer_graph_rule_frontend", terms=ported, blend="opaque", constants=constants,
                     limitation=material.get("rc_shader_frontend_limitation"))
-    glass = next((key for key in ("glass_basic", "glass_cg02", "glass_jn") if key in ported), None)
+    glass = next((key for key in ("glass_basic", "glass_cg02", "glass_jn", "glass_thumper") if key in ported), None)
     if glass:   # Surface = Cull(blend(alpha; lit = diffuse/emission + F90 * Schlick-GGX))
         upstream = _viewer_upstream(output.inputs["Surface"])
         names = {node.name for node in upstream}

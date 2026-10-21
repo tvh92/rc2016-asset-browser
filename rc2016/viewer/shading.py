@@ -835,6 +835,13 @@ void main() {
 #   N' is the _n normal map (xy = 2t - 1, strength CB0[95] and fade taken as 1 and 0).
 # uKind 10, jn_glass E7118623: uA = tint.rgb, rim bias P3; uB = colour C.rgb, weight w; uC = P8, rim exponent P9, gloss.
 #   alpha = sat(P3 + rim); rgb = C + w * specular, F0 = sat(T / luma(T)) (P8 + rim^10); no body term in this table.
+# uKind 11, wpn_thumper_glove_glass 5226F404 (docs/material-decoding/thumper-glove-glass.md): uA = tint.rgb, rim bias P3;
+#   uB = body C.rgb, normal strength; uC = pattern tiling, P8, gloss, rim exponent P9; uD = glow colour K.rgb, amplitude.
+#   Patterns_cma (_n slot) at uv * tiling gives the normal (xy = sat(strength) (2t - 1), z weight 1 - x^2 - y^2) and S = its
+#   alpha; fx_noisetile02 (_pick slot) at (u/2, v/2) and (u/2, v/2 + 1/2) gives X = sat(0.454545 (n1 + n2) - 0.363636) with
+#   CB0[99] = 0. rim = sat(4 (1 - N.V)^P9) from the geometry normal, alpha = sat(sat(X + sat(P3 + rim)) attr0.w),
+#   F0 = P8 C S + rim^10, gloss = sat(gloss C.r S), tint k = sat(T / luma(T)). rgb = k specular(F0, N') + K amp (L + X):
+#   the light loop is the one of 4FC5703F; amp is CB0[115] (labelled presentation value), fog, SSR and probes are the viewer rig.
 GLASS_FRAGMENT = """
 #version 120
 uniform sampler2D uWaterHeightA; uniform sampler2D uWaterHeightB; uniform bool uHasWaterHeights;
@@ -916,6 +923,27 @@ void main() {
         vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
         vec3 S = glassSpec(N, V, L1, L2, C1, C2, F0, a, ambient);
         color = uKind == 8 ? uB.rgb * Ld + S : uB.rgb + uB.w * S;
+    } else if (uKind == 11) { // wpn_thumper_glove_glass 5226F404 (see the uKind 11 comment)
+        float rim = sat(4.0 * pow(om, uC.w));
+        vec4 pat = uHasN ? texture2D(uTexN, vUV * uC.x) : vec4(0.5, 0.5, 0.0, 0.0);
+        float nA = uHasP ? texture2D(uTexP, vec2(0.5 * vUV.x, 0.5 * vUV.y)).r : 0.0;
+        float nB = uHasP ? texture2D(uTexP, vec2(0.5 * vUV.x, 0.5 * vUV.y + 0.5)).r : 0.0;
+        float X = sat(0.45454546 * (nA + nB) - 0.36363637);
+        alpha = sat(X + sat(uA.w + rim));
+        if (uHasN) {   // Patterns_cma RG at uv * tiling, linear z weight (as uKind 2); tangent frame from screen derivatives
+            vec3 dp1 = dFdx(vPos), dp2 = dFdy(vPos); vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
+            vec3 p2 = cross(dp2, N), p1 = cross(N, dp1);
+            vec3 T = p2 * du1.x + p1 * du2.x, B = p2 * du1.y + p1 * du2.y;
+            float scale = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-20));
+            vec2 xy = sat(uB.w) * (pat.rg * 2.0 - 1.0);
+            N = normalize(T * scale * xy.x - B * scale * xy.y + N * (1.0 - dot(xy, xy)));
+        }
+        vec3 F0 = uC.y * uB.rgb * pat.a + vec3(pow(rim, 10.0));
+        float a = pow(2.0, -5.5 * sqrt(sat(uC.z * uB.r * pat.a)));
+        float luma = max(dot(vec3(0.2126, 0.7152, 0.0722), uA.rgb), 1e-6);
+        vec3 ambient = ambientLight(N);
+        vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
+        color = clamp(uA.rgb / luma, 0.0, 1.0) * glassSpec(N, V, L1, L2, C1, C2, F0, a, ambient) + uD.rgb * uD.w * (Ld + vec3(X));
     } else if (uKind == 9) { // character_glass_02 4DF1D438
         if (uHasN) {
             vec3 dp1 = dFdx(vPos), dp2 = dFdy(vPos); vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
@@ -1083,7 +1111,7 @@ FRAGMENT=FRAGMENT.replace('vec3 N = normalize(vNrm);','vec3 N = normalize(vNrm);
 FRAGMENT = FRAGMENT.replace("// @lighting\n", LIGHTING+FOG+_SCENE_OUTPUT)
 GLASS_FRAGMENT = GLASS_FRAGMENT.replace("// @lighting\n", LIGHTING+FOG)
 GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4, "bright_glow": 5,
-               "eye_cornea": 6, "number_display": 7, "glass_basic": 8, "glass_cg02": 9, "glass_jn": 10}
+               "eye_cornea": 6, "number_display": 7, "glass_basic": 8, "glass_cg02": 9, "glass_jn": 10, "glass_thumper": 11}
 
 
 def glass_uniforms(forward):
@@ -1112,6 +1140,9 @@ def glass_uniforms(forward):
     if forward["kind"] == "glass_jn":
         return (GLASS_KINDS["glass_jn"], (*p["tint"], p["rim_bias"]), (*p["colour"], p["weight"]), (p["f0_base"], p["rim_exp"], p["gloss"], 0.0),
                 (p["alpha_scale"], 0.0, 0.0, 0.0), (0.0,) * 4)
+    if forward["kind"] == "glass_thumper":
+        return (GLASS_KINDS["glass_thumper"], (*p["tint"], p["rim_bias"]), (*p["body"], p["normal_strength"]),
+                (p["tiling"], p["f0_base"], p["gloss"], p["rim_exp"]), (*p["glow_colour"], p["amplitude"]), (0.0,) * 4)
     if forward["kind"] == "glass_cg02":
         return (GLASS_KINDS["glass_cg02"], (*p["body"], p["gloss"]), (*p["tint"], p["tint_scale"]),
                 (p["env_scale"], p["env_exp"], p["alpha_floor"], p["alpha_exp"]), (*p["rim_colour"], p["rim_exp"]),

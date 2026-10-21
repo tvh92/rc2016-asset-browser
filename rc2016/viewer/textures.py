@@ -152,6 +152,21 @@ CLANK_ANTENNA_GLOSS_SQ = (-math.log2(1.0 - 0.9890101552009583) / 11.0) ** 2
 CLANK_ANTENNA_BLINK_RATE = 4.2                    # phase = 4.2 CB0[99]; no per-vertex phase term
 FLAT_SURFACE_GOO = dict(colour_key=0x34392B3C, f0_key=0x17DE448C, gloss_key=GLOSS_SCALE_KEY)
 BASIC_FLAT_COLOR_SHA256 = '6d9bcad5a9dab38dd5988195cc9e87514c08a90c6b8fa899c2d21f3e42c14f95'
+# Thumper glove glass forward program 5226F404 (pass contract 0). Graph and program identity are pinned by
+# tests/test_thumper_glove_glass_rule.py. Slots: API5/API6 fx_noisetile02 (0x0056CBD0, 0x39DBF715) and API7/API8
+# patterns_cma (0xABDAD780 alpha, 0x7AE34E7A rg), each pair bound to one texture by the graph defaults.
+THUMPER_GLOVE_GLASS_GRAPH_SHA256 = 'ffec1bf59b2567ad404a016412708a6df957f004250cf276d9c13e725743ad98'
+THUMPER_GLOVE_GLASS_NOISE_SLOTS = (0x49A7866B0056CBD0, 0x49A7866B39DBF715)
+THUMPER_GLOVE_GLASS_PATTERN_SLOTS = (0x49A7866B7AE34E7A, 0x49A7866BABDAD780)
+# Constants of the program that are not material keys: the lit-path glow colour K (CB0[115] multiplies it; the
+# amplitude is the labelled presentation value of BRIGHT_GLOW_PRESENTATION, captured 0.01), the noise term and
+# the engine inputs frozen in the rule. game_equivalence stays False: the program variant (5226F404 or the
+# normal-map-free 1D429528), the instance flags, CB0[99], CB0[115], fade and fog are not established per draw.
+THUMPER_GLOVE_GLASS_CONSTANTS = dict(
+    glow_colour=(0.39613863825798035, 2.0, 0.0), amplitude=0.5, amplitude_input='CB0 dword 115', captured_amplitude=0.01,
+    presentation=True, game_equivalence=False, writer='5226F404',
+    frozen_inputs=dict(CB0_99=0.0, CB0_95=1.0, instance_fade=0.0, attr0_w=1.0, instance_flags=0x2261,
+                       geometric_aa=0.0, fog=1.0, ssr=False, program_variant='5226F404 (pass contract 0)'))
 # Decoded writers that do not read _g as coloured F0 + gloss alpha (first matching prefix wins).
 # g_mode 'grey': F0 = grey spec*_g.G, gloss = sqrt(sat(gloss*_g.R)); 'grey_skin': the basic_skin
 # front-end (F0 cap 0.5). self_lit 'g_blue' takes the mask from _g.B instead of _c.a.
@@ -284,6 +299,17 @@ GRAPH_RULES = (
      dict(forward='glass_jn', writer='E7118623', params=(
          ('tint', 0x4B4DAB19, 3), ('rim_bias', 0x42170E5E, 1), ('colour', 0x7F058428, 3), ('weight', 0xEBF9478B, 1),
          ('gloss', 0x24F4CA4C, 1), ('f0_base', 0x62835AF9, 1), ('rim_exp', 0xECE213A3, 1)))),
+    # Thumper glove glass 5226F404 (table 0), exact graph + SHA only. Decoded with the translator's loop-opaque research
+    # mode (rc2016/research/forward_loops.py) against the same light-loop body as 4FC5703F; docs/material-decoding/
+    # thumper-glove-glass.md. Material-only terms (alpha, rim, normal, F0, gloss, tint) are checked numerically against
+    # the program; the engine light list, SSR, probes and fog are the viewer rig.
+    ('materialgraph/equipment/weapon/wpn_thumper_glove_glass/wpn_thumper_glove_glass.',
+     dict(forward='glass_thumper', writer='5226F404', constants=THUMPER_GLOVE_GLASS_CONSTANTS,
+          _graph_sha256=THUMPER_GLOVE_GLASS_GRAPH_SHA256,
+          slots={'_n': THUMPER_GLOVE_GLASS_PATTERN_SLOTS[0], '_pick': THUMPER_GLOVE_GLASS_NOISE_SLOTS[0]}, params=(
+         ('body', 0x79120089, 3), ('tint', 0x4B4DAB19, 3), ('rim_bias', 0x42170E5E, 1), ('tiling', 0x375AF9AC, 1),
+         ('f0_base', 0x62835AF9, 1), ('gloss', 0x24F4CA4C, 1), ('normal_strength', 0xCC7457CD, 1),
+         ('rim_exp', 0xECE213A3, 1)))),
     # Other models/enm_blarg_saucer/evidence/GLASS_DECODE.md (FEEC00CE). The graph binds two textures,
     # by slot hash: the colour-pick palette (api5) and Patterns_cma in the _n slot (api6). The
     # material's _c/_g use slots this graph does not have, so the writer never reads them.
@@ -1035,6 +1061,14 @@ def material_texture_paths(archive, material_path: str) -> dict:
             intensity_b=value(0x1F4CDDD9, 0.5), intensity_a=value(0xCD131891, 1.0)),
             time=0.0, time_input='CB0 dword 99', rate=value(0xD7B41D33, 0.1), writer='8716DC7A',
             frozen_inputs=dict(cutoff=0.0, alpha=1.0, fog_fade=1.0), **blend_state(material_flags(data)))
+    if rule.get('forward') == 'glass_thumper':
+        # The program reads each slot pair as one texture (noise at two coordinates, patterns rg and alpha at one);
+        # a material binding the pair to different textures is not the decoded program input.
+        pair_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
+        bound = lambda slot: pair_slots.get(slot) or slots.get(slot)
+        if any(not bound(a) or bound(a) != bound(b)
+               for a, b in (THUMPER_GLOVE_GLASS_NOISE_SLOTS, THUMPER_GLOVE_GLASS_PATTERN_SLOTS)):
+            rule = {}
     if rule.get('forward'):
         # Roles the writer binds by slot hash: the material's texture in that slot, else the graph's.
         material_slots = texture_slots(data, MATERIAL_SLOT_SECTION)

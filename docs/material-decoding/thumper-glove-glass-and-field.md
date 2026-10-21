@@ -1,6 +1,6 @@
-# Thumper glove glass and shockwave field: not previewable
+# Thumper glove glass and shockwave field: no source preview
 
-Neither material gets a `SOURCE_PREVIEW_POLICIES` rule. Each blocker is an input or a pass that no exact-hash freeze can supply without inventing a value. Archive-backed guards are in `tests/test_thumper_not_bindable.py`.
+Neither material gets a `SOURCE_PREVIEW_POLICIES` rule. The glove glass has a separate forward viewer rule, described in [thumper-glove-glass.md](thumper-glove-glass.md); the shockwave field has none. Each blocker is an input or a pass that no exact-hash freeze can supply without inventing a value. Archive-backed guards are in `tests/test_thumper_not_bindable.py`.
 
 ## Glove glass (`wpn_thumper_glove_glass`)
 
@@ -8,13 +8,13 @@ Graph SHA-256 `ffec1bf5…ad98`, material SHA-256 `4e6f27a3…4f70`, flags word 
 
 | Program | Shader id | Shape | Status |
 | --- | --- | --- | --- |
-| 0, 3 | `0x5226f404`, `0x1d429528` | Target 0 only, loop over the engine light list | Loop not shown to end; untranslated. Likely holds the visible glass colour (inferred). |
+| 0, 3 | `0x5226f404`, `0x1d429528` | Target 0 only, loop over the engine light list | Holds the visible glass colour. The translator refuses the loop; the material-only terms are read with the loop-opaque research mode (see the glass page). |
 | 1, 4 | `0x11408de9` | Three targets, all constant zero | Compiles; the shared placeholder writer (933 graphs), not glass content. |
 | 2, 5 | `0xdd9a126f`, `0x34256787` | Three targets, exec-masked | Untranslated. |
 
 - The decoded outputs of the exec-masked writers are `target0 = 0.5 * normalize(attribute1.xyz) + 0.5`, albedo 0, F0 0, gloss 0. A preview built from them would be black and must not be read as the glass look.
 - Their keep predicate reads `CB0[92..94, 96..102, 104..106]`, engine texture API 33, `POS_X`, `POS_Y`, `POS_W`, `FRONT_FACE`, `attribute0.0..2`, `attribute1.0..2` and three unresolved descriptor values. The `CB0[92..106]` block has no known meaning, and a review value for it would shape the discard mask directly with no evidence for any number.
-- None of the four code hashes equals `basic_glass`, `character_glass_02` or `jn_glass`, so the decoded glass rules in `docs/shading.md` (Forward glass writers) cannot be reused by hash. The parameter keys overlap those of `basic_glass` (tint `4B4DAB19`, P3 `42170E5E`, gloss `24F4CA4C`, P8 `62835AF9`, P9 `ECE213A3`), but the programs differ, and the key family alone is not a binding.
+- None of the four code hashes equals `basic_glass`, `character_glass_02` or `jn_glass`, so the decoded rules cannot be reused by hash. `5226f404` does share the light-loop body of `basic_glass` `4FC5703F`; that and the material-only terms are established on the glass page.
 
 ## Shockwave field (`proj_thumper_field`)
 

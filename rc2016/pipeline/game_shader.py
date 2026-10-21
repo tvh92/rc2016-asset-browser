@@ -1352,13 +1352,14 @@ def _viewer_skin_spec(P, skin, gR, gG, f, tinted):
     rgb = P.comb(*(P.sat(P.m('MULTIPLY', grey, ch)) for ch in P.sep(tinted))) if qwark else None
     return grey, gloss_in, rgb
 
-GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn')
+GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper')
 
 
 def _viewer_rule_glass(mat, rule, key, img):
-    """Forward glass writers basic_glass 4FC5703F, character_glass_02 4DF1D438 and jn_glass E7118623
-    (gl_shading.GLASS_FRAGMENT uKind 8, 9, 10). alpha comes from the rim, the lit part is a diffuse
-    term plus the writers' specular lobe (F0, F90 = sat(60 F0), Schlick), the blend from the flags word.
+    """Forward glass writers basic_glass 4FC5703F, character_glass_02 4DF1D438, jn_glass E7118623 and
+    wpn_thumper_glove_glass 5226F404 (gl_shading.GLASS_FRAGMENT uKind 8, 9, 10, 11). alpha comes from the rim,
+    the lit part is a diffuse term plus the writers' specular lobe (F0, F90 = sat(60 F0), Schlick), the blend
+    from the flags word.
     """
     nt = mat.node_tree; P = _ViewerNodes(nt)
     f = rule['terms'][key]; p = f['params']; blend = f.get('blend')
@@ -1385,6 +1386,8 @@ def _viewer_rule_glass(mat, rule, key, img):
         k = P.vsat(P.v('SCALE', tint, P.m('DIVIDE', 1.0, luma)))
         return P.vsat(P.v('SCALE', k, scale)) if scale is not None else k
 
+    shade = None   # shading normal of the BSDFs (the glove glass perturbs it with the pattern map); None = interpolated
+
     def spec_lobe(f0, gloss):   # F90 * Schlick-GGX(F0 / F90 -> 1) with F90 = sat(60 F0) collapsed to its maximum channel
         r, g, b = P.sep(f0)
         f90 = P.m('MULTIPLY', P.m('MAXIMUM', P.m('MAXIMUM', r, g), b), 60.0, clamp=True)
@@ -1395,6 +1398,8 @@ def _viewer_rule_glass(mat, rule, key, img):
         if 'Specular Tint' in bsdf.inputs:
             bsdf.inputs['Specular Tint'].default_value = (1, 1, 1, 1)
         P.L.new(base, bsdf.inputs['Base Color']); P.L.new(rough, bsdf.inputs['Roughness'])
+        if shade is not None:
+            P.L.new(shade, bsdf.inputs['Normal'])
         return bsdf.outputs[0], f90
 
     def zero():
@@ -1414,6 +1419,8 @@ def _viewer_rule_glass(mat, rule, key, img):
     def diffuse(colour):
         d = P.N.new('ShaderNodeBsdfDiffuse'); d.name = 'VR glass diffuse'
         P.L.new(colour, d.inputs['Color'])
+        if shade is not None:
+            P.L.new(shade, d.inputs['Normal'])
         return d.outputs[0]
 
     if key in ('glass_basic', 'glass_jn'):
@@ -1429,6 +1436,44 @@ def _viewer_rule_glass(mat, rule, key, img):
             em = P.N.new('ShaderNodeEmission'); em.name = 'VR glass emission'
             P.L.new(P.const3('glass colour', p['colour']), em.inputs['Color'])
             lit = add(em.outputs[0], scaled(lobe, P.m('MULTIPLY', f90, P.const('glass weight', p['weight']))), 'VR glass lit')
+    elif key == 'glass_thumper':
+        # 5226F404: rim from the geometry normal; Patterns_cma (_n slot) at uv * tiling gives the normal and S (its alpha);
+        # fx_noisetile02 (_pick slot) at (u/2, v/2) and (u/2, v/2 + 1/2) gives X; rgb = k specular(F0, N') + K amp (L + X).
+        rim = P.sat(P.m('MULTIPLY', P.m('POWER', om, P.const('glass rim exp', p['rim_exp'])), 4.0))
+        pattern, noise = img('_n'), img('_pick')
+        tiling = P.const('glass tiling', p['tiling'])
+        s_alpha, xy_normal = 0.0, None
+        if pattern is not None:
+            u, vb, _ = P.uv_split()
+            vec = P.comb(P.m('MULTIPLY', u, tiling), P.m('SUBTRACT', 1.0, P.m('MULTIPLY', P.m('SUBTRACT', 1.0, vb), tiling)))
+            pat = P.tex(pattern, vec, 'glass pattern map')
+            s_alpha = pat.outputs['Alpha']
+            x, y = P.rg(pat.outputs['Color'], P.sat(P.const('glass normal strength', p['normal_strength'])))
+            shade = P.v('NORMALIZE', P.tangent_normal(x, y, P.m('SUBTRACT', 1.0, P.dot2(x, y)), "glass pattern normal N'"))
+        else:
+            limits.append('no pattern texture bound: geometric normal and S = 0')
+        x_noise = 0.0
+        if noise is not None:
+            n_a = P.sep(P.tex(noise, P.game_uv(0.5, 0.5, 0.0, 0.0), 'glass noise map A').outputs['Color'])[0]
+            n_b = P.sep(P.tex(noise, P.game_uv(0.5, 0.5, 0.0, 0.5), 'glass noise map B').outputs['Color'])[0]
+            x_noise = P.sat(P.m('MULTIPLY_ADD', P.m('ADD', n_a, n_b), 0.45454546, -0.36363637))
+        else:
+            limits.append('no noise texture bound: X = 0')
+        alpha = P.sat(P.m('ADD', x_noise, P.sat(P.m('ADD', P.const('glass rim bias', p['rim_bias']), rim))))
+        body = P.const3('glass body', p['body'])
+        s_val = P.m('MULTIPLY', P.const('glass f0 base', p['f0_base']), s_alpha)
+        f0 = P.v('ADD', P.v('SCALE', body, s_val), P.comb(*(P.m('POWER', rim, 10.0),) * 3))
+        gloss = P.sat(P.m('MULTIPLY', P.m('MULTIPLY', P.const('glass gloss', p['gloss']), P.sep(body)[0]), s_alpha))
+        lobe, f90 = spec_lobe(P.v('MULTIPLY', tint_k(P.const3('glass tint', p['tint'])), f0), gloss)
+        glow = P.v('SCALE', P.const3('glass glow colour', p['glow_colour']), P.const('glass amplitude', p['amplitude']))
+        em = P.N.new('ShaderNodeEmission'); em.name = 'VR glass emission'
+        P.L.new(P.v('SCALE', glow, x_noise), em.inputs['Color'])
+        lit = add(add(diffuse(glow), em.outputs[0], 'VR glass glow'), scaled(lobe, f90), 'VR glass lit')
+        limits.append('Thumper glove glass 5226F404 (frozen preview, game_equivalence False): the sample X of fx_noisetile02 is taken at '
+                      'CB0[99] = 0; the glow colour K is multiplied by the labelled presentation amplitude CB0[115] = %g (captured '
+                      '%g elsewhere, not decoded for this pass); the tint multiplies F0 and the Principled F90 is collapsed to its '
+                      'maximum channel; the program variant (5226F404, with the pattern normal, or 1D429528 without it) is not '
+                      'selected per draw' % (p['amplitude'], p['captured_amplitude']))
     else:   # character_glass_02
         rim = P.sat(P.m('MULTIPLY', P.m('POWER', om, P.const('glass alpha exp', p['alpha_exp'])), 4.0))
         alpha = P.sat(P.m('ADD', P.const('glass alpha floor', p['alpha_floor']), rim))
