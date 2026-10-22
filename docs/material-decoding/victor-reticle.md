@@ -12,7 +12,7 @@ G = 2 A (e + r (e^10 - e))
 B = 2 A (b^2 + r (e^20 - b^2))
 ```
 
-Here `A` is engine-owned `CB0[115]`; it is absent from the material archive. The preview exposes it as the named `VICTOR_RETICLE_PRESENTATION_AMPLITUDE` input and uses the established 0.5 presentation convention. That is not a decoded game value. The albedo target is UNORM and the preview clamps it to `[0,1]` before deferred lighting. The writer's MRT2 terms are `F0 = (0, 0.0999755859375, 0.0999755859375)` and gloss `0`.
+Here `A` is `CB0[115]`, a frame constant shared by every draw and absent from the material archive ([frame constants](frame-constants.md): 0.01 in the one captured Veldin frame, where the reticle is not drawn). The preview exposes it as the named `VICTOR_RETICLE_PRESENTATION_AMPLITUDE` input and uses the established 0.5 presentation convention. That is not a decoded game value. The albedo target is UNORM and the preview clamps it to `[0,1]` before deferred lighting. The writer's MRT2 terms are `F0 = (0, 0.0999755859375, 0.0999755859375)` and gloss `0`.
 
 The MRT1 alpha stores self-lit data, not surface opacity. The source scalar is `exp2(5 * (0.20000000298023224 * log2(1 + API8.R * CB2[1]))) - 1`. The Viewer and Blender port add `clamped_albedo * source_scalar` through their shared deferred BRDF representation. Material flags `0x9` select additive, one-sided material state; the preview records this composition policy explicitly.
 

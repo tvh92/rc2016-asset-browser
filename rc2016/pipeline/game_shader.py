@@ -1283,7 +1283,7 @@ def _viewer_rule_bright_glow(mat, rule):
     if hasattr(mat, 'surface_render_method'):
         mat.surface_render_method = 'BLENDED'
     return ['Forward glow shell 93695188 (unlit, additive): emission amplitude CB0[115] is a labelled presentation value '
-            '(captured 0.01 near off, shown at %g), not decoded; blink sine frozen at 0, cutoff 0, alpha 1, fog fade 1; '
+            '(frame constant, 0.01 near off in the captured Veldin frame; shown at %g), not decoded; blink sine frozen at 0, cutoff 0, alpha 1, fog fade 1; '
             'depth write (flags bit 0x200000), pre-pass 79b1fbf4 and the vertex billboard/wobble branches are not modelled; '
             'Cycles blends scene-linear emission before the view transform, Camera Data distance assumes scene units equal game units'
             % p['amplitude']]
@@ -1470,8 +1470,8 @@ def _viewer_rule_glass(mat, rule, key, img):
         P.L.new(P.v('SCALE', glow, x_noise), em.inputs['Color'])
         lit = add(add(diffuse(glow), em.outputs[0], 'VR glass glow'), scaled(lobe, f90), 'VR glass lit')
         limits.append('Thumper glove glass 5226F404 (frozen preview, game_equivalence False): the sample X of fx_noisetile02 is taken at '
-                      'CB0[99] = 0; the glow colour K is multiplied by the labelled presentation amplitude CB0[115] = %g (captured '
-                      '%g elsewhere, not decoded for this pass); the tint multiplies F0 and the Principled F90 is collapsed to its '
+                      'CB0[99] = 0; the glow colour K is multiplied by the labelled presentation amplitude CB0[115] = %g (a frame '
+                      'constant: %g in the captured Veldin frame, not decoded for this object); the tint multiplies F0 and the Principled F90 is collapsed to its '
                       'maximum channel; the program variant (5226F404, with the pattern normal, or 1D429528 without it) is not '
                       'selected per draw' % (p['amplitude'], p['captured_amplitude']))
     else:   # character_glass_02
@@ -2156,7 +2156,7 @@ def apply_viewer_graph_rule(mat, source):
         add = nt.nodes.new('ShaderNodeAddShader'); add.name = add.label = 'VR facing glow add'; add.location = (650, -150)
         L.new(grp.outputs[0], add.inputs[0]); L.new(emit.outputs[0], add.inputs[1]); L.new(add.outputs[0], out.inputs['Surface'])
         view_terms.append('facing glow')
-        limits.append('facing glow: presentation amplitude %g for %s (captured %g; blink timing not decoded); fog, tint '
+        limits.append('facing glow: presentation amplitude %g for %s (frame constant, %g in the captured Veldin frame; blink timing not decoded); fog, tint '
                       'volumes and instance flag bit 5 lighting terms omitted (v8 = v9 = 1)'
                       % (facing['amplitude'], facing['amplitude_input'], facing['captured_amplitude']))
     if on('alpha_cut') and c is not None:
@@ -2223,8 +2223,8 @@ def _viewer_rule_number_display(mat, rule, img):
     out = P.N.new('ShaderNodeOutputMaterial'); out.is_active_output = True
     P.L.new(shader.outputs[0], out.inputs['Surface'])
     mat.use_backface_culling = not f.get('two_sided')
-    return ['Prisoner number forward program %s at t = 0: amplitude CB0[115] is a labelled presentation value (captured %g, shown at %g), '
-            'not decoded; the scroll time, CB0[107] (vignette), fog fade, vertex alpha and the discard predicate are frozen or not '
+    return ['Prisoner number forward program %s at t = 0: amplitude CB0[115] is a labelled presentation value (frame constant, %g in the captured Veldin frame; shown at %g), '
+            'not decoded; the scroll time, CB0[107] (vignette w = 0.5 + 0.1 CB0[107]; frozen at 0, in game a new value each frame), fog fade, vertex alpha and the discard predicate are frozen or not '
             'translated; the fifth texture sample (weight %g) is not modelled; the deferred writer of this graph outputs zero; '
             'the viewer tonemaps the colour, Cycles emits scene-linear'
             % (p['writer'], p['captured_amplitude'], p['amplitude'], p['s3_weight'])]

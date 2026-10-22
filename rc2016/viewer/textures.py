@@ -99,8 +99,9 @@ TINT_G_SWITCH = 0x7107A2D8   # < 0.5: grey _g (R gloss, G spec); >= 0.5: coloure
 # The key in the graph's own parameter table wins: materials can store keys their graph never reads.
 SELF_LIT_K_KEYS = (0x66EFA55B, 0x06F19114, 0xF8C61683)
 SPECULAR_SCALE_KEY, GLOSS_SCALE_KEY = 0x62835AF9, 0x24F4CA4C
-# Antenna glow shell forward colour pass 93695188: amplitude is engine constant CB0 dword 115, not decoded.
-# Same labelled convention as facing_glow: captured 0.01 (near off), presentation value 0.5. The blink
+# Antenna glow shell forward colour pass 93695188: amplitude is the frame constant CB0 dword 115, not decoded for this
+# object (docs/material-decoding/frame-constants.md: 0.01, near off, at every draw of the captured Veldin frame).
+# Same labelled convention as facing_glow: presentation value 0.5. The blink
 # sine and the cutoff, vertex alpha and fog fade are frozen (sin 0, cutoff 0, alpha 1, fog_fade 1).
 BRIGHT_GLOW_PRESENTATION = dict(amplitude=0.5, amplitude_input='CB0 dword 115', captured_amplitude=0.01,
                                 presentation=True, writer='93695188',
@@ -117,7 +118,8 @@ ROBOT_BULB_QWARK_TIP = dict(
     edge=[0.006048833020031452, 0.0, 0.0], centre=[0.4691011607646942, 0.002428215928375721, 0.0], exponent=0.1,
     weight=1.0, f0=0.20000000298023224, gloss_sq=0.3499999940395355, steady=1.0, k=50.0, writer='D14A48D7',
     albedo_white=True, preview_override='npc_qwark_robot_bulb drawn with the enm_qwark_light_center values')
-# CB0[115] is engine-owned and absent from the material archive; use the established labelled preview convention.
+# CB0[115] is a frame constant (0.01 in the captured Veldin frame) absent from the material archive; use the established
+# labelled preview convention.
 VICTOR_RETICLE_PRESENTATION_AMPLITUDE = 0.5
 # Eye cornea forward colour pass A36A97CB (hero_eye_cornea): literals read from the instruction words.
 # Fresnel/normal scales and the highlight lobe; the light loop, probes, screen-space reflections, fog and
@@ -131,7 +133,8 @@ EYE_CORNEA_CONSTANTS = dict(fresnel_normal_scale=0.555, fresnel_bias=1.001000046
 #   rgb = 3.5 amp T (2 Kc G + Ko), T = (1 - bscale B7) R8 X8, G = sat((1 - |(u - .5, 2v - 1)| - w) / (1 - w)),
 #   X8 = G8 (Shiv) or A8 (Qwark), sample 8 at uv + distort (B5 + B6); B5/B6/B7 are the B channels of API5/6/7 at
 #   (u, v), (u, 2v), (u, 10v). amp = CB0 dword 115 (labelled presentation value, as facing_glow), w = 0.5 + 0.1 CB0[107]
-#   with CB0[107] frozen at 0. The 5th texture sample (API9 at (u, 2v)) adds s3_weight * sample and is not modelled.
+#   with CB0[107] frozen at 0 (in game a new frame value in [0, 1) each frame, so w jitters in [0.5, 0.6)).
+#   The 5th texture sample (API9 at (u, 2v)) adds s3_weight * sample and is not modelled.
 NUMBER_DISPLAY_SLOTS = {'_pick': 0x49A7866B4AC18E9F, '_n': 0x49A7866B5DBA9ADC, '_g': 0x49A7866B39DBF715, '_c': 0x49A7866B0056CBD0}
 _NUMBER_DISPLAY_COMMON = dict(kc=(1.1130030155181885, 1.7709393501281738, 0.06296715140342712),
     ko=(0.4010990858078003, 1.524936556816101, 0.34239083528518677), amplitude=0.5, amplitude_input='CB0 dword 115',
@@ -182,7 +185,8 @@ THUMPER_GLOVE_GLASS_GRAPH_SHA256 = 'ffec1bf59b2567ad404a016412708a6df957f004250c
 THUMPER_GLOVE_GLASS_NOISE_SLOTS = (0x49A7866B0056CBD0, 0x49A7866B39DBF715)
 THUMPER_GLOVE_GLASS_PATTERN_SLOTS = (0x49A7866B7AE34E7A, 0x49A7866BABDAD780)
 # Constants of the program that are not material keys: the lit-path glow colour K (CB0[115] multiplies it; the
-# amplitude is the labelled presentation value of BRIGHT_GLOW_PRESENTATION, captured 0.01), the noise term and
+# amplitude is the labelled presentation value of BRIGHT_GLOW_PRESENTATION; the frame constant is 0.01 in the captured
+# Veldin frame), the noise term and
 # the engine inputs frozen in the rule. game_equivalence stays False: the program variant (5226F404 or the
 # normal-map-free 1D429528), the instance flags, CB0[99], CB0[115], fade and fog are not established per draw.
 THUMPER_GLOVE_GLASS_CONSTANTS = dict(
@@ -1213,7 +1217,7 @@ def material_texture_paths(archive, material_path: str) -> dict:
         # No texture, parameter, vertex colour or instance input: albedo is 1.0 and the glow is
         # f = pow(sat(N.V) - bias, exponent), a = a_scale*f + a_offset,
         # rgb += amplitude * (2a(1 + a), g_scale*f*(1 + a), 0). Literals from the instruction words.
-        # amplitude = CB0 dword 115 (captured 0.01, near off); 0.5 is the labelled presentation value
+        # amplitude = CB0 dword 115, a frame constant (0.01, near off, in the captured Veldin frame); 0.5 is the labelled presentation value
         # (x1 in the monitor writer 0x4dd02bef's 2*dw115). Blink timing is not decoded.
         result['facing_glow'] = dict(albedo=[1.0, 1.0, 1.0], bias=0.001, exponent=7.5,
             a_scale=0.30324259, a_offset=0.06301001, g_scale=0.03041702,

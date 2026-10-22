@@ -34,7 +34,7 @@ The `CB2[4]` terms are `|CB2[4]|^1.5` powers (sat of it, and exp2 of 1.5 log2 of
 
 ## Engine inputs in the capture
 
-`A`, `c` and `t` are dwords of `CB0`, the frame constant block. Neither the material, graph, atmosphere, level, zone, config, visual-effect nor actor data stores them per draw. The only capture is a Veldin frame (shadPS4 RenderDoc), so it has no Victor draw, but it settles what kind of inputs they are:
+`A`, `c` and `t` are dwords of `CB0`, the frame constant block shared by every draw ([frame constants](frame-constants.md) has the capture evidence and the other programs that read them). Neither the material, graph, atmosphere, level, zone, config, visual-effect nor actor data stores them per draw. The only capture is a Veldin frame (shadPS4 RenderDoc), so it has no Victor draw, but it settles what kind of inputs they are:
 
 - **They are frame-level.** A replay that reads each draw's own bound `CB0` (fragment buffer binding 0 at its descriptor offset plus the low byte of `buf_offsets0.x`) finds the same dwords 99, 107 and 115 at every draw that binds the frame block. That covers the lighting pass, the G-buffer draws and the forward effect draws that read dwords 107 and 115. No per-effect, per-actor or per-material value can reach the program through them.
 - **The captured frame.** At the lighting event (`CB0` bound at byte 54186240 of shadPS4's 64 MB constant ring), `t` = 259.7947, `c` = 0.3936, `A` = 0.01, fog colour `CB0[112..114]` = (1.665, 3.720, 5.201). The ring also keeps 20 earlier frames, each uploaded about 1150 times. Reading the dump from byte 0 (the oldest frame in the ring) gives a different frame: `c` = 0.5245.

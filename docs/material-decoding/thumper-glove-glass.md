@@ -28,7 +28,7 @@ Final colour before fog is `k (light-loop and sun and probe specular with F0, F9
 
 ## Limitations (kept visible in the rule and the Blender material)
 
-- `CB0[115]` is engine-owned. The rule uses the labelled presentation value 0.5 (`BRIGHT_GLOW_PRESENTATION`; captured 0.01 for other effects, not for this pass). At 0.01 the glow and diffuse term is nearly off.
+- `CB0[115]` is a frame constant shared by every draw ([frame constants](frame-constants.md)). The one captured frame (Veldin) has 0.01, the value any pass drawn in that frame sees; no capture identifies a draw of this program, and whether the value changes between levels or moments is unknown. The rule uses the labelled presentation value 0.5 (`BRIGHT_GLOW_PRESENTATION`). At 0.01 the glow and diffuse term is nearly off.
 - Frozen: `CB0[99] = 0`, normal-map fade `CB0[95] = 1`, instance fade 0, `attribute0.w = 1`, geometric AA width 0, instance flags `0x2261` (lit diffuse and specular paths), no dissolve.
 - Light list, shadows, probes, screen-space reflection, ambient occlusion and fog are the viewer rig or Cycles lighting.
 - Pass contract 1 (`0x1d429528`) is the variant without the pattern normal (no `0xCC7457CD`, three texture slots: API 5, 6, 7, C at `CB2[4..6]`). Which variant the game draws is not in the archive; the rule uses `0x5226f404`.

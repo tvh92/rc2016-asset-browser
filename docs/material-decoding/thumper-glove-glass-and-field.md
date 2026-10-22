@@ -27,7 +27,7 @@ Graph SHA-256 `61e30442…7dc2`, material SHA-256 `9057cb3f…7123`, flags `0x3A
 | 2, 5 | `0x27dda5f7` | Three targets, exec-masked on `attribute0.2`; albedo, F0 and gloss are constant zero |
 
 - The keep predicate of both writers is `X >= attribute0.2`, with `X` built from `CB2[0]`, UV0 and the API 5 sample. It reads no engine word, but `attribute0.2` has no provable value: the vertex programs that export it branch on per-draw runtime flags (see Known gaps in `docs/shading.md`).
-- The visible colour is in `0x9ca12194`, which is not a deferred writer, so there is no pass contract to bind. Its RGB is `a2.3 * (unresolved * CB0[115] * ...) + CB0[11x] * (1 - a2.3)`; the meaning of `CB0[112..115]` and the vertex source of `attribute2.3` and `attribute0.3` are not decoded.
+- The visible colour is in `0x9ca12194`, which is not a deferred writer, so there is no pass contract to bind. Its RGB is `a2.3 * (unresolved * CB0[115] * ...) + CB0[11x] * (1 - a2.3)`. That is the fog blend of the other forward effects: `CB0[112..114]` is the frame fog colour and `CB0[115]` the frame amplitude ([frame constants](frame-constants.md)), so `attribute2.3` takes the role of the fog transmittance. This program's vertex source of `attribute2.3`, and `attribute0.3`, are not traced.
 - Alpha is `sat(a0.3 * sat(max(0, sat(0.75 X + Y Z))))` with the nodes behind `X`, `Y` and `Z` not yet decoded. This is the only part that could later become a labelled preview, once those nodes and a source for `attribute0.3` are traced.
 
 ## Not decoded

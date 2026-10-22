@@ -877,7 +877,7 @@ MAP_O_MATIC_SCREEN_SOURCE_PREVIEW=dict(
         dict(kind='cb',api=0,dword=115,value=0.5,name='CB0[115]',
             meaning='albedo amplitude; 0.5 makes the writer factor 2A equal 1; presentation value, not a decoded game value',
             limitation='CB0[115] scales the albedo as 2A and is set to the presentation value 0.5 (factor 1). It is not a '
-                'decoded game value; amplitude captures of other writers read 0.01, so the in-game albedo brightness is unknown.'),
+                'decoded game value; CB0[115] is a frame constant, 0.01 at every draw of the one captured (Veldin) frame, so the in-game albedo brightness is unknown.'),
         dict(kind='cb',api=0,dword=139,value=0.0,name='CB0[139]',
             meaning='specular-AA width scale; 0 selects the flat-surface gloss; runtime upload/value unverified',
             limitation='CB0[139] is frozen at 0 so the screen-space specular-AA width term is neutral (flat-surface '
