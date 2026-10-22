@@ -181,6 +181,10 @@ CLANK_ANTENNA_BLINK_RATE = 4.2                    # phase = 4.2 CB0[99]; no per-
 FLAT_SURFACE_GOO = dict(colour_key=0x34392B3C, f0_key=0x17DE448C, gloss_key=GLOSS_SCALE_KEY)
 BASIC_FLAT_COLOR_SHA256 = '6d9bcad5a9dab38dd5988195cc9e87514c08a90c6b8fa899c2d21f3e42c14f95'
 GRASS_BLEND_GRAPH_SHA256 = '3634199da89150f03c56b21d855f83d840e4dd06eeb33b748f8e16df1bd7ba65'
+CORAL_BLEND_GRAPH_SHA256 = 'b97b38326b95942a3000aa36f591bec1c425366da27605531bc30851a97ecb43'
+# Volume slice order of the coral blend rule (rock_texture_volume on unit 15): the roles are the Blender image roles too.
+CORAL_BLEND_VOLUME_ROLES = ('_coral_n_wavy', '_coral_n_coral', '_coral_c_wavy', '_coral_c_rock', '_coral_g_rock', '_coral_g_sand',
+                            '_coral_cma', '_caustic_blur', '_caustic_noise', '_caustic_smoke')
 # Thumper glove glass forward program 5226F404 (pass contract 0). Graph and program identity are pinned by
 # tests/test_thumper_glove_glass_rule.py. Slots: API5/API6 fx_noisetile02 (0x0056CBD0, 0x39DBF715) and API7/API8
 # patterns_cma (0xABDAD780 alpha, 0x7AE34E7A rg), each pair bound to one texture by the graph defaults.
@@ -385,6 +389,10 @@ GRAPH_RULES = (
     # world-planar breakup colours and the two F0/gloss images; Research/decodes/2026-10-22_pokitaru-grass-tile-blend/README.md.
     ('materialgraph/environment/pokitaru/rock/pok_rock_blend_01/rp_pok_grass_blend_01.',
      dict(g_mode='grey', self_lit_key=None, grass_blend=True, _graph_sha256=GRASS_BLEND_GRAPH_SHA256)),
+    # 35571F99 deferred writer (pass 0): vertex-paint and cma blend of wavy sand, coral and rock layers (colour, F0/gloss, normal)
+    # plus the world-planar caustic term; Research/decodes/2026-10-22_pokitaru-coral-underwater-blend/README.md.
+    ('materialgraph/environment/pokitaru/ground/pok_gnd_coral_underwater_blend_01/pok_gnd_coral_underwater_blend_01.',
+     dict(g_mode='grey', self_lit_key=None, coral_blend=True, _graph_sha256=CORAL_BLEND_GRAPH_SHA256)),
     # FE32FE79/B01E7CB2 cached deferred outputs; Research/2026-10-22_from-PS4-animation-pipeline/decodes/Materials/Foliage/FOLIAGE_DECODE.md.
     ('materialgraph/global/basic_foliage/basic_foliage.',
      dict(g_mode='grey', self_lit_key=None, foliage=True, alpha_cut=True)),
@@ -1096,6 +1104,28 @@ def material_texture_paths(archive, material_path: str) -> dict:
         result['grass_blend'] = dict(threshold=value(0x2C23F963, 0.6), uv_scale=value(0x461F69B4, 1.0),
             layer_uv_scale=value(0xD83AB5FE, 1.0), world_tile=value(0xFD70EF49, 10.0),
             world_axes='native x, z', writer='A814EDCF')
+    if rule.get('coral_blend'):
+        # 35571F99 pass 0, API = 5 + resource index: 5 rock normal (_n), 6 coral colour (_c), 9 coral F0/gloss (_g), 11 wavy and
+        # 12 coral normals, 16 wavy and 17 rock colours, 7 and 8 the rock-file and default sand F0/gloss images, 10 the cma
+        # height mask, 13-15 the three world-planar noise images. CB2[0] and CB2[16] select the plain UV0 reading.
+        instance = texture_slots(data, MATERIAL_SLOT_SECTION)
+        wanted = {'_n': 0x22CE69BF, '_c': 0xAE5AE453, '_g': 0x3BD2CD7B, '_coral_n_wavy': 0x0EA6FD41, '_coral_n_coral': 0x59D0EB5C,
+                  '_coral_c_wavy': 0x24D2A874, '_coral_c_rock': 0xCA0A1A70, '_coral_g_rock': 0x8AD8B8C5, '_coral_g_sand': 0xC93D3881,
+                  '_coral_cma': 0x431F8CB6, '_caustic_blur': 0xC09A33A8, '_caustic_noise': 0xF9170F6D, '_caustic_smoke': 0x191F8A5B}
+        found = {role: instance.get(0x49A7866B00000000 | key) or slots.get(0x49A7866B00000000 | key) for role, key in wanted.items()}
+        if all(found.values()) and value(0x64979355, 0.0) <= 0.0 and value(0x1272AA68, 0.0) <= 0.0:
+            from rc2016.shaders.terrain_preview import DEFAULT_CONTROLS
+            result.update(found)
+            result.update(spec=1.0, gloss=1.0)
+            result['graph_identity'] = dict(path=rule['graph_path'], sha256=rule['graph_sha256'])
+            result['coral_blend'] = dict(height_width=value(0x432E1EB0, 0.5), water_top=value(0x03731780, 223.0),
+                water_fade=value(0xE115BFBC, 2.0), coral_f0=value(0x94D1A6CD, 1.0), coral_gloss=value(0xFC40B3E8, 1.0),
+                base_f0=value(0xD309D7AA, 1.0), base_gloss=value(0x6E30668C, 1.0),
+                noise_scale=[value(0x8F32B1BA, 0.21), value(0x446E621F, 0.19), value(0x09A6C314, 0.03)],
+                scroll=[[value(0xD3D017BA, 2.6), value(0x71E471AB, 2.4), value(0xD3D017BA, 2.6)],
+                        [value(0x3C127C84, -2.4), value(0x669F65E8, -2.6), value(0x3C127C84, -2.4)],
+                        [value(0x38E7ACB9, 0.105), value(0x48694D6E, 0.095), value(0x38E7ACB9, 0.105)]],
+                paint_fallback=[float(DEFAULT_CONTROLS[0]), float(DEFAULT_CONTROLS[1])], world_axes='native x, y, z', writer='35571F99')
     if rule.get('liquid_flow'):
         result.update(g_mode='grey', self_lit='g_blue', spec=flow['spec'], gloss=flow['gloss'], k=flow['k'])
     if rule.get('screen'):
@@ -1668,7 +1698,7 @@ def leaf_palette_sample(texture, u, v):
 
 
 def rock_texture_volume(textures):
-    """Four stored-value RGBA slices on unit 15, tiled without resampling.
+    """Four (the coral blend rule: ten) stored-value RGBA slices on unit 15, tiled without resampling.
 
     Each source keeps its texel spacing through its own UV scale. Sizes must
     divide the shared volume dimensions; unsupported sizes retain layer A.
@@ -1683,7 +1713,7 @@ def rock_texture_volume(textures):
         for y in range(0, height, image.height):
             for x in range(0, width, image.width): tile.paste(image, (x, y))
         slices.append(tile.tobytes())
-    return dict(path='rock-volume:' + '|'.join(t['path'] for t in textures), width=width, height=height,
+    return dict(path='rock-volume:' + '|'.join(t['path'] for t in textures), width=width, height=height, depth=len(slices),
                 pixels=b''.join(slices), scales=[(t['width']/width, t['height']/height) for t in textures],
                 source_paths=[t['path'] for t in textures])
 
@@ -1851,6 +1881,22 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
                     entry['grass_blend'] = dict(entry['grass_blend'], unresolved_layers=True, volume_error=str(exc))
             else:
                 entry['grass_blend'] = dict(entry['grass_blend'], unresolved_layers=True)
+        if paths.get('coral_blend'):
+            entry['coral_blend'] = paths['coral_blend']
+            # The ten further layers share the rock volume on unit 15 in CORAL_BLEND_VOLUME_ROLES order.
+            extra = []
+            for role in CORAL_BLEND_VOLUME_ROLES:
+                path = paths.get(role)
+                if path: cached(archive, cache, path)
+                extra.append(with_pixels(archive, cache, path))
+            if all(extra) and all(entry.get(role) for role in ('_c', '_g', '_n')):
+                try:
+                    entry['_rock_volume'] = rock_texture_volume(extra)
+                    entry['coral_blend']['extra_srgb'] = [bool(t.get('srgb')) for t in extra]
+                except ValueError as exc:
+                    entry['coral_blend'] = dict(entry['coral_blend'], unresolved_layers=True, volume_error=str(exc))
+            else:
+                entry['coral_blend'] = dict(entry['coral_blend'], unresolved_layers=True)
         if paths.get('rock_blend'):
             entry['rock_blend'] = paths['rock_blend']
             extra = []

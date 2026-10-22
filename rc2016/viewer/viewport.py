@@ -853,6 +853,11 @@ class ModelViewport(_TkFrame):
             if entry.get('_rock_volume'):
                 uploaded['_rock_volume'] = (self._upload_rock_volume(entry['_rock_volume']), False)
                 uploaded['grass_blend']['scales'] = entry['_rock_volume']['scales']
+        if entry.get('coral_blend'):
+            uploaded['coral_blend'] = dict(entry['coral_blend'])
+            if entry.get('_rock_volume'):
+                uploaded['_rock_volume'] = (self._upload_rock_volume(entry['_rock_volume']), False)
+                uploaded['coral_blend']['scales'] = entry['_rock_volume']['scales']
         for key in ('parallax', 'parallax_normal'):
             if key in entry: uploaded[key] = entry[key]
         if "bng" in entry:
@@ -915,7 +920,7 @@ class ModelViewport(_TkFrame):
             gl.glTexParameteri(0x806F,p,v)
         gl.glPixelStorei(self.GL_UNPACK_ALIGNMENT,1)
         pixels=ctypes.create_string_buffer(texture['pixels'])
-        upload(0x806F,0,0x8058,texture['width'],texture['height'],4,0,0x1908,self.GL_UNSIGNED_BYTE,pixels)
+        upload(0x806F,0,0x8058,texture['width'],texture['height'],texture.get('depth',4),0,0x1908,self.GL_UNSIGNED_BYTE,pixels)
         gl.glBindTexture(0x806F,0)
         if gl.glGetError():
             gl.glDeleteTextures(1,ctypes.byref(name)); raise RuntimeError('RockBlend volume upload failed')
@@ -1496,6 +1501,20 @@ class ModelViewport(_TkFrame):
         sh.glUniform1i(u['uGrassBlend'],1 if grass and volume and not grass.get('unresolved_layers') and level == 2 else 0)
         sh.glUniform4f(u['uGrassP'],*(float(grass.get(k,d)) for k,d in (('threshold',.6),('uv_scale',1.),('layer_uv_scale',1.))),
                        1./max(1e-5,float(grass.get('world_tile',1.))))
+        coral = entry.get('coral_blend') or {}
+        sh.glUniform1i(u['uCoralBlend'],1 if coral and volume and not coral.get('unresolved_layers') and level == 2 else 0)
+        if coral and volume and not coral.get('unresolved_layers'):
+            scroll = coral.get('scroll', ((0.,)*3,)*3); scales = coral.get('scales', [(1.,1.)]*10); flags = coral.get('extra_srgb', (False,)*10)
+            sh.glUniform4f(u['uCoralA'], float(coral.get('height_width', .5)), float(coral.get('water_top', 223.)),
+                           float(coral.get('water_fade', 2.)), 0.0)   # 0.333 CB0[99]: static render, game time 0
+            sh.glUniform4f(u['uCoralB'], float(coral.get('coral_f0', 1.)), float(coral.get('coral_gloss', 1.)),
+                           float(coral.get('base_f0', 1.)), float(coral.get('base_gloss', 1.)))
+            sh.glUniform3f(u['uCoralNoise'], *(float(x) for x in coral.get('noise_scale', (1., 1., 1.))))
+            sh.glUniform3fv(u['uCoralScroll'], 3, (ctypes.c_float * 9)(*(float(x) for row in scroll for x in row)))
+            fallback = getattr(self, 'ground_preview_controls', None) or coral.get('paint_fallback', (0.75, 0.5))
+            sh.glUniform2fv(u['uCoralPaint'], 1, (ctypes.c_float * 2)(float(fallback[0]) ** 2, float(fallback[1]) ** 2))
+            sh.glUniform2fv(u['uCoralScale'], 10, (ctypes.c_float * 20)(*(float(x) for pair in scales for x in pair)))
+            sh.glUniform1fv(u['uCoralSrgb'], 10, (ctypes.c_float * 10)(*(1.0 if x else 0.0 for x in flags)))
         sh.glUniform3f(u['uRockSrgb'],*(float(x) for x in (rock or grass).get('extra_srgb',(False,)*3)))
         scales = (rock or grass).get('scales',[(1.,1.)]*4)
         sh.glUniform4f(u['uRockScale0'],*scales[0],*scales[1]); sh.glUniform4f(u['uRockScale1'],*scales[2],*scales[3])

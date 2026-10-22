@@ -252,6 +252,14 @@ uniform vec4 uRockScale0; uniform vec4 uRockScale1;
 uniform vec3 uRockTint; uniform vec4 uRockP; // exponent, tint amount, mask strength, sharpness
 uniform vec3 uRockBreakup; // A3DAA047: enabled, 1/max(1e-5, world tile T), layer UV scale U
 uniform bool uGrassBlend; uniform vec4 uGrassP; // A814EDCF: CB2[0], tile/g9 UV scale CB2[1], rock UV scale CB2[6], 1/world tile CB2[4]
+// 35571F99 (Coral Underwater): ten layers on the unit-15 volume (slice order CORAL_BLEND_VOLUME_ROLES), each with its own texel scale and
+// stored-value sRGB flag. uCoralA = height-blend width CB2[13], water top CB2[14], fade range CB2[15], 0.333 CB0[99] (static: 0);
+// uCoralB = coral F0 and gloss scales CB2[1], CB2[2], base F0 and gloss scales CB2[11], CB2[12]; uCoralNoise = noise scales CB2[8], CB2[9],
+// CB2[10]; uCoralScroll = per-noise (x, y, z) scroll; uCoralPaint = squared review fallback for vertices without paint.
+uniform bool uCoralBlend; uniform vec4 uCoralA; uniform vec4 uCoralB; uniform vec3 uCoralNoise; uniform vec3 uCoralScroll[3];
+uniform vec2 uCoralPaint; uniform vec2 uCoralScale[10]; uniform float uCoralSrgb[10];
+#define CORAL(I, UV) texture3D(uRockTex, vec3(fract(UV) * uCoralScale[I], (float(I) + 0.5) / 10.0))
+#define CORAL_LIN(I, UV) (uCoralSrgb[I] > 0.5 ? linear(CORAL(I, UV).rgb) : CORAL(I, UV).rgb)
 varying float vRockAlpha; varying vec3 vGroundBlend;
 uniform int uMode;           // 0 solid, 1 base colour, 2 game BRDF, 3 flat colour (wireframe)
 uniform vec3 uColor;
@@ -644,7 +652,7 @@ void main() {
             }
         }
         // Image "up" is decreasing t (top row first), so the bitangent is -B.
-        if (uRockBlend || uGrassBlend) z = 1.0 - dot(rg, rg);
+        if (uRockBlend || uGrassBlend || uCoralBlend) z = 1.0 - dot(rg, rg);
         vec3 baseN = normalize(T * scale * rg.x - B * scale * rg.y + N * z);
         if (uBngKind == 3 || uBngKind == 6 || uBngKind == 8 || uBngKind == 9) {
             float rim = 1.00100004673 - clamp(dot(baseN, V), 0.0, 1.0);
@@ -677,7 +685,17 @@ void main() {
             float ws = inversesqrt(max(max(dot(wT, wT), dot(wB, wB)), 1e-20));
             grassQ = normalize(wT * ws * rg.x - wB * ws * rg.y + wn * z).y;
         }
-        if (uRockBlend) {
+        if (uCoralBlend) {
+            // 35571F99 MRT0: the rock _n (UV0), the wavy and the coral normal, each x, y = 2 RG - 1, z = 1 - x*x - y*y, in one frame;
+            // N = lerp(lerp(wavy, coral, paint.y), rock, m) with m from the cma red and paint.x (engine normal strength and close-range fade taken as 1).
+            vec2 paintC = vGroundBlend.xy + (1.0 - vGroundBlend.z) * uCoralPaint;
+            float mC = clamp((CORAL(6, vUV).r - (paintC.x - uCoralA.x)) / uCoralA.x, 0.0, 1.0);
+            vec2 rW = CORAL(0, vUV).rg * 2.0 - 1.0, rC = CORAL(1, vUV).rg * 2.0 - 1.0;
+            vec3 nR = normalize(T * scale * rg.x - B * scale * rg.y + N * z);
+            vec3 nW = normalize(T * scale * rW.x - B * scale * rW.y + N * (1.0 - dot(rW, rW)));
+            vec3 nC = normalize(T * scale * rC.x - B * scale * rC.y + N * (1.0 - dot(rC, rC)));
+            N = normalize(mix(mix(nW, nC, paintC.y), nR, mC));
+        } else if (uRockBlend) {
             vec2 r2 = texture3D(uRockTex, vec3(fract(materialUV)*uRockScale1.zw, 0.875)).rg*2.0-1.0;
             vec3 n2 = normalize(T*scale*r2.x - B*scale*r2.y + N*(1.0-dot(r2,r2)));
             N = normalize(mix(baseN, n2, rockWeight));
@@ -703,6 +721,32 @@ void main() {
         vec3 g9 = texture3D(uRockTex, vec3(fract(vUV * uGrassP.y) * uRockScale1.xy, 0.625)).rgb;
         if (uRockSrgb.z > 0.5) g9 = linear(g9);
         rockG = mix(g8, g9, gw);
+    }
+    if (uMode == 2 && uCoralBlend) {
+        // 35571F99 MRT1/MRT2 (pass 0): m = sat((cma.r - (p.x - CB2[13])) / CB2[13]) with p the vertex red and green (squared in the vertex stage);
+        // albedo = sat(caustic + lerp(lerp(wavy, coral, p.y), rock, m)); F0 = lerp(CB2[11] lerp(rock g, sand g, p.y).G, CB2[1] coral g.G, m),
+        // gloss input = lerp(CB2[12] lerp(rock g, sand g, p.y).R, CB2[2] coral g.R, m). The self-lit mask (coral c .R) needs K, which is unbound.
+        vec2 paintC = vGroundBlend.xy + (1.0 - vGroundBlend.z) * uCoralPaint;
+        float mC = clamp((CORAL(6, vUV).r - (paintC.x - uCoralA.x)) / uCoralA.x, 0.0, 1.0);
+        vec3 coralC = uHasC ? texture2D(uTexC, vUV).rgb : vec3(0.0); if (uSrgbC) coralC = linear(coralC);
+        // Caustic: three world-planar noise images at (y, z), (z, x), (x, y), blended by the native normal weights max(7 |n| - 1.4, 0).
+        vec3 cwp = vTintWorldPos, cwn = abs(normalize(vTintWorldNrm));
+        vec3 cw = max(7.0 * cwn - 1.4, vec3(0.0)); cw /= max(cw.x + cw.y + cw.z, 1e-6);
+        vec3 qa = (cwp + uCoralScroll[0] * uCoralA.w) * uCoralNoise.x;
+        vec3 qb = (cwp + uCoralScroll[1] * uCoralA.w) * uCoralNoise.y;
+        vec3 qc = (cwp + uCoralScroll[2] * uCoralA.w) * uCoralNoise.z;
+        float nBlur = cw.x * CORAL(7, qa.yz).r + cw.y * CORAL(7, qa.zx).r + cw.z * CORAL(7, qa.xy).r;
+        float nNoise = cw.x * CORAL(8, qb.yz).r + cw.y * CORAL(8, qb.zx).r + cw.z * CORAL(8, qb.xy).r;
+        float nSmoke = cw.x * CORAL(9, qc.yz).r + cw.y * CORAL(9, qc.zx).r + cw.z * CORAL(9, qc.xy).r;
+        float cTop = uCoralA.y, cLow = uCoralA.y - uCoralA.z;
+        float cFade = cwp.y > cLow ? (cTop - clamp(cwp.y, cLow, cTop)) / uCoralA.z : 1.0;
+        float caustic = cFade * clamp(0.952381 * nSmoke + 0.047619, 0.0, 1.0)
+                      * clamp(0.0472 - pow(abs(nBlur - nNoise), 1.52), 0.0, 1.0);
+        albedo = clamp(mix(mix(CORAL_LIN(2, vUV), coralC, paintC.y), CORAL_LIN(3, vUV), mC) + vec3(caustic), 0.0, 1.0);
+        vec3 gA = CORAL_LIN(4, vUV), gB = CORAL_LIN(5, vUV);
+        vec3 gC = uHasG ? texture2D(uTexG, vUV).rgb : vec3(0.0); if (uSrgbG) gC = linear(gC);
+        rockG = vec3(mix(uCoralB.w * mix(gA.r, gB.r, paintC.y), uCoralB.y * gC.r, mC),
+                     mix(uCoralB.z * mix(gA.g, gB.g, paintC.y), uCoralB.x * gC.g, mC), 0.0);
     }
     if (uMode == 2 && uLeafColour && uHasCma) {
         // 0476D929 / CDD7CD94: F = (1.001 - sat(N.V))^CB2[0]; L = S * mix(c.rgb, cma.r, F); (Novalis material S; global literal 0.5)
@@ -805,7 +849,7 @@ void main() {
             if (uFlatSurface) { F0 = vec3(uFlatSpec.x); gloss = sqrt(clamp(uFlatSpec.y, 0.0, 1.0)); }
             if (uVictorReticle) { F0 = uReticleF0; gloss = 0.0; }
             if (uTintVariant >= 3) gloss = sqrt(clamp(uGlossScale * gl.r * 2.0 * tintDetailMask, 0.0, 1.0));
-            if (uRockBlend || uGrassBlend) { F0 = vec3(uSpecScale*rockG.g); gloss = sqrt(clamp(uGlossScale*rockG.r, 0.0, 1.0)); }
+            if (uRockBlend || uGrassBlend || uCoralBlend) { F0 = vec3(uSpecScale*rockG.g); gloss = sqrt(clamp(uGlossScale*rockG.r, 0.0, 1.0)); }
             if (uTwoColorMetal) gloss = sqrt(clamp(uGlossScale * gl.r * (1.0 - metalRim), 0.0, 1.0));
             F0 *= uSpecTint;
             vec3 F90 = clamp(60.0 * F0, 0.0, 1.0);
@@ -1235,7 +1279,7 @@ def glass_uniforms(forward, time=None):
 
 OPAQUE_UNIFORMS = (
     "uPuddles", "uPuddleTex", "uHasPuddleAtlas", "uPuddle0", "uPuddle1", "uPuddle2", "uPuddle3", "uPuddleNoiseScale", "uPuddleRippleScale",
-    "uRockBlend", "uGrassBlend", "uGrassP", "uRockTex", "uRockSrgb", "uRockScale0", "uRockScale1", "uRockTint", "uRockP", "uRockBreakup",
+    "uRockBlend", "uGrassBlend", "uGrassP", "uCoralBlend", "uCoralA", "uCoralB", "uCoralNoise", "uCoralScroll", "uCoralPaint", "uCoralScale", "uCoralSrgb", "uRockTex", "uRockSrgb", "uRockScale0", "uRockScale1", "uRockTint", "uRockP", "uRockBreakup",
     "uSkin", "uBoneTex", "uBoneWidth", "uMode", "uColor", "uTexC", "uTexG", "uTexN", "uHasC", "uHasG", "uHasN",
     "uSrgbC", "uSrgbG", "uGMode", "uSpecScale", "uGlossScale", "uSelfLitG", "uK",
     "uTwoColorMetal", "uMetalDiffuseA", "uMetalDiffuseB", "uMetalSpecA", "uMetalSpecB", "uMetalP",
@@ -1477,6 +1521,8 @@ class Shading:
         "glUniform3f": (None, [ctypes.c_int, ctypes.c_float, ctypes.c_float, ctypes.c_float]),
         "glUniform4f": (None, [ctypes.c_int, ctypes.c_float, ctypes.c_float, ctypes.c_float, ctypes.c_float]),
         "glUniform3fv": (None, [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]),
+        "glUniform2fv": (None, [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]),
+        "glUniform1fv": (None, [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]),
         "glUniformMatrix3fv": (None, [ctypes.c_int, ctypes.c_int, ctypes.c_ubyte, ctypes.c_void_p]),
         "glUniformMatrix4fv": (None, [ctypes.c_int, ctypes.c_int, ctypes.c_ubyte, ctypes.c_void_p]),
         "glVertexAttribPointer": (None, [ctypes.c_uint, ctypes.c_int, ctypes.c_uint, ctypes.c_ubyte, ctypes.c_int, ctypes.c_void_p]),

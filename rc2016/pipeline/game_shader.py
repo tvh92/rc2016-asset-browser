@@ -1109,7 +1109,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 16
+VIEWER_RULE_FRONTEND_VERSION = 17
 
 
 def _viewer_rule_images(nt):
@@ -2011,6 +2011,59 @@ def apply_viewer_graph_rule(mat, source):
                           'breakup colour its native x, z; the game uses world space, equal only for an unrotated model at the origin. '
                           'Back faces rely on Blender flipping the shading normal (the source flips q by the front-face sign); '
                           'normal strength CB0[95] and the instance fade are taken as 1 and 0')
+        if on('coral_blend'):          # 35571F99: vertex-paint / cma blend of wavy sand, coral and rock, plus the world-planar caustic
+            cb = terms['coral_blend']
+            uv0 = P.game_uv(1.0, 1.0)
+            tex0 = lambda role, label: P.tex(img(role), uv0, label).outputs['Color']
+            paint = P.N.new('ShaderNodeAttribute'); paint.attribute_name = 'RC zone ground blend'; paint.name = 'VR coral blend vertex paint'
+            split = P.N.new('ShaderNodeSeparateColor'); split.mode = 'RGB'; P._set(split.inputs[0], paint.outputs['Color'])
+            unpainted = P.m('SUBTRACT', 1.0, split.outputs[2])      # missing attribute: zero, so the review fallback applies
+            fb = [P.const('coral blend paint fallback %s' % name, float(v) ** 2) for name, v in zip(('red', 'green'), cb['paint_fallback'])]
+            p0 = P.m('MULTIPLY_ADD', unpainted, fb[0], split.outputs[0]); p1 = P.m('MULTIPLY_ADD', unpainted, fb[1], split.outputs[1])
+            width = P.const('coral blend height width', cb['height_width'])
+            cma = P.sep(tex0('_coral_cma', 'coral cma'))[0]
+            cm = P.sat(P.m('DIVIDE', P.m('SUBTRACT', cma, P.m('SUBTRACT', p0, width)), width))
+            def layer_normal(sample, label):
+                lx, ly = P.rg(sample)
+                return P.tangent_normal(lx, ly, P.m('SUBTRACT', 1.0, P.dot2(lx, ly)), label)
+            n_wavy = layer_normal(tex0('_coral_n_wavy', 'coral wavy normal sample'), 'VR coral wavy normal')
+            n_coral = layer_normal(tex0('_coral_n_coral', 'coral coral normal sample'), 'VR coral coral normal')
+            normal = final_n = P.v('NORMALIZE', P.vlerp(P.vlerp(n_wavy, n_coral, p1), base_normal, cm))
+            # Caustic: three world-planar noise images at (y, z), (z, x), (x, y), weighted by max(7 |n| - 1.4, 0) of the native normal.
+            px, py, pz = P.sep(P.native_position())
+            wts = [P.m('MAXIMUM', P.m('MULTIPLY_ADD', a, 7.0, -1.4), 0.0) for a in P.sep(P.v('ABSOLUTE', P.native_normal()))]
+            total = P.m('MAXIMUM', P.m('ADD', P.m('ADD', wts[0], wts[1]), wts[2]), 1e-6)
+            wts = [P.m('DIVIDE', w, total) for w in wts]
+            def planar(role, name, scale):
+                s = P.const('coral blend %s scale' % name, scale)
+                q = [P.m('MULTIPLY', a, s) for a in (px, py, pz)]
+                total_r = None
+                for w, (a, b) in zip(wts, ((q[1], q[2]), (q[2], q[0]), (q[0], q[1]))):
+                    r = P.sep(P.tex(img(role), P.gl_coord(a, b), 'caustic %s sample' % name).outputs['Color'])[0]
+                    total_r = P.m('MULTIPLY', w, r) if total_r is None else P.m('MULTIPLY_ADD', w, r, total_r)
+                return total_r
+            blur = planar('_caustic_blur', 'blur', cb['noise_scale'][0])
+            noise = planar('_caustic_noise', 'noise', cb['noise_scale'][1])
+            smoke = planar('_caustic_smoke', 'smoke', cb['noise_scale'][2])
+            top = P.const('coral blend water top', cb['water_top']); rng = P.const('coral blend water fade', cb['water_fade'])
+            fade = P.m('DIVIDE', P.m('SUBTRACT', top, P.m('MINIMUM', P.m('MAXIMUM', py, P.m('SUBTRACT', top, rng)), top)), rng)
+            s1 = P.sat(P.m('MULTIPLY_ADD', smoke, 0.952381, 0.047619))
+            s2 = P.sat(P.m('SUBTRACT', 0.0472, P.m('POWER', P.m('ABSOLUTE', P.m('SUBTRACT', blur, noise)), 1.52)))
+            caustic = P.m('MULTIPLY', P.m('MULTIPLY', fade, s1), s2)
+            base_c = P.vlerp(tex0('_coral_c_wavy', 'coral wavy colour'), c.outputs['Color'], p1)
+            albedo = P.vsat(P.v('ADD', P.vlerp(base_c, tex0('_coral_c_rock', 'coral rock colour'), cm), P.comb(caustic, caustic, caustic)))
+            g_base = P.vlerp(tex0('_coral_g_rock', 'coral rock F0 gloss'), tex0('_coral_g_sand', 'coral sand F0 gloss'), p1)
+            br, bg, _ = P.sep(g_base)
+            cr, cg, _ = P.sep(g_rgb if g is not None else (0.0, 0.0, 0.0))
+            gloss_mix = P.lerp(P.m('MULTIPLY', br, P.const('coral blend base gloss', cb['base_gloss'])),
+                               P.m('MULTIPLY', cr, P.const('coral blend coral gloss', cb['coral_gloss'])), cm)
+            f0_mix = P.lerp(P.m('MULTIPLY', bg, P.const('coral blend base F0', cb['base_f0'])),
+                            P.m('MULTIPLY', cg, P.const('coral blend coral F0', cb['coral_f0'])), cm)
+            rock_g = P.comb(gloss_mix, f0_mix, 0.0)
+            limits.append('coral_blend: the vertex paint (red and green squared) comes from the explicit RC zone ground blend attribute, '
+                          'inferred from zone-keyed colours, and unpainted vertices use the review fallback; the caustic scroll is frozen at '
+                          'game time 0, the planes and height use object-space (model) native axes, and normal strength and fade are taken as 1; '
+                          'the self-lit mask (coral colour red) is not applied because its constant K is unbound')
         if leaf and leaf.get('mapped_fresnel'): albedo = leaf_albedo(albedo, final_n)
         metal_tint = None
         if metal:                     # 1012E99D forward two-colour terms with the final normal

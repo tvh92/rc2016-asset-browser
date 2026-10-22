@@ -475,6 +475,15 @@ def _viewer_expected_constants(rule):
         r = terms["grass_blend"]
         e.update({"grass blend threshold": r["threshold"], "grass blend tile uv scale": r["uv_scale"],
                   "grass blend rock uv scale": r["layer_uv_scale"], "grass blend world tile": r["world_tile"]})
+    if "coral_blend" in ported:
+        r = terms["coral_blend"]
+        e.update({"coral blend height width": r["height_width"], "coral blend water top": r["water_top"],
+                  "coral blend water fade": r["water_fade"], "coral blend coral F0": r["coral_f0"],
+                  "coral blend coral gloss": r["coral_gloss"], "coral blend base F0": r["base_f0"],
+                  "coral blend base gloss": r["base_gloss"], "coral blend blur scale": r["noise_scale"][0],
+                  "coral blend noise scale": r["noise_scale"][1], "coral blend smoke scale": r["noise_scale"][2],
+                  "coral blend paint fallback red": r["paint_fallback"][0] ** 2,
+                  "coral blend paint fallback green": r["paint_fallback"][1] ** 2})
     if "bng" in ported or "bng_detail" in ported:
         b = terms["bng"]
         e.update({"bng colour": b["colour"], **{"bng P%d" % i: x for i, x in enumerate(b["params"])},
@@ -615,6 +624,12 @@ def _viewer_required(rule, has_n):
     if "grass_blend" in ported:
         names += ["grass blend threshold", "grass blend tile uv scale", "grass blend rock uv scale", "grass blend world tile"]
         req("_grass_r", "_grass_g", "_grass_g9")
+    if "coral_blend" in ported:
+        names += ["coral blend height width", "coral blend water top", "coral blend water fade", "coral blend coral F0",
+                  "coral blend coral gloss", "coral blend base F0", "coral blend base gloss", "coral blend blur scale",
+                  "coral blend noise scale", "coral blend smoke scale", "coral blend paint fallback red", "coral blend paint fallback green"]
+        req("_coral_n_wavy", "_coral_n_coral", "_coral_c_wavy", "_coral_c_rock", "_coral_g_rock", "_coral_g_sand", "_coral_cma",
+            "_caustic_blur", "_caustic_noise", "_caustic_smoke")
     if "bng" in ported:
         kind = int(terms["bng"]["kind"])
         names += ["bng colour"] if kind == 1 or (kind == 4 and lit) else [] if kind in (4, 10) else ["bng P0", "bng P1"] if kind == 7 else (["bng P0", "bng P1"] + (["bng P2"] if kind == 6 else []) if has_n else [])
