@@ -277,6 +277,19 @@ class NumberDisplayTests(unittest.TestCase):
         self.assertEqual(glass_uniforms(qwark['forward'])[1][:2], (0.005, 0.2))
         self.assertEqual(glass_uniforms(qwark['forward'])[1][3], 1.0)
 
+    def test_clip_clock_jitters_the_vignette_per_game_frame(self):
+        from rc2016.viewer.shading import frame_fade
+        _, got = extract(SHIV, {})
+        forward = got['forward']
+        self.assertEqual(glass_uniforms(forward)[1][2], 0.5)                         # static: CB0[107] = 0
+        widths = [glass_uniforms(forward, n / 30.0 + 0.01)[1][2] for n in range(300)]
+        self.assertTrue(all(0.5 <= w < 0.6 for w in widths))                          # w = 0.5 + 0.1 CB0[107]
+        self.assertEqual(widths[7], 0.5 + 0.1 * frame_fade(7 / 30.0 + 0.01, 30.0))
+        self.assertGreater(len(set(widths)), 290)                                     # a new value each 30 Hz frame
+        self.assertEqual(glass_uniforms(forward, 10.01)[1][2], glass_uniforms(forward, 10.03)[1][2])
+        from rc2016.viewer.viewport import ModelViewport
+        self.assertIn('number_display', ModelViewport.EFFECT_KINDS)
+
     def test_glsl_and_rule(self):
         for text in ('uKind == 7', '3.5 * uB.w * tt', '2.0 * vUV.y - 1.0', 'uA.w > 0.5 ? s8.a : s8.g'):
             self.assertIn(text, GLASS_FRAGMENT)

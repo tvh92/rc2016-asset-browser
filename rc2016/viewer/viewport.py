@@ -1589,7 +1589,7 @@ class ModelViewport(_TkFrame):
             sh.glUniform1i(u[name], int(bool(texture and texture[1])))
         texture = entry.get('_n'); sh.glUniform1i(u['uScreenSrgbN'], int(bool(texture and texture[1])))
 
-    EFFECT_KINDS = frozenset({'ion_tubes'})   # forward rules with a time term (CB0[99])
+    EFFECT_KINDS = frozenset({'ion_tubes', 'number_display'})   # forward rules with a per-frame term (CB0[99] or CB0[107])
     EFFECT_PERIOD = 1024.0                    # seconds; every decoded scroll has period 1, so the wrap is invisible
 
     def _effect_time(self, forward):

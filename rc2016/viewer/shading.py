@@ -863,7 +863,7 @@ void main() {
 #   rgb = 2 amp (1 + m) (base + rim F^5 + m C g), m = sat(API6.R + API5.G) from the one electricity image, F = max(N.V - 0.001, 0);
 #   uB.y = t = CB0[99] scrolls both bolt samples (game time in seconds: 0 for static renders, the viewer clock when animating);
 #   uB.z = c = CB0[107], the dissolve threshold: m = sat((t5 + t6 - c) / max(1e-5, 1 - c)) (a new value each game frame:
-#   0 = full streaks for static renders, ion_tubes_fade(t) when animating);
+#   0 = full streaks for static renders, frame_fade(t) when animating);
 #   fog blend 1, CB2[4] = 0, vertex alpha 1 (opaque, back faces culled).
 GLASS_FRAGMENT = """
 #version 120
@@ -1146,7 +1146,7 @@ GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water":
                "ion_tubes": 12}
 
 
-def ion_tubes_fade(time, rate):
+def frame_fade(time, rate):
     """Presentation stand-in for the per-frame CB0[107]: a value in [0, 1) hashed from the game frame index floor(time * rate).
 
     The capture shows a new, uncorrelated value each frame; the engine's generator is unknown, so this is not its sequence."""
@@ -1159,17 +1159,18 @@ def ion_tubes_fade(time, rate):
 def glass_uniforms(forward, time=None):
     """(uKind, uA, uB, uC, uD) for a texture_preview 'forward' entry.
 
-    ``time`` replaces the rule's static CB0[99] for the time-driven kinds (ion_tubes), and with it the static CB0[107] by
-    the per-frame ``ion_tubes_fade``; None keeps both."""
+    ``time`` is the model view's clip clock for the time-driven kinds: it replaces the ion tubes' static CB0[99], and for
+    the ion tubes and the number displays the static CB0[107] by the per-frame ``frame_fade``; None keeps the static values."""
     p = forward["params"]
     if forward["kind"] == "screen":
         return (3, (*p["colour_a"], p["intensity_a"]), (*p["colour_b"], p["intensity_b"]),
                 (p["alpha_base"], p["mask_strength"], p["grid"], 0.0), (0.0,) * 4)
     if forward["kind"] == "number_display":
-        return (GLASS_KINDS["number_display"], (p["distort"], p["b_scale"], p["vignette_w"], 1.0 if p["alpha_channel"] else 0.0), (0.0, 0.0, 0.0, p["amplitude"]),
+        w = p["vignette_w"] if time is None else p["vignette_w"] + p["vignette_slope"] * frame_fade(time, p["fade_frame_rate"])
+        return (GLASS_KINDS["number_display"], (p["distort"], p["b_scale"], w, 1.0 if p["alpha_channel"] else 0.0), (0.0, 0.0, 0.0, p["amplitude"]),
                 (*p["kc"], 0.0), (*p["ko"], 0.0))
     if forward["kind"] == "ion_tubes":
-        clock = (p["time"], p["fade"]) if time is None else (time, ion_tubes_fade(time, p["fade_frame_rate"]))
+        clock = (p["time"], p["fade"]) if time is None else (time, frame_fade(time, p["fade_frame_rate"]))
         return (GLASS_KINDS["ion_tubes"], (*p["colour"], p["gain"]), (p["amplitude"], *clock, 0.0),
                 (*p["base"], 0.0), (*p["rim"], 0.0))
     if forward["kind"] == "bright_glow":

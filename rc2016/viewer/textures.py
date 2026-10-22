@@ -133,12 +133,14 @@ EYE_CORNEA_CONSTANTS = dict(fresnel_normal_scale=0.555, fresnel_bias=1.001000046
 #   rgb = 3.5 amp T (2 Kc G + Ko), T = (1 - bscale B7) R8 X8, G = sat((1 - |(u - .5, 2v - 1)| - w) / (1 - w)),
 #   X8 = G8 (Shiv) or A8 (Qwark), sample 8 at uv + distort (B5 + B6); B5/B6/B7 are the B channels of API5/6/7 at
 #   (u, v), (u, 2v), (u, 10v). amp = CB0 dword 115 (labelled presentation value, as facing_glow), w = 0.5 + 0.1 CB0[107]
-#   with CB0[107] frozen at 0 (in game a new frame value in [0, 1) each frame, so w jitters in [0.5, 0.6)).
+#   with CB0[107] at 0 for static renders (in game a new frame value in [0, 1) each frame, so w jitters in [0.5, 0.6);
+#   the model view's clip clock reproduces that with the hashed per-frame stand-in, shading.frame_fade).
 #   The 5th texture sample (API9 at (u, 2v)) adds s3_weight * sample and is not modelled.
 NUMBER_DISPLAY_SLOTS = {'_pick': 0x49A7866B4AC18E9F, '_n': 0x49A7866B5DBA9ADC, '_g': 0x49A7866B39DBF715, '_c': 0x49A7866B0056CBD0}
 _NUMBER_DISPLAY_COMMON = dict(kc=(1.1130030155181885, 1.7709393501281738, 0.06296715140342712),
     ko=(0.4010990858078003, 1.524936556816101, 0.34239083528518677), amplitude=0.5, amplitude_input='CB0 dword 115',
-    captured_amplitude=0.01, presentation=True, vignette_w=0.5, time=0.0, time_input='CB0 dword 99',
+    captured_amplitude=0.01, presentation=True, vignette_w=0.5, vignette_slope=0.1, fade_frame_rate=30.0,
+    time=0.0, time_input='CB0 dword 99',
     frozen_inputs=dict(cb0_107=0.0, fog_fade=1.0, alpha=1.0, cutoff='discard predicate not translated'))
 NUMBER_DISPLAY_SHIV = dict(_NUMBER_DISPLAY_COMMON, variant='shiv', writer='8CEC816B', distort=0.01, b_scale=0.1, s3_weight=0.05, alpha_channel=False)
 NUMBER_DISPLAY_QWARK = dict(_NUMBER_DISPLAY_COMMON, variant='qwark', writer='37C85F4C', distort=0.005, b_scale=0.2, s3_weight=0.1, alpha_channel=True)
