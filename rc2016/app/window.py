@@ -1094,8 +1094,17 @@ class AssetBrowserApp:
             return
         # Include animations: each model's clips are read first, and the user picks which to export.
         clip_choices: dict[str, tuple[str, ...]] = {}
+        models = [r for r in selected if isinstance(r, PipelineModelCandidate)]
         if export_mode and options.animations == "all":
-            picked = self._choose_clips([r for r in selected if isinstance(r, PipelineModelCandidate)], output, options)
+            picked = self._choose_clips(models, output, options)
+            if picked is None:
+                self._append_log("Export cancelled", "muted")
+                return
+            clip_choices = picked
+        elif blend_mode and self.export_animations_var.get() and self.export_skeleton_var.get():
+            # The Blender scene reads the same clips as a glTF export, so its picker lists them the same way.
+            reader_options = replace(self.export_options(), formats=("glb",), animations="all", skeleton=True)
+            picked = self._choose_clips(models, output, reader_options)
             if picked is None:
                 self._append_log("Export cancelled", "muted")
                 return
@@ -1136,7 +1145,8 @@ class AssetBrowserApp:
                 selectors, Path(self.source_var.get()), output, interpreter, blender,
                 event=lambda kind, **values: self.events.put((kind, values)), clip_only=research_clip,
                 group_blend=group_name, blend_only=True, skeleton=self.export_skeleton_var.get(),
-                animations=self.export_animations_var.get())
+                animations=self.export_animations_var.get(),
+                clip_choices={r.archive_path: clip_choices[r.model_id] for r in models if r.model_id in clip_choices})
         else:
             self.runner = BatchRunner(
                 [record for record in selected if isinstance(record, ModelCandidate)], output, interpreter,

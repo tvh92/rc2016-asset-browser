@@ -133,6 +133,8 @@ def apply_titlebar(window, dark: bool | None = None) -> None:
         active = ctypes.windll.user32.GetForegroundWindow() == hwnd
         for state in (not active, active):
             ctypes.windll.user32.SendMessageW(hwnd, 0x0086, int(state), 0)
+        # RDW_FRAME | RDW_INVALIDATE | RDW_UPDATENOW: repaint the caption now, not at the next paint of the window.
+        ctypes.windll.user32.RedrawWindow(hwnd, None, None, 0x0501)
     except (AttributeError, OSError):
         pass
 

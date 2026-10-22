@@ -1,5 +1,6 @@
 """One-command orchestration. All runtime output stays below OutputRoot."""
 import argparse
+import copy
 from collections import Counter
 import json
 import os
@@ -1528,6 +1529,11 @@ def assemble_group_blend(selection,manifest,args,log):
         log('group_blend_failed',**error)
 
 
+def model_path_key(path):
+    """Archive path as a --clip-map key: '/' separators, case folded."""
+    return str(path).replace(chr(92),'/').casefold()
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--extracted-root',type=Path,required=True);parser.add_argument('--output-root',type=Path,required=True)
@@ -1558,6 +1564,7 @@ def main():
     parser.add_argument('--novalis-atmosphere-sun',action='store_true',help='Add the source-valued Novalis RGB96 Sun candidate; runtime field names remain pending')
     parser.add_argument('--no-skeleton',action='store_true',help='Export static meshes only: no joints, skin weights, rig or animation. Mirrors the viewer export option Skeleton off.')
     parser.add_argument('--no-animations',action='store_true',help='Keep the joints and skin weights but write no animation clips. Mirrors the viewer export option Include animations off.')
+    parser.add_argument('--clip-map',type=Path,default=None,help='JSON file {"<archive path>": ["name:<clip>", ...]}: each listed model gets only those clips, in this one run (the Blender picker). An empty list writes that model without animations. Models not listed get every clip. Cannot be combined with --clip, --no-animations or --no-skeleton.')
     args=parser.parse_args()
     if bool(args.list_models_json) == bool(args.model or args.all_models):
         parser.error('Choose exactly one of --model/--all-models or --list-models-json')
@@ -1565,6 +1572,11 @@ def main():
         parser.error('--no-skeleton exports no animation; drop --clip, --active-clip, --cinematic-clips and --borrow-animset')
     if args.no_animations and (args.clip or args.active_clip or args.cinematic_clips or args.borrow_animset):
         parser.error('--no-animations writes no clips; drop --clip, --active-clip, --cinematic-clips and --borrow-animset')
+    if args.clip_map and (args.clip or args.no_animations or args.no_skeleton):
+        parser.error('--clip-map chooses the clips of each model; drop --clip, --no-animations and --no-skeleton')
+    clip_map={}
+    if args.clip_map:
+        clip_map={model_path_key(path):list(clips) for path,clips in load(args.clip_map).items()}
     args.extracted_root,args.output_root=ensure_separate(args.extracted_root,args.output_root)
     if not args.extracted_root.is_dir():parser.error('ExtractedRoot is not a directory')
     from rc2016.pipeline.scene_defaults import load_shared_lighting
@@ -1661,12 +1673,18 @@ def main():
             args.game_lighting['environment_exr']=str((args.output_root/'lighting'/'novalis'/'novalis_environment.exr').resolve())
             dump(args.output_root/'reports/selected_game_lighting.json',args.game_lighting)
             manifest['selected_game_lighting']=args.game_lighting
+        def model_arguments(key):
+            """The run's arguments for one model: its own clip list when --clip-map names it."""
+            choice=clip_map.get(model_path_key(archive.entries[key]['path']))
+            if choice is None:return args
+            chosen=copy.copy(args);chosen.clip=choice;chosen.no_animations=not choice
+            return chosen
         run_selected_models(
             selection, manifest,
-            lambda key: process_model(key,index,args,code_hash,previous,log),
+            lambda key: process_model(key,index,model_arguments(key),code_hash,previous,log),
             archive.checkpoint, lambda: dump(manifest_path,manifest), log,
             model_name=lambda key: archive.entries[key]['path'])
-        if args.clip:
+        if args.clip or clip_map:
             log('source_linked_assemblies_skipped',reason='Explicit clip selection does not satisfy fixed source-linked variant coverage contracts')
         else:
             assemble_source_linked_fusion(selection,manifest,index,args,code_hash,previous,log)

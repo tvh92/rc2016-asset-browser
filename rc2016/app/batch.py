@@ -10,6 +10,7 @@ import queue
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from typing import Callable, Iterable, Sequence
@@ -442,8 +443,11 @@ class PipelineBatchRunner:
                  python_executable: Path, blender_executable: Path,
                  skip_verified: bool = True, event: Callable[..., None] | None = None,
                  blend_only: bool = False, clip_only: tuple[str, str] | None = None, group_blend: str = "",
-                 skeleton: bool = True, animations: bool = True):
+                 skeleton: bool = True, animations: bool = True,
+                 clip_choices: dict[str, tuple[str, ...]] | None = None):
         self.selectors = tuple(dict.fromkeys(s.strip() for s in selectors if s.strip()))
+        # (archive path -> viewer clip labels to keep): a model absent from it keeps every clip; [] keeps none.
+        self.clip_choices = dict(clip_choices or {})
         # (archive path, clip name): that model is built in its own run with only this clip.
         self.clip_only = clip_only if clip_only and clip_only[0] in self.selectors else None
         self.extracted_root = extracted_root.expanduser().resolve()
@@ -478,7 +482,8 @@ class PipelineBatchRunner:
                 except OSError:
                     pass
 
-    def command(self, selectors: Sequence[str] | None = None, clips: Sequence[str] = ()) -> list[str]:
+    def command(self, selectors: Sequence[str] | None = None, clips: Sequence[str] = (),
+                clip_map: Path | None = None) -> list[str]:
         command = [str(self.python_executable), "-u", str(PIPELINE_CLI),
                    "--extracted-root", str(self.extracted_root),
                    "--output-root", str(self.output_root),
@@ -489,6 +494,8 @@ class PipelineBatchRunner:
             command.extend(("--clip", clip))
         if clips:   # the viewer can offer a cutscene shot, which only the cutscene scan lists
             command.append("--cinematic-clips")
+        elif clip_map:   # each picked model keeps its own clips, in this same run
+            command.extend(("--clip-map", str(clip_map)))
         # Blend-only output keeps no receipts, so every run rebuilds.
         if self.skip_verified and not self.blend_only:
             command.append("--reuse-cache")
@@ -523,15 +530,32 @@ class PipelineBatchRunner:
             runs = ([(rest, ())] if rest else []) + [((path,), ("name:" + name,))]
         self._started = 0
         return_code = 0
-        for selectors, clips in runs:
-            if self.cancel_requested.is_set():
-                break
-            return_code = self._run_cli(self.command(selectors, clips)) or return_code
+        clip_map = self._write_clip_map()
+        try:
+            for selectors, clips in runs:
+                if self.cancel_requested.is_set():
+                    break
+                return_code = self._run_cli(self.command(selectors, clips, clip_map)) or return_code
+        finally:
+            if clip_map:
+                clip_map.unlink(missing_ok=True)
         cancelled = self.cancel_requested.is_set()
         self.event("batch_done", returncode=return_code, cancelled=cancelled)
         if return_code and not cancelled:
             raise RuntimeError(f"Full pipeline exited with code {return_code}")
         return return_code
+
+    def _write_clip_map(self) -> Path | None:
+        """A --clip-map file for the models whose clips the picker changed; the viewer's single clip has its own run."""
+        choices = {path: [f"name:{label.rpartition(': ')[2]}" for label in labels]
+                   for path, labels in self.clip_choices.items()
+                   if path in self.selectors and not (self.clip_only and path == self.clip_only[0])}
+        if not choices:
+            return None
+        handle, name = tempfile.mkstemp(prefix="rc2016-clip-map-", suffix=".json")
+        with os.fdopen(handle, "w", encoding="utf-8") as file:
+            json.dump(choices, file)
+        return Path(name)
 
     def _run_cli(self, command: list[str]) -> int:
         env = os.environ.copy()

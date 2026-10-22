@@ -1,7 +1,10 @@
 """The animation picker: when it opens, what it selects, and its search, filter and tick rules."""
+import json
 import unittest
 from dataclasses import dataclass
+from pathlib import Path
 
+from rc2016.app.batch import PipelineBatchRunner
 from rc2016.app.clip_picker import CLIP_PICKER_THRESHOLD, ClipPickerDialog, ClipSelection, needs_picker
 
 
@@ -108,6 +111,45 @@ class DialogRows(unittest.TestCase):
         dialog._escape()
         self.assertEqual(dialog.search.get(), "")
         self.assertTrue(dialog.top.winfo_exists())
+
+
+class BlendClipMap(unittest.TestCase):
+    """The Blender scene path: picked clips reach the pipeline as one --clip-map file, in the same run."""
+
+    def runner(self, selectors, choices, clip_only=None):
+        return PipelineBatchRunner(selectors, Path("game"), Path("out"), Path("python.exe"), Path("blender.exe"),
+                                   clip_choices=choices, clip_only=clip_only)
+
+    def test_picked_models_get_a_clip_map_and_unpicked_models_keep_every_clip(self):
+        runner = self.runner(["a/hero.model", "b/npc.model"], {"a/hero.model": ("Run00", "Wave: Idle")})
+        clip_map = runner._write_clip_map()
+        try:
+            self.assertEqual(json.loads(clip_map.read_text(encoding="utf-8")),
+                             {"a/hero.model": ["name:Run00", "name:Idle"]})
+            command = runner.command(runner.selectors, (), clip_map)
+            self.assertEqual(command[command.index("--clip-map") + 1], str(clip_map))
+            self.assertNotIn("--clip", command)
+        finally:
+            clip_map.unlink()
+
+    def test_an_empty_choice_is_written_as_an_empty_list(self):
+        runner = self.runner(["a/hero.model"], {"a/hero.model": ()})
+        clip_map = runner._write_clip_map()
+        try:
+            self.assertEqual(json.loads(clip_map.read_text(encoding="utf-8")), {"a/hero.model": []})
+        finally:
+            clip_map.unlink()
+
+    def test_no_choices_writes_no_file_and_the_viewer_single_clip_keeps_its_own_run(self):
+        self.assertIsNone(self.runner(["a/hero.model"], {})._write_clip_map())
+        runner = self.runner(["a/hero.model"], {"a/hero.model": ("Run00",)}, clip_only=("a/hero.model", "Run01"))
+        self.assertIsNone(runner._write_clip_map())
+
+    def test_clip_map_is_not_added_to_a_run_that_selects_clips(self):
+        runner = self.runner(["a/hero.model"], {})
+        command = runner.command(["a/hero.model"], ("name:Run01",), Path("map.json"))
+        self.assertNotIn("--clip-map", command)
+        self.assertIn("--clip", command)
 
 
 if __name__ == "__main__":
