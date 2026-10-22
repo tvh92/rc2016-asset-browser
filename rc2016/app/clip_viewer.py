@@ -1,6 +1,7 @@
 """Viewport beside the clip picker: plays the clip clicked in the list on its model."""
 from __future__ import annotations
 
+import copy
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
@@ -67,22 +68,33 @@ class ClipViewer:
     # Worker thread
 
     def _read(self, key, label):
-        """Load the model when it is new, then the pose of ``label``. Returns (mesh or None, pose)."""
+        """Load the model when it is new, then the pose of ``label``. Returns (mesh or None, pose or None, message).
+        The mesh is returned even when the clip is missing, so the model still shows."""
         model_id, source_path = key
         mesh = None
         if self.loaded != key:
             self.loaded = None
             mesh = self.loader.load(self.source_root, model_id, source_path, "Highest", 0, self.index_root, True)
             self.loader.load_animation(self.source_root, model_id, source_path, self.index_root, self.borrowed)
-            library = self.loader.animation
-            if self.cinematic and library is not None and library.rows:
-                self.loader.animation = library.with_cinematic(self.loader.archive)   # the cutscene shots export adds
+            self.loader.animation = self._offered(self.loader.animation)
             self.loaded = key
         library = self.loader.animation
         labels = library.labels() if library is not None and library.rows else []
         if label not in labels:
-            raise ValueError(f"'{label}' is not a clip this model's preview offers")
-        return mesh, self.loader.pose(labels.index(label))
+            return mesh, None, f"'{label}' is not offered for this model"
+        return mesh, self.loader.pose(labels.index(label)), ""
+
+    def _offered(self, library):
+        """The clips the export offers. A preview load also adds the cutscene shots; the export adds them only when
+        cinematic, and only then do its animset labels differ (no ``stem:`` prefix), so the list must match it."""
+        from rc2016.formats.animation_sources import CINEMATIC_SOURCE
+        if library is None or self.cinematic:
+            return library
+        shots = {c["animset"] for c in library.clips if c.get("source") == CINEMATIC_SOURCE}
+        other = copy.copy(library)
+        other.clips = [c for c in library.clips if c.get("source") != CINEMATIC_SOURCE]
+        other.animset_data = {path: data for path, data in library.animset_data.items() if path not in shots}
+        return other
 
     # Tk thread
 
@@ -92,14 +104,17 @@ class ClipViewer:
             future = self.pending.popleft()
             try:
                 self._apply(*future.result())
-            except Exception as error:   # a clip or model that cannot be shown says why, in place of the pose
+            except Exception as error:   # a model that cannot be loaded says why, in place of the pose
                 self._fail(str(error))
         if not self.closed:
             self.poll_job = self.parent.after(self.POLL_MS, self._poll)
 
-    def _apply(self, mesh, pose) -> None:
+    def _apply(self, mesh, pose, message) -> None:
         if mesh is not None:
             self.viewport.set_mesh(mesh)
+        if pose is None:
+            self._fail(message)
+            return
         if not self.viewport.can_animate:
             self._fail("Needs shader support")
             return

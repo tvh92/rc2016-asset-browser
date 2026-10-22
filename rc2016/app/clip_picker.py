@@ -88,21 +88,27 @@ class ClipPickerDialog:
         top.transient(parent)
         top.minsize(600, 520)
         top.columnconfigure(0, weight=1)
-        top.rowconfigure(2, weight=1)
+        top.rowconfigure(0, weight=1)
+        # The list and the viewport sit either side of a divider the user can drag.
+        split = self.split = ttk.PanedWindow(top, orient="horizontal")
+        split.grid(row=0, column=0, sticky="nsew")
+        left = self.left = ttk.Frame(split)
+        split.add(left, weight=1)
+        left.columnconfigure(0, weight=1)
+        left.rowconfigure(2, weight=1)
         hint = ("Every animation starts ticked. Click a tick box or press Space to tick it; a folder or model ticks "
                 "everything inside it.")
         if source_root:
             hint += " Click an animation's name or press Enter to play it in the viewport."
-        ttk.Label(top, text=hint, style="Muted.TLabel", wraplength=700, padding=(12, 12, 12, 6)).grid(row=0, column=0,
-                                                                                                      sticky="ew")
+        ttk.Label(left, text=hint, style="Muted.TLabel", wraplength=560, padding=(12, 12, 12, 6)).grid(row=0, column=0,
+                                                                                                        sticky="ew")
         self.viewer = None
         if source_root:
-            pane = ttk.Frame(top, padding=(0, 12, 12, 12))
-            pane.grid(row=0, column=1, rowspan=4, sticky="nsew")
-            top.columnconfigure(1, weight=0)
+            pane = ttk.Frame(split, padding=(0, 12, 12, 12))
+            split.add(pane, weight=0)
             self.viewer = ClipViewer(tk, ttk, pane, source_root, index_root, borrowed, cinematic)
 
-        bar = ttk.Frame(top, padding=(12, 0, 12, 6))
+        bar = ttk.Frame(left, padding=(12, 0, 12, 6))
         bar.grid(row=1, column=0, sticky="ew")
         bar.columnconfigure(0, weight=1)
         self.search_entry = ttk.Entry(bar, textvariable=self.search)
@@ -112,7 +118,7 @@ class ClipPickerDialog:
         for value, label in self.MODES:
             ttk.Radiobutton(filters, text=label, value=value, variable=self.mode).pack(side="left", padx=(0, 4))
 
-        body = ttk.Frame(top, padding=(12, 0))
+        body = ttk.Frame(left, padding=(12, 0))
         body.grid(row=2, column=0, sticky="nsew")
         body.rowconfigure(0, weight=1)
         body.columnconfigure(0, weight=1)
@@ -122,7 +128,7 @@ class ClipPickerDialog:
         self.tree.grid(row=0, column=0, sticky="nsew")
         scrollbar.grid(row=0, column=1, sticky="ns")
 
-        footer = ttk.Frame(top, padding=12)
+        footer = ttk.Frame(left, padding=12)
         footer.grid(row=3, column=0, sticky="ew")
         footer.columnconfigure(0, weight=1)
         ttk.Label(footer, textvariable=self.status).grid(row=0, column=0, columnspan=2, sticky="w")
@@ -331,6 +337,8 @@ class ClipPickerDialog:
         top.geometry(f"{width}x{height}+{x}+{y}")
         top.deiconify()
         top.update()
+        if self.viewer is not None:
+            self.split.sashpos(0, width - 380)   # the viewport keeps its natural width; the list takes the rest
         apply_titlebar(top)
         top.grab_set()
         self.search_entry.focus_set()

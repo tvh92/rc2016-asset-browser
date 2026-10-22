@@ -184,6 +184,8 @@ class FakeViewport:
 
 class FakeLibrary:
     rows = [1]
+    clips = []
+    animset_data = {}
 
     def __init__(self, labels):
         self._labels = labels
@@ -280,7 +282,22 @@ class ClipViewerPlayback(unittest.TestCase):
         self.viewer.show(self.hero, "Missing")
         self.settle()
         self.assertFalse(self.viewer.frames)
-        self.assertIn("not a clip", self.viewer.status.get())
+        self.assertEqual(self.viewport.meshes, ["mesh:hero"])   # the model still shows
+        self.assertIn("not offered", self.viewer.status.get())
+
+    def test_the_offered_clips_drop_the_cutscene_shots_unless_the_export_is_cinematic(self):
+        from rc2016.viewer.animation import AnimationLibrary
+        from rc2016.formats.animation_sources import CINEMATIC_SOURCE
+        library = AnimationLibrary.__new__(AnimationLibrary)
+        library.rows = [1]
+        library.clips = [dict(animset="a.animset", offset=0, name="Hookshot_Pull"),
+                         dict(animset="shot.cinematic2", offset=0, name="Shot", source=CINEMATIC_SOURCE)]
+        library.animset_data = {"a.animset": b"", "shot.cinematic2": b""}
+        self.assertEqual(library.labels(), ["a: Hookshot_Pull", "Shot"])
+        self.assertEqual(self.viewer._offered(library).labels(), ["Hookshot_Pull"])
+        cinematic = ClipViewer(self.tk, self.ttk, self.ttk.Frame(self.root), "source", None, False, True)
+        self.addCleanup(cinematic.close)
+        self.assertEqual(cinematic._offered(library).labels(), ["a: Hookshot_Pull", "Shot"])
 
 
 class DialogViewer(unittest.TestCase):
