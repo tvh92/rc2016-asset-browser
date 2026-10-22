@@ -369,6 +369,7 @@ class AssetBrowser:
         self.clip_button.bind('<KeyPress-space>',self._open_clip_picker)
         self.clip_button.grid(row=0,column=1,columnspan=2,sticky='ew')
         self.clip_labels=[];self.clip_cutscene=[];self.clip_index=-1;self.clip_popup=None
+        self.pending_clip=None   # (model identity, clip label) asked for by the batch clip picker
         self.play_button=ttk.Button(anim,text='Pause',width=7,command=self._toggle_play,state='disabled')
         self.play_button.grid(row=1,column=0,sticky='ew',padx=(0,6),pady=(4,0))
         self.frame_pos=tk.DoubleVar(value=0)
@@ -655,6 +656,22 @@ class AssetBrowser:
             self.frame_text.set('Needs shader support')
         else:
             self.frame_text.set(f'{len(clips)} clips')
+        self._apply_pending_clip()
+
+    def preview_clip(self,record,label):
+        """Show one clip of a model in the viewer, for the batch clip picker. The model loads first when it is not shown."""
+        self.pending_clip=((getattr(record,'model_id',None),getattr(record,'archive_path',None)),label)
+        self.select_asset(record)
+        self._apply_pending_clip()
+
+    def _apply_pending_clip(self):
+        """Choose the clip a picker click asked for, once its model is shown with a clip list."""
+        payload=self.source_payload
+        if self.pending_clip is None or not payload or not payload.get('clips'):return
+        identity,label=self.pending_clip
+        if (payload['model_id'],payload['source_path'])!=identity:return
+        self.pending_clip=None
+        if label in self.clip_labels:self._choose_clip(self.clip_labels.index(label),label)
 
     def _apply_clip_list(self,clips):
         """Clips that finished loading after the mesh: only for the model still shown."""

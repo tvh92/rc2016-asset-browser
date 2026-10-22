@@ -95,7 +95,7 @@ class DialogRows(unittest.TestCase):
         dialog.tree.focus(clip)
         dialog._toggle_focus()
         self.assertEqual(dialog.selection.totals(), (22, 23))
-        self.assertTrue(dialog.tree.item(clip, "text").startswith("[ ]"))
+        self.assertIn(str(dialog.boxes["off"]), dialog.tree.item(clip, "image"))
         self.assertIn("22 of 23", dialog.status.get())
 
     def test_tick_shown_follows_the_search(self):

@@ -1222,7 +1222,7 @@ class AssetBrowserApp:
 
         if not needs_picker(listed):
             return {}   # every model has few enough clips to export them all without asking
-        return ClipPickerDialog(tk, ttk, self.root, listed).show()
+        return ClipPickerDialog(tk, ttk, self.root, listed, preview=self.browser.preview_clip).show()
 
     def _batch_worker(self, runner: BatchRunner) -> None:
         try:

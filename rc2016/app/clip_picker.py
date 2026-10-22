@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from rc2016.app.browser import group_clips
-from rc2016.app.theme import apply_titlebar
+from rc2016.app.theme import CHECK_GAP, CHECK_SIZE, _draw_check_box, apply_titlebar, current_palette
 
 # Models with this many clips or fewer export every clip without asking: reading them is quick.
 CLIP_PICKER_THRESHOLD = 10
@@ -64,12 +64,14 @@ def _leaves(nodes):
 
 class ClipPickerDialog:
     """Modal list of the clips of every model, with search, a Ticked/Unticked filter, folder and model ticks,
-    expand and collapse, and keyboard control. Rows show [x] ticked, [ ] unticked, [-] partly ticked."""
+    expand and collapse, and keyboard control. Each row has a tick box: empty, ticked, or a dash when partly ticked.
+    Clicking an animation's name shows it in the viewer through ``preview(record, clip label)``."""
 
     MODES = (("all", "All"), ("ticked", "Ticked"), ("unticked", "Unticked"))
 
-    def __init__(self, tk, ttk, parent, listed):
+    def __init__(self, tk, ttk, parent, listed, preview=None):
         self.tk, self.ttk, self.parent = tk, ttk, parent
+        self.preview = preview
         self.selection = ClipSelection(listed)
         self.targets = {}   # tree item -> (model, clip indices, text, is_clip) for every row shown
         self.opened = {f"m{model}" for model in range(len(listed))}   # models start open, folders closed
@@ -77,17 +79,18 @@ class ClipPickerDialog:
         self.search = tk.StringVar()
         self.mode = tk.StringVar(value="all")
         self.status = tk.StringVar()
+        self.boxes = self._tick_boxes()
 
         top = self.top = tk.Toplevel(parent)
         top.withdraw()
         top.title("Choose animations to export")
         top.transient(parent)
-        top.minsize(540, 440)
+        top.minsize(600, 520)
         top.columnconfigure(0, weight=1)
         top.rowconfigure(2, weight=1)
-        ttk.Label(top, text="Every animation starts ticked. Click a row or press Space to tick it; a folder or model "
-                  "ticks everything inside it.", style="Muted.TLabel", wraplength=600, padding=(12, 12, 12, 6)
-                  ).grid(row=0, column=0, sticky="ew")
+        ttk.Label(top, text="Every animation starts ticked. Click a tick box or press Space to tick it; a folder or model "
+                  "ticks everything inside it. Click an animation's name or press Enter to show it in the viewer.",
+                  style="Muted.TLabel", wraplength=700, padding=(12, 12, 12, 6)).grid(row=0, column=0, sticky="ew")
 
         bar = ttk.Frame(top, padding=(12, 0, 12, 6))
         bar.grid(row=1, column=0, sticky="ew")
@@ -132,7 +135,7 @@ class ClipPickerDialog:
         self.tree.bind("<<TreeviewOpen>>", lambda _event: self._remember_open(True))
         self.tree.bind("<<TreeviewClose>>", lambda _event: self._remember_open(False))
         self.tree.bind("<space>", lambda _event: self._toggle_focus())
-        self.tree.bind("<Return>", lambda _event: self._toggle_focus())
+        self.tree.bind("<Return>", lambda _event: self._enter_focus())
         self.search_entry.bind("<Down>", self._focus_tree)
         self.search_entry.bind("<Return>", self._focus_tree)
         top.bind("<Control-f>", lambda _event: self.search_entry.focus_set())
@@ -178,19 +181,34 @@ class ClipPickerDialog:
             self.tree.insert(parent, "end", iid=iid, open=searching or iid in self.opened)
             self._add_nodes(iid, node, shown, model, searching)
 
+    def _tick_boxes(self) -> dict:
+        """Tick boxes for the rows, drawn in the current palette: unticked, ticked, and partly ticked (a dash)."""
+        palette = current_palette()
+        boxes = {}
+        for state, fill, border, mark in (("off", palette["field"], palette["muted"], None),
+                                          ("on", palette["accent"], palette["accent"], palette["select_fg"]),
+                                          ("part", palette["field"], palette["accent"], None)):
+            image = self.tk.PhotoImage(master=self.parent, width=CHECK_SIZE + CHECK_GAP, height=CHECK_SIZE)
+            _draw_check_box(image, fill, border, mark)
+            if state == "part":
+                for x in range(4, CHECK_SIZE - 4):
+                    image.put(border, to=(x, 8, x + 1, 10))
+            boxes[state] = image
+        return boxes
+
     def _refresh(self) -> None:
-        """Update every row's tick mark and count, and the status line. Rows are not refilled, so a row
+        """Update every row's tick box and count, and the status line. Rows are not refilled, so a row
         that a filter no longer matches stays visible until the search or filter changes."""
         ticked_in = self.selection.ticked
         shown_clips = 0
         for iid, (model, indices, text, is_clip) in self.targets.items():
             on = sum(1 for index in indices if index in ticked_in[model])
-            mark = "[x]" if on == len(indices) else "[ ]" if on == 0 else "[-]"
+            box = self.boxes["on" if on == len(indices) else "off" if on == 0 else "part"]
             if is_clip:
                 shown_clips += 1
-                self.tree.item(iid, text=f"{mark} {text}")
+                self.tree.item(iid, text=text, image=box)
             else:
-                self.tree.item(iid, text=f"{mark} {text}  ({on} of {len(indices)})")
+                self.tree.item(iid, text=f"{text}  ({on} of {len(indices)})", image=box)
         ticked, total = self.selection.totals()
         models = len(self.selection.models)
         line = f"{ticked} of {total} animations ticked across {models} model{'s' if models != 1 else ''}"
@@ -201,10 +219,40 @@ class ClipPickerDialog:
     # Actions
 
     def _on_click(self, event) -> None:
+        """A tick box ticks its row. A clip's name shows that clip; a folder or model name ticks its clips."""
         row = self.tree.identify_row(event.y)
-        if row and self.tree.identify_element(event.x, event.y) != "Treeitem.indicator":
-            self.tree.focus(row)
+        if not row:
+            return
+        element = self.tree.identify_element(event.x, event.y)
+        if element == "Treeitem.indicator":
+            return
+        self.tree.focus(row)
+        if "image" in element or not self._is_clip(row):
             self._toggle(row)
+        else:
+            self._show_clip(row)
+
+    def _is_clip(self, item: str) -> bool:
+        entry = self.targets.get(item)
+        return bool(entry and entry[3])
+
+    def _show_clip(self, item: str) -> None:
+        """Show one clip in the viewer through the preview callback."""
+        entry = self.targets.get(item)
+        if entry is None or self.preview is None:
+            return
+        model, indices, _text, _is_clip = entry
+        record, labels = self.selection.models[model]
+        self.preview(record, labels[indices[0]])
+
+    def _enter_focus(self) -> str:
+        """Enter shows the focused clip, or ticks the focused folder or model."""
+        item = self.tree.focus()
+        if self._is_clip(item):
+            self._show_clip(item)
+        else:
+            self._toggle(item)
+        return "break"
 
     def _toggle_focus(self) -> str:
         self._toggle(self.tree.focus())
@@ -266,9 +314,10 @@ class ClipPickerDialog:
         top = self.top
         self.rebuild()
         top.update_idletasks()
-        width, height = 640, 600
-        x = self.parent.winfo_rootx() + max(0, (self.parent.winfo_width() - width) // 2)
-        y = self.parent.winfo_rooty() + 60
+        width = 760
+        height = min(760, top.winfo_screenheight() - 120)
+        x = max(0, (top.winfo_screenwidth() - width) // 2)   # centred on the screen
+        y = max(0, (top.winfo_screenheight() - height) // 2)
         top.geometry(f"{width}x{height}+{x}+{y}")
         top.deiconify()
         top.update()
