@@ -18,7 +18,7 @@ from rc2016.levels.level_format import decode_level
 from rc2016.levels.zone_format import decode_zone_arrays, name_crc32
 
 # The Blender assembler keeps these but hides them (docs/levels.md).
-HIDDEN_MARKERS = ('collision', 'environment/template/')
+HIDDEN_MARKERS = ('collision', 'camera_coll', '_coll.model', 'environment/template/')
 
 
 def open_archive(source_root):

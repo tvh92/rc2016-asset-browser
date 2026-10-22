@@ -55,6 +55,10 @@ class LevelSceneTests(unittest.TestCase):
     def test_collision_and_template_models_start_hidden(self):
         self.assertTrue(hidden_by_default('gameplay\\gbl_gp_hero_collision_01.model'))
         self.assertTrue(hidden_by_default('environment/template/template_Square.model'))
+        # Camera collision proxies carry only the default grid material and would cover the ground they follow.
+        self.assertTrue(hidden_by_default('environment/aridia/ground/tj_ari_gnd_Sludge_camera_coll/tj_ari_gnd_Sludge_camera_coll.model'))
+        self.assertTrue(hidden_by_default('environment/metropolis/met_arch_Gear_coll.model'))
+        self.assertFalse(hidden_by_default('environment/global/prop/gbl_prop_A4O_Creature_Collector_01.model'))
         self.assertFalse(hidden_by_default('environment/novalis/architecture/tb_nov_bldg1_floor_4x4.model'))
 
     def test_core_bounds_trim_distant_backdrops(self):

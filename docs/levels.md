@@ -336,7 +336,7 @@ The viewport is on the left and the controls column on the right (drag the sash 
 
 ### Hidden by default
 
-Models whose path contains `collision` or `environment/template/` (for example `gbl_gp_hero_collision_01`, and `template_Square`, 152 instances in Novalis `lighting.zone`, assumed to be an editor helper) are loaded but not drawn. The **Collision/helpers** checkbox shows them. They are also excluded from the framing bounds.
+Models whose path contains `collision`, `camera_coll`, ends in `_coll.model` or contains `environment/template/` (for example `gbl_gp_hero_collision_01`, the camera collision proxies such as Aridia's `tj_ari_gnd_Sludge_camera_coll`, which would otherwise cover the ground they follow with the default grid material, and `template_Square`, 152 instances in Novalis `lighting.zone`, assumed to be an editor helper) are loaded but not drawn. The **Collision/helpers** checkbox shows them. They are also excluded from the framing bounds.
 
 ### Camera and controls
 
