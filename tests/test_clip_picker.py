@@ -1,11 +1,14 @@
 """The animation picker: when it opens, what it selects, and its search, filter and tick rules."""
 import json
+import time
+import types
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
 from rc2016.app.batch import PipelineBatchRunner
 from rc2016.app.clip_picker import CLIP_PICKER_THRESHOLD, ClipPickerDialog, ClipSelection, needs_picker
+from rc2016.app.clip_viewer import ClipViewer
 
 
 @dataclass
@@ -154,3 +157,151 @@ class BlendClipMap(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeViewport:
+    """Records what the viewer sends; the real viewport needs an OpenGL context."""
+    can_animate = True
+
+    def __init__(self):
+        self.meshes, self.poses = [], []
+
+    def set_mesh(self, payload):
+        self.meshes.append(payload)
+
+    def set_pose(self, frame):
+        self.poses.append(frame)
+
+    def clear(self, _message=None):
+        pass
+
+    def clear_pose(self):
+        pass
+
+    def set_effects_running(self, _running, reset=False):
+        pass
+
+
+class FakeLibrary:
+    rows = [1]
+
+    def __init__(self, labels):
+        self._labels = labels
+
+    def labels(self):
+        return list(self._labels)
+
+
+class FakeLoader:
+    """Stands in for SourcePreviewLoader: counts the model loads and answers poses for a fixed clip list."""
+
+    def __init__(self, labels):
+        self.labels, self.loads, self.animation, self.archive = labels, 0, None, None
+
+    def load(self, _root, model_id, _path, _lod, _look, _output, _defer):
+        self.loads += 1
+        return f"mesh:{model_id}"
+
+    def load_animation(self, _root, _model_id, _path, _output, _borrowed):
+        self.animation = FakeLibrary(self.labels)
+
+    def pose(self, index):
+        return dict(name=self.labels[index], kind="skinned", fps=10.0, frames=[index, index, index], joint_count=1)
+
+
+class ClipViewerPlayback(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import tkinter as tk
+        from tkinter import ttk
+        try:
+            cls.root = tk.Tk()
+        except tk.TclError:
+            raise unittest.SkipTest("no display for Tk")
+        cls.root.withdraw()
+        cls.tk, cls.ttk = tk, ttk
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.root.destroy()
+
+    def setUp(self):
+        self.viewer = ClipViewer(self.tk, self.ttk, self.ttk.Frame(self.root), "source", None, False, False)
+        self.addCleanup(self.viewer.close)
+        self.viewer.viewport = self.viewport = FakeViewport()
+        self.viewer.loader = self.loader = FakeLoader(["Idle", "Run", "Jump"])
+        self.hero = types.SimpleNamespace(model_id="hero", archive_path="a/hero.model")
+
+    def settle(self):
+        """Wait for the queued reads, then let the Tk loop apply them."""
+        deadline = time.time() + 5
+        while self.viewer.pending and time.time() < deadline:
+            self.viewer.pending[0].exception(timeout=5)
+            self.root.update()
+        self.root.update()
+
+    def test_first_clip_loads_the_model_and_starts_playing(self):
+        self.viewer.show(self.hero, "Run")
+        self.settle()
+        self.assertEqual(self.loader.loads, 1)
+        self.assertEqual(self.viewport.meshes, ["mesh:hero"])
+        self.assertEqual(self.viewport.poses, [1])
+        self.assertTrue(self.viewer.playing)
+        self.assertIn("Run", self.viewer.status.get())
+
+    def test_another_clip_of_the_same_model_reuses_the_loaded_model(self):
+        self.viewer.show(self.hero, "Run")
+        self.settle()
+        self.viewer.show(self.hero, "Jump")
+        self.settle()
+        self.assertEqual(self.loader.loads, 1)
+        self.assertEqual(self.viewport.meshes, ["mesh:hero"])
+        self.assertEqual(self.viewport.poses[-1], 2)
+
+    def test_a_clip_of_another_model_loads_that_model(self):
+        self.viewer.show(self.hero, "Run")
+        self.settle()
+        other = types.SimpleNamespace(model_id="npc", archive_path="a/npc.model")
+        self.viewer.show(other, "Idle")
+        self.settle()
+        self.assertEqual(self.loader.loads, 2)
+        self.assertEqual(self.viewport.meshes, ["mesh:hero", "mesh:npc"])
+
+    def test_pause_stops_the_frame_clock_and_scrubbing_moves_the_frame(self):
+        self.viewer.show(self.hero, "Run")
+        self.settle()
+        self.viewer.toggle()
+        self.assertFalse(self.viewer.playing)
+        self.assertIsNone(self.viewer.tick_job)
+        self.viewer._scrub("2")
+        self.assertEqual(self.viewer.frame, 2)
+
+    def test_a_clip_the_model_does_not_offer_is_reported_in_place(self):
+        self.viewer.show(self.hero, "Missing")
+        self.settle()
+        self.assertFalse(self.viewer.frames)
+        self.assertIn("not a clip", self.viewer.status.get())
+
+
+class DialogViewer(unittest.TestCase):
+    setUpClass = classmethod(ClipViewerPlayback.setUpClass.__func__)
+    tearDownClass = classmethod(ClipViewerPlayback.tearDownClass.__func__)
+
+    def test_no_source_means_no_viewport_and_clicks_do_nothing(self):
+        listed = [listed_model("hero", 12, prefix="Run")]
+        dialog = ClipPickerDialog(self.tk, self.ttk, self.root, listed)
+        self.addCleanup(lambda: dialog.top.winfo_exists() and dialog.top.destroy())
+        dialog.rebuild()
+        self.assertIsNone(dialog.viewer)
+        dialog._show_clip("c0.0")
+
+    def test_a_clicked_clip_is_handed_to_the_viewer_with_its_label(self):
+        listed = [listed_model("hero", 12, prefix="Run")]
+        dialog = ClipPickerDialog(self.tk, self.ttk, self.root, listed, source_root="source")
+        self.addCleanup(lambda: dialog.top.winfo_exists() and dialog.top.destroy())
+        self.addCleanup(dialog.viewer.close)
+        shown = []
+        dialog.viewer.show = lambda record, label: shown.append((record.model_id, label))
+        dialog.rebuild()
+        dialog._show_clip("c0.3")
+        self.assertEqual(shown, [("hero", "Run03")])

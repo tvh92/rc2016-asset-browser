@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from rc2016.app.browser import group_clips
+from rc2016.app.clip_viewer import ClipViewer
 from rc2016.app.theme import CHECK_GAP, CHECK_SIZE, _draw_check_box, apply_titlebar, current_palette
 
 # Models with this many clips or fewer export every clip without asking: reading them is quick.
@@ -65,13 +66,13 @@ def _leaves(nodes):
 class ClipPickerDialog:
     """Modal list of the clips of every model, with search, a Ticked/Unticked filter, folder and model ticks,
     expand and collapse, and keyboard control. Each row has a tick box: empty, ticked, or a dash when partly ticked.
-    Clicking an animation's name shows it in the viewer through ``preview(record, clip label)``."""
+    With ``source_root``, a viewport beside the list plays the clip whose name is clicked (see ClipViewer); the
+    viewer reads the archive with ``index_root``, ``borrowed`` and ``cinematic`` as the export would."""
 
     MODES = (("all", "All"), ("ticked", "Ticked"), ("unticked", "Unticked"))
 
-    def __init__(self, tk, ttk, parent, listed, preview=None):
+    def __init__(self, tk, ttk, parent, listed, source_root=None, index_root=None, borrowed=False, cinematic=False):
         self.tk, self.ttk, self.parent = tk, ttk, parent
-        self.preview = preview
         self.selection = ClipSelection(listed)
         self.targets = {}   # tree item -> (model, clip indices, text, is_clip) for every row shown
         self.opened = {f"m{model}" for model in range(len(listed))}   # models start open, folders closed
@@ -88,9 +89,18 @@ class ClipPickerDialog:
         top.minsize(600, 520)
         top.columnconfigure(0, weight=1)
         top.rowconfigure(2, weight=1)
-        ttk.Label(top, text="Every animation starts ticked. Click a tick box or press Space to tick it; a folder or model "
-                  "ticks everything inside it. Click an animation's name or press Enter to show it in the viewer.",
-                  style="Muted.TLabel", wraplength=700, padding=(12, 12, 12, 6)).grid(row=0, column=0, sticky="ew")
+        hint = ("Every animation starts ticked. Click a tick box or press Space to tick it; a folder or model ticks "
+                "everything inside it.")
+        if source_root:
+            hint += " Click an animation's name or press Enter to play it in the viewport."
+        ttk.Label(top, text=hint, style="Muted.TLabel", wraplength=700, padding=(12, 12, 12, 6)).grid(row=0, column=0,
+                                                                                                      sticky="ew")
+        self.viewer = None
+        if source_root:
+            pane = ttk.Frame(top, padding=(0, 12, 12, 12))
+            pane.grid(row=0, column=1, rowspan=4, sticky="nsew")
+            top.columnconfigure(1, weight=0)
+            self.viewer = ClipViewer(tk, ttk, pane, source_root, index_root, borrowed, cinematic)
 
         bar = ttk.Frame(top, padding=(12, 0, 12, 6))
         bar.grid(row=1, column=0, sticky="ew")
@@ -237,13 +247,13 @@ class ClipPickerDialog:
         return bool(entry and entry[3])
 
     def _show_clip(self, item: str) -> None:
-        """Show one clip in the viewer through the preview callback."""
+        """Play one clip in the viewport beside the list."""
         entry = self.targets.get(item)
-        if entry is None or self.preview is None:
+        if entry is None or self.viewer is None:
             return
         model, indices, _text, _is_clip = entry
         record, labels = self.selection.models[model]
-        self.preview(record, labels[indices[0]])
+        self.viewer.show(record, labels[indices[0]])
 
     def _enter_focus(self) -> str:
         """Enter shows the focused clip, or ticks the focused folder or model."""
@@ -314,7 +324,7 @@ class ClipPickerDialog:
         top = self.top
         self.rebuild()
         top.update_idletasks()
-        width = 760
+        width = min(1140 if self.viewer else 760, top.winfo_screenwidth() - 40)
         height = min(760, top.winfo_screenheight() - 120)
         x = max(0, (top.winfo_screenwidth() - width) // 2)   # centred on the screen
         y = max(0, (top.winfo_screenheight() - height) // 2)
@@ -325,4 +335,6 @@ class ClipPickerDialog:
         top.grab_set()
         self.search_entry.focus_set()
         self.parent.wait_window(top)
+        if self.viewer is not None:
+            self.viewer.close()
         return self.selection.result() if self.confirmed else None
