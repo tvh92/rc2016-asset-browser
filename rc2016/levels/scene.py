@@ -494,5 +494,5 @@ def material_entries(archive, materials, done, texture_cache, previews=False):
     if not todo:
         return {}
     by_index = material_textures(archive, [dict(index=i, path=m['path']) for i, m in enumerate(todo)], texture_cache,
-                                 previews=previews)
+                                 previews=previews, hd=True)
     return {m['path']: by_index[i] for i, m in enumerate(todo)}

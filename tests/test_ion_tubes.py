@@ -98,6 +98,34 @@ class IonTubesRuleTests(unittest.TestCase):
         self.assertIn("P.m('MAXIMUM', P.m('SUBTRACT', ndv, 0.00100004673), 0.0)", body)
 
 
+class EffectClockTests(unittest.TestCase):
+    """The viewer clock for CB0[99]: running while a clip plays, held while paused, static at the rest pose."""
+
+    def view(self):
+        from rc2016.viewer.viewport import ModelViewport
+        view = ModelViewport.__new__(ModelViewport)
+        view.animate_effects, view._effects_job, view._effect_origin, view._effect_held = False, None, None, None
+        view._schedule_draw = lambda: None
+        view.after = lambda delay, callback: 'job'
+        return view
+
+    def test_static_at_rest_running_while_playing_held_while_paused(self):
+        from unittest.mock import patch
+        view, tubes, other = self.view(), dict(kind='ion_tubes'), dict(kind='water')
+        with patch('time.perf_counter', side_effect=iter([100.0, 101.5, 105.0, 110.0])):
+            self.assertIsNone(view._effect_time(tubes))                    # rest pose: the rule's static time
+            view.set_effects_running(True)
+            self.assertEqual(view._effect_time(tubes), 0.0)                # the first draw sets the origin (100.0)
+            self.assertEqual(view._effect_time(tubes), 1.5)
+            self.assertIsNone(view._effect_time(other))                    # only time-driven kinds use the clock
+            view.set_effects_running(False)                                # paused at 105.0: held at 5.0
+            self.assertEqual(view._effect_time(tubes), 5.0)
+            view.set_effects_running(True)
+            self.assertEqual(view._effect_time(tubes), 5.0)                # resumes where it stopped (draw at 110.0)
+        view.set_effects_running(False, reset=True)
+        self.assertIsNone(view._effect_time(tubes))                        # back at the rest pose
+
+
 @unittest.skipUnless(os.environ.get('RC2016_RESEARCH'), 'RC2016_RESEARCH is required')
 class IonTubesArchiveTests(unittest.TestCase):
     @classmethod

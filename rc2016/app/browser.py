@@ -292,7 +292,6 @@ class AssetBrowser:
         holder=split.first;holder.columnconfigure(0,weight=1);holder.rowconfigure(0,weight=1)
         side=split.second;side.configure(padding=(8,0,0,0));side.columnconfigure(0,weight=1);side.rowconfigure(8,weight=1)
         self.viewport=ModelViewport(holder,width=380,height=560)
-        self.viewport.animate_effects=True
         self.viewport.grid(row=0,column=0,sticky='nsew')
         tip=app._tip
         # View: camera and draw mode.
@@ -812,7 +811,7 @@ class AssetBrowser:
         if index<0:self.clip_only_var.set(False)
         self.clip_only_check.configure(state='normal' if index>=0 else 'disabled')
         if index<0:
-            self.animation=None;self.viewport.clear_pose()
+            self.animation=None;self.viewport.clear_pose();self._sync_effects()
             self.play_button.configure(state='disabled');self.frame_slider.configure(state='disabled')
             self.frame_text.set('Rest pose');return
         self.frame_text.set('Decoding…')
@@ -826,6 +825,11 @@ class AssetBrowser:
         self._show_frame(0)
         self.playing=count>1;self.play_button.configure(text='Pause' if self.playing else 'Play')
         if self.playing:self._schedule_tick()
+        self._sync_effects()
+
+    def _sync_effects(self):
+        """Time-driven materials move only while a clip plays; the rest pose shows their static time."""
+        self.viewport.set_effects_running(bool(self.playing and self.animation),reset=not self.animation)
 
     def _show_frame(self,frame):
         if not self.animation:return
@@ -850,16 +854,17 @@ class AssetBrowser:
         self.playing=not self.playing
         self.play_button.configure(text='Pause' if self.playing else 'Play')
         if self.playing and self.play_job is None:self._schedule_tick()
+        self._sync_effects()
 
     def _scrub(self,_value):
         if not self.animation:return
         frame=int(round(self.frame_pos.get()))
         if frame!=self.anim_frame:
             self.playing=False;self.play_button.configure(text='Play')
-            self._show_frame(frame)
+            self._show_frame(frame);self._sync_effects()
 
     def _stop_animation(self,reset):
-        self.playing=False
+        self.playing=False;self._sync_effects()
         if self.play_job is not None:
             self.app.root.after_cancel(self.play_job);self.play_job=None
         self.anim_work.submit(lambda:None)   # drop a pending decode for the old model
@@ -869,7 +874,7 @@ class AssetBrowser:
             self._show_animation(False)
             self.clip_index=-1;self.clip_only_var.set(False);self.clip_only_check.configure(state='disabled')
             self.play_button.configure(state='disabled',text='Pause');self.frame_slider.configure(state='disabled')
-            self.frame_text.set('')
+            self.frame_text.set('');self._sync_effects()
 
     def _reset(self,message):
         self.generation+=1

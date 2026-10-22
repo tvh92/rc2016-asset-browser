@@ -414,9 +414,10 @@ class ModelViewport(_TkFrame):
         self.native_translation = True
         self.lighting_enabled = True
         self.experimental_materials = False
-        self.animate_effects = False   # the browser turns it on; offscreen renders keep the rules' static time
+        self.animate_effects = False   # True while the browser plays a clip; the rest pose and offscreen renders keep the rules' static time
         self._effects_job = None
         self._effect_origin = None
+        self._effect_held = None       # clock value kept while a clip is paused; None at the rest pose
         self.native_program_switches = 0
         self._gl_textures = None   # material slot -> {role: (GL id, sRGB)} + 'k', built lazily
         self._compressed_upload = None
@@ -1592,15 +1593,32 @@ class ModelViewport(_TkFrame):
     EFFECT_PERIOD = 1024.0                    # seconds; every decoded scroll has period 1, so the wrap is invisible
 
     def _effect_time(self, forward):
-        """Presentation clock (seconds) for a time-driven forward rule while ``animate_effects`` is on, else None."""
-        if not self.animate_effects or forward.get('kind') not in self.EFFECT_KINDS:
+        """Presentation clock (seconds) for a time-driven forward rule: running while a clip plays, held while it is
+        paused, and None (the rule's static time) at the rest pose."""
+        if forward.get('kind') not in self.EFFECT_KINDS:
             return None
+        if not self.animate_effects:
+            return self._effect_held
         import time
+        now = time.perf_counter()
         if self._effect_origin is None:
-            self._effect_origin = time.perf_counter()
+            self._effect_origin = now - (self._effect_held or 0.0)
         if self._effects_job is None:
             self._effects_job = self.after(33, self._effects_tick)
-        return (time.perf_counter() - self._effect_origin) % self.EFFECT_PERIOD
+        return (now - self._effect_origin) % self.EFFECT_PERIOD
+
+    def set_effects_running(self, running, reset=False):
+        """Start or stop the effect clock; ``reset`` also returns it to the static time (no clip selected)."""
+        import time
+        if running:
+            self.animate_effects, self._effect_origin = True, None
+        else:
+            if self.animate_effects and self._effect_origin is not None:
+                self._effect_held = (time.perf_counter() - self._effect_origin) % self.EFFECT_PERIOD
+            self.animate_effects = False
+            if reset:
+                self._effect_held = None
+        self._schedule_draw()
 
     def _effects_tick(self):
         self._effects_job = None

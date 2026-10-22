@@ -100,7 +100,7 @@ class LevelTextureCacheTests(unittest.TestCase):
         def entry():
             return dict(native_translation=dict(normal=dict(api=2)),native_textures={0:released,2:released})
         loaded=[]
-        def load(archive,path):
+        def load(archive,path,hd=False):
             loaded.append(path);return dict(path=path,srgb=True,array_size=1,pixels=b'x')
         posted=set()
         first,second={'a.material':entry()},{'b.material':entry(),'c.material':entry()}

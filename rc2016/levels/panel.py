@@ -59,7 +59,7 @@ def load_sky(archive, zones, probe_position=None):
         sky["textures"] = {}
         for path in {p for dome in sky["domes"] for p in (dome["dome_texture"], dome["noise_texture"])}:
             try:
-                sky["textures"][path] = load_texture(archive, path)
+                sky["textures"][path] = load_texture(archive, path, hd=True)
             except (ValueError, KeyError, OSError) as exc:
                 sky["textures"][path] = None
                 sky["notes"].append(f"{path}: {exc}")
@@ -134,7 +134,7 @@ def restore_native_pixels(archive, entries, posted):
                 if "pixels" not in texture:
                     path = texture["path"]
                     if path not in reloaded:
-                        reloaded[path] = load_texture(archive, path)
+                        reloaded[path] = load_texture(archive, path, hd=True)
                     textures[api] = reloaded[path]
 
 

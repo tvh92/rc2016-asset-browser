@@ -68,7 +68,7 @@ class SkinSlotTests(unittest.TestCase):
             expected = {r: 'textures/character/enemy/enm_pufferfish/enm_pufferfish' + r + '.texture'
                         for r in ('_c', '_g', '_n')}
             self.assertEqual({r: got[r] for r in expected}, expected)
-            def texture(_archive, path):
+            def texture(_archive, path, hd=False):
                 return dict(path=path, format=28, width=1, height=1, srgb=False, pixels=bytes(4))
             with patch.object(tp, 'load_texture', side_effect=texture):
                 model = tp.material_textures(c.archive, [dict(index=0, path=material)], {})[0]
