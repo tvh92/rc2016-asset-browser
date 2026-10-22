@@ -400,7 +400,7 @@ class SourcePreviewLoader:
         if purpose=='view':
             from rc2016.viewer.textures import FORMAT_NAMES, material_textures, model_texture_list, texture_header
             translations={}
-            decoded['textures']=material_textures(archive,decoded['materials'],texture_cache,translations)
+            decoded['textures']=material_textures(archive,decoded['materials'],texture_cache,translations,hd=True)
             decoded['texture_list']=model_texture_list(archive,decoded['materials'])
             for row in decoded['texture_list']:
                 try:

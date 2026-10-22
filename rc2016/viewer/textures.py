@@ -139,6 +139,20 @@ _NUMBER_DISPLAY_COMMON = dict(kc=(1.1130030155181885, 1.7709393501281738, 0.0629
     frozen_inputs=dict(cb0_107=0.0, fog_fade=1.0, alpha=1.0, cutoff='discard predicate not translated'))
 NUMBER_DISPLAY_SHIV = dict(_NUMBER_DISPLAY_COMMON, variant='shiv', writer='8CEC816B', distort=0.01, b_scale=0.1, s3_weight=0.05, alpha_channel=False)
 NUMBER_DISPLAY_QWARK = dict(_NUMBER_DISPLAY_COMMON, variant='qwark', writer='37C85F4C', distort=0.005, b_scale=0.2, s3_weight=0.1, alpha_channel=True)
+# Victor von Ion tubes forward colour program 86DDE345 (graph enm_victor_von_ion_tubes_w_rust; its deferred writers export zero
+# albedo, F0 and gloss, so the colour is this single-target forward pass; docs/material-decoding/victor-von-ion-tubes.md).
+# With CB0[99] = CB0[107] = 0, attribute2.w = 1 (a vertex fog transmittance: exactly 1 in some vertex variants, sat(exp2(-tau)) in
+# others; frozen at no fog, so the CB0[112..114] fog colour drops out) and CB2[4] = 0:
+#   rgb = 2 amp (1 + m) (base + rim F^5 + m C g), m = sat(API6.R(2u + 0.3, v/2) + API5.G(1 - 2v, u/4)), F = max(N.V - 0.00100005, 0),
+#   C = CB2[0..2], g = CB2[3]; APIs 5 and 6 read one image. amp = CB0 dword 115 (labelled presentation value, as bright_glow).
+ION_TUBES_GRAPH_SHA256 = '8cdc2c05c2e934ecc56e6765992ee8734ada8af530dc9d42c1265578ff21b901'
+ION_TUBES_SLOTS = (0x49A7866B4AC18E9F, 0x49A7866B39DBF715)
+ION_TUBES_POWER_KEY = 0xEC98DCA7
+ION_TUBES_CONSTANTS = dict(amplitude=0.5, amplitude_input='CB0 dword 115', presentation=True, writer='86DDE345',
+    base=(0.0074990298599004745, 0.012286489829421043, 0.019382359459996223),
+    rim=(0.030705338343977928, 0.12897680699825287, 0.19647814333438873),
+    frozen_inputs=dict(cb0_99=0.0, cb0_107=0.0, fog_blend=1.0, vertex_alpha=1.0, cb2_4_power=0.0,
+                       cutoff='discard predicate not translated'))
 # basic_emissive writer 452EDC8C (pass 0 record 4, CB2 layout 7F058428@0..2, 06F19114@3, 62835AF9@4, 4069EA80@5):
 # MRT1 rgb = CB2[0..2], MRT2 rgb = CB2[4], gloss = sqrt(sat(CB2[5])), emission K = CB2[3]. The pass-1 variant E921A79B
 # (no texture, record 17) writes F0 0.1 and a fixed gloss instead. enm_blarg_green_goo writer 4A73CC38 (pass 1 record 4,
@@ -425,6 +439,12 @@ GRAPH_RULES = (
          ('fade_end', 0x8CE80F85, 1), ('power_far', 0xB0624EB0, 1), ('reflect_base', 0xAF7D5E6B, 1),
          ('power_near', 0x621FAA21, 1), ('fade_start', 0xDBAD0A10, 1), ('reflect_weight', 0x223DC13C, 1),
          ('env_normal', 0x3F13004B, 1), ('highlight_k', 0xF8828985, 1), ('highlight_normal', 0xE14A15D1, 1)))),
+    # Forward colour pass 86DDE345 (flags 0x38: opaque, one-sided). Victor von Ion tubes; exact graph + SHA only. The ion colour
+    # is CB2[0..2] (key 0x427C868D) times the gain CB2[3] (0x8A063007); the power CB2[4] (0xEC98DCA7, default 0) must be 0.
+    ('materialgraph/character/enemy/enm_victor_von_ion_tubes/enm_victor_von_ion_tubes_w_rust.',
+     dict(self_lit_key=None, forward='ion_tubes', constants=ION_TUBES_CONSTANTS, _graph_sha256=ION_TUBES_GRAPH_SHA256,
+          slots={'_pick': ION_TUBES_SLOTS[0]}, params=(
+         ('colour', 0x427C868D, 3), ('gain', 0x8A063007, 1), ('power', ION_TUBES_POWER_KEY, 1)))),
 )
 # Leaf cut-out (alpha test). The deferred foliage writers kill a fragment when its coverage, `_c`
 # alpha (basic_foliage FE32FE79/B01E7CB2; the tree graphs' 0476D929/6F0C1A0C), is below the
@@ -1069,6 +1089,13 @@ def material_texture_paths(archive, material_path: str) -> dict:
         if any(not bound(a) or bound(a) != bound(b)
                for a, b in (THUMPER_GLOVE_GLASS_NOISE_SLOTS, THUMPER_GLOVE_GLASS_PATTERN_SLOTS)):
             rule = {}
+    if rule.get('forward') == 'ion_tubes':
+        # The program reads both slots as one image and the decoded form has no CB2[4] power term; a material that
+        # binds the slots to different images or sets the power is not the decoded program input.
+        tube_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
+        tube_paths = {tube_slots.get(slot) or slots.get(slot) for slot in ION_TUBES_SLOTS}
+        if len(tube_paths) != 1 or None in tube_paths or value(ION_TUBES_POWER_KEY, 0.0) != 0.0:
+            rule = {}
     if rule.get('forward'):
         # Roles the writer binds by slot hash: the material's texture in that slot, else the graph's.
         material_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
@@ -1114,6 +1141,9 @@ def material_texture_paths(archive, material_path: str) -> dict:
                 if role not in result or not (material_slots.get(rule['slots'][role]) or slots.get(rule['slots'][role])):
                     result.pop(role, None)
             result.pop('_h', None)
+        if rule['forward'] == 'ion_tubes':
+            for role in ('_c', '_g', '_n', '_h'):   # the program samples only the electricity image
+                result.pop(role, None)
         result['forward'] = dict(kind=rule['forward'], params=params,
                                  **({'writer': rule['writer']} if rule.get('writer') else {}),
                                  **({'graph_path': rule['graph_path'], 'graph_sha256': rule['graph_sha256']}
@@ -1279,7 +1309,7 @@ class TextureDiskCache:
         self._lock = threading.Lock()
         self._total = None
 
-    def key(self, archive, texture_path):
+    def key(self, archive, texture_path, full=False):
         metadata = getattr(archive, 'metadata', None)
         if not metadata or _TEXTURE_DECODER_SHA256 is None:
             return None
@@ -1291,7 +1321,7 @@ class TextureDiskCache:
             rows.append((k, e['built_path'], [(o['archive'], o['offset'], o['size']) for o in e['occurrences'] if o['available']][:1]))
         import hashlib
         return hashlib.sha256(repr((TEXTURE_DISK_CACHE_VERSION, _TEXTURE_DECODER_SHA256, sorted(metadata.items()),
-                                    texture_path, rows)).encode()).hexdigest()
+                                    texture_path, rows, full)).encode()).hexdigest()
 
     def _file(self, key):
         return self.folder / key[:2] / f'{key}{self.SUFFIX}'
@@ -1373,18 +1403,21 @@ class TextureDiskCache:
         return rows
 
 
-def load_texture(archive, texture_path: str) -> dict:
+def load_texture(archive, texture_path: str, hd: bool = False) -> dict:
     """Top mip of one game texture as GPU-ready blocks plus its GL format.
 
-    With a TextureDiskCache on ``archive.texture_disk_cache`` the decoded top mip is
-    reused from disk across sessions.
+    The built SD mip stands in once it is at least MIN_PREVIEW_SIZE; ``hd`` takes the streamed
+    full-size mip instead whenever the texture has one (ignored while MIN_PREVIEW_SIZE is 0,
+    which callers set to skip every stream). With a TextureDiskCache on
+    ``archive.texture_disk_cache`` the decoded top mip is reused from disk across sessions.
     """
 
+    full = hd and MIN_PREVIEW_SIZE > 0
     disk = getattr(archive, 'texture_disk_cache', None)
-    key = disk.key(archive, texture_path) if disk is not None else None
+    key = disk.key(archive, texture_path, full) if disk is not None else None
     texture = disk.get(key) if key else None
     if texture is None:
-        texture = _read_top_mip(archive, texture_path, full=False)
+        texture = _read_top_mip(archive, texture_path, full=full)
         if key and texture['format'] in GL_COMPRESSED.keys() | GL_UNCOMPRESSED.keys():
             disk.put(key, texture)
     fmt = texture['format']
@@ -1647,14 +1680,14 @@ def puddle_texture_atlas(noise, ripple):
             pixels_sha256=hashlib.sha256(t['pixels']).hexdigest()) for t in (noise,ripple)])
 
 
-def _cached_texture(archive, cache: dict, path, tolerate=True):
+def _cached_texture(archive, cache: dict, path, tolerate=True, hd=False):
     """cache[path], loading it once. ``tolerate`` stores None for an unloadable texture;
     otherwise the error propagates and nothing is stored. Loads run outside the lock."""
     with _CACHE_LOCK:
         if path in cache:
             return cache[path]
     try:
-        texture = load_texture(archive, path)
+        texture = load_texture(archive, path, hd=True) if hd else load_texture(archive, path)
     except (ValueError, KeyError, OSError):
         if not tolerate:
             raise
@@ -1662,19 +1695,19 @@ def _cached_texture(archive, cache: dict, path, tolerate=True):
     return _remember(cache, path, texture)
 
 
-def _with_pixels(archive, cache: dict, path):
+def _with_pixels(archive, cache: dict, path, hd=False):
     """cache[path] for CPU sampling: reloaded when a caller dropped its 'pixels' (see material_textures)."""
     with _CACHE_LOCK:
         texture = cache.get(path)
     if texture and 'pixels' not in texture:
-        texture = load_texture(archive, path)
+        texture = load_texture(archive, path, hd=True) if hd else load_texture(archive, path)
         with _CACHE_LOCK:
             cache[path] = texture
     return texture
 
 
 def material_textures(archive, materials: list[dict], cache: dict, translations: dict | None = None,
-                      previews: bool = True) -> dict[int, dict]:
+                      previews: bool = True, hd: bool = False) -> dict[int, dict]:
     """Material slot -> {'_c'/'_g'/'_n'/'_pick': texture or None, 'k', 'g_mode', 'self_lit', 'spec', 'gloss'[, 'pick']}.
 
     Missing or unloadable textures are None and that part is shaded without
@@ -1686,9 +1719,12 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
     for materials whose texture paths resolved, so material_rules need not select it again.
     ``previews`` prepares the opt-in experimental material previews; their source analysis is
     expensive, so a caller that has not enabled them passes False and prepares them on demand.
-    Thread-safe for concurrent calls sharing one ``cache``.
+    ``hd`` loads the streamed full-size mips instead of the SD previews (see load_texture); a
+    ``cache`` must not mix the two. Thread-safe for concurrent calls sharing one ``cache``.
     """
 
+    cached = lambda a, c, p, tolerate=True: _cached_texture(a, c, p, tolerate, hd)
+    with_pixels = lambda a, c, p: _with_pixels(a, c, p, hd)
     result = {}
     for material in materials:
         entry = {role: None for role in ROLES}
@@ -1715,7 +1751,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             path = paths.get(role)
             if not path:
                 continue
-            loaded = _cached_texture(archive, cache, path)
+            loaded = cached(archive, cache, path)
             if role == '_reticle' and loaded is None:
                 entry.pop(role, None)
             else:
@@ -1724,22 +1760,22 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             entry['tint'] = dict(entry['tint'])
             for role in ('_tint_detail', '_tint_palette'):
                 path = paths.get(role)
-                if path: _cached_texture(archive, cache, path)
+                if path: cached(archive, cache, path)
                 if role == '_tint_detail': entry[role] = cache.get(path)
                 elif cache.get(path):
-                    entry['tint']['palette_rgb'] = tint_palette_sample(_with_pixels(archive, cache, path), entry['tint']['palette_u'])
+                    entry['tint']['palette_rgb'] = tint_palette_sample(with_pixels(archive, cache, path), entry['tint']['palette_u'])
                     entry['tint']['palette_source'] = path
         if paths.get('leaf_colour'):
             # Placeholder: one fixed-coordinate read of the palette ramp (no per-instance UV yet).
             path = paths['_cmb']
-            _cached_texture(archive, cache, path)
-            ramp = _with_pixels(archive, cache, path)
+            cached(archive, cache, path)
+            ramp = with_pixels(archive, cache, path)
             if ramp:
                 entry['leaf_colour'] = dict(paths['leaf_colour'], palette_rgb=leaf_palette_sample(ramp, *paths['leaf_colour']['palette_uv']))
         if paths.get('forward', {}).get('kind') == 'screen':
             path = paths.get('_screen_timeline')
-            if path: _cached_texture(archive, cache, path, tolerate=False)
-            timeline = _with_pixels(archive, cache, path)
+            if path: cached(archive, cache, path, tolerate=False)
+            timeline = with_pixels(archive, cache, path)
             if not timeline: raise ValueError('Screen timeline source unavailable')
             # Linear filtering at normalized .5: exact RGBA8 source timeline, 512x1.
             q = tint_palette_sample(timeline, 0.5)[0]
@@ -1753,13 +1789,13 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             sources=[]
             for role in ('_puddle_noise','_puddle_ripple'):
                 path=paths.get(role)
-                if path: _cached_texture(archive,cache,path,tolerate=False)
+                if path: cached(archive,cache,path,tolerate=False)
                 sources.append(cache.get(path))
             if not all(sources) or not entry.get('_g') or not entry.get('_c'):
                 raise ValueError('GroundPuddles source texture unavailable')
             key=('GroundPuddlesAtlas',*(t['path'] for t in sources))
             atlas=cache.get(key)
-            if atlas is None: atlas=_remember(cache,key,puddle_texture_atlas(*(_with_pixels(archive,cache,t['path']) for t in sources)))
+            if atlas is None: atlas=_remember(cache,key,puddle_texture_atlas(*(with_pixels(archive,cache,t['path']) for t in sources)))
             entry['_puddle_atlas']=atlas
             entry['puddles']=dict(entry['puddles'], scales=atlas['scales'])
             if not entry.get('_n'): entry['puddles']['writer']='4A6CDAAA'
@@ -1771,8 +1807,8 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
                 else ('_rock_mask', '_rock_c2', '_rock_g2', '_rock_n2')
             for role in roles:
                 path = paths.get(role)
-                if path: _cached_texture(archive, cache, path)
-                extra.append(_with_pixels(archive, cache, path))
+                if path: cached(archive, cache, path)
+                extra.append(with_pixels(archive, cache, path))
             if all(extra) and all(entry.get(role) for role in ('_c', '_g', '_n')):
                 try:
                     entry['_rock_volume'] = rock_texture_volume(extra)
@@ -1785,7 +1821,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             surface = paths['lava_surface']
             source_textures = {}
             for binding in surface['texture_bindings']:
-                texture = _cached_texture(archive, cache, binding['path'], tolerate=False)
+                texture = cached(archive, cache, binding['path'], tolerate=False)
                 if not texture or texture.get('array_size', 1) != 1:
                     raise ValueError('Lava source texture unavailable or not 2D: ' + binding['path'])
                 source_textures[binding['api']] = texture
@@ -1808,7 +1844,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
                         # dropped this texture's pixels restores them for a variant it has not
                         # uploaded yet (the level loader's restore_native_pixels); reloading here
                         # would decode a shared texture again for every material binding it.
-                        texture = _cached_texture(archive, cache, path, tolerate=False)
+                        texture = cached(archive, cache, path, tolerate=False)
                         if not texture or texture.get('array_size', 1) != 1:
                             raise ValueError('Native source texture unavailable or not 2D: ' + path)
                         native_textures[binding['api']] = texture
@@ -1822,7 +1858,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
                 if preview:
                     preview_textures = {}
                     for binding in preview['texture_bindings']:
-                        texture = _cached_texture(archive, cache, binding['path'], tolerate=False)
+                        texture = cached(archive, cache, binding['path'], tolerate=False)
                         if not texture or texture.get('array_size',1) != 1:
                             raise ValueError('Experimental source texture unavailable: '+binding['path'])
                         preview_textures[binding['api']] = texture

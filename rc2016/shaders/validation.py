@@ -522,6 +522,10 @@ def _viewer_expected_constants(rule):
         p = terms["number_display"]["params"]
         e.update({"number distort": p["distort"], "number b scale": p["b_scale"], "number vignette w": p["vignette_w"],
                   "number kc": p["kc"], "number ko": p["ko"], "number amplitude": p["amplitude"]})
+    if "ion_tubes" in ported:
+        p = terms["ion_tubes"]["params"]
+        e.update({"ion tubes tint": p["colour"], "ion tubes gain": p["gain"], "ion tubes amplitude": p["amplitude"],
+                  "ion tubes base": p["base"], "ion tubes rim": p["rim"]})
     if "victor_reticle" in ported:
         p = terms["victor_reticle"]["params"]
         e.update({"Victor reticle CB2[0] material UV phase": p["uv_phase"],
@@ -653,6 +657,9 @@ def _viewer_required(rule, has_n):
     if "number_display" in ported:
         names += ["number distort", "number b scale", "number vignette w", "number kc", "number ko", "number amplitude"]
         req("_c", "_n", "_pick", "_g")
+    if "ion_tubes" in ported:
+        names += ["ion tubes tint", "ion tubes gain", "ion tubes amplitude", "ion tubes base", "ion tubes rim"]
+        req("_pick")
     if "victor_reticle" in ported:
         names += ["Victor reticle CB2[0] material UV phase", "Victor reticle CB2[1] API8 gain",
                   "Victor reticle CB2[2] ring tint", "Victor reticle CB0[115] presentation amplitude"]
@@ -869,6 +876,16 @@ def _validate_viewer_rule_material(source, material):
         assert "VR number colour (unlit)" in names, "Number display emission is not the output"
         assert rule["terms"]["number_display"].get("blend") == "opaque", "Number display source blend is not opaque"
         assert two_sided or "VR cull back faces" in names, "Number display back faces are not culled"
+        constants = _viewer_check_constants_and_images(source, material, rule, upstream, has_n)
+        return dict(status="passed_viewer_graph_rule_frontend", terms=ported, blend="opaque", constants=constants,
+                    limitation=material.get("rc_shader_frontend_limitation"))
+    if "ion_tubes" in ported:   # Surface = Cull(Emission(2 amp (1 + m) (base + rim F^5 + m C g))), opaque
+        upstream = _viewer_upstream(output.inputs["Surface"])
+        names = {node.name for node in upstream}
+        two_sided = rule["terms"]["ion_tubes"].get("two_sided")
+        assert "VR ion tubes colour (unlit)" in names, "Ion tubes emission is not the output"
+        assert rule["terms"]["ion_tubes"].get("blend") == "opaque", "Ion tubes source blend is not opaque"
+        assert two_sided or "VR cull back faces" in names, "Ion tubes back faces are not culled"
         constants = _viewer_check_constants_and_images(source, material, rule, upstream, has_n)
         return dict(status="passed_viewer_graph_rule_frontend", terms=ported, blend="opaque", constants=constants,
                     limitation=material.get("rc_shader_frontend_limitation"))

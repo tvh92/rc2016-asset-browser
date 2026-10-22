@@ -1563,15 +1563,18 @@ def apply_viewer_graph_rule(mat, source):
     glow_shell = 'bright_glow' in ported and 'bright_glow' in terms   # 93695188 samples no texture
     eye_cornea = 'eye_cornea' in ported and 'eye_cornea' in terms   # A36A97CB samples _n only
     number = 'number_display' in ported and 'number_display' in terms   # 8CEC816B / 37C85F4C sample the four number slots
+    ion = 'ion_tubes' in ported and 'ion_tubes' in terms   # 86DDE345 samples the electricity image only
     reticle = 'victor_reticle' in ported and 'victor_reticle' in terms # EB9C8254 source pass 0, exact graph identity
     lava = 'lava_surface' in ported and 'lava_surface' in terms
     water = 'water' in ported and 'water' in terms
     flat = terms.get('flat_surface') if 'flat_surface' in ported else None   # constant albedo, F0 and gloss, no texture
     if number and not all(img(role) is not None for role in ('_c', '_n', '_pick', '_g')):
         return False
+    if ion and img('_pick') is None:
+        return False
     glass = next((k for k in GLASS_VIEWER_KINDS if k in ported and k in terms), None)   # forward glass writers sample no _c
     bright_white = bool(terms.get('bright_center', {}).get('albedo_white')) and 'bright_center' in ported   # preview override: no _c
-    if c is None and not (arch and g is not None) and not facing and not bright_white and not glow_shell and not eye_cornea and not number and not reticle and not flat and not glass and not water and not lava:
+    if c is None and not (arch and g is not None) and not facing and not bright_white and not glow_shell and not eye_cornea and not number and not ion and not reticle and not flat and not glass and not water and not lava:
         return False
     for node in list(nt.nodes):   # keep every source image node (provenance and coverage reports)
         if node.type != 'TEX_IMAGE':
@@ -1594,6 +1597,10 @@ def apply_viewer_graph_rule(mat, source):
     if glow_shell:
         limits += _viewer_rule_bright_glow(mat, rule)
         _finish_viewer_rule(mat, rule, 'forward bright glow 93695188 (unlit, additive, back faces culled)', limits)
+        return True
+    if ion:
+        limits += _viewer_rule_ion_tubes(mat, rule, img)
+        _finish_viewer_rule(mat, rule, 'forward ion tubes %s (t=0, unlit, opaque)' % terms['ion_tubes']['params']['writer'], limits)
         return True
     if number:
         limits += _viewer_rule_number_display(mat, rule, img)
@@ -2221,6 +2228,42 @@ def _viewer_rule_number_display(mat, rule, img):
             'translated; the fifth texture sample (weight %g) is not modelled; the deferred writer of this graph outputs zero; '
             'the viewer tonemaps the colour, Cycles emits scene-linear'
             % (p['writer'], p['captured_amplitude'], p['amplitude'], p['s3_weight'])]
+
+
+def _viewer_rule_ion_tubes(mat, rule, img):
+    """Victor von Ion tubes forward colour (86DDE345; gl_shading.GLASS_FRAGMENT uKind 12) at t = 0.
+
+    rgb = 2 amp (1 + m) (base + rim F^5 + m C g); m = sat(API6.R(2u + 0.3, v/2) + API5.G(1 - 2v, u/4)) from one image,
+    F = max(N.V - 0.00100005, 0). The emission is unlit and opaque (flags 0x38), back faces culled.
+    """
+    nt = mat.node_tree; P = _ViewerNodes(nt)
+    f = rule['terms']['ion_tubes']; p = f['params']
+    pick = img('_pick')
+    u, vb, _ = P.uv_split(); v = P.m('SUBTRACT', 1.0, vb)   # game v counts from the top row
+    t5 = P.sep(P.tex(pick, P.gl_coord(P.m('SUBTRACT', 1.0, P.m('MULTIPLY', v, 2.0)), P.m('MULTIPLY', u, 0.25)), 'ion tubes API5').outputs['Color'])[1]
+    t6 = P.sep(P.tex(pick, P.gl_coord(P.m('ADD', P.m('MULTIPLY', u, 2.0), 0.3), P.m('MULTIPLY', v, 0.5)), 'ion tubes API6').outputs['Color'])[0]
+    m = P.sat(P.m('ADD', t5, t6))
+    geo = P.geo()
+    ndv = P.sat(P.v('DOT_PRODUCT', P.v('NORMALIZE', geo.outputs['Normal']), P.v('NORMALIZE', geo.outputs['Incoming'])))
+    face = P.m('MAXIMUM', P.m('SUBTRACT', ndv, 0.00100004673), 0.0)
+    face5 = P.m('POWER', face, 5.0)
+    tint = P.v('SCALE', P.const3('ion tubes tint', p['colour']), P.m('MULTIPLY', P.const('ion tubes gain', p['gain']), m))
+    inner = P.v('ADD', P.v('ADD', P.const3('ion tubes base', p['base']), P.v('SCALE', P.const3('ion tubes rim', p['rim']), face5)), tint)
+    scale = P.m('MULTIPLY', P.m('MULTIPLY', P.const('ion tubes amplitude', p['amplitude']), 2.0), P.m('ADD', m, 1.0))
+    em = P.N.new('ShaderNodeEmission'); em.name = em.label = 'VR ion tubes colour (unlit)'
+    P.L.new(P.v('SCALE', inner, scale), em.inputs['Color']); shader = em
+    if not f.get('two_sided'):
+        culled = P.N.new('ShaderNodeBsdfTransparent'); culled.name = 'VR culled back face'
+        cull = P.N.new('ShaderNodeMixShader'); cull.name = cull.label = 'VR cull back faces'
+        P.L.new(geo.outputs['Backfacing'], cull.inputs[0]); P.L.new(shader.outputs[0], cull.inputs[1])
+        P.L.new(culled.outputs[0], cull.inputs[2]); shader = cull
+    out = P.N.new('ShaderNodeOutputMaterial'); out.is_active_output = True
+    P.L.new(shader.outputs[0], out.inputs['Surface'])
+    mat.use_backface_culling = not f.get('two_sided')
+    return ['Ion tubes forward program %s at t = 0: amplitude CB0[115] is a labelled presentation value (shown at %g), not decoded; '
+            'the scroll time CB0[99], CB0[107] (dissolve), the fog blend (attribute2.w = 1), vertex alpha and the discard predicate '
+            '(attribute0.2) are frozen or not translated; the power term CB2[4] is 0 and not built; the deferred writers of this '
+            'graph output zero; the viewer tonemaps the colour, Cycles emits scene-linear' % (p['writer'], p['amplitude'])]
 
 
 def _finish_viewer_rule(mat, rule, frontend, limits):

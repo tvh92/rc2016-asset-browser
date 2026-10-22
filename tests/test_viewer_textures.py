@@ -1030,5 +1030,19 @@ class GroundPuddlesTests(unittest.TestCase):
         self.assertFalse(tp.fur_shell_grey_reading(skin,[],data_with_flags(0x30)))
         self.assertFalse(tp.fur_shell_grey_reading('material/character/hero/test/other.material',[],fur))
 
+
+    def test_hd_flag_takes_the_stream_mip_unless_previews_are_disabled(self):
+        from unittest.mock import patch
+        seen=[]
+        def read(_archive,_path,full):
+            seen.append(full);return dict(format=28,full_size=(2,2),width=2,height=2,pixels=b'',slices=[b''])
+        archive=type('A',(),{})()
+        with patch.object(tp,'_read_top_mip',side_effect=read):
+            tp.load_texture(archive,'a.texture')
+            tp.load_texture(archive,'a.texture',hd=True)
+            with patch.object(tp,'MIN_PREVIEW_SIZE',0):
+                tp.load_texture(archive,'a.texture',hd=True)
+        self.assertEqual(seen,[False,True,False])
+
 if __name__ == '__main__':
     unittest.main()

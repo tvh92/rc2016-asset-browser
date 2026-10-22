@@ -858,6 +858,10 @@ void main() {
 #   CB0[99] = 0. rim = sat(4 (1 - N.V)^P9) from the geometry normal, alpha = sat(sat(X + sat(P3 + rim)) attr0.w),
 #   F0 = P8 C S + rim^10, gloss = sat(gloss C.r S), tint k = sat(T / luma(T)). rgb = k specular(F0, N') + K amp (L + X):
 #   the light loop is the one of 4FC5703F; amp is CB0[115] (labelled presentation value), fog, SSR and probes are the viewer rig.
+# uKind 12, ion_tubes 86DDE345 (enm_victor_von_ion_tubes_w_rust; docs/material-decoding/victor-von-ion-tubes.md): uA = tint C
+#   (CB2[0..2]) and gain g (CB2[3]); uB.x = amplitude (CB0[115], labelled presentation value); uC = base colour; uD = rim colour.
+#   rgb = 2 amp (1 + m) (base + rim F^5 + m C g), m = sat(API6.R + API5.G) from the one electricity image, F = max(N.V - 0.001, 0);
+#   CB0[99] = CB0[107] = 0, fog blend 1, CB2[4] = 0, vertex alpha 1 (opaque, back faces culled).
 GLASS_FRAGMENT = """
 #version 120
 uniform sampler2D uWaterHeightA; uniform sampler2D uWaterHeightB; uniform bool uHasWaterHeights;
@@ -989,6 +993,14 @@ void main() {
         if (uSrgbP) na = screenLinear(na);
         if (uScreenSrgbB) nb = screenLinear(nb);
         color = (1.0 + mix(uB.w, uA.w, h)) * (1.0 - (1.0-na)*(1.0-nb)*(1.0-tint));
+    } else if (uKind == 12) { // 86DDE345 Victor von Ion tubes forward colour (see the uKind 12 comment)
+        float t5 = uHasP ? texture2D(uTexP, vec2(1.0 - 2.0 * vUV.y, 0.25 * vUV.x)).g : 0.0;   // API5 .G
+        float t6 = uHasP ? texture2D(uTexP, vec2(2.0 * vUV.x + 0.3, 0.5 * vUV.y)).r : 0.0;    // API6 .R
+        if (uSrgbP) { t5 = screenLinear(t5); t6 = screenLinear(t6); }
+        float m = sat(t5 + t6);
+        float F = max(ndv - 0.00100004673, 0.0), F2 = F * F;
+        color = 2.0 * uB.x * (1.0 + m) * (uC.rgb + uD.rgb * (F2 * F2 * F) + m * uA.w * uA.rgb);
+        alpha = 1.0;
     } else if (uKind == 7) { // prisoner number forward colour (8CEC816B / 37C85F4C), time 0, fog fade and vertex alpha 1
         // uA = distort, b scale, vignette w, alpha-channel flag; uB.w = amplitude (CB0[115], presentation value); uC = Kc; uD = Ko.
         float b5 = uHasP ? texture2D(uTexP, vUV).b : 0.0;                                   // API5 at (u, v)
@@ -1127,7 +1139,8 @@ FRAGMENT=FRAGMENT.replace('vec3 N = normalize(vNrm);','vec3 N = normalize(vNrm);
 FRAGMENT = FRAGMENT.replace("// @lighting\n", LIGHTING+FOG+_SCENE_OUTPUT)
 GLASS_FRAGMENT = GLASS_FRAGMENT.replace("// @lighting\n", LIGHTING+FOG)
 GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4, "bright_glow": 5,
-               "eye_cornea": 6, "number_display": 7, "glass_basic": 8, "glass_cg02": 9, "glass_jn": 10, "glass_thumper": 11}
+               "eye_cornea": 6, "number_display": 7, "glass_basic": 8, "glass_cg02": 9, "glass_jn": 10, "glass_thumper": 11,
+               "ion_tubes": 12}
 
 
 def glass_uniforms(forward):
@@ -1139,6 +1152,9 @@ def glass_uniforms(forward):
     if forward["kind"] == "number_display":
         return (GLASS_KINDS["number_display"], (p["distort"], p["b_scale"], p["vignette_w"], 1.0 if p["alpha_channel"] else 0.0), (0.0, 0.0, 0.0, p["amplitude"]),
                 (*p["kc"], 0.0), (*p["ko"], 0.0))
+    if forward["kind"] == "ion_tubes":
+        return (GLASS_KINDS["ion_tubes"], (*p["colour"], p["gain"]), (p["amplitude"], 0.0, 0.0, 0.0),
+                (*p["base"], 0.0), (*p["rim"], 0.0))
     if forward["kind"] == "bright_glow":
         return (5, (*p["colour"], p["gain"]), (*p["colour_lo"], p["sharp"]),
                 (p["dist_k"], p["dist0"], p["weight"], p["amplitude"]), (0.0,) * 4)
