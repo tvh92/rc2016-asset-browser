@@ -3,9 +3,10 @@
 Run by ``run.py --group-blend NAME`` inside Blender (``blender --background --python group_blend.py -- --job JOB``;
 ``--validate`` reopens the candidate).  Each member is a finished per-model .blend: its meshes and armature are
 appended at the position they have in that .blend, so a part built as part of a larger model (a glove of a suit)
-overlaps the model it belongs to exactly.  The animation is cleared so every member stands in its bind pose.  The
-scene then uses the shared review lighting, one camera dollied to fit the whole group and one Render Region around
-it, exactly as a single-model build does.
+overlaps the model it belongs to exactly.  Each member keeps the animation it was built with (its NLA strips and their
+Actions), so the timeline plays every member's clips; ``bind_pose`` on a member clears it instead.  The scene then
+uses the shared review lighting, one camera dollied to fit the whole group and one Render Region around it, exactly
+as a single-model build does.
 """
 import argparse
 import json
@@ -70,7 +71,8 @@ def _mesh_key(obj):
 def _load_member(member, label):
     """Append one member's meshes and armatures into a collection named after it; returns all of them.
 
-    ``member["pose"]`` keeps the action and pose the member was built with. ``member["materials"]`` (``blend``,
+    The member's armatures keep the action and NLA strips they were built with unless ``member["bind_pose"]`` is set,
+    which clears them to the rest pose. ``member["materials"]`` (``blend``,
     ``names``) replaces the named material slots with the same-named materials of another member's .blend, which
     is how a texture set (captain, chrome, flame) is put on a suit without another mesh. ``member["exclude"]`` lists
     part names (see ``_mesh_key``) that are left out of the group. ``member["hide_armature"]`` hides the member's
@@ -93,7 +95,7 @@ def _load_member(member, label):
         if obj.type == "MESH" and _mesh_key(obj) in excluded:
             bpy.data.objects.remove(obj, do_unlink=True)
             continue
-        if obj.type == "ARMATURE" and not member.get("pose"):
+        if obj.type == "ARMATURE" and member.get("bind_pose"):
             # Bind pose: no action, no NLA strips, and every pose bone back at its rest transform.
             obj.animation_data_clear()
             for bone in obj.pose.bones:
@@ -136,6 +138,24 @@ def _layout(members, right):
     return layout
 
 
+def _timeline(scene, members):
+    """Span the scene's frame range over every kept NLA strip, so the timeline plays the members' clips; a group
+    with no animation keeps the default range. Frame 1 of that range is the frame the camera is fitted to."""
+    starts, ends = [], []
+    for objects in members:
+        for obj in objects:
+            if obj.type != "ARMATURE" or obj.animation_data is None:
+                continue
+            for track in obj.animation_data.nla_tracks:
+                for strip in track.strips:
+                    starts.append(strip.frame_start)
+                    ends.append(strip.frame_end)
+    if starts:
+        scene.frame_start = int(math.floor(min(starts)))
+        scene.frame_end = int(math.ceil(max(ends)))
+        scene.frame_set(scene.frame_start)
+
+
 def assemble(job):
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
@@ -162,6 +182,7 @@ def assemble(job):
                     obj.matrix_basis = place @ obj.matrix_basis
         members.append(objects)
         print("GROUP member", index + 1, len(job["members"]), member["name"], flush=True)
+    _timeline(scene, members)
     layout = _layout(members, right)
     camera_data = bpy.data.cameras.new("Group review camera")
     camera_data.type = "PERSP"
