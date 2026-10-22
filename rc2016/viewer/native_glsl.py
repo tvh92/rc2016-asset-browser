@@ -186,9 +186,11 @@ vec3 nativeVertexTangent() {
     vec3 dp1 = dFdx(vTintWorldPos), dp2 = dFdy(vTintWorldPos); vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
     return cross(dp2, vTintWorldNrm) * du1.x + cross(vTintWorldNrm, dp1) * du2.x;
 }
-// The writers tilt the _n green towards h * cross(N, T); the viewer's hand rules tilt it towards
-// -grad v (game V). The game's sign is not stored in the vertex word: the UV winding decides.
+// The writers tilt the _n green towards h * cross(N, T), h = sign of the interpolated stored
+// bitangent sign (position w). Without a tangent stream the UV winding stands in, with the same
+// convention: h * cross(N, T) along -grad v (game V).
 float nativeFrameHandedness(vec3 T) {
+    if (dot(vTintWorldTan, vTintWorldTan) > 0.0) return sign(vTangentSign);
     vec3 dp1 = dFdx(vTintWorldPos), dp2 = dFdy(vTintWorldPos); vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
     vec3 B = cross(dp2, vTintWorldNrm) * du1.y + cross(vTintWorldNrm, dp1) * du2.y;
     return dot(cross(vTintWorldNrm, T), B) < 0.0 ? 1.0 : -1.0;

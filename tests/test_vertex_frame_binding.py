@@ -1,8 +1,8 @@
 """Vertex frame binding (rc2016/shaders/bindings.py, vertex_frame=True).
 
 attribute2.xyz and attribute3.xyz become the decoded vertex normal and tangent, and the integer sign chain of
-attribute3.w (the bitangent handedness) becomes an explicit input. The handedness is inferred from the UV
-winding, so it is never reported as game-proven. Synthetic checks always run; the archive check skips without
+attribute3.w (the bitangent handedness) becomes an explicit input, supplied from the stored position-w sign;
+its per-draw factors and the drawn vertex path are inferred, so it is never reported as game-proven. Synthetic checks always run; the archive check skips without
 RC2016_RESEARCH.
 """
 import os
@@ -53,7 +53,10 @@ class FrameAndEquivalenceTests(unittest.TestCase):
         body = emit_surface(receipt, experimental=True)['body']
         for name in ('nativeFrameTangent.x', 'nativeHandedness', 'vTintWorldNrm.z'):
             self.assertIn(name, body)
-        self.assertIn('float nativeFrameHandedness', fragment_source(receipt, experimental=True)['source'])
+        source = fragment_source(receipt, experimental=True)['source']
+        self.assertIn('float nativeFrameHandedness', source)
+        # The stored position-w sign wins wherever the tangent stream is drawn.
+        self.assertIn('return sign(vTangentSign);', source)
         with self.assertRaises(ValueError):
             emit_surface(receipt)
 

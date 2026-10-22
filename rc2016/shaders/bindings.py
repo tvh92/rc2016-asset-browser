@@ -525,7 +525,8 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
                 '. Some exporting vertex program, on some per-draw flag path, gives each as a per-draw rotation of vertex stream 1 '
                 '(the +8 normal word) or 2 (the +12 tangent word), and no exporter gives another stream; other exporters and paths '
                 '(skinning, deformation, buffer fetches) are not proven, nor is the path the game draws. The bitangent handedness '
-                'sign(tangent attribute w) is the viewer-inferred sign of the UV winding, not game data.')
+                'sign(tangent attribute w) reads the stored int16 position w sign (clamp(w, -1, 1), exported so on one vertex flag '
+                'path); its two per-draw factors there are taken as 1, and the viewer falls back to the UV winding without a tangent stream.')
         if colours:
             lowered['limitations'].append(f'Experimental: interpolants of this pixel program trace to vertex semantic {COLOUR_SEMANTIC} squared components '+','.join(sorted(painted))+'. The runtime flag path and colour-stream identity are inferred; level instances use candidate keyed channels where available. Generic red/green fallback is white 1, not Novalis review controls; standalone red/green stream transport remains unresolved.')
             normals.update(colours)
@@ -536,14 +537,16 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
         if position_terms:lowered['limitations'].append(f'Experimental: {position_terms} expressions of the form CB0[28..30] + (CB0[92..95] + CB0[100..103]*POS_Y + POS_X*(CB0[96..99] + CB0[104..107]*POS_Y)) * POS_W are read as world position and replaced by viewer world position. This engine meaning is inferred from the expression shape, not decoded from the game.')
     if vertex_frame:
         # Vertex normal (attribute2.xyz) and tangent (attribute3.xyz) are the decoded per-vertex words; the
-        # bitangent handedness sign(attribute3.w) is the integer select/u_sub/i2f chain. The archive does not
-        # store the handedness (docs/pipeline.md), so the caller supplies it from the UV winding: inferred.
+        # bitangent handedness sign(attribute3.w) is the integer select/u_sub/i2f chain, which the caller
+        # supplies from the stored position w sign (docs/pipeline.md).
         frame=_frame_substitutions(ir,replaced,{2:'vertex_normal',3:'vertex_tangent'})
         if frame:
             replaced=ir.replace(replaced,frame)
             lowered['limitations'].append('Vertex frame: attribute2.xyz and attribute3.xyz are the decoded vertex normal and tangent '
-                '(native +8/+12 words). The bitangent handedness sign(attribute3.w) is the viewer-inferred sign of the UV winding; '
-                'the game handedness is not stored in the vertex record and is not game-proven.')
+                '(native +8/+12 words). The bitangent handedness sign(attribute3.w) is the stored sign of the int16 position w: '
+                'vertex program 0x59bb3ae4 exports clamp(float(w), -1, 1) times two per-draw words as attribute3.w on one flag path '
+                '(other paths read instance buffers). The per-draw words are taken as 1 and the drawn path is not established; '
+                'without a tangent stream (level viewer) the UV winding stands in.')
     replaced,zero_guards=guard_source_zero_powers(ir,replaced)
     replaced,front_face=bind_front_face(ir,replaced)
     if front_face:
@@ -1046,7 +1049,7 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False,
             material_sha256=hashlib.sha256(bytes(material_data)).hexdigest())
         result['limitations'].insert(0,
             'Experimental world-position preview: an inferred engine meaning of CB0 and pixel position replaces runtime data; not a ready translation.' if position_preview else
-            'Experimental vertex-frame preview: interpolants are read as the decoded vertex normal and tangent with an inferred handedness; not a ready translation.' if frame_preview else
+            'Experimental vertex-frame preview: interpolants are read as the decoded vertex normal and tangent with the stored position-w handedness; the drawn vertex path is inferred; not a ready translation.' if frame_preview else
             'Experimental squared-colour preview: source-proven vertex squares use candidate colour streams; their runtime binding and flag selection remain inferred. No world-position or normal substitution; not a ready translation.')
     result['translation_sha256']=hashlib.sha256(candidate['signature'].encode()).hexdigest()
     return result

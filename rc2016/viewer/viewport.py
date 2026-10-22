@@ -291,8 +291,9 @@ def _prepare_viewport_numpy(payload, np):
     tangent_values = payload.get("tangents")
     tangent_array = None
     if tangent_values is not None:
-        tangent_values = np.asarray(tangent_values, dtype=np.float64).reshape(-1, 3)
-        if tangent_values.shape == vertices.shape and np.isfinite(tangent_values).all():
+        # xyz tangent and w the stored bitangent sign (native_model tangent_signs).
+        tangent_values = np.asarray(tangent_values, dtype=np.float64).reshape(-1, 4)
+        if len(tangent_values) == len(vertices) and np.isfinite(tangent_values).all():
             tangent_array = floats(tangent_values)
     arrays = (floats(vertices), floats(normals),
               (ctypes.c_uint * triangles.size).from_buffer_copy(np.ascontiguousarray(triangles, dtype=np.uint32)),
@@ -1317,7 +1318,7 @@ class ModelViewport(_TkFrame):
             sh.glVertexAttrib4f(STATIC_VECTOR_ATTRIBUTE, 0.0, 0.0, 0.0, 0.0)
         if tangent_array is not None:
             sh.glEnableVertexAttribArray(TANGENT_ATTRIBUTE)
-            sh.glVertexAttribPointer(TANGENT_ATTRIBUTE, 3, self.GL_FLOAT, 0, 0, self._vptr(tangent_array))
+            sh.glVertexAttribPointer(TANGENT_ATTRIBUTE, 4, self.GL_FLOAT, 0, 0, self._vptr(tangent_array))
         else:
             sh.glDisableVertexAttribArray(TANGENT_ATTRIBUTE)
             sh.glVertexAttrib4f(TANGENT_ATTRIBUTE, 0.0, 0.0, 0.0, 0.0)

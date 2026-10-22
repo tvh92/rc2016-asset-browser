@@ -547,11 +547,14 @@ def _import_native_descriptor(job,rig,descriptor):
         # The +12 vertex word is kept exactly (SourceTangentPacked) and also as
         # its shader-observed 10:10:10:2 UNORM tangent decode (SourceTangent,
         # native mesh space). Blender's Normal Map node still uses its own
-        # UV-derived tangents; the bitangent sign is not stored in this word.
+        # UV-derived tangents. The bitangent sign is not in this word: it is the
+        # clamped int16 position w (SourceTangentSign, -1/0/1).
         tangent=mesh.attributes.new(name='SourceTangentPacked',type='INT',domain='POINT')
         write_values(tangent.data,'value',signed_int32(section['packed_tangents']))
         decoded_tangent=mesh.attributes.new(name='SourceTangent',type='FLOAT_VECTOR',domain='POINT')
         write_values(decoded_tangent.data,'vector',np.asarray(section['tangents'],dtype=np.float32).reshape(-1),3)
+        tangent_sign=mesh.attributes.new(name='SourceTangentSign',type='FLOAT',domain='POINT')
+        write_values(tangent_sign.data,'value',np.asarray(section['tangent_signs'],dtype=np.float32))
         if section['uv0_secondary_packed'] is not None:
             mesh.attributes.new(name='SourceUV0SecondaryU',type='INT',domain='POINT')
             mesh.attributes.new(name='SourceUV0SecondaryV',type='INT',domain='POINT')

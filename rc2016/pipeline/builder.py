@@ -196,6 +196,11 @@ def validate_reopened_native_descriptor(descriptor,objects,joint_names=None):
             assert max_abs_error(read_values(decoded_tangent.data,'vector',3).reshape(-1,3),
                 np.asarray(section['tangents'],dtype=np.float64).reshape(-1,3))<=1e-6,('Native decoded tangent changed',index)
             decoded_tangent_state='matches_fresh_decode'
+            tangent_sign=mesh.attributes.get('SourceTangentSign')
+            assert tangent_sign is not None and tangent_sign.domain=='POINT' and tangent_sign.data_type=='FLOAT' \
+                and len(tangent_sign.data)==len(section['tangent_signs']),('Native tangent sign attribute is missing or malformed',index)
+            assert max_abs_error(read_values(tangent_sign.data,'value',1).reshape(-1),
+                np.asarray(section['tangent_signs'],dtype=np.float64))==0,('Native tangent sign changed',index)
         source_weights=section['weights']
         # A static (--no-skeleton) mesh keeps no skin, so there are no weights to compare with the source.
         if source_weights and any(weights is not None for weights in source_weights) and not obj.get('source_skin_weights_omitted'):

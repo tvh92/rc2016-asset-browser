@@ -208,7 +208,8 @@ varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm; varying vec3 vTintViewOf
 attribute float aRockAlpha; varying float vRockAlpha;
 attribute vec3 aGroundBlend; varying vec3 vGroundBlend;
 attribute vec3 aStaticPackedVector; varying vec3 vStaticPackedVector;
-attribute vec3 aTangent; varying vec3 vTangent;   // zero when the mesh has no decoded tangent
+// Decoded vertex tangent, w the stored bitangent sign (position w); zero when the mesh has no decoded tangent.
+attribute vec4 aTangent; varying vec3 vTangent; varying float vTangentSign;
 // Rows of joint j's row-major skin matrix, as the columns of its transpose.
 mat4 boneT(float j) {
     float x = j * 4.0 + 0.5;
@@ -218,7 +219,7 @@ mat4 boneT(float j) {
                 texture2DLod(uBoneTex, vec2((x + 3.0) / uBoneWidth, 0.5), 0.0));
 }
 void main() {
-    vec4 p = gl_Vertex; vec3 n = gl_Normal; vec3 tn = aTangent;
+    vec4 p = gl_Vertex; vec3 n = gl_Normal; vec3 tn = aTangent.xyz; vTangentSign = aTangent.w;
     vRockAlpha = aRockAlpha * aRockAlpha;
     vGroundBlend = vec3(aGroundBlend.xy * aGroundBlend.xy * aGroundBlend.z, aGroundBlend.z);
     // This opt-in source input is supplied separately from the unit shading normal.
@@ -231,7 +232,7 @@ void main() {
                + boneT(aJoints1.x) * aWeights1.x + boneT(aJoints1.y) * aWeights1.y
                + boneT(aJoints1.z) * aWeights1.z + boneT(aJoints1.w) * aWeights1.w;
         // v * transpose(M) == M * v
-        p = gl_Vertex * t; n = (vec4(gl_Normal, 0.0) * t).xyz; tn = (vec4(aTangent, 0.0) * t).xyz;
+        p = gl_Vertex * t; n = (vec4(gl_Normal, 0.0) * t).xyz; tn = (vec4(aTangent.xyz, 0.0) * t).xyz;
     }
     vTangent = gl_NormalMatrix * tn;
     vTintWorldPos = vec3(p.x, p.z, -p.y); vTintWorldNrm = vec3(n.x, n.z, -n.y); vTintWorldTan = vec3(tn.x, tn.z, -tn.y);
@@ -313,7 +314,7 @@ uniform bool uFacingGlow; uniform vec4 uFacingGlowP; uniform vec3 uFacingGlowQ; 
 uniform bool uBrightCentre; uniform bool uBrightWhite; uniform vec3 uBrightEdge; uniform vec3 uBrightColour; uniform vec4 uBrightP; // D14A48D7: exponent, weight, F0, gloss^2
 varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
 varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm; varying vec3 vTangent; varying vec3 vTintViewOffset;
-varying vec3 vTintWorldTan;
+varying vec3 vTintWorldTan; varying float vTangentSign;
 const float PI = 3.14159265;
 vec3 linear(vec3 c) { return pow(max(c, 0.0), vec3(2.2)); }
 // @lighting
@@ -606,11 +607,12 @@ void main() {
         vec3 T = p2 * du1.x + p1 * du2.x, B = p2 * du1.y + p1 * du2.y;
         float scale = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-20));
         if (uBngKind == 8 && dot(vTangent, vTangent) > 0.0) {
-            // 76C79AA4 reads the vertex tangent. The stored word has no handedness: the bitangent sign is the one the UV derivative frame has (UV winding), as in bindings.py.
+            // 76C79AA4 reads the vertex tangent and its stored bitangent sign h (position w, as in bindings.py):
+            // h * cross(N, T) points along -grad v, and B here is +grad v.
             vec3 Tv = vTangent - N * dot(N, vTangent);
             if (dot(Tv, Tv) > 1e-12) {
                 vec3 Bv = cross(N, normalize(Tv));
-                T = normalize(Tv); B = dot(Bv, B) < 0.0 ? -Bv : Bv; scale = 1.0;
+                T = normalize(Tv); B = -sign(vTangentSign) * Bv; scale = 1.0;
             }
         }
         vec2 rg = texture2D(uTexN, materialUV).rg * 2.0 - 1.0;
@@ -1206,9 +1208,9 @@ varying vec3 vGroundBlend;
 varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
 varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm; varying vec3 vTintViewOffset; varying vec3 vTintWorldTan;
 varying float vRockAlpha; varying vec3 vStaticPackedVector;
-varying vec3 vTangent;   // the level viewer draws no tangent stream: zero keeps the derivative frame
+varying vec3 vTangent; varying float vTangentSign;   // the level viewer draws no tangent stream: zero keeps the derivative frame
 void main() {
-    vTangent = vec3(0.0); vTintWorldTan = vec3(0.0);
+    vTangent = vec3(0.0); vTintWorldTan = vec3(0.0); vTangentSign = 0.0;
     vRockAlpha = aRockAlpha * aRockAlpha; // zone position-keyed colour alpha (inferred), else 1
     vGroundBlend = vec3(aGroundBlend.xy * aGroundBlend.xy * aGroundBlend.z, aGroundBlend.z);
     vec3 a = aInst0.xyz, b = aInst1.xyz, c = aInst2.xyz;

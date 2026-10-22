@@ -65,7 +65,8 @@ def _frontend(translation,images):
         if any(n.get('kind') in ('vertex_normal','vertex_tangent','vertex_handedness') for n in translation['nodes']):
             # Experimental vertex frame: the geometry normal; the decoded +12 tangent word (SourceTangent,
             # native mesh space) taken to world, or Blender's UV0 tangent when the mesh lacks it; and the
-            # handedness that tilts the _n green towards Blender's UV0 bitangent (game -grad v, as the viewer).
+            # stored bitangent sign (SourceTangentSign, the position w) with it, else the handedness that
+            # tilts the _n green towards Blender's UV0 bitangent (game -grad v, as the viewer).
             def native_basis(socket,kind):
                 separate=nodes.new('ShaderNodeSeparateXYZ');links.new(socket,separate.inputs[0])
                 negate=nodes.new('ShaderNodeMath');negate.operation='MULTIPLY';negate.inputs[1].default_value=-1
@@ -93,10 +94,17 @@ def _frontend(translation,images):
             side=vector_math('DOT_PRODUCT',vector_math('CROSS_PRODUCT',geometry.outputs['Normal'],tangent).outputs[0],green.outputs[0])
             sign=nodes.new('ShaderNodeMath');sign.operation='GREATER_THAN';sign.inputs[1].default_value=0
             links.new(side.outputs['Value'],sign.inputs[0])
-            handedness=nodes.new('ShaderNodeMath');handedness.operation='MULTIPLY_ADD'
-            handedness.inputs[1].default_value=2;handedness.inputs[2].default_value=-1
-            links.new(sign.outputs[0],handedness.inputs[0])
-            preview_inputs[('vertex_handedness',None)]=handedness.outputs[0]
+            winding=nodes.new('ShaderNodeMath');winding.operation='MULTIPLY_ADD'
+            winding.inputs[1].default_value=2;winding.inputs[2].default_value=-1
+            links.new(sign.outputs[0],winding.inputs[0])
+            stored=nodes.new('ShaderNodeAttribute');stored.attribute_type='GEOMETRY';stored.attribute_name='SourceTangentSign'
+            stored.name='Experimental stored bitangent sign'
+            stored_sign=nodes.new('ShaderNodeMath');stored_sign.operation='SIGN'
+            links.new(stored.outputs['Fac'],stored_sign.inputs[0])
+            handedness=nodes.new('ShaderNodeMix');handedness.data_type='FLOAT';handedness.clamp_factor=True
+            links.new(present.outputs[0],handedness.inputs['Factor'])
+            links.new(winding.outputs[0],handedness.inputs['A']);links.new(stored_sign.outputs[0],handedness.inputs['B'])
+            preview_inputs[('vertex_handedness',None)]=handedness.outputs['Result']
         if any(n.get('kind') == 'preview_view_offset' for n in translation['nodes']):
             # World position minus camera, -Incoming x View Distance, in the same native basis.
             camera=nodes.new('ShaderNodeCameraData');camera.name='Experimental viewer camera adapter'

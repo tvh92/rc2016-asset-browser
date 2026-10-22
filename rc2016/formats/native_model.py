@@ -87,13 +87,13 @@ def _normal(value):
 
 
 def _tangent(value):
-    """Decode the vertex-record +12 word (tangent); handedness is not stored.
+    """Decode the vertex-record +12 word (tangent); its handedness is in the position w.
 
     The shader transforms it with the same basis as the normal. On seven
     checked models it is orthogonal to the normal (median |dot| ~0.0006) and
     within a median 0.3-0.8 degrees of the UV-derived tangent. Its 2-bit field
     was zero everywhere while UV frames had both orientations, so the
-    bitangent sign does not come from this word.
+    bitangent sign does not come from this word: see ``tangent_signs``.
     """
     return _unorm_1010102_vector(value, 'tangent')
 
@@ -321,7 +321,7 @@ def decode_model(path, lod='Highest', look=0, expected_sha256=None, preserve_sou
                  data=None, as_arrays=False):
     """Decode a direct PS4 model file (or its ``data`` bytes; ``path`` is then only a label).
 
-    ``as_arrays`` gives each mesh's positions, normals, tangents, packed_normals,
+    ``as_arrays`` gives each mesh's positions, normals, tangents, tangent_signs, packed_normals,
     raw_vectors, packed_tangents, uv0 and
     triangles as numpy arrays instead of lists, for previews that upload them as-is.
     """
@@ -361,6 +361,11 @@ def decode_model(path, lod='Highest', look=0, expected_sha256=None, preserve_sou
     # decoded tangent so the source bits stay auditable.
     tangents=records['tangent'].astype(np.uint32)
     tangent_vectors=_unorm_1010102_vectors(tangents,'tangent')
+    # Bitangent handedness: the game vertex shader (0x59bb3ae4, one per-draw flag path) exports
+    # clamp(float(int16 position w), -1, 1) times two per-draw words as the tangent interpolant's w,
+    # whose sign the pixel writers take. Over the meshes of 300 sampled models sign(w) is opposite to the
+    # UV-derived sign of cross(N, T).dP/dv on 96.6% of vertices with a consistent UV frame, and never 0.
+    tangent_signs=np.clip(records['xyzw'][:,3].astype(np.int64),-1,1).astype(np.float64)
     uv_words=np.frombuffer(uv0,dtype='<u2').reshape(vertex_count,uv0_bytes_per_vertex//2)
     uv_pairs=uv_words[:,:2].copy().view('<f2').astype(np.float64)
     if not np.all(np.isfinite(uv_pairs)):
@@ -384,6 +389,7 @@ def decode_model(path, lod='Highest', look=0, expected_sha256=None, preserve_sou
         source_xyz=_tuples(source_xyz) if preserve_source_positions else None
         positions,normals,raw_vectors,tangent_vectors,uvs=(_tuples(a) for a in (positions,normals,raw_vectors,tangent_vectors,uvs))
         tangents=tangents.tolist()
+        tangent_signs=tangent_signs.tolist()
         uv0_secondary_packed=_tuples(uv0_secondary_packed) if uv0_secondary_packed is not None else None
 
     mesh_count=len(meshes_raw)//MESH_STRIDE
@@ -471,6 +477,7 @@ def decode_model(path, lod='Highest', look=0, expected_sha256=None, preserve_sou
             static_vector_eligible=static_vector_eligible,
             packed_tangents=tangents[first_vertex:first_vertex+local_count],
             tangents=tangent_vectors[first_vertex:first_vertex+local_count],
+            tangent_signs=tangent_signs[first_vertex:first_vertex+local_count],
             uv0=uvs[first_vertex:first_vertex+local_count],
             uv0_secondary_packed=(uv0_secondary_packed[first_vertex:first_vertex+local_count]
                                   if uv0_secondary_packed is not None else None),
@@ -497,7 +504,8 @@ def decode_model(path, lod='Highest', look=0, expected_sha256=None, preserve_sou
                           uv0_secondary='opaque uint16 pair retained when record stride is 8'),
         uv_semantic_evidence=_semantic_evidence(uv0_bytes_per_vertex),
         packed_normal='Vertex record +8: 10:10:10:2 UNORM, 2*(u/1023)-1 per 10-bit field, normalized; 2-bit field unused. Format from the game vertex shader fetch (shadPS4 cache 0x59bb3ae4); not yet confirmed against a captured draw. ALERT spherical 10/10/sign is a different model-stream candidate',
-        tangent='Vertex record +12: 10:10:10:2 UNORM tangent decoded like the normal and kept losslessly as the raw uint32; bitangent sign is not stored in this word. Format from the game vertex shader fetch; not yet confirmed against a captured draw',vertex_count=vertex_count,
+        tangent='Vertex record +12: 10:10:10:2 UNORM tangent decoded like the normal and kept losslessly as the raw uint32; bitangent sign is not stored in this word. Format from the game vertex shader fetch; not yet confirmed against a captured draw',
+        tangent_sign='Vertex record +6 int16 position w, clamped to -1..1: the bitangent handedness the game vertex shader exports as the tangent interpolant w on one per-draw flag path (times two per-draw words); not yet confirmed against a captured draw',vertex_count=vertex_count,
         index_count=len(indexes)//2,mesh_record_count=mesh_count,selected_mesh_count=len(result),
         selected_mesh_indices=selected,import_lod=lod,import_look=look,looks=looks,materials=materials,meshes=result,
         section_sizes=sections_out,
@@ -508,7 +516,7 @@ def inspect_native_model(path, lod='Highest', look=0):
     decoded=decode_model(path,lod,look)
     summary={k:v for k,v in decoded.items() if k!='meshes'}
     summary['meshes']=[]
-    excluded={'positions','normals','packed_normals','raw_vectors','packed_tangents','tangents','uv0','uv0_secondary_packed',
+    excluded={'positions','normals','packed_normals','raw_vectors','packed_tangents','tangents','tangent_signs','uv0','uv0_secondary_packed',
               'uv1','colors','weights','triangles','source_positions_i16'}
     for mesh in decoded['meshes']:
         row={k:v for k,v in mesh.items() if k not in excluded}

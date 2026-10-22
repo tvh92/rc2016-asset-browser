@@ -76,12 +76,14 @@ def _normal_word(x, y, z):
     return q(x) | q(y) << 10 | q(z) << 20
 
 
-def build_model(rng, meshes, batches, skin, joint_count=0, remap=b''):
-    """meshes: [(vertex_count, first_skin_batch, skin_batch_count, flags)]; batches: [(skin_offset, u32, u16, code, count, first)]."""
+def build_model(rng, meshes, batches, skin, joint_count=0, remap=b'', position_w=None):
+    """meshes: [(vertex_count, first_skin_batch, skin_batch_count, flags)]; batches: [(skin_offset, u32, u16, code, count, first)].
+    position_w: the int16 position w per vertex (default 0)."""
     total = sum(m[0] for m in meshes)
-    vertices = b''.join(struct.pack('<4hII', *(int(v) for v in rng.integers(-3000, 3000, 3)), 0,
+    position_w = position_w or [0]*total
+    vertices = b''.join(struct.pack('<4hII', *(int(v) for v in rng.integers(-3000, 3000, 3)), position_w[i],
                                     _normal_word(*(rng.uniform(-1, 1, 3)/2+np.array([.5, 0, 0]))),
-                                    _normal_word(0.0, 1.0, 0.0)) for _ in range(total))
+                                    _normal_word(0.0, 1.0, 0.0)) for i in range(total))
     uv0 = b''.join(struct.pack('<2e', *rng.uniform(0, 1, 2)) for _ in range(total))
     indexes, records, first_vertex, first_index = b'', b'', 0, 0
     for count, batch_first, batch_count, flags in meshes:
@@ -217,6 +219,20 @@ class ModelDecodeTests(unittest.TestCase):
             np.testing.assert_allclose(np.frombuffer(prepared[6], np.float32).reshape(-1, 3), payload['raw_vectors'])
         flagged = nm.decode_model('alternate', 'All', data=build_model(rng, [(3, 0, 0, 0x40)], [], b''))
         self.assertFalse(flagged['meshes'][0]['static_vector_eligible'])
+
+    def test_position_w_sign_is_the_tangent_sign_through_the_viewer_arrays(self):
+        w = [-300, 0, 1, 32767]
+        data = build_model(np.random.default_rng(5), [(4, 0, 0, 0)], [], b'', position_w=w)
+        from rc2016.viewer.viewport import prepare_viewport
+        for as_arrays in (False, True):
+            decoded = nm.decode_model('signs', 'All', data=data, as_arrays=as_arrays)
+            self.assertEqual(list(decoded['meshes'][0]['tangent_signs']), [-1.0, 0.0, 1.0, 1.0])
+            payload = ld.mesh_payload(decoded, 'All')
+            self.assertEqual([float(t[3]) for t in payload['tangents']], [-1.0, 0.0, 1.0, 1.0])
+            _mesh, prepared, _bounds = prepare_viewport(payload)
+            tangent = np.frombuffer(prepared[7], np.float32).reshape(-1, 4)
+            np.testing.assert_array_equal(tangent[:, 3], [-1, 0, 1, 1])
+            np.testing.assert_allclose(tangent[:, :3], [(x, -z, y) for x, y, z in decoded['meshes'][0]['tangents']], atol=1e-6)
 
     def test_light_container_matches_the_full_section_table(self):
         data = skinned_fixture()

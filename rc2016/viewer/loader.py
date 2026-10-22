@@ -53,8 +53,10 @@ def _mesh_payload_arrays(decoded, meshes, selected):
     for mesh in meshes:
         positions=np.asarray(mesh['positions'],dtype=np.float64).reshape(-1,3);count=len(positions)
         vertices.append(_basis_array(positions));normals.append(_basis_array(mesh['normals']))
-        tangent=mesh.get('tangents')
-        if tangent is not None and len(tangent)==count:tangents.append(_basis_array(tangent))
+        tangent,signs=mesh.get('tangents'),mesh.get('tangent_signs')
+        if tangent is not None and len(tangent)==count and signs is not None and len(signs)==count:
+            # xyz in the display basis; w is the stored bitangent sign (position w), not a basis value.
+            tangents.append(np.column_stack((_basis_array(tangent),np.asarray(signs,dtype=np.float64))))
         raw = _static_raw_vectors(mesh, count)
         if raw is None:
             raw_vector_eligible = False
@@ -112,8 +114,9 @@ def mesh_payload(decoded, lod='Highest', look=0):
         # presentation_basis inlined: these loops dominate large models.
         vertices.extend([(x,-z,y) for x,y,z in mesh['positions']])
         normals.extend([(x,-z,y) for x,y,z in mesh['normals']])
-        if mesh.get('tangents') is not None and len(mesh['tangents'])==len(mesh['positions']):
-            tangents.extend([(float(x),-float(z),float(y)) for x,y,z in mesh['tangents']])
+        if mesh.get('tangents') is not None and len(mesh['tangents'])==len(mesh['positions']) \
+                and len(mesh.get('tangent_signs') or ())==len(mesh['positions']):
+            tangents.extend([(float(x),-float(z),float(y),float(h)) for (x,y,z),h in zip(mesh['tangents'],mesh['tangent_signs'])])
         raw = _static_raw_vectors(mesh, len(mesh['positions']))
         if raw is None:
             raw_vector_eligible = False
