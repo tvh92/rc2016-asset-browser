@@ -514,17 +514,15 @@ One folder per model in the output root:
 - Graph extras (tints, palettes, detail maps, rims, glass, animated terms) are not baked. Forward blend materials (alpha-over or additive) get a fixed 40% opacity. The bulb graph's facing glow becomes a constant emissive (0.497, 0.021, 0) with a white base, because glTF has no view-dependent emission.
 - This is a portable approximation, not game equivalence.
 
-**Options...** (in the main window) holds the formats, textures, game DDS, animations (all/none), LOD, skip-existing (keeps a folder whose `export.json` matches source and options), Python and Blender paths, the advanced research-build switch, backend and clip prefixes, and UI scale. Export choices are saved in the settings file.
+**Options...** (in the main window) holds the formats, textures, game DDS, animations (all/none), LOD (a folder whose `export.json` already matches the source and options is kept, not exported again), Python and Blender paths, the Blender Scene (.blend) switch with its group option, backend and clip prefixes, and UI scale. Export choices are saved in the settings file.
 
 **Reset to defaults** (bottom of the Options window) puts every option and toggle, the Vertical layout, the 100% UI scale and the window and Browser split back to their first-start values. The game folder, output folder, Python and Blender paths are kept.
 
 **Single clip:** pick a clip under the 3D view (the Animation button opens the searchable list) and tick **Export only this clip**; it applies to the model shown there.
 
-**Combined file (Options, portable export):** with GLB among the formats, the exported models can also be merged into one `groups/NAME.glb` (`rc2016/export/merge_glb.py`). Each model keeps its own nodes, skins, materials and animations, every glTF index is shifted, and the models sit at their native places, so they overlap when they share an origin. FBX, USD or `.blend` are then converted from the combined file by Blender. In a .blend, FBX or USD made from it, each model is a collection named after its file (`rc2016/export/model_collections.py`), so a model can be hidden or moved as a group; the tag that says which model a node belongs to is glTF extras (`rc2016_model`).
-
 ## Research Blender build and viewer rules
 
-Options -> Advanced selects the full research Blender scene (`PipelineBatchRunner`; backend "Full archive pipeline"), which runs the pipeline in [pipeline](pipeline.md) and needs Blender. With **Keep only the .blend files** ticked, a fully successful run deletes everything else in the output folder (reports, meshes, textures, caches); every run then rebuilds, since nothing is left to reuse. With **Export only this clip** ticked, the shown model gets its own CLI run with `--clip name:<clip>` and the other selected models run without it.
+Options -> Blender Scene (.blend) selects the research Blender build (`PipelineBatchRunner` with `--blend-only`; backend "Full archive pipeline"), which runs the pipeline in [pipeline](pipeline.md) and needs Blender. A fully successful run keeps only the .blend files and deletes everything else in the output folder (reports, meshes, textures, caches); every run then rebuilds, since nothing is left to reuse. Skeleton and Include animations still apply: off passes `--no-skeleton` or `--no-animations`. With **Export only this clip** ticked, the shown model gets its own CLI run with `--clip name:<clip>` and the other selected models run without it.
 
 The research build consumes the viewer's material reading:
 

@@ -48,16 +48,16 @@ HELP = {
               "the window maximised and the Browser split in its default place. The game folder, output folder, Python and "
               "Blender paths are kept. No files are deleted."),
     "prefixes": "Transform-only mode: only extract clips whose names start with these words.",
-    "group": ("Full research pipeline only. After the selected models are built, they are also placed side by side "
+    "blend_scene": ("Writes one validated Blender scene (.blend) per model: the RC PS4 game shader, the shared review "
+                    "lighting, the HDRI, the camera and render region framing for quick rendering, and every animation "
+                    "as an action. Slow, and needs Blender.\n\nWhile it is on, the other export formats are not written. "
+                    "Skeleton and animations can still be left out."),
+    "group": ("Blender Scene only. After the selected models are built, they are also placed side by side "
               "in one .blend under groups/, with one camera and one Render Region framing them all. Each model keeps "
               "its own .blend as well."),
-    "combine": ("Portable export only. After the selected models are exported, their .glb files are merged into one "
-                "file under groups/: every model keeps its own nodes, skins and animations, at its native place. "
-                "Needs GLB among the formats; FBX or USD are then made from the combined file by Blender."),
     "skeleton": ("Keeps the joints and skin weights, so the model can be posed and animated. Off exports the meshes only, "
                  "as static geometry, and no animations are written.\n\nUseful for props or for a model that is only "
                  "needed for its shape."),
-    "skip": "Don't redo models that were already exported with the same options. Leave this on.",
     "scan": "Re-read the game folder and list every model it contains.",
     "extract": (
         "Exports the selected models in the formats chosen under Options… (GLB by default), "
@@ -69,10 +69,6 @@ HELP = {
         "Unity, Unreal, Godot, three.js and most viewers.\n"
         "OBJ: the model and its textures only, in the rest pose (OBJ has no skeleton or animation).\n"
         "FBX and USD are converted from the glTF by Blender, so they need Blender."),
-    "full_pipeline": (
-        "Instead of the portable export, run the research pipeline: a validated Blender scene with "
-        "the RC PS4 game shader, shared lighting, every animation as an action, and many reports. "
-        "Slow and needs Blender; most users want the normal export."),
     "cancel": "Stop the running extraction. Finished models are kept.",
     "filter": (
         "Search by file name, folder, asset ID, or the actor/animset that uses the model "
@@ -210,7 +206,6 @@ class AssetBrowserApp:
         self.state_var = tk.StringVar(value="All")
         self.shading_var = tk.StringVar(value="All")
         self.prefix_var = remember_var(tk.StringVar(), "export.prefixes")
-        self.skip_verified_var = remember_var(tk.BooleanVar(value=True), "export.skip_verified")
         # Export options (Options… window): every option is restored from, and saved to, the settings file on change.
         from rc2016.export.models import FORMATS
         self.export_format_vars = {key: remember_var(tk.BooleanVar(value=key == "glb"), f"export.format.{key}") for key in FORMATS}
@@ -219,11 +214,9 @@ class AssetBrowserApp:
         self.export_animations_var = remember_var(tk.BooleanVar(value=False), "export.animations")
         self.export_skeleton_var = remember_var(tk.BooleanVar(value=True), "export.skeleton")
         self.export_lod_var = remember_var(tk.StringVar(value="Highest"), "export.lod", ("Highest", "Lowest", "All"))
-        self.full_pipeline_var = remember_var(tk.BooleanVar(value=False), "export.full_pipeline")
+        self.blend_scene_var = remember_var(tk.BooleanVar(value=False), "export.blend_scene")
         self.group_blend_var = remember_var(tk.BooleanVar(value=False), "export.group_blend")
         self.group_name_var = remember_var(tk.StringVar(value="Selected models"), "export.group_name")
-        self.combine_var = remember_var(tk.BooleanVar(value=False), "export.combine")
-        self.combine_name_var = remember_var(tk.StringVar(value="Selected models"), "export.combine_name")
         self.export_summary_var = tk.StringVar()
         self.exported_names: set[str] = set()
         self.selection_var = tk.StringVar(value="0 models selected")
@@ -440,18 +433,36 @@ class AssetBrowserApp:
 
         formats = ttk.LabelFrame(window, text="Export formats  ⓘ", padding=8)
         formats.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
+        self.blend_check = ttk.Checkbutton(formats, text="Blender Scene (.blend) (includes local setup for quick rendering)",
+                                           variable=self.blend_scene_var)
+        self.blend_check.grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
+        self._tip(HELP["blend_scene"], self.blend_check)
+        self.group_check = ttk.Checkbutton(formats, text="Also put the selected models into one .blend, framed by one camera",
+                                           variable=self.group_blend_var)
+        self.group_check.grid(row=1, column=0, columnspan=3, sticky="w", padx=(22, 0), pady=(4, 2))
+        self._tip(HELP["group"], self.group_check)
+        self.group_name_label = ttk.Label(formats, text="Group file name")
+        self.group_name_label.grid(row=2, column=0, sticky="w", padx=(22, 0), pady=4)
+        self.group_name_entry = ttk.Entry(formats, textvariable=self.group_name_var, width=28)
+        self.group_name_entry.grid(row=2, column=1, sticky="w", padx=6, pady=4)
+        ttk.Label(formats, text="saved under groups/", style="Muted.TLabel").grid(row=2, column=2, sticky="w")
+        self._tip(HELP["group"], self.group_name_label, self.group_name_entry)
+        self.format_checks = []
         for number, (key, (label, _suffix, needs_blender)) in enumerate(FORMATS.items()):
             box = ttk.Checkbutton(formats, text=label + ("  (needs Blender)" if needs_blender else ""),
                                   variable=self.export_format_vars[key])
-            box.grid(row=number % 3, column=number // 3, sticky="w", padx=(0, 18), pady=2)
+            box.grid(row=3 + number % 3, column=number // 3, sticky="w", padx=(0, 18), pady=2)
             self._tip(HELP["formats"], box)
+            self.format_checks.append(box)
 
         include = ttk.LabelFrame(window, text="Include", padding=8)
         include.grid(row=1, column=0, sticky="ew", padx=12, pady=6)
-        ttk.Checkbutton(include, text="Textures (embedded in .glb; PNG files in a textures folder otherwise)",
-                        variable=self.export_textures_var).grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
-        ttk.Checkbutton(include, text="Also the original game textures (.dds, unchanged)",
-                        variable=self.export_dds_var).grid(row=1, column=0, columnspan=3, sticky="w", pady=2)
+        self.texture_check = ttk.Checkbutton(include, text="Textures (embedded in .glb; PNG files in a textures folder otherwise)",
+                                             variable=self.export_textures_var)
+        self.texture_check.grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
+        self.dds_check = ttk.Checkbutton(include, text="Also the original game textures (.dds, unchanged)",
+                                         variable=self.export_dds_var)
+        self.dds_check.grid(row=1, column=0, columnspan=3, sticky="w", pady=2)
         self.skeleton_check = ttk.Checkbutton(include, text="Skeleton (joints and skin weights; off exports static meshes)",
                                               variable=self.export_skeleton_var)
         self.skeleton_check.grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 2))
@@ -460,12 +471,11 @@ class AssetBrowserApp:
         self.animation_check.grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 2))
         ttk.Label(include, text="To export one clip, pick it under the 3D view and tick 'Export only this clip'.",
                   style="Muted.TLabel").grid(row=4, column=0, columnspan=3, sticky="w")
-        ttk.Label(include, text="Detail level (LOD)").grid(row=5, column=0, sticky="w", pady=(6, 2))
-        ttk.Combobox(include, textvariable=self.export_lod_var, values=("Highest", "Lowest", "All"), state="readonly",
-                     width=10).grid(row=5, column=1, columnspan=2, sticky="w", padx=8, pady=(6, 2))
-        skip = ttk.Checkbutton(include, text="Skip models already exported with these options", variable=self.skip_verified_var)
-        skip.grid(row=6, column=0, columnspan=3, sticky="w", pady=(6, 0))
-        self._tip(HELP["skip"], skip)
+        self.lod_label = ttk.Label(include, text="Detail level (LOD)")
+        self.lod_label.grid(row=5, column=0, sticky="w", pady=(6, 2))
+        self.lod_box = ttk.Combobox(include, textvariable=self.export_lod_var, values=("Highest", "Lowest", "All"),
+                                    state="readonly", width=10)
+        self.lod_box.grid(row=5, column=1, columnspan=2, sticky="w", padx=8, pady=(6, 2))
 
         programs = ttk.LabelFrame(window, text="Programs", padding=8)
         programs.grid(row=2, column=0, sticky="ew", padx=12, pady=6)
@@ -476,43 +486,19 @@ class AssetBrowserApp:
         advanced = ttk.LabelFrame(window, text="Advanced", padding=8)
         advanced.grid(row=3, column=0, sticky="ew", padx=12, pady=6)
         advanced.columnconfigure(1, weight=1)
-        full = ttk.Checkbutton(advanced, text="Build the full research Blender scene instead (slow; needs Blender)",
-                               variable=self.full_pipeline_var)
-        full.grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
-        self._tip(HELP["full_pipeline"], full)
         backend_label = ttk.Label(advanced, text="Backend  ⓘ")
-        backend_label.grid(row=1, column=0, sticky="w", pady=4)
+        backend_label.grid(row=0, column=0, sticky="w", pady=4)
         backend = ttk.Combobox(advanced, textvariable=self.backend_var, state="readonly",
                                 values=("Transform only", "Full archive pipeline"), width=28)
-        backend.grid(row=1, column=1, sticky="w", padx=6, pady=4)
+        backend.grid(row=0, column=1, sticky="w", padx=6, pady=4)
         backend.bind("<<ComboboxSelected>>", lambda _event: self._backend_changed())
         self._tip(HELP["backend"], backend_label, backend)
         self.prefix_label = ttk.Label(advanced, text="Clip prefixes")
-        self.prefix_label.grid(row=2, column=0, sticky="w", pady=4)
+        self.prefix_label.grid(row=1, column=0, sticky="w", pady=4)
         self.prefix_entry = ttk.Entry(advanced, textvariable=self.prefix_var)
-        self.prefix_entry.grid(row=2, column=1, sticky="ew", padx=6, pady=4)
-        ttk.Label(advanced, text="transform only; comma-separated", style="Muted.TLabel").grid(row=2, column=2, sticky="w")
+        self.prefix_entry.grid(row=1, column=1, sticky="ew", padx=6, pady=4)
+        ttk.Label(advanced, text="transform only; comma-separated", style="Muted.TLabel").grid(row=1, column=2, sticky="w")
         self._tip(HELP["prefixes"], self.prefix_label, self.prefix_entry)
-        self.group_check = ttk.Checkbutton(advanced, text="Also put the selected models into one .blend, framed by one camera",
-                                           variable=self.group_blend_var)
-        self.group_check.grid(row=3, column=0, columnspan=3, sticky="w", padx=(22, 0), pady=(6, 2))
-        self._tip(HELP["group"], self.group_check)
-        self.group_name_label = ttk.Label(advanced, text="Group file name")
-        self.group_name_label.grid(row=4, column=0, sticky="w", pady=4)
-        self.group_name_entry = ttk.Entry(advanced, textvariable=self.group_name_var)
-        self.group_name_entry.grid(row=4, column=1, sticky="ew", padx=6, pady=4)
-        ttk.Label(advanced, text="saved under groups/", style="Muted.TLabel").grid(row=4, column=2, sticky="w")
-        self._tip(HELP["group"], self.group_name_label, self.group_name_entry)
-        self.combine_check = ttk.Checkbutton(advanced, text="Also write the selected models as one combined file",
-                                             variable=self.combine_var)
-        self.combine_check.grid(row=5, column=0, columnspan=3, sticky="w", padx=(22, 0), pady=(6, 2))
-        self._tip(HELP["combine"], self.combine_check)
-        self.combine_name_label = ttk.Label(advanced, text="Combined file name")
-        self.combine_name_label.grid(row=6, column=0, sticky="w", pady=4)
-        self.combine_name_entry = ttk.Entry(advanced, textvariable=self.combine_name_var)
-        self.combine_name_entry.grid(row=6, column=1, sticky="ew", padx=6, pady=4)
-        ttk.Label(advanced, text="saved under groups/", style="Muted.TLabel").grid(row=6, column=2, sticky="w")
-        self._tip(HELP["combine"], self.combine_name_label, self.combine_name_entry)
 
         display = ttk.Frame(window, padding=(12, 6))
         display.grid(row=4, column=0, sticky="ew")
@@ -532,15 +518,15 @@ class AssetBrowserApp:
         self._tip(HELP["reset"], reset)
 
         for variable in (*self.export_format_vars.values(), self.export_textures_var, self.export_dds_var,
-                         self.export_animations_var, self.export_skeleton_var, self.export_lod_var, self.full_pipeline_var,
-                         self.backend_var, self.group_blend_var, self.combine_var):
+                         self.export_animations_var, self.export_skeleton_var, self.export_lod_var, self.blend_scene_var,
+                         self.backend_var, self.group_blend_var):
             variable.trace_add("write", lambda *_args: self._options_changed())
         self._options_changed()
 
     def show_options(self) -> None:
         window = self.options_window
         window.deiconify()
-        window.update_idletasks()
+        window.update()   # mapped first: the title bar is only repainted for a window that exists on screen
         apply_titlebar(window)
         x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - window.winfo_reqwidth()) // 2)
         y = self.root.winfo_rooty() + 60
@@ -574,30 +560,39 @@ class AssetBrowserApp:
         return tuple(key for key, variable in self.export_format_vars.items() if variable.get())
 
     def _options_changed(self) -> None:
-        # Only the portable export reads the skeleton and animation options; the research pipeline and Transform only ignore them.
-        portable = self.backend_var.get() == "Full archive pipeline" and not self.full_pipeline_var.get()
-        self.skeleton_check.configure(state="normal" if portable else "disabled")
-        # Without a skeleton there is nothing to animate, so the animation choice is switched off.
-        self.animation_check.configure(state="normal" if portable and self.export_skeleton_var.get() else "disabled")
-        full_research = self.backend_var.get() == "Full archive pipeline" and self.full_pipeline_var.get()
-        group_state = "normal" if full_research else "disabled"
+        # The Blender scene is the research pipeline; Transform only ignores every export option.
+        pipeline = self.backend_var.get() == "Full archive pipeline"
+        blend = pipeline and self.blend_scene_var.get()
+        # The Blender scene replaces the portable formats, so their boxes are greyed out while it is on.
+        for box in self.format_checks:
+            box.configure(state="disabled" if blend else "normal")
+        self.blend_check.configure(state="normal" if pipeline else "disabled")
+        group_state = "normal" if blend else "disabled"
         self.group_check.configure(state=group_state)
         self.group_name_entry.configure(state=group_state)
-        self.group_name_label.configure(state=group_state)
-        if self.backend_var.get() != "Full archive pipeline":
+        self.group_name_label.configure(style="Disabled.TLabel" if blend else "TLabel")
+        # Without a skeleton there is nothing to animate, so the animation choice is switched off.
+        self.skeleton_check.configure(state="normal" if pipeline else "disabled")
+        self.animation_check.configure(state="normal" if pipeline and self.export_skeleton_var.get() else "disabled")
+        # Textures, the original .dds files and the LOD level are only written by the portable export.
+        self.texture_check.configure(state="disabled" if blend else "normal")
+        self.dds_check.configure(state="disabled" if blend else "normal")
+        self.lod_label.configure(style="Disabled.TLabel" if blend else "TLabel")
+        self.lod_box.configure(state="disabled" if blend else "readonly")
+        if not pipeline:
             text = "Transform only: animation data from loose files"
-        elif self.full_pipeline_var.get():
-            text = "Full research Blender scene (needs Blender)"
         else:
-            from rc2016.export.models import FORMATS
-            formats = [FORMATS[key][1] for key in self._export_formats()] or ["no format chosen"]
-            parts = [", ".join(formats)]
-            parts.append("textures" if self.export_textures_var.get() else "no textures")
+            parts = ["Blender Scene (.blend)"] if blend else []
+            if not blend:
+                from rc2016.export.models import FORMATS
+                formats = [FORMATS[key][1] for key in self._export_formats()] or ["no format chosen"]
+                parts.append(", ".join(formats))
+                parts.append("textures" if self.export_textures_var.get() else "no textures")
             if self.export_skeleton_var.get():
                 parts.append("all animations" if self.export_animations_var.get() else "no animations")
             else:
                 parts.append("no skeleton or animations")
-            if self.export_lod_var.get() != "Highest":
+            if not blend and self.export_lod_var.get() != "Highest":
                 parts.append(f"{self.export_lod_var.get()} LOD")
             text = "Export: " + " · ".join(parts)
         self.export_summary_var.set(text)
@@ -608,7 +603,7 @@ class AssetBrowserApp:
                              source_textures=self.export_dds_var.get(), animations="all" if self.export_animations_var.get() else "none",
                              skeleton=self.export_skeleton_var.get(),
                              lod=self.export_lod_var.get(), blender=self.blender_var.get().strip(),
-                             skip_existing=self.skip_verified_var.get())
+                             skip_existing=True)
 
     def _path_row(self, parent, row: int, label: str, variable, command, tooltip: str) -> None:
         ttk = self.ttk
@@ -1071,7 +1066,8 @@ class AssetBrowserApp:
             self.messagebox.showerror("Python interpreter", f"File not found:\n{interpreter}")
             return
         pipeline_mode = self.backend_var.get() == "Full archive pipeline"
-        export_mode = pipeline_mode and not self.full_pipeline_var.get()
+        blend_mode = pipeline_mode and self.blend_scene_var.get()
+        export_mode = pipeline_mode and not blend_mode
         if export_mode:
             options = self.export_options()
             if not options.formats:
@@ -1087,16 +1083,14 @@ class AssetBrowserApp:
         clip_only = self.browser.export_clip() if pipeline_mode else None
         if clip_only and not any(getattr(r, "model_id", None) == clip_only[0] for r in selected):
             clip_only = None
+        if clip_only and blend_mode and not (self.export_skeleton_var.get() and self.export_animations_var.get()):
+            self._append_log("The single clip from the 3D view is left out: the Blender scene has no animations", "muted")
+            clip_only = None
         if clip_only:
             self._append_log(f"Only clip '{clip_only[1]}' for the model shown in the 3D view", "muted")
         if not pipeline_mode and any(not isinstance(record, ModelCandidate) or record.animset is None for record in selected):
             self.messagebox.showerror("Selection", "One or more selected models have no exact same-directory animset. Deselect them or choose paired models.")
             return
-        if self.combine_var.get() and not self.full_pipeline_var.get() and pipeline_mode:
-            if "glb" not in self._export_formats() or not self.combine_name_var.get().strip():
-                self.messagebox.showinfo("Combined file", "Tick GLB among the export formats and type a name for the combined file under Options….")
-                self.show_options()
-                return
         # Include animations: each model's clips are read first, and the user picks which to export.
         clip_choices: dict[str, tuple[str, ...]] = {}
         if export_mode and options.animations == "all":
@@ -1115,8 +1109,7 @@ class AssetBrowserApp:
             self.runner = ExportBatchRunner(
                 [record for record in selected if isinstance(record, PipelineModelCandidate)],
                 Path(self.source_var.get()), output, options, clip_only,
-                event=lambda kind, **values: self.events.put((kind, values)),
-                combine_name=self.combine_name_var.get() if self.combine_var.get() else "", clip_choices=clip_choices)
+                event=lambda kind, **values: self.events.put((kind, values)), clip_choices=clip_choices)
         elif pipeline_mode:
             blender = Path(self.blender_var.get().strip())
             if not blender.is_file():
@@ -1140,13 +1133,13 @@ class AssetBrowserApp:
                     return
             self.runner = PipelineBatchRunner(
                 selectors, Path(self.source_var.get()), output, interpreter, blender,
-                skip_verified=self.skip_verified_var.get(),
                 event=lambda kind, **values: self.events.put((kind, values)), clip_only=research_clip,
-                group_blend=group_name)
+                group_blend=group_name, blend_only=True, skeleton=self.export_skeleton_var.get(),
+                animations=self.export_animations_var.get())
         else:
             self.runner = BatchRunner(
                 [record for record in selected if isinstance(record, ModelCandidate)], output, interpreter,
-                parse_prefixes(self.prefix_var.get()), self.skip_verified_var.get(),
+                parse_prefixes(self.prefix_var.get()), True,
                 event=lambda kind, **values: self.events.put((kind, values)))
         self._fill_queue(selected)
         self.worker = threading.Thread(target=self._batch_worker, args=(self.runner,), daemon=True)
@@ -1194,8 +1187,9 @@ class AssetBrowserApp:
                 progress.destroy()
 
         worker.start()
-        apply_titlebar(progress)
         progress.deiconify()
+        progress.update()   # mapped before the title bar is set, as in show_options
+        apply_titlebar(progress)
         progress.grab_set()
         progress.after(0, poll)
         self.root.wait_window(progress)
@@ -1279,7 +1273,7 @@ class AssetBrowserApp:
         ttk.Button(buttons, text="OK", command=ok).pack(side="right", padx=(0, 8))
         top.protocol("WM_DELETE_WINDOW", top.destroy)
         top.deiconify()
-        top.update_idletasks()
+        top.update()
         apply_titlebar(top)
         x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - top.winfo_reqwidth()) // 2)
         y = self.root.winfo_rooty() + 60

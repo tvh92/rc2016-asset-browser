@@ -124,6 +124,25 @@ class PipelineGuiBackendTests(unittest.TestCase):
             self.assertNotIn("--blend-only", PipelineBatchRunner(["hero"], root / "source", root / "out", py,
                                                                  blender, skip_verified=True).command())
 
+    def test_blend_scene_skeleton_and_animation_options_map_to_cli_flags(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            py, blender = root / "python.exe", root / "blender.exe"
+            py.touch(); blender.touch()
+
+            def command(**options):
+                return PipelineBatchRunner(["hero"], root / "source", root / "out", py, blender,
+                                           blend_only=True, **options).command()
+
+            full = command()
+            self.assertNotIn("--no-skeleton", full)
+            self.assertNotIn("--no-animations", full)
+            self.assertIn("--no-animations", command(animations=False))
+            self.assertNotIn("--no-animations", command(animations=False, skeleton=False))
+            skeleton_off = command(skeleton=False)
+            self.assertIn("--no-skeleton", skeleton_off)
+            self.assertNotIn("--no-animations", skeleton_off)
+
     def test_blend_only_keeps_deliveries_and_removes_everything_else(self):
         from rc2016.pipeline.run import keep_only_blends
         with tempfile.TemporaryDirectory() as folder:

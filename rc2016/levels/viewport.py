@@ -15,6 +15,7 @@ import sys
 import time
 import zlib
 
+from rc2016.app.theme import gl_color
 from rc2016.viewer.viewport import ModelViewport
 
 # Column-major native -> presentation basis: (x, y, z) -> (x, -z, y).
@@ -1214,7 +1215,7 @@ class LevelViewport(ModelViewport):
         gl = self._gl
         width, height = max(1, self.winfo_width()), max(1, self.winfo_height())
         gl.glViewport(0, 0, width, height)
-        gl.glClearColor(0.33, 0.39, 0.47, 1.0)
+        gl.glClearColor(*gl_color("viewport"))
         gl.glClear(self.GL_COLOR_BUFFER_BIT | self.GL_DEPTH_BUFFER_BIT)
         if self._pending or self._pending_materials:
             self._flush_pending()

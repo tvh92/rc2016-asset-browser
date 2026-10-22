@@ -128,6 +128,11 @@ def apply_titlebar(window, dark: bool | None = None) -> None:
                 break
         # A visible window keeps its old title bar until its frame is recalculated.
         ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x37)   # NOSIZE | NOMOVE | NOZORDER | NOACTIVATE | FRAMECHANGED
+        # DWM reads the attribute only when the caption is next painted, and a frame change does not repaint it.
+        # Toggling the activation state (WM_NCACTIVATE) does, and ends on the window's real state.
+        active = ctypes.windll.user32.GetForegroundWindow() == hwnd
+        for state in (not active, active):
+            ctypes.windll.user32.SendMessageW(hwnd, 0x0086, int(state), 0)
     except (AttributeError, OSError):
         pass
 
@@ -150,12 +155,12 @@ def _configure_ttk(style, p: dict[str, str]) -> None:
               foreground=[("disabled", disabled)])
     # Same height as a combobox, for buttons that share a row with one.
     style.configure("Compact.TButton", padding=(8, 1))
-    # Checkboxes and radio buttons keep the default indicator size (the native size in both themes); greyed out when disabled.
-    for widget in ("TCheckbutton", "TRadiobutton"):
-        style.configure(widget, indicatorbackground=field, indicatorforeground=select_fg, bordercolor=muted)
-        style.map(widget, background=[("active", bg)], foreground=[("disabled", disabled)],
-                  indicatorbackground=[("disabled", bg), ("selected", accent)],
-                  indicatorforeground=[("disabled", disabled)], bordercolor=[("disabled", disabled)])
+    # Checkboxes draw their own box (see _install_check_indicator); radio buttons keep the clam indicator.
+    style.map("TCheckbutton", background=[("active", bg)], foreground=[("disabled", disabled)])
+    style.configure("TRadiobutton", indicatorbackground=field, indicatorforeground=select_fg, bordercolor=muted)
+    style.map("TRadiobutton", background=[("active", bg)], foreground=[("disabled", disabled)],
+              indicatorbackground=[("disabled", bg), ("selected", accent)],
+              indicatorforeground=[("disabled", disabled)], bordercolor=[("disabled", disabled)])
     # Asset-type selector (segmented Model / Level / Flash UI radio buttons).
     style.configure("Toolbutton", background=panel, foreground=fg, bordercolor=border)
     style.map("Toolbutton", background=[("selected", accent), ("active", hover)],
@@ -182,6 +187,72 @@ def _configure_ttk(style, p: dict[str, str]) -> None:
     style.map("TScrollbar", background=[("disabled", bg), ("pressed", accent), ("active", p["scroll_hover"])],
               arrowcolor=[("disabled", p["arrow_disabled"]), ("pressed", fg), ("active", fg)])
     style.configure("TProgressbar", background=accent, troughcolor=panel)
+
+
+CHECK_SIZE = 18   # pixels; clam's own indicator is about 13 and its mark too small to read on the dark field
+CHECK_GAP = 6     # transparent pixels between the box and the label
+CHECK_ELEMENT = "RC.Checkbutton.indicator"
+_CHECK_IMAGES = ("off", "off_hover", "on", "on_hover", "disabled_off", "disabled_on")
+
+
+def _near_segment(px: float, py: float, x1: float, y1: float, x2: float, y2: float, radius: float = 1.1) -> bool:
+    dx, dy = x2 - x1, y2 - y1
+    t = max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)))
+    return (px - (x1 + t * dx)) ** 2 + (py - (y1 + t * dy)) ** 2 <= radius * radius
+
+
+def _draw_check_box(image, fill: str, border: str, mark: str | None) -> None:
+    """A square box: a 1-pixel border, the fill, and a two-pixel check mark when ``mark`` is given."""
+
+    segments = ((4.5, 9.0, 7.5, 12.0), (7.5, 12.0, 13.5, 6.0))
+    last = CHECK_SIZE - 1
+    image.blank()
+    for y in range(CHECK_SIZE):
+        for x in range(CHECK_SIZE):
+            if x in (0, last) or y in (0, last):
+                colour = border
+            elif mark and any(_near_segment(x + 0.5, y + 0.5, *segment) for segment in segments):
+                colour = mark
+            else:
+                colour = fill
+            image.put(colour, to=(x, y, x + 1, y + 1))
+
+
+def _with_indicator(layout, element: str):
+    """The layout spec with its checkbutton indicator replaced by ``element``."""
+
+    out = []
+    for name, options in layout:
+        options = dict(options)
+        if "children" in options:
+            options["children"] = _with_indicator(options["children"], element)
+        out.append((element if name == "Checkbutton.indicator" else name, options))
+    return out
+
+
+def _install_check_indicator(root, style, p: dict[str, str]) -> None:
+    """Checkboxes get a drawn box: the images are made once per window and redrawn on every theme switch."""
+
+    import tkinter
+    images = getattr(root, "_check_images", None)
+    if images is None:
+        images = root._check_images = {name: tkinter.PhotoImage(master=root, width=CHECK_SIZE + CHECK_GAP, height=CHECK_SIZE)
+                                       for name in _CHECK_IMAGES}
+        # The first matching state wins, so the more specific states come first.
+        style.element_create(CHECK_ELEMENT, "image", images["off"],
+                             (("disabled", "selected"), images["disabled_on"]),
+                             (("disabled",), images["disabled_off"]),
+                             (("selected", "active"), images["on_hover"]),
+                             (("selected",), images["on"]),
+                             (("active",), images["off_hover"]))
+        style.layout("TCheckbutton", _with_indicator(style.layout("TCheckbutton"), CHECK_ELEMENT))
+    field, bg, accent = p["field"], p["bg"], p["accent"]
+    _draw_check_box(images["off"], field, p["muted"], None)
+    _draw_check_box(images["off_hover"], field, accent, None)
+    _draw_check_box(images["on"], accent, accent, p["select_fg"])
+    _draw_check_box(images["on_hover"], p["accent_active"], p["accent_active"], p["select_fg"])
+    _draw_check_box(images["disabled_off"], bg, p["disabled_fg"], None)
+    _draw_check_box(images["disabled_on"], p["disabled_fg"], p["disabled_fg"], bg)
 
 
 def _apply_option_defaults(root, p: dict[str, str]) -> None:
@@ -235,6 +306,7 @@ def apply_theme(root, ttk, dark: bool) -> None:
     if style.theme_use() != "clam":
         style.theme_use("clam")
     _configure_ttk(style, p)
+    _install_check_indicator(root, style, p)
     _apply_option_defaults(root, p)
     root.configure(background=p["bg"])
     TOOLTIP_COLORS.update(background=p["tooltip_bg"], foreground=p["tooltip_fg"])

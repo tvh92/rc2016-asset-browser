@@ -21,6 +21,7 @@ import sys
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from rc2016.app.theme import apply_theme, windows_prefers_dark  # noqa: E402
 from rc2016.common import settings_dir  # noqa: E402
 from rc2016.levels.panel import DEFAULT_LEVEL, LevelPanel  # noqa: E402
 from rc2016.levels.viewport import LevelViewport  # noqa: E402
@@ -36,11 +37,19 @@ def _read_json(path):
 
 
 def default_settings():
-    """Own settings first, then the asset browser's source root."""
+    """Own settings first, then the asset browser's source root and appearance."""
     own = _read_json(SETTINGS_DIR / "level_viewer.json")
     browser = _read_json(SETTINGS_DIR / "settings.json")
     return dict(source=own.get("source") or browser.get("source") or "",
-                level=own.get("level") or DEFAULT_LEVEL)
+                level=own.get("level") or DEFAULT_LEVEL,
+                appearance=own.get("appearance") or browser.get("appearance") or "")
+
+
+def is_dark(appearance):
+    """The saved light or dark choice; without one, the Windows app mode."""
+    if appearance in ("dark", "light"):
+        return appearance == "dark"
+    return windows_prefers_dark()
 
 
 def save_settings(values):
@@ -88,6 +97,8 @@ def main(argv=None):
     root = tk.Tk()
     root.title("R&C 2016 Level Viewer")
     root.geometry("1500x920")
+    dark = is_dark(settings["appearance"])
+    apply_theme(root, ttk, dark)
     top = ttk.Frame(root, padding=(8, 6)); top.pack(side="top", fill="x")
     ttk.Label(top, text="Source root").pack(side="left")
     source = tk.StringVar(value=args.source_root)
@@ -98,6 +109,13 @@ def main(argv=None):
         if chosen:
             source.set(chosen)
     ttk.Button(top, text="Browse…", command=browse).pack(side="left")
+
+    def dark_mode_changed():
+        apply_theme(root, ttk, dark_var.get())
+        values = _read_json(SETTINGS_DIR / "level_viewer.json")
+        save_settings({**values, "appearance": "dark" if dark_var.get() else "light"})
+    dark_var = tk.BooleanVar(value=dark)
+    ttk.Checkbutton(top, text="Dark mode", variable=dark_var, command=dark_mode_changed).pack(side="left", padx=(12, 0))
 
     def finished(panel):
         if args.camera:
@@ -136,7 +154,8 @@ def main(argv=None):
 
     def close():
         if not args.capture:
-            save_settings(dict(source=source.get(), level=panel.loaded_level or panel.level_var.get()))
+            save_settings({**_read_json(SETTINGS_DIR / "level_viewer.json"), "source": source.get(),
+                           "level": panel.loaded_level or panel.level_var.get()})
         panel.close()
         root.destroy()
     root.protocol("WM_DELETE_WINDOW", close)
