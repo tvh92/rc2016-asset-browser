@@ -98,5 +98,25 @@ class ActiveAuthoredLightTests(unittest.TestCase):
         self.assertEqual(len(self.view._active_authored_lights()), 1)
 
 
+class SpotConeUniformTests(unittest.TestCase):
+    def test_spots_pack_view_space_aim_and_cone_cosines_and_points_pack_zeros(self):
+        view = object.__new__(LevelViewport)
+        matrix = [1., 0., 0., 0., 0., 0., -1., 0., 0., 1., 0., 0., 0., 0., 0., 1.]   # native Y-up to Z-up view
+        spot = dict(kind='spot', position=[0., 0., -5.], axis=[0., -1., 0.], inverse_radius=0.1, colour=[1., 1., 1.],
+                    cone_degrees=[40., 80.])
+        point = dict(position=[0., 0., -50.], inverse_radius=0.1, colour=[1., 1., 1.])
+        lights = [spot, point]
+        count, _positions, _colours = view._authored_light_uniforms(bytes((ctypes.c_float * 16)(*matrix)), lights)
+        directions, spots = (list(array) for array in view._authored_light_cones)
+        self.assertEqual(count, 2)
+        np.testing.assert_allclose(directions[:4], [0., 0., 1., 1.], atol=1e-6)    # the matrix turns native -Y into view +Z
+        np.testing.assert_allclose(spots[:2], [np.cos(np.radians(40.)), 1. / (np.cos(np.radians(20.)) - np.cos(np.radians(40.)))], rtol=1e-5)
+        self.assertEqual(directions[4:], [0., 0., 0., 0.])
+        self.assertEqual(spots[2:], [0., 0.])
+        view._authored_light_cones = None
+        view._authored_light_uniforms(bytes((ctypes.c_float * 16)(*matrix)), lights)   # a cache hit restores them
+        self.assertEqual(list(view._authored_light_cones[0])[:4], directions[:4])
+
+
 if __name__ == '__main__':
     unittest.main()

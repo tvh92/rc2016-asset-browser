@@ -1153,6 +1153,9 @@ class LevelViewport(ModelViewport):
         if count:
             effects.uniform4(u['uSceneLightPos'],count,positions)
             self._shading.glUniform3fv(u['uSceneLightColour'],count,colours)
+            directions,spots=self._authored_light_cones
+            effects.uniform4(u['uSceneLightDir'],count,directions)
+            self._shading.glUniform2fv(u['uSceneLightSpot'],count,spots)
 
     def _active_authored_lights(self):
         """The authored point lights in use: the Veldin-validated ones for every lighting source, plus the inferred
@@ -1173,6 +1176,7 @@ class LevelViewport(ModelViewport):
         over all lights runs once per (modelview, list), not once per shader switch."""
         cached=self.__dict__.get('_authored_light_cache')
         if cached is not None and cached[0]==modelview and cached[1] is all_lights:
+            self._authored_light_cones=cached[3]
             return cached[2]
         import numpy as np
         matrix=np.array((ctypes.c_float*16).from_buffer_copy(modelview)).reshape(4,4).T
@@ -1188,13 +1192,20 @@ class LevelViewport(ModelViewport):
             limit=np.partition(distances,31)[31]
             candidates=[all_lights[i] for i in np.flatnonzero(distances<=limit*(1+1e-9)+1e-9)]
         lights=sorted(candidates,key=lambda l:float(np.linalg.norm((matrix@np.r_[l['position'],1.])[:3])))[:32]
-        positions=[];colours=[]
+        positions=[];colours=[];directions=[];spots=[]
         for light in lights:
             inverse=np.float32(light['inverse_radius'])
             positions.extend([*(matrix@np.r_[light['position'],1.])[:3],float(inverse)])
             colours.extend((np.array(light['colour'],dtype=np.float32)*np.float32(inverse*inverse)).tolist())
+            if light.get('kind')=='spot':
+                # Inferred cone (scene_lighting.SPOT_CONE_OFFSET): full inner/outer angles, smooth between their half angles.
+                inner,outer=(np.cos(np.radians(a/2.)) for a in light['cone_degrees'])
+                directions.extend([*(matrix[:3,:3]@np.array(light['axis'],dtype=float)),1.]);spots.extend([float(outer),float(1./max(inner-outer,1e-3))])
+            else:
+                directions.extend([0.,0.,0.,0.]);spots.extend([0.,0.])
+        self._authored_light_cones=((ctypes.c_float*len(directions))(*directions),(ctypes.c_float*len(spots))(*spots))
         result=(len(lights),(ctypes.c_float*len(positions))(*positions),(ctypes.c_float*len(colours))(*colours))
-        self._authored_light_cache=(modelview,all_lights,result)
+        self._authored_light_cache=(modelview,all_lights,result,self._authored_light_cones)
         return result
 
     def _restore_unculled_instances(self):
@@ -1285,6 +1296,7 @@ class LevelViewport(ModelViewport):
             phase = time.perf_counter()
             try:
                 self._draw_level()
+                self._draw_beams()
                 level_ms = (time.perf_counter() - phase) * 1000.0
             except Exception as exc:   # report instead of failing every Tk repaint
                 self.shading_error = f"Level view failed: {exc}"
@@ -1295,6 +1307,61 @@ class LevelViewport(ModelViewport):
         self.last_phase_ms = dict(scene=scene_ms, level=level_ms)   # CPU time issuing each phase
         self._gdi32.SwapBuffers(self._hdc)
         self._emit_stats()
+
+    GL_ONE, GL_NORMAL_ARRAY, GL_COLOR_ARRAY = 1, 0x8075, 0x8076
+
+    def _beam_lights(self):
+        """The spot lights drawn with a beam (rc2016.levels.beams): spots on lamp model instances, under the built Level
+        atmosphere lighting with Authored lights on. Rebuilt when the loaded lights or models change."""
+        lights = self._active_authored_lights()
+        if not self.scene_authored or self.lighting != "Level atmosphere" or not any(l.get("kind") == "spot" for l in lights):
+            return []
+        key = (id(lights), len(self._models), getattr(self, "_scene_revision", 0))
+        cached = self.__dict__.get("_beam_cache")
+        if cached is None or cached[0] != key:
+            import numpy as np
+            from rc2016.levels import beams
+            positions = []
+            for model in self._models.values():
+                if beams.is_lamp_model(model["path"]):
+                    for _zone, _key, rows in model["zones"]:
+                        positions.append(np.asarray(rows, dtype=float).reshape(-1, 4, 4)[:, 3, :3])
+            spots = beams.lamp_spots([l for l in lights if l.get("kind") == "spot"], np.concatenate(positions) if positions else [])
+            cached = self._beam_cache = (key, spots, beams.beam_mesh(spots) if spots else None)
+        return cached
+
+    def _draw_beams(self):
+        """Additive cones of the lamp spot lights, after the level: depth-tested against it, no depth write."""
+        cached = self._beam_lights()
+        if not cached or cached[2] is None or self._mode not in ("Shaded", "Textured"):
+            return
+        positions, normals, ts, colours, indices = cached[2]
+        gl, sh, ext = self._gl, self._shading, self._ext
+        program, _u = sh.beam_program()
+        sh.glUseProgram(program)
+        gl.glBlendFunc.argtypes = [ctypes.c_uint, ctypes.c_uint]; gl.glDepthMask.argtypes = [ctypes.c_ubyte]
+        gl.glMatrixMode(self.GL_MODELVIEW)
+        gl.glLoadMatrixf((ctypes.c_float * 16)(*view_matrix(self._eye, self._yaw, self._pitch)))
+        gl.glMultMatrixf((ctypes.c_float * 16)(*BASIS))
+        gl.glEnable(self.GL_BLEND); gl.glBlendFunc(self.GL_ONE, self.GL_ONE)
+        gl.glDepthMask(0); gl.glDisable(self.GL_CULL_FACE)
+        ext["glBindVertexArray"](0)
+        ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0); ext["glBindBuffer"](self.GL_ELEMENT_ARRAY_BUFFER, 0)
+        uvs = ts.reshape(-1, 1).repeat(2, axis=1)
+        pointer = lambda array: ctypes.cast(array.ctypes.data, ctypes.c_void_p)
+        for array in (self.GL_VERTEX_ARRAY, self.GL_NORMAL_ARRAY, self.GL_COLOR_ARRAY, self.GL_TEXTURE_COORD_ARRAY):
+            gl.glEnableClientState(array)
+        try:
+            gl.glVertexPointer(3, self.GL_FLOAT, 0, pointer(positions))
+            gl.glNormalPointer(self.GL_FLOAT, 0, pointer(normals))
+            gl.glColorPointer(3, self.GL_FLOAT, 0, pointer(colours))
+            gl.glTexCoordPointer(2, self.GL_FLOAT, 0, pointer(uvs))
+            gl.glDrawElements(self.GL_TRIANGLES, len(indices), self.GL_UNSIGNED_INT, pointer(indices))
+        finally:
+            for array in (self.GL_VERTEX_ARRAY, self.GL_NORMAL_ARRAY, self.GL_COLOR_ARRAY, self.GL_TEXTURE_COORD_ARRAY):
+                gl.glDisableClientState(array)
+            gl.glDisable(self.GL_BLEND); gl.glDepthMask(1)
+            sh.glUseProgram(0)
 
     def _cull_frame(self, width, height):
         try:
@@ -1570,14 +1637,23 @@ class LevelViewport(ModelViewport):
                 gl.glVertexPointer(3, self.GL_FLOAT, 0, ctypes.cast(vertices, ctypes.c_void_p))
                 gl.glDrawElements(self.GL_TRIANGLES, 36, self.GL_UNSIGNED_INT, ctypes.cast(indices, ctypes.c_void_p))
                 gl.glPopMatrix()
+            if record["domes"] and not sky.get("clear_sky") and any(d.get("kind") == "flat" for d in record["domes"]):
+                sh.glUniform1i(u["uSkyMode"], 3)   # the flat dome blends over a clear sky that is not decoded: black, as the dome is drawn
+                gl.glPushMatrix(); gl.glScalef(radius, radius, radius)
+                vertices, indices = record["cube"]
+                gl.glVertexPointer(3, self.GL_FLOAT, 0, ctypes.cast(vertices, ctypes.c_void_p))
+                gl.glDrawElements(self.GL_TRIANGLES, 36, self.GL_UNSIGNED_INT, ctypes.cast(indices, ctypes.c_void_p))
+                gl.glPopMatrix()
             if record["domes"]:
                 sh.glUniform1i(u["uSkyMode"], 1)
                 sh.glUniform3f(u["uSunRay"], *(float(x) for x in sky["sun_ray"]))
                 sh.glUniform1i(u["uDome"], 0); sh.glUniform1i(u["uNoise"], 1)
+                sh.glUniform1i(u["uSkyOpaque"], 0 if sky.get("clear_sky") else 1)
                 gl.glEnable(self.GL_BLEND); gl.glBlendFunc(self.GL_SRC_ALPHA, self.GL_ONE_MINUS_SRC_ALPHA)
                 gl.glEnableClientState(self.GL_TEXTURE_COORD_ARRAY)
                 for dome in record["domes"]:
-                    constants = list(dome["constants"]) + [0.0]
+                    constants = list(dome["constants"]) + [0.0] * 24
+                    sh.glUniform1i(u["uSkyMode"], 2 if dome.get("kind") == "flat" else 1)
                     for i in range(6):
                         sh.glUniform4f(u[f"uP[{i}]"], *constants[4 * i:4 * i + 4])
                     sh.glUniform1i(u["uDomeSrgb"], dome["srgb"][dome["dome_texture"]])

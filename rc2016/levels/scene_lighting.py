@@ -161,6 +161,52 @@ def _decode_zone_lights(data, source_path):
     return lights, skipped
 
 
+SPOT_SHAPE = 1
+# Inferred, not decoded: the pair at +0x80 and +0x84 (second always larger, e.g. 46 and 70 for Aridia's orange hanging
+# lamps) is the full inner and outer cone angle in degrees of a spot, the lit cone fading smoothly between their half
+# angles. The pair is the only decoded field that behaves like a cone, but no capture covers a spot.
+SPOT_CONE_OFFSET = 0x80
+
+
+def _decode_zone_spots(data, source_path):
+    """The spot records (shape byte 1, normalization 0) of one zone as lights of kind 'spot': a point light's fields
+    plus ``axis`` (the unit aim direction, matrix row 2, native Y-up) and ``cone_degrees`` (the inner and outer full
+    angles at +0x80 and +0x84, inferred). Records that are not usable spots are not returned; the point decoder has
+    already reported them as undrawn shapes."""
+    table = sections(data)
+    if LIGHT_INDEX not in table or DATA_HEAP not in table:
+        return []
+    index_offset, index_size = table[LIGHT_INDEX]
+    heap_offset, heap_size = table[DATA_HEAP]
+    spots = []
+    for ordinal, relative in enumerate(struct.unpack_from(f'<{index_size // 4}I', data, index_offset)):
+        start = heap_offset + relative
+        if relative + 0x48 > heap_size:
+            continue
+        size = struct.unpack_from('<I', data, start + 0x44)[0]
+        if size < MIN_LIGHT_RECORD_SIZE or relative + size > heap_size:
+            continue
+        light = parse_light_record(data[start:start + size])
+        inner, outer = struct.unpack_from('<2f', data, start + SPOT_CONE_OFFSET)
+        if light['shape'] != SPOT_SHAPE or light['normalization'] != SUPPORTED_NORMALIZATION:
+            continue
+        values = (*light['position'], *light['colour'], *light['axis'], inner, outer)
+        if not all(math.isfinite(v) for v in values) or any(v < 0 for v in light['colour']) or not 0.0 < outer <= 180.0:
+            continue
+        radius, rule = _light_radius(light['colour'], light['normalization'], light['radius'])
+        if radius is None or not light['axis'][0] ** 2 + light['axis'][1] ** 2 + light['axis'][2] ** 2 > 0.5:
+            continue
+        spots.append(dict(kind='spot', position=light['position'], axis=light['axis'], radius=radius, colour=light['colour'],
+                          inverse_radius=struct.unpack('<f', struct.pack('<f', 1.0 / radius))[0],
+                          cone_degrees=[min(max(inner, 0.0), outer), outer], transform=light['transform'],
+                          source_path=source_path, source_ordinal=ordinal, source_id=f"0x{light['source_id']:016x}",
+                          source_type=light['flags'], raw_byte_0x50=SPOT_SHAPE, normalization=light['normalization'],
+                          raw_flags=struct.unpack_from('<I', data, start + 0x50)[0], validated=False,
+                          source_radius=light['radius'], source_record_size=size,
+                          source_extension_size=size - MIN_LIGHT_RECORD_SIZE, radius_rule=rule))
+    return spots
+
+
 def _novalis_grid_probes(archive, lighting_zone_path):
     """Expose source grid/probe references for the selected Novalis lighting zone only."""
     zone_data = asset_bytes(archive, lighting_zone_path)
@@ -235,6 +281,7 @@ def load_scene_lighting(archive, zone_paths):
     lights, skipped = [], []
     loaded_zones = []
     seen = set()
+    drawn_spots = 0
     for original_path in zone_paths:
         path = original_path.replace('\\', '/').lstrip('?').lower()
         if not path.endswith('.zone') or path in seen:
@@ -246,14 +293,17 @@ def load_scene_lighting(archive, zone_paths):
             continue
         zone_data = asset_bytes(archive, path)
         decoded, rejected = _decode_zone_lights(zone_data, path)
+        spots = _decode_zone_spots(zone_data, path)
+        decoded = decoded + spots
         lights.extend(decoded)
+        drawn_spots += len(spots)
         skipped.extend(rejected)
         if decoded or rejected:
             loaded_zones.append(path)
 
     probes = dict(status='unsupported_zone', grid_count=0, grids=[], tableless_grid_count=0,
                   limitations=['No native global probe assignment is inferred.'])
-    notes = [dict(status='bounded_preview_data', message='Only point shapes (byte +0x50 equal to 0) with normalization byte 0 are emitted. Flag byte 1 has the Veldin-joined category-0 path (validated); other flag bytes reuse it as an inferred extension that the level viewer applies only under the Level atmosphere lighting. Spots, projectors, boxes and other normalization modes are reported, not drawn. The raw byte and dword are retained without assigning flag names.'),
+    notes = [dict(status='bounded_preview_data', message='Point shapes (byte +0x50 equal to 0) and spots (1, with an inferred cone) with normalization byte 0 are emitted. Flag byte 1 points have the Veldin-joined category-0 path (validated); other flag bytes and all spots are an inferred extension that the level viewer applies only under the Level atmosphere lighting. Projectors, boxes and other normalization modes are reported, not drawn. The raw byte and dword are retained without assigning flag names.'),
              dict(status='runtime_binding_unobserved', message='Per-level runtime light dispatch, shader view-space conversion, global-light selection, and native probe-slot allocation are unobserved.')]
     sun = _authored_sun_note(archive, [p.replace('\\', '/').lstrip('?') for p in zone_paths])
     if sun is not None:
@@ -264,9 +314,12 @@ def load_scene_lighting(archive, zone_paths):
     for item in skipped:
         if item.get('reason') == 'unsupported_light_shape':
             undrawn[item['shape']] = undrawn.get(item['shape'], 0) + 1
+    if drawn_spots:
+        undrawn['spot'] = undrawn.get('spot', 0) - drawn_spots
+        undrawn = {shape: count for shape, count in undrawn.items() if count > 0}
     if undrawn:
         notes.append(dict(status='undrawn_light_shapes', counts=undrawn,
-                          message='Spot, projector and box lights are decoded (aim axis, extents, gobo) but not drawn: cone profile and falloff are unverified.'))
+                          message='Projector and box lights (and spots with unusable fields) are decoded (aim axis, extents, gobo) but not drawn: cone profile and falloff are unverified.'))
     if skipped:
         notes.append(dict(status='source_records_skipped', records=skipped))
     return dict(lights=lights, probes=probes, notes=notes, source_zones=loaded_zones)

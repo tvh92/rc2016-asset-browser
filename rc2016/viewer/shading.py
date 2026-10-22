@@ -423,7 +423,7 @@ vec3 deferredDiffuse(vec3 N, vec3 albedo) {
     if(uSceneEnabled)for(int i=0;i<32;i++)if(i<uSceneLightCount){
         vec3 delta=uSceneLightPos[i].xyz-vPos;float d=length(delta);
         vec3 L=delta/max(d,0.0001);float w=pow(clamp(1.0-d*uSceneLightPos[i].w,0.0,1.0),4.0);
-        float nl=max(dot(N,L),0.0);D+=uSceneLightColour[i]*w*nl*nl*(0.5+0.5*A);
+        float nl=max(dot(N,L),0.0);D+=uSceneLightColour[i]*w*sceneSpot(i,L)*nl*nl*(0.5+0.5*A);
     }
 #endif
     return albedo*D;
@@ -445,7 +445,7 @@ vec3 deferredSpecular(vec3 N, vec3 V, vec3 F0, float gloss) {
     if(uSceneEnabled)for(int i=0;i<32;i++)if(i<uSceneLightCount){
         vec3 delta=uSceneLightPos[i].xyz-vPos;float d=length(delta);
         float w=pow(clamp(1.0-d*uSceneLightPos[i].w,0.0,1.0),4.0);
-        S+=ggx(N,V,delta/max(d,0.0001),F0,F90,a)*uSceneLightColour[i]*w;
+        S+=ggx(N,V,delta/max(d,0.0001),F0,F90,a)*uSceneLightColour[i]*w*sceneSpot(i,delta/max(d,0.0001));
     }
 #endif
     return S;
@@ -1504,6 +1504,11 @@ void main() { vDir = gl_Vertex.xyz; vUV = gl_MultiTexCoord0.xy; gl_Position = ft
 # ends in mix(fogColour, lit, T) with T a vertex output (undecoded: the dome's vertex shader is not in the
 # cache). Inferred, not decoded: T is the level's height fog (uFog*, rc2016.levels.fog) of a point
 # SKY_FOG_DISTANCE along the view ray from the camera, i.e. the dome at infinity.
+# uSkyMode 2: port of the rk_sky_dome_flat pixel program 0xdc0d410d (the Aridia nebula; rc2016.levels.sky.flat_constants,
+# docs/levels.md "Flat nebula dome"): uDome is the nebula, uNoise the star texture, uP[0..3] the constant dwords 0-14.
+# Not ported: the clock (frozen at 0), the vertex alpha (1) and the fog blend T (vertex output, undecoded, taken as 1,
+# so the engine fog colour CB0[112..114] never mixes in). The program blends over the atmosphere's clear sky, whose
+# scattering tables are undecoded; with no clear sky (uSkyOpaque) the dome is drawn over black.
 SKY_FRAGMENT = """
 #version 120
 const float PI = 3.14159265;
@@ -1513,7 +1518,7 @@ varying vec3 vDir; varying vec2 vUV;
 uniform int uSkyMode;
 uniform vec3 uProfile[15]; uniform float uProfileStep;
 uniform sampler2D uDome; uniform sampler2D uNoise; uniform bool uDomeSrgb; uniform bool uNoiseSrgb;
-uniform vec4 uP[6]; uniform vec3 uSunRay;
+uniform vec4 uP[6]; uniform vec3 uSunRay; uniform int uSkyOpaque;
 uniform int uFogOn; uniform vec3 uFogColour;
 uniform vec4 uFogA; uniform vec4 uFogB; uniform vec4 uFogAlpha; uniform vec4 uFogBeta;
 uniform vec4 uFogMisc;   // as in FOG: horizontal-ray c88, c89, exponent, start distance
@@ -1556,10 +1561,25 @@ float P(int i) { return uP[i / 4][i - 4 * (i / 4)]; }
 vec4 fetch(sampler2D s, vec2 uv, bool srgb) { vec4 c = texture2D(s, uv); return srgb ? vec4(linear(c.rgb), c.a) : c; }
 void main() {
     vec3 dir = normalize(vDir);
+    if (uSkyMode == 3) { gl_FragColor = vec4(skyDisplay(vec3(0.0)), 1.0); return; }   // black behind an opaque flat dome
     if (uSkyMode == 0) {
         float x = clamp(degrees(asin(clamp(dir.y, -1.0, 1.0))) / uProfileStep - 0.5, 0.0, 14.0);
         int i = int(floor(x)), j = i < 14 ? i + 1 : 14;
         gl_FragColor = vec4(skyDisplay(mix(uProfile[i], uProfile[j], x - float(i))), 1.0);
+        return;
+    }
+    if (uSkyMode == 2) {
+        vec2 uv = vUV;
+        vec4 neb = fetch(uDome, vec2(P(13) + P(14) * uv.x, P(12) + uv.y), uDomeSrgb);
+        vec4 s6 = fetch(uNoise, vec2(5.5 * P(8) * uv.x, 4.0 * P(8) * uv.y), uNoiseSrgb);
+        vec4 s7a = fetch(uNoise, 8.0 * uv, uNoiseSrgb);               // + 0.12 t on both axes, t = 0
+        vec4 s7b = fetch(uNoise, vec2(uv.x, 1.1 + uv.y), uNoiseSrgb);
+        float glow = P(9) * pow(clamp(-dot(uSunRay, dir), 0.0, 1.0), P(7));   // the sun-facing sign is the cloud dome's
+        vec3 base = neb.rgb + vec3(P(0), P(1), P(2)) * glow;
+        vec3 stars = clamp(vec3(P(4), P(5), P(6)) * s6.rgb * (P(3) * s6.r) * (-0.5 + 2.0 * neb.r + s7a.b * s7b.g), 0.0, 1.0);
+        vec3 lit = P(11) * (base + stars);
+        float cover = clamp(P(10) * (neb.r - 1.0) + 1.0, 0.0, 1.0);
+        gl_FragColor = uSkyOpaque != 0 ? vec4(skyDisplay(lit * cover), 1.0) : vec4(skyDisplay(lit), cover);
         return;
     }
     float t = 0.0;
@@ -1580,7 +1600,29 @@ void main() {
 }
 """.replace("// @lighting\n", LIGHTING)
 SKY_UNIFORMS = (*LIGHTING_UNIFORMS, "uSkyMode", "uProfile", "uProfileStep", "uDome", "uNoise", "uDomeSrgb",
-                "uNoiseSrgb", "uSunRay", *(f"uP[{i}]" for i in range(6)))
+                "uNoiseSrgb", "uSunRay", "uSkyOpaque", *(f"uP[{i}]" for i in range(6)))
+
+# Lamp beams (rc2016/levels/beams.py): additive cones, drawn after the level with the scene depth and no depth write. The
+# colour is already in display units (the beam is added after the tonemap), shaped by the visual choices below: brightest
+# where the surface faces the eye, fading to the cone's silhouette and along its length, with a soft apex.
+BEAM_VERTEX = """
+#version 120
+varying vec3 vN; varying vec3 vV; varying vec3 vC; varying float vT;
+void main() {
+    vec4 p = gl_ModelViewMatrix * gl_Vertex;
+    vN = gl_NormalMatrix * gl_Normal; vV = -p.xyz; vC = gl_Color.rgb; vT = gl_MultiTexCoord0.x;
+    gl_Position = gl_ProjectionMatrix * p;
+}
+"""
+BEAM_FRAGMENT = """
+#version 120
+varying vec3 vN; varying vec3 vV; varying vec3 vC; varying float vT;
+void main() {
+    float facing = abs(dot(normalize(vN), normalize(vV)));
+    float shape = pow(facing, 1.6) * (1.0 - vT) * (1.0 - vT) * smoothstep(0.0, 0.08, vT);
+    gl_FragColor = vec4(vC * shape, 1.0);
+}
+"""
 
 
 class ShaderError(RuntimeError):
@@ -1828,6 +1870,12 @@ class Shading:
         if "sky" not in self.programs:
             self.programs["sky"] = self._link(SKY_VERTEX, SKY_FRAGMENT, {}, SKY_UNIFORMS)
         return self.programs["sky"]
+
+    def beam_program(self):
+        """Level viewer lamp beams (BEAM_FRAGMENT)."""
+        if "beam" not in self.programs:
+            self.programs["beam"] = self._link(BEAM_VERTEX, BEAM_FRAGMENT, {}, ())
+        return self.programs["beam"]
 
     def pick_program(self):
         """Level viewer click-to-identify: INSTANCED_VERTEX writing a flat id colour (uPickColour)."""

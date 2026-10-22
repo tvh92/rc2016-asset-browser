@@ -28,13 +28,20 @@ def shadowed_ambient_factor(shadow, ndl, ambient=SHADOW_AMBIENT):
 # this long and reused until the camera or scene changes; frames in between draw without AO.
 AO_SETTLE_SECONDS = 0.15
 SCENE_UNIFORMS = ('uSceneEnabled','uSceneAOEnabled','uSceneShadowEnabled','uSceneAO','uSceneShadow',
-                  'uSceneSize','uSceneShadowSize','uSceneShadowMatrix','uSceneLightCount','uSceneLightPos','uSceneLightColour','uSceneShadowAmbient',
+                  'uSceneSize','uSceneShadowSize','uSceneShadowMatrix','uSceneLightCount','uSceneLightPos','uSceneLightColour','uSceneLightDir','uSceneLightSpot','uSceneShadowAmbient',
                   'uGridOn','uGridTable','uGridColour','uGridDirQ','uGridFromView','uGridParams','uGridInvSize')
 HELPERS = '''
 uniform bool uSceneEnabled,uSceneAOEnabled,uSceneShadowEnabled;
 uniform sampler2D uSceneAO; uniform sampler2DShadow uSceneShadow;
 uniform vec2 uSceneSize,uSceneShadowSize; uniform mat4 uSceneShadowMatrix;
 uniform int uSceneLightCount; uniform vec4 uSceneLightPos[32]; uniform vec3 uSceneLightColour[32]; uniform float uSceneShadowAmbient;
+// Spot cones (inferred, rc2016.levels.scene_lighting.SPOT_CONE_OFFSET): Dir.xyz the aim in view space and Dir.w 1 for a spot (0 for a
+// point); Spot.x the outer half-angle cosine, Spot.y 1 / (inner - outer cosine). L points from the surface to the light.
+uniform vec4 uSceneLightDir[32]; uniform vec2 uSceneLightSpot[32];
+float sceneSpot(int i,vec3 L){
+ if(uSceneLightDir[i].w<0.5)return 1.0;
+ float t=clamp((dot(-L,uSceneLightDir[i].xyz)-uSceneLightSpot[i].x)*uSceneLightSpot[i].y,0.0,1.0);return t*t*(3.0-2.0*t);
+}
 float sceneAO(){return uSceneEnabled&&uSceneAOEnabled?texture2D(uSceneAO,gl_FragCoord.xy/uSceneSize).r:1.0;}
 // Fragment540 nine weighted linear Less comparisons. Allocation is viewer defined.
 float sceneShadow(vec3 p){

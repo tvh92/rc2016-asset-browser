@@ -1,6 +1,8 @@
 """Level sky data: atmosphere zone strings, dome constants and the clear-sky profile (no archive, no GL)."""
+import os
 import struct
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from rc2016.levels import sky
@@ -39,6 +41,24 @@ class DomeConstantTests(unittest.TestCase):
                 sky.dome_constants(b'', b'')
 
 
+class FlatDomeConstantTests(unittest.TestCase):
+    def test_flat_constants_read_fifteen_dwords_with_instance_values_over_defaults(self):
+        rows = [dict(dword=0, key_hash=1), dict(dword=3, key_hash=2), *(dict(dword=d, key_hash=10 + d) for d in range(4, 15))]
+        defaults = {1: [0.1, 0.5, 1.0], 2: 0.0, **{10 + d: float(d) for d in range(4, 15)}}
+        instance = dict(parameters=[], unsupported_parameters=[dict(key_hash=2, raw_hex=struct.pack('<f', 2.0).hex())])
+        with mock.patch('rc2016.shaders.families.graph_parameter_tables', return_value=([rows], defaults)),                 mock.patch('rc2016.formats.materials.extract_material_parameters', return_value=instance):
+            values = sky.flat_constants(b'', b'')
+        self.assertEqual(len(values), sky.FLAT_DWORDS)
+        self.assertEqual(values[:4], [0.1, 0.5, 1.0, 2.0])
+        self.assertEqual(values[14], 14.0)
+
+    def test_a_missing_dword_raises(self):
+        rows = [dict(dword=d, key_hash=d) for d in range(14)]
+        with mock.patch('rc2016.shaders.families.graph_parameter_tables', return_value=([rows], {d: 1.0 for d in range(14)})),                 mock.patch('rc2016.formats.materials.extract_material_parameters', return_value={}):
+            with self.assertRaises(ValueError):
+                sky.flat_constants(b'', b'')
+
+
 class ClearSkyProfileTests(unittest.TestCase):
     def test_profile_keeps_clear_sky_and_fills_terrain_bins(self):
         import numpy as np
@@ -59,6 +79,38 @@ class ClearSkyProfileTests(unittest.TestCase):
         import numpy as np
         grey = np.full((16, 16, 3), 0.5)
         self.assertIsNone(sky._profile_from_faces([grey] * 6))
+
+
+
+class AridiaFlatDomeArchiveTests(unittest.TestCase):
+    """Aridia's atmosphere names the flat nebula dome; reads the game archive (RC2016_RESEARCH) and skips without it."""
+
+    @classmethod
+    def setUpClass(cls):
+        research = os.environ.get('RC2016_RESEARCH')
+        if not research:
+            raise unittest.SkipTest('RC2016_RESEARCH is required')
+        from rc2016.levels import scene
+        try:
+            cls.archive = scene.open_archive(Path(research))
+            cls.sky = sky.level_sky(cls.archive, scene.level_zone_paths(cls.archive, 'levels/aridia/aridia.level'))
+        except (OSError, ValueError):
+            raise unittest.SkipTest('Source archive not available')
+
+    @classmethod
+    def tearDownClass(cls):
+        if hasattr(cls, 'archive'):
+            cls.archive.close()
+
+    def test_the_nebula_dome_is_drawn_with_the_decoded_constants(self):
+        self.assertEqual(self.sky['unsupported'], [])
+        (dome,) = self.sky['domes']
+        self.assertEqual(dome['kind'], 'flat')
+        self.assertEqual(dome['dome_texture'], 'atmosphere/atm_aridia/rk_sky_aridia_nebula.texture')
+        self.assertTrue(dome['noise_texture'].endswith('rk_sky_rilgar_stars.texture'))
+        self.assertEqual(len(dome['constants']), sky.FLAT_DWORDS)
+        self.assertEqual((dome['constants'][3], dome['constants'][7], dome['constants'][10]), (2.0, 9.0, 1.0))   # star gain, glow exponent, alpha ramp
+        self.assertEqual(self.sky['notes'], [])
 
 
 if __name__ == '__main__':

@@ -2,8 +2,9 @@
 
 A level's atmosphere zone names one `.atmosphere` asset; the asset lists its sky models first
 (docs/levels.md, "Skybox"). Dome materials on the `Rk_Sky_Dome` graph are drawn with a port of its
-cloud fragment shader 0x8d3c81d0 (`SKY_FRAGMENT` in rc2016/viewer/shading.py); other sky graphs (`_flat` nebula
-domes, `rk_sky_matte` planets) are reported, not drawn. The clear sky behind the clouds comes from
+cloud fragment shader 0x8d3c81d0 (`SKY_FRAGMENT` in rc2016/viewer/shading.py); the `rk_sky_dome_flat` nebula domes are
+drawn with a port of its pixel program 0xdc0d410d (``flat_constants``); other sky graphs (`rk_sky_matte` planets) are
+reported, not drawn. The clear sky behind the clouds comes from
 the atmosphere scattering tables, which are not decoded; `clear_sky_profile` instead samples the
 clear-sky pixels of the reflection capture the atmosphere zone references.
 """
@@ -23,6 +24,15 @@ DOME_GRAPH = 'materialgraph/global/rk_sky_dome/rk_sky_dome.materialgraph'
 # The graph whose cloud fragment shader 0x8d3c81d0 was read (shadPS4 cache SPIR-V); hash-bound.
 DOME_GRAPH_SHA256 = '4637d9a78bc577aae47f4db9b4576909d0fce172c6cf173b3910b7fdcd45278c'
 DOME_SHADER_ID = '0x8d3c81d0'
+# The flat nebula dome (Aridia): pixel program 0xdc0d410d of this graph, hash-bound like the cloud dome. Its constant
+# dwords 0-14 are the material's CB2; the nebula is the graph's first texture slot, the star slots (two APIs) must
+# bind one texture.
+FLAT_GRAPH = 'materialgraph/global/rk_sky_dome/rk_sky_dome_flat.materialgraph'
+FLAT_GRAPH_SHA256 = '6098551d0e839e766783eba4eac5489f7e24df72b4e59b347d58ae57b3a1e863'
+FLAT_SHADER_ID = '0xdc0d410d'
+FLAT_DWORDS = 15
+FLAT_NEBULA_SLOT = 0x49A7866BABDAD780
+FLAT_STAR_SLOTS = (0x49A7866B5578AC94, 0x49A7866BD0A27656)
 DOME_DWORDS = 23            # constant-buffer dwords 0-22, one-to-one with the graph's table 0
 # Graph texture slots (0x1CAFE804 hashes): distortion noise, the two cloud-layer slots, the two star
 # slots. Which cloud slot feeds which layer is not decoded; every dome material binds both to one
@@ -112,8 +122,8 @@ def colour_grade(atmosphere_data):
     return bytes(header[GRADE_OFFSET:GRADE_OFFSET + GRADE_BYTES])
 
 
-def dome_constants(material_data, graph_data):
-    """Constant-buffer dwords 0-22 of a dome material: instance values over graph table-0 defaults."""
+def dome_constants(material_data, graph_data, dwords=DOME_DWORDS):
+    """Constant-buffer dwords 0 to ``dwords`` - 1 of a dome material: instance values over graph table-0 defaults."""
     from rc2016.formats.materials import extract_material_parameters
     from rc2016.shaders.families import graph_parameter_tables
     tables, defaults = graph_parameter_tables(graph_data)
@@ -131,10 +141,32 @@ def dome_constants(material_data, graph_data):
             floats = default if isinstance(default, (list, tuple)) else [default]
         for i, value in enumerate(floats):
             values[row['dword'] + i] = float(value)
-    missing = [d for d in range(DOME_DWORDS) if d not in values]
+    missing = [d for d in range(dwords) if d not in values]
     if missing:
         raise ValueError(f'dome material lacks constant dwords {missing}')
-    return [values[d] for d in range(DOME_DWORDS)]
+    return [values[d] for d in range(dwords)]
+
+
+def flat_constants(material_data, graph_data):
+    """Constant dwords 0-14 of a flat nebula dome material (``dome_constants``). As decoded from program 0xdc0d410d
+    (docs/levels.md, Flat nebula dome): 0-2 glow colour, 3 star gain, 4-6 star tint, 7 glow exponent, 8 star UV
+    scale, 9 glow gain, 10 alpha ramp, 11 overall gain, 12 and 13 UV offsets (v, u), 14 u scale."""
+    return dome_constants(material_data, graph_data, FLAT_DWORDS)
+
+
+def _flat_dome(archive, model, geometry, material, spans, material_data):
+    """A drawable flat nebula dome (``dome_texture`` the nebula, ``noise_texture`` the stars, ``kind`` 'flat'), or the
+    reason it is not ported: the graph bytes differ from the decoded one, or the slots do not bind a nebula and one
+    star texture."""
+    graph = _graph(archive, FLAT_GRAPH)
+    if hashlib.sha256(graph).hexdigest() != FLAT_GRAPH_SHA256:
+        return 'rk_sky_dome_flat graph bytes differ from the decoded one'
+    slots = {**texture_slots(graph, GRAPH_SLOT_SECTION), **texture_slots(material_data, MATERIAL_SLOT_SECTION)}
+    nebula, stars = slots.get(FLAT_NEBULA_SLOT), {slots.get(s) for s in FLAT_STAR_SLOTS}
+    if not nebula or len(stars) != 1 or None in stars:
+        return f'flat dome slots bind nebula {nebula}, stars {sorted(map(str, stars))}'
+    return dict(model=model, geometry=geometry, material=material['path'], spans=spans, kind='flat',
+                constants=flat_constants(material_data, graph), dome_texture=nebula, noise_texture=stars.pop(), stars=True)
 
 
 def dome_fog_transmittance(sin_elevation, ramps):
@@ -300,6 +332,13 @@ def level_sky(archive, zone_paths, profile=True, probe_position=None):
             mdata = _material(archive, material['path'])
             refs = [r['path'] for r in references(mdata) if not r.get('resolution_error')]
             graphs = [p for p in refs if p.endswith('.materialgraph')]
+            if graphs == [FLAT_GRAPH]:
+                flat = _flat_dome(archive, model, geometry, material, spans, mdata)
+                if isinstance(flat, str):
+                    result['unsupported'].append(dict(model=model, material=material['path'], reason=flat))
+                else:
+                    result['domes'].append(flat)
+                continue
             if graphs != [DOME_GRAPH]:
                 result['unsupported'].append(dict(model=model, material=material['path'],
                                                   reason=f'sky graph {", ".join(graphs) or "none"} is not ported'))
@@ -320,7 +359,7 @@ def level_sky(archive, zone_paths, profile=True, probe_position=None):
             result['domes'].append(dict(model=model, geometry=geometry, material=material['path'], spans=spans,
                                         constants=constants, dome_texture=dome.pop(), noise_texture=noise,
                                         stars=constants[22] != 0.0))
-    if any(d['stars'] for d in result['domes']):
+    if any(d['stars'] and d.get('kind') != 'flat' for d in result['domes']):
         result['notes'].append('stars term (constant dword 22) is not ported')
     if len(reflections) == 1:
         result['reflection'], result['reflection_source'] = next(iter(reflections)), 'atmosphere zone'
