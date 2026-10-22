@@ -351,14 +351,16 @@ Models whose path contains `collision` or `environment/template/` (for example `
 | W A S D | Move |
 | Q / E | Down / up |
 | Shift | Fly speed times the Shift multiplier (default x4) |
-| Wheel | Change the Shift multiplier (also editable in the side column, x1 to x200) |
+| Wheel | Change the Shift multiplier (also editable in the side column, x1 to x10) |
 | Ctrl | 10% of the fly speed, when **Ctrl = fine move** is ticked |
 | `[` `]`, `-` `+` | Fly speed |
+| Shift+Tab | Hide or show the side column |
+| F11 | Borderless full screen (also hides the side column and the level list); F11 or Esc leaves it |
 | F, Home | Reset to overview |
 | Left click (no drag) | Identify a model or actor; actors report name, actor path, primary model and ID |
 | Double click | Open the identified model in the Model tab (asset browser) and load it; it does not reset the camera |
 
-Zone list: one checkbox per zone with its placed-instance count, grouped by name prefix (Art, Gameplay, Lighting & atmosphere, Effects, Audio, Navigation, Other) with each `_imposter` twin after its zone; unticking a zone hides it at once, and **All** / **None** set every zone that has models. The side column also has the **Lighting** (`Viewer rig` or `Shared HDRI`) and **Tonemap** (`ACES fit` or `Khronos PBR Neutral`) selectors, which work as in the model viewer ([Lighting and tonemap](viewer.md#lighting-and-tonemap)), and the **Collision/helpers**, **Material overrides**, **Native translation**, **Sky** and **Actors** checkboxes. Native translation is on by default, affects Shaded mode only and switches surface frontends without moving the camera. The status line shows load state, zone and model counts, failures, material and texture counts, the number of instances drawn with material overrides and of override entries not applied, the sky (cloud domes drawn, sky meshes not ported, captured clear sky or flat background), visible instances and triangles, draw calls, frame time (ms) and speed. Instances and triangles are those drawn after culling ("showing N of M instances"); frame time is split into the scene passes and the main draw, where M is the placed total of the visible zones and layers.
+Zone list: one checkbox per zone with its placed-instance count, grouped by name prefix, collapsed until clicked (Art, Gameplay, Lighting & atmosphere, Effects, Audio, Navigation, Other) with each `_imposter` twin after its zone; unticking a zone hides it at once, and **All** / **None** set every zone that has models. The side column also has the **Lighting** (`Viewer rig` or `Shared HDRI`) and **Tonemap** (`ACES fit` or `Khronos PBR Neutral`) selectors, which work as in the model viewer ([Lighting and tonemap](viewer.md#lighting-and-tonemap)), and the **Collision/helpers**, **Material overrides**, **Native translation**, **Sky** and **Actors** checkboxes. Native translation is on by default, affects Shaded mode only and switches surface frontends without moving the camera. The status line shows load state, zone and model counts, failures, material and texture counts, the number of instances drawn with material overrides and of override entries not applied, the sky (cloud domes drawn, sky meshes not ported, captured clear sky or flat background), visible instances and triangles, draw calls, frame time (ms) and speed. Instances and triangles are those drawn after culling ("showing N of M instances"); frame time is split into the scene passes and the main draw, where M is the placed total of the visible zones and layers.
 
 ### Click to identify
 

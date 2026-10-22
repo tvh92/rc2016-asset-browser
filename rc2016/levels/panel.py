@@ -23,7 +23,7 @@ from rc2016.viewer.viewport import GL_TEXTURE_ROLES
 
 DEFAULT_LEVEL = "levels/novalis/novalis.level"
 HELP = ("Left drag look · right drag pan · WASD move · Q/E down/up · Shift faster (wheel sets how much) · "
-        "Ctrl slower (10%) · [ ] speed · F overview · click a model to identify it, right click to clear it, double click to open it")
+        "Ctrl slower (10%) · [ ] speed · Shift+Tab hide sidebar · F11 full screen · F overview · click a model to identify it, right click to clear it, double click to open it")
 
 
 def zone_names(zones):
@@ -442,7 +442,7 @@ class LevelPanel:
 
     def __init__(self, parent, tk, ttk, source_root, level=None, mode="Shaded", zone_filter=None, on_done=None,
                  list_parent=None, on_open_model=None, material_overrides=True, sky=True, native_translation=True, actors=True, spawn_preview=False,
-                 experimental_materials=False, layout=None, remember=False, probe_position=None):
+                 experimental_materials=False, layout=None, remember=False, probe_position=None, on_fullscreen=None):
         """``list_parent``: a separate frame for the level list (the asset browser's left pane);
         by default the list sits at the top of the panel's own side column (standalone window).
         ``on_open_model(model path)``: open a picked model elsewhere (the browser's Model tab).
@@ -664,6 +664,9 @@ class LevelPanel:
         self.view.set_mode(mode)
         self.view.clear("Choose a level from the list.")
         self.view.on_stats = self._show_stats
+        self.on_fullscreen = on_fullscreen
+        self.view.on_toggle_sidebar = self._toggle_sidebar
+        self.view.on_toggle_fullscreen = self._toggle_fullscreen
         self.view.on_pick = self._picked
         self.view.on_open = self._open_model
         # Right-button press and release without a drag clears the pick; a right drag still pans (the view's own binding).
@@ -905,14 +908,40 @@ class LevelPanel:
     def _add_zone_rows(self, zones):
         names = zone_names(zones)
         for title, members in zone_order(zones):
-            self.ttk.Label(self.zone_list, text=title, style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
+            header = self.ttk.Label(self.zone_list, style="Muted.TLabel", cursor="hand2")
+            header.pack(anchor="w", pady=(4, 0))
+            group = self.ttk.Frame(self.zone_list)   # collapsed until the header is clicked
+            header.bind("<Button-1>", lambda _e, h=header, g=group, t=title, n=len(members): self._toggle_group(h, g, t, n))
+            header.configure(text=f"▸ {title} ({len(members)})")
             for zone in members:
                 var = self.tk.BooleanVar(value=True)
-                row = self.ttk.Checkbutton(self.zone_list, text=names[zone] + " …", variable=var,
+                row = self.ttk.Checkbutton(group, text=names[zone] + " …", variable=var,
                                            command=lambda z=zone, v=var: self.view.set_zone_visible(z, v.get()))
                 row.pack(anchor="w", padx=(8, 0))
                 self.zone_vars[zone], self.zone_rows[zone] = var, row
                 row.name = names[zone]
+
+    def _toggle_group(self, header, group, title, count):
+        if group.winfo_manager():
+            group.pack_forget()
+            header.configure(text=f"▸ {title} ({count})")
+        else:
+            group.pack(anchor="w", after=header)
+            header.configure(text=f"▾ {title} ({count})")
+
+    def _toggle_sidebar(self):
+        self.frame.set_second_visible(not self.frame.second_visible)
+
+    def _toggle_fullscreen(self):
+        """Borderless full screen with the sidebar hidden; leaving restores the sidebar."""
+        window = self.frame.winfo_toplevel()
+        entering = not self.view.is_fullscreen
+        self.view.is_fullscreen = entering
+        self.frame.set_second_visible(not entering)
+        window.attributes("-fullscreen", entering)
+        if self.on_fullscreen:
+            self.on_fullscreen(entering)
+        self.view.focus_set()
 
     def _set_all_zones(self, visible):
         for zone, var in self.zone_vars.items():

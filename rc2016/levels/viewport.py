@@ -20,7 +20,7 @@ from rc2016.viewer.viewport import ModelViewport
 
 # Column-major native -> presentation basis: (x, y, z) -> (x, -z, y).
 BASIS = (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
-BOOST_RANGE = (1.0, 200.0)
+BOOST_RANGE = (1.0, 10.0)
 FINE_FACTOR = 0.1
 MOVE_KEYS = {"w": (1, 0, 0), "s": (-1, 0, 0), "d": (0, 1, 0), "a": (0, -1, 0), "e": (0, 0, 1), "q": (0, 0, -1)}
 FOV_DEGREES = 60.0
@@ -332,8 +332,11 @@ class LevelViewport(ModelViewport):
         self._far = 10000.0
         self._keys, self._release_pending = set(), {}
         self.boost = 4.0           # Shift speed as a multiple of the fly speed; the wheel changes it
+        self.is_fullscreen = False   # kept by the panel
         self.fine_enabled = True   # Ctrl moves at FINE_FACTOR of the fly speed
         self.on_boost_change = None   # called with the new boost after the wheel changes it
+        self.on_toggle_sidebar = None      # Shift+Tab
+        self.on_toggle_fullscreen = None   # F11; Escape leaves it
         self._last_tick = None
         self._press = None
         self.bind("<ButtonPress-1>", self._begin_look)
@@ -1773,6 +1776,14 @@ class LevelViewport(ModelViewport):
     def _key_down(self, event):
         key = event.keysym.lower()
         self._release_pending.pop(key, None)
+        if key == "iso_left_tab" or (key == "tab" and event.state & 0x1):
+            if self.on_toggle_sidebar:
+                self.on_toggle_sidebar()
+            return "break"
+        if key == "f11" or (key == "escape" and self.is_fullscreen):
+            if self.on_toggle_fullscreen:
+                self.on_toggle_fullscreen()
+            return "break"
         if key in ("bracketright", "plus", "equal"):
             self._speed *= 1.25
         elif key in ("bracketleft", "minus"):

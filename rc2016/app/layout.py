@@ -40,6 +40,7 @@ class Splitter(ttk.Frame):
         self.sizes = {False: side, True: stacked}
         self.fixed_first = fixed_first
         self.is_stacked = False
+        self.second_visible = True
         self.first, self.second = ttk.Frame(self), ttk.Frame(self)
         self.sash = tk.Frame(self, borderwidth=0, highlightthickness=0)
         track(self.sash, background="sash")
@@ -54,6 +55,14 @@ class Splitter(ttk.Frame):
         self.sash.configure(cursor="sb_v_double_arrow" if self.is_stacked else "sb_h_double_arrow")
         self._place()
 
+    def set_second_visible(self, visible: bool) -> None:
+        """Hide the second pane and its sash (the first pane takes the whole area), or bring them back."""
+        self.second_visible = bool(visible)
+        if not self.second_visible:
+            self.sash.place_forget()
+            self.second.place_forget()
+        self._place()
+
     def _length(self) -> int:
         return self.winfo_height() if self.is_stacked else self.winfo_width()
 
@@ -64,6 +73,9 @@ class Splitter(ttk.Frame):
         width, height = self.winfo_width(), self.winfo_height()
         total = self._length()
         if total <= 1:
+            return
+        if not self.second_visible:
+            self.first.place(x=0, y=0, width=width, height=height)
             return
         size = self._clamp(self.sizes[self.is_stacked], total)
         first = size if self.fixed_first else total - self.SASH - size

@@ -454,6 +454,13 @@ class AssetBrowser:
             regrid(widget,row=srow if stacked else vrow,column=1 if stacked else 0,rowspan=span if stacked else 1,sticky='new',padx=0)
 
     # Asset types (Model / Level / Flash UI) --------------------------------
+    def _level_fullscreen(self,level_list,full):
+        """Full screen in the level viewer also hides the level list pane."""
+        if full:
+            self.level_view.forget(level_list)
+        else:
+            self.level_view.insert(0,level_list,weight=1)
+
     def _build_type_views(self,host,model_view):
         """Level and Flash UI views: a file list on the left, the viewer on the right. They are
         built once and only hidden on a switch, so loaded levels and UI files keep their state."""
@@ -470,7 +477,8 @@ class AssetBrowser:
         self.level_view.add(level_list,weight=1);self.level_view.add(level_right,weight=4)
         level_right.columnconfigure(0,weight=1);level_right.rowconfigure(0,weight=1)
         self.level_panel=LevelPanel(level_right,tk,ttk,lambda:app.source_var.get().strip(),list_parent=level_list,
-                                    on_open_model=self.open_model,layout=self.layout,remember=True)
+                                    on_open_model=self.open_model,layout=self.layout,remember=True,
+                                    on_fullscreen=lambda full:self._level_fullscreen(level_list,full))
         self.level_panel.frame.grid(row=0,column=0,sticky='nsew')
         # Flash UI (flash_tab.py): the .gfx/.swf list on the left; reads the list on first show.
         from rc2016.flash.tab import FlashTab
