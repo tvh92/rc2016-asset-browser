@@ -13,7 +13,7 @@ from pathlib import Path
 
 from rc2016.shaders import validation
 from rc2016.viewer import textures as tp
-from rc2016.viewer.shading import GLASS_FRAGMENT, GLASS_KINDS, glass_uniforms
+from rc2016.viewer.shading import GLASS_FRAGMENT, GLASS_KINDS, glass_uniforms, ion_tubes_fade
 
 GRAPH = 'materialgraph/character/enemy/enm_victor_von_ion_tubes/enm_victor_von_ion_tubes_w_rust.materialgraph'
 MATERIAL = 'material/character/enemy/enm_victor_von_ion_tubes/enm_victor_von_ion_tubes.material'
@@ -55,14 +55,24 @@ class IonTubesRuleTests(unittest.TestCase):
         self.assertEqual((c['fade'], c['fade_input']), (0.0, 'CB0 dword 107'))
         self.assertEqual(c['frozen_inputs'], dict(fog_blend=1.0, vertex_alpha=1.0, cb2_4_power=0.0,
                                                   cutoff='discard predicate not translated'))
+        # Captured frame values (Veldin): amp 0.01 every frame; c re-drawn each 30 Hz frame. Neither is Victor's arena value.
+        self.assertEqual((c['amplitude_captured'], c['fade_frame_rate']), (0.01, 30.0))
 
     def test_uniform_packing(self):
         kind, a, b, c, d = glass_uniforms(forward())
         self.assertEqual((kind, GLASS_KINDS['ion_tubes']), (12, 12))
         self.assertEqual(a, (0.0953, 0.5906, 1.0, 6.0)); self.assertEqual(b, (0.5, 0.0, 0.0, 0.0))
-        self.assertEqual(glass_uniforms(forward(), 2.5)[2], (0.5, 2.5, 0.0, 0.0))   # the viewer clock replaces the static time
+        self.assertEqual(glass_uniforms(forward(), 2.5)[2], (0.5, 2.5, ion_tubes_fade(2.5, 30.0), 0.0))   # the viewer clock
         self.assertEqual(glass_uniforms(forward(fade=0.25))[2], (0.5, 0.0, 0.25, 0.0))
         self.assertEqual(c, (*BASE, 0.0)); self.assertEqual(d, (*RIM, 0.0))
+
+    def test_animated_fade_is_a_new_value_each_game_frame(self):
+        fades = [glass_uniforms(forward(), n / 30.0 + 0.01)[2][2] for n in range(300)]
+        self.assertTrue(all(0.0 <= f < 1.0 for f in fades))
+        self.assertEqual(glass_uniforms(forward(), 10.01)[2][2], glass_uniforms(forward(), 10.03)[2][2])   # one 30 Hz frame
+        self.assertGreater(len(set(fades)), 290)
+        self.assertLess(abs(sum(fades) / len(fades) - 0.5), 0.05)
+        self.assertEqual(ion_tubes_fade(7.0, 30.0), ion_tubes_fade(7.0, 30.0))   # a held clock holds the flicker
 
     def test_glsl_branch_carries_the_decoded_equations(self):
         branch = GLASS_FRAGMENT.split('uKind == 12')[1].split('uKind == 7')[0]

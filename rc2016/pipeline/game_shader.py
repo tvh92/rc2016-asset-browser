@@ -2234,7 +2234,8 @@ def _viewer_rule_ion_tubes(mat, rule, img):
     """Victor von Ion tubes forward colour (86DDE345; gl_shading.GLASS_FRAGMENT uKind 12), t = the "ion tubes time" constant (0).
 
     rgb = 2 amp (1 + m) (base + rim F^5 + m C g); m = sat((s - c) / max(1e-5, 1 - c)), s = API6.R(2u + 0.3, v/2 - t) +
-    API5.G(1 - 2v + t, u/4 - t) from one image, c = the "ion tubes fade" constant (CB0[107], 0), F = max(N.V - 0.00100005, 0). The emission is unlit and opaque (flags 0x38), back faces culled.
+    API5.G(1 - 2v + t, u/4 - t) from one image, c = the "ion tubes fade" constant (CB0[107], 0; in game a new value each frame),
+    F = max(N.V - 0.00100005, 0). The emission is unlit and opaque (flags 0x38), back faces culled.
     """
     nt = mat.node_tree; P = _ViewerNodes(nt)
     f = rule['terms']['ion_tubes']; p = f['params']
@@ -2262,8 +2263,9 @@ def _viewer_rule_ion_tubes(mat, rule, img):
     out = P.N.new('ShaderNodeOutputMaterial'); out.is_active_output = True
     P.L.new(shader.outputs[0], out.inputs['Surface'])
     mat.use_backface_culling = not f.get('two_sided')
-    return ['Ion tubes forward program %s at t = 0: amplitude CB0[115] is a labelled presentation value (shown at %g), not decoded; '
-            'the scroll time CB0[99], the dissolve threshold CB0[107] (0), the fog blend (attribute2.w = 1), vertex alpha and the discard predicate '
+    return ['Ion tubes forward program %s at t = 0: amplitude CB0[115] is a labelled presentation value (shown at %g; the Veldin '
+            'capture has 0.01, Victor\'s arena is not captured); the scroll time CB0[99] (game seconds), the dissolve threshold '
+            'CB0[107] (0; in game a new value in [0, 1) each frame, so the bolts flicker), the fog blend (attribute2.w = 1), vertex alpha and the discard predicate '
             '(attribute0.2) are frozen or not translated; the power term CB2[4] is 0 and not built; the deferred writers of this '
             'graph output zero; the viewer tonemaps the colour, Cycles emits scene-linear' % (p['writer'], p['amplitude'])]
 

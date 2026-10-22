@@ -146,13 +146,17 @@ NUMBER_DISPLAY_QWARK = dict(_NUMBER_DISPLAY_COMMON, variant='qwark', writer='37C
 #   rgb = 2 amp (1 + m) (base + rim F^5 + m C g), F = max(N.V - 0.00100005, 0),
 #   m = sat((s - c) / max(1e-5, 1 - c)), s = API6.R(2u + 0.3, v/2 - t) + API5.G(1 - 2v + t, u/4 - t), c = CB0[107] (a dissolve
 #   threshold: 0 shows the full streaks, 1 removes them; the 22+ other VFX programs that read it use it the same way),
-#   t = CB0[99] (time-like; engine upload unverified: the static value is 0 and the viewer clock is a labelled presentation value),
-#   C = CB2[0..2], g = CB2[3]; APIs 5 and 6 read one image. amp = CB0 dword 115 (labelled presentation value, as bright_glow).
+#   t = CB0[99], C = CB2[0..2], g = CB2[3]; APIs 5 and 6 read one image. amp = CB0 dword 115.
+# CB0 is the frame block (Veldin capture: every draw of a frame binds a copy with the same dwords 99, 107 and 115). Over 21
+# consecutive captured frames t advances by the frame time in seconds (30 Hz steps), c is a fresh value in [0, 1) each frame
+# (0.018 to 0.965, uncorrelated: the bolts flicker per frame) and amp is 0.01 in every frame. The static t = 0 and c = 0, the
+# viewer's per-frame c (a hash of the 30 Hz frame index, generator unknown) and amp = 0.5 (as bright_glow; 0.01 is the Veldin
+# value, Victor's arena is not captured) are labelled presentation values.
 ION_TUBES_GRAPH_SHA256 = '8cdc2c05c2e934ecc56e6765992ee8734ada8af530dc9d42c1265578ff21b901'
 ION_TUBES_SLOTS = (0x49A7866B4AC18E9F, 0x49A7866B39DBF715)
 ION_TUBES_POWER_KEY = 0xEC98DCA7
 ION_TUBES_CONSTANTS = dict(amplitude=0.5, amplitude_input='CB0 dword 115', presentation=True, writer='86DDE345',
-    fade=0.0, fade_input='CB0 dword 107',
+    amplitude_captured=0.01, fade=0.0, fade_input='CB0 dword 107', fade_frame_rate=30.0,
     base=(0.0074990298599004745, 0.012286489829421043, 0.019382359459996223),
     rim=(0.030705338343977928, 0.12897680699825287, 0.19647814333438873),
     time=0.0, time_input='CB0 dword 99',
