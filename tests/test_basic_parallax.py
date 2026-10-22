@@ -9,7 +9,7 @@ from rc2016.formats.materials import viewer_graph_rule,_viewer_rule_wins_transla
 from rc2016.shaders.families import graph_parameter_tables
 GRAPH='materialgraph/global/basic_parallax_occlusion/basic_parallax_occlusion.materialgraph'
 SLOTS={'_c':0x49A7866BABDAD780,'_g':0x49A7866B1576D848,'_n':0x49A7866B7AE34E7A,'_parallax_height':0x49A7866BB521DFCB}
-ARCHIVE = Path(__file__).resolve().parents[1] / 'Research' / '2026-10-22_moved-from-PS4-models-Animation-pipeline-Research'
+ARCHIVE = Path(__file__).resolve().parents[1] / 'Research' / '2026-10-22_from-PS4-animation-pipeline'
 
 class RouteTests(unittest.TestCase):
  def test_explicit_exceptional_parameter_policy(self):

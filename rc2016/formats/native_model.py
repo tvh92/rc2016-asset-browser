@@ -47,7 +47,7 @@ SKIN_BATCH_STRIDE = 16
 # bounds and UV range) as the unflagged Metropolis dome, flagged and unflagged meshes share one
 # vertex buffer in the Kalebo/Pokitaru domes, and stored normals match face normals (median |dot|
 # 1.000). Its render meaning (likely sky/draw-at-infinity) is not decoded; the raw flags are kept.
-# Evidence: Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/levels/README.md (Skybox), Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/corpus/CorpusPreflight/Flag0020/README.md.
+# Evidence: Research/2026-10-22_from-PS4-animation-pipeline/levels/README.md (Skybox), Research/2026-10-22_from-PS4-animation-pipeline/corpus/CorpusPreflight/Flag0020/README.md.
 SUPPORTED_MESH_FLAG_MASK = 0x00F1
 
 
@@ -59,7 +59,7 @@ def _unorm_1010102_vector(value, label):
     """Decode a direct-PS4 10:10:10:2 UNORM word to a signed unit vector.
 
     The game's compiled vertex shader (shadPS4 cache module 0x59bb3ae4, see
-    Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/decodes/NativeTranslators/VertexInput20261006/README.md) fetches the +8
+    Research/2026-10-22_from-PS4-animation-pipeline/decodes/NativeTranslators/VertexInput20261006/README.md) fetches the +8
     and +12 words of the 16-byte vertex record as three 10-bit UNORM fields
     (u/1023) plus a 2-bit field, then forms 2*x-1 per component. The 2-bit
     field is unused for these vectors and is retained only in the raw word.

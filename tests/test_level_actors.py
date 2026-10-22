@@ -9,7 +9,7 @@ from rc2016.levels import actor_format as af
 from rc2016.formats.container import game_crc32
 
 
-ARCHIVE = Path(__file__).resolve().parents[1] / 'Research' / '2026-10-22_moved-from-PS4-models-Animation-pipeline-Research'
+ARCHIVE = Path(__file__).resolve().parents[1] / 'Research' / '2026-10-22_from-PS4-animation-pipeline'
 def container(bodies, strings):
     base = 16 + 12 * len(bodies)
     pool, offsets = bytearray(), {}

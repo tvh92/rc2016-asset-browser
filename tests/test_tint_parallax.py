@@ -5,7 +5,7 @@ from unittest.mock import patch
 from rc2016.viewer import textures as tp
 from tests.test_viewer_textures import FakeArchive,dat1,slot_rows
 GRAPH='materialgraph/environment/global/gbl_color_tint_01/jn_color_tint_detail_parallax.materialgraph'
-ARCHIVE = Path(__file__).resolve().parents[1] / 'Research' / '2026-10-22_moved-from-PS4-models-Animation-pipeline-Research'
+ARCHIVE = Path(__file__).resolve().parents[1] / 'Research' / '2026-10-22_from-PS4-animation-pipeline'
 ROOT=ARCHIVE/'decodes/Materials/ColorTintVariants'
 class TintParallaxTests(unittest.TestCase):
  def test_exact_rule_and_misleading_texture_names(self):

@@ -6,7 +6,7 @@ from __future__ import annotations
 import hashlib, json, math, os, struct, unittest
 from pathlib import Path
 from unittest.mock import patch
-ARCHIVE = Path(__file__).resolve().parents[1] / 'Research' / '2026-10-22_moved-from-PS4-models-Animation-pipeline-Research'
+ARCHIVE = Path(__file__).resolve().parents[1] / 'Research' / '2026-10-22_from-PS4-animation-pipeline'
 RESEARCH = Path(os.environ['RC2016_RESEARCH']) if os.environ.get('RC2016_RESEARCH') else None
 HERE = ARCHIVE / 'decodes/Materials/TwoColorGlossMetal'
 from rc2016.formats.materials import extract_material_parameters, viewer_graph_rule

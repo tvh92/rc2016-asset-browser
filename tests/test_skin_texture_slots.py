@@ -11,7 +11,7 @@ from rc2016.viewer import textures as tp
 from rc2016.shaders.families import FAMILY_REGISTRY, SKIN_TEXTURE_SLOTS
 
 
-ARCHIVE = Path(__file__).resolve().parents[1] / 'Research' / '2026-10-22_moved-from-PS4-models-Animation-pipeline-Research'
+ARCHIVE = Path(__file__).resolve().parents[1] / 'Research' / '2026-10-22_from-PS4-animation-pipeline'
 class SkinSlotTests(unittest.TestCase):
     GRAPH = 'materialgraph/global/basic_skin/basic_skin.materialgraph'
 
