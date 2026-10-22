@@ -24,6 +24,8 @@ Evidence and limits:
   level share it, and the lit level gets a visual ``DIFFUSE_LIGHT_SCALE`` instead), light-grid
   irradiance, per-region probe selection and occlusion of the sky term. This is a review preview, not
   game lighting.
+- A level with no reflection capture but a lightgrid (Aridia) takes its ambient and specular bands from the
+  level-average grid light instead (``grid_environment``); inferred, see docs/levels.md.
 - The research pipeline's ``novalis`` source uses a different probe (``NOVALIS_PROBE``, about 25 times
   dimmer); the two are not interchangeable.
 """
@@ -201,15 +203,107 @@ def environment_from_faces(faces, ray_native, sun_rgb, exposure_stops):
                 sun=np.array(sun_rgb, np.float32), strength=1.0, exposure=float(exposure_stops))
 
 
-def level_environment(archive, sky, exposure_stops=None, diffuse_scale=None):
+def grid_mean_irradiance(grid):
+    """Level-average lightgrid irradiance as a linear function of the normal: (k0 (3,), k (3, 3), cells), with
+    ``E_c(n) = k0[c] + k[c] . n`` in native Y-up space and grid units, averaged over the valid cells (validity
+    byte at least 128). The per-cell light ``lerp(B, A, 0.5 + 0.5 d.n) + S (0.5 + 0.5 n.y) C``
+    (``rc2016.levels.lightgrid.cell_light``) is linear in ``n``, so its mean is exact in this form."""
+    import numpy as np
+    from rc2016.levels.lightgrid import SKY_TERM_SCALE, decode_cells
+    total_k0, total_k, count = np.zeros(3), np.zeros((3, 3)), 0
+    for tile in grid.cells:
+        fields = decode_cells(tile)
+        valid = fields['w'] >= 0.5
+        if not valid.any():
+            continue
+        a, b, c, d = (fields[name][valid].astype(np.float64) for name in ('A', 'B', 'C', 'd'))
+        total_k0 += (b + 0.5 * (a - b)).sum(axis=0) + 0.5 * SKY_TERM_SCALE * c.sum(axis=0)
+        total_k += 0.5 * np.einsum('nc,ni->ci', a - b, d)
+        total_k[:, 1] += 0.5 * SKY_TERM_SCALE * c.sum(axis=0)
+        count += int(valid.sum())
+    if not count:
+        raise ValueError('the lightgrid has no valid cells')
+    return (total_k0 / count).astype(np.float32), (total_k / count).astype(np.float32), count
+
+
+def grid_environment_maps(k0, k, diffuse_scale, size=LATLONG_SIZE):
+    """Lighting maps (SH ambient, specular bands) of the level-average lightgrid light ``E(n) = k0 + k . n``.
+
+    The SH holds E itself in viewer ambient units (grid units times ``AMBIENT_SCALE``, the factor the lightgrid
+    shader path applies). The bands hold the radiance of a sky with that irradiance, ``E / (pi * diffuse_scale)``
+    in probe units, so a specular term reads the grid's colour and brightness where the level has no capture.
+    Directions follow ``latlong``: Blender (x, y, z) is native (x, z, -y)."""
+    import numpy as np
+    from rc2016.levels.lightgrid import AMBIENT_SCALE
+    from rc2016.viewer.environment import equirect_directions, prefiltered_bands
+    k0, k = np.asarray(k0, np.float64) * AMBIENT_SCALE, np.asarray(k, np.float64) * AMBIENT_SCALE
+    kx, ky, kz = k[:, 0], k[:, 1], k[:, 2]
+    sh = np.zeros((9, 3), np.float32)
+    # Blender x = native x, Blender y = -native z, Blender z = native y; the SH basis is [1, y, z, x, ...].
+    sh[0], sh[1], sh[2], sh[3] = k0 / 0.282095, -kz / 0.488603, ky / 0.488603, kx / 0.488603
+    blender = equirect_directions(*size).reshape(-1, 3)
+    native = np.stack([blender[:, 0], blender[:, 2], -blender[:, 1]], axis=1)
+    irradiance = np.maximum(k0 + native @ k.T, 0.0)
+    image = (irradiance / (math.pi * diffuse_scale)).reshape(size[1], size[0], 3).astype(np.float32)
+    return sh, prefiltered_bands(image)
+
+
+def grid_environment(grid, sky, exposure_stops=None, diffuse_scale=None):
+    """Lighting maps for a level with no reflection capture: the ambient and specular bands come from the
+    level-average lightgrid light (``grid_mean_irradiance``), the key light from the atmosphere sun.
+
+    Inferred, not decoded: that the level-average grid light stands in for the missing capture. The probe path's
+    calibrations carry over unchanged (``AMBIENT_SCALE``, ``DIFFUSE_LIGHT_SCALE`` on the sun colour), so the
+    brightness follows the level's authored values; the display exposure is the same fixed one. The viewer
+    uses these maps only where the lightgrid has no valid cell, and for the specular term everywhere. Cached
+    under .cache/environment by the grid's bytes and the version."""
+    import numpy as np
+    if grid is None or not sky:
+        raise ValueError('the level has no reflection probe and no lightgrid')
+    stops = REVIEW_EXPOSURE_STOPS if exposure_stops is None else float(exposure_stops)
+    scale = DIFFUSE_LIGHT_SCALE if diffuse_scale is None else float(diffuse_scale)
+    ray, rgb = tuple(sky['sun_ray']), tuple(sky['sun_rgb'])
+    digest = hashlib.sha256(np.ascontiguousarray(grid.cells).tobytes())
+    key = hashlib.sha256(json.dumps([digest.hexdigest(), ENVIRONMENT_VERSION, scale]).encode()).hexdigest()[:16]
+    cache = CACHE_DIR / f'grid_{key}.npz'
+    maps = None
+    if cache.is_file():
+        try:
+            with np.load(cache) as stored:
+                maps = {name: stored[name] for name in ('sh', 'bands', 'k0', 'k')}
+                cells = int(stored['cells'])
+        except (OSError, ValueError, KeyError):
+            maps = None
+    if maps is None:
+        k0, k, cells = grid_mean_irradiance(grid)
+        sh, bands = grid_environment_maps(k0, k, scale)
+        maps = dict(sh=sh, bands=bands, k0=k0, k=k)
+        try:
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            temporary = cache.with_suffix('.tmp.npz')
+            np.savez(temporary, cells=cells, **maps)
+            temporary.replace(cache)
+        except OSError:
+            pass
+    maps['sun_direction'] = np.array(sun_direction_blender(ray), np.float32)
+    maps['sun'] = (np.array(rgb, np.float32) * scale).astype(np.float32)
+    maps.update(strength=1.0, exposure=stops, atmosphere=sky['atmosphere'], sun_rgb=list(rgb), diffuse_scale=scale,
+                probe=None, source='lightgrid', grid_cells=cells, grid_mean_irradiance=[float(x) for x in maps['k0']])
+    return maps
+
+
+def level_environment(archive, sky, exposure_stops=None, diffuse_scale=None, lightgrid=None):
     """Lighting maps for a ``level_sky`` result: reflection probe ambient plus the atmosphere sun.
 
     ``diffuse_scale`` (default ``DIFFUSE_LIGHT_SCALE``) multiplies the SH irradiance and the sun colour
-    after the cache, so the cached maps stay in probe units.
+    after the cache, so the cached maps stay in probe units. A level whose sky names no reflection probe
+    takes the maps of ``grid_environment`` from ``lightgrid`` (a ``LightGrid``) when one is given.
 
-    Raises ValueError when the sky names no single reflection probe or the cube fails the seam check.
-    Cached under .cache/environment by the probe's hash, the sun and the version."""
+    Raises ValueError when the sky names no single reflection probe (and no lightgrid is given) or the cube
+    fails the seam check. Cached under .cache/environment by the probe's hash, the sun and the version."""
     import numpy as np
+    if sky and not sky.get('reflection') and lightgrid is not None:
+        return grid_environment(lightgrid, sky, exposure_stops, diffuse_scale)
     if not sky or not sky.get('reflection'):
         raise ValueError('the level has no atmosphere with exactly one reflection probe')
     stops = REVIEW_EXPOSURE_STOPS if exposure_stops is None else float(exposure_stops)
@@ -245,5 +339,6 @@ def level_environment(archive, sky, exposure_stops=None, diffuse_scale=None):
     return maps
 
 
-__all__ = ['environment_from_faces', 'face_direction', 'fill_unsupported', 'latlong', 'level_environment', 'probe_faces',
-           'sample_cube', 'seam_ratio', 'sun_direction_blender']
+__all__ = ['environment_from_faces', 'face_direction', 'fill_unsupported', 'grid_environment', 'grid_environment_maps',
+           'grid_mean_irradiance', 'latlong', 'level_environment', 'probe_faces', 'sample_cube', 'seam_ratio',
+           'sun_direction_blender']

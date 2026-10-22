@@ -151,5 +151,73 @@ class LevelEnvironmentTests(unittest.TestCase):
                 pl.level_environment(None, self.sky)
 
 
+
+ONE = 960 | (960 << 11) | (480 << 22)   # R11G11B10_FLOAT word of (1, 1, 1)
+
+
+def vertical_grid(valid=255):
+    """One lightgrid tile whose cells hold A = 1 facing native up (d = +Y), B = C = 0 (so E(n) = 0.5 + 0.5 n.y)."""
+    from rc2016.levels.lightgrid import pack_tiles
+    cells = np.zeros((1, 4096, 24), np.uint8)
+    words = cells.view('<u4').reshape(1, 4096, 6)
+    words[..., 0] = 128 | (255 << 8) | (128 << 16)
+    words[..., 1] = ONE
+    words[..., 4] = 128 | (128 << 8) | (128 << 16) | (valid << 24)
+    return pack_tiles(cells, [[8, 8, 8]])
+
+
+class GridEnvironmentTests(unittest.TestCase):
+    """A level with no reflection capture takes its ambient and specular from the level-average lightgrid."""
+    sky = dict(atmosphere='atmosphere/atm_x/atm_x.atmosphere', reflection=None, sun_ray=(0.0, -1.0, 0.0), sun_rgb=(0.03, 0.02, 0.05))
+
+    def test_mean_irradiance_is_the_linear_function_of_the_cells(self):
+        k0, k, cells = pl.grid_mean_irradiance(vertical_grid())
+        self.assertEqual(cells, 4096)
+        np.testing.assert_allclose(k0, 0.5, atol=0.01)
+        np.testing.assert_allclose(k[:, 1], 0.5, atol=0.01)
+        np.testing.assert_allclose(k[:, [0, 2]], 0.0, atol=0.01)
+
+    def test_invalid_cells_are_left_out(self):
+        with self.assertRaises(ValueError):
+            pl.grid_mean_irradiance(vertical_grid(valid=0))
+
+    def test_sh_holds_the_grid_irradiance_in_ambient_units(self):
+        from rc2016.levels.lightgrid import AMBIENT_SCALE
+        k0, k, _cells = pl.grid_mean_irradiance(vertical_grid())
+        sh, bands = pl.grid_environment_maps(k0, k, pl.DIFFUSE_LIGHT_SCALE)
+        # native up is Blender +Z, native +X is Blender +X, native +Z is Blender -Y
+        np.testing.assert_allclose(irradiance(sh, (0, 0, 1)), AMBIENT_SCALE, rtol=0.02)
+        np.testing.assert_allclose(irradiance(sh, (0, 0, -1)), 0.0, atol=0.02 * AMBIENT_SCALE)
+        np.testing.assert_allclose(irradiance(sh, (1, 0, 0)), 0.5 * AMBIENT_SCALE, rtol=0.02)
+        np.testing.assert_allclose(irradiance(sh, (0, -1, 0)), 0.5 * AMBIENT_SCALE, rtol=0.02)
+        self.assertEqual(bands.shape, (384, 128, 3))
+        self.assertTrue(np.isfinite(bands).all())
+
+    def test_level_environment_without_a_probe_uses_the_grid_and_caches(self):
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(pl, 'CACHE_DIR', Path(folder)), \
+                mock.patch.object(pl, 'grid_mean_irradiance', wraps=pl.grid_mean_irradiance) as mean:
+            first = pl.level_environment(None, self.sky, lightgrid=vertical_grid())
+            second = pl.level_environment(None, self.sky, lightgrid=vertical_grid())
+            self.assertEqual(mean.call_count, 1)
+            self.assertEqual(len(list(Path(folder).glob('grid_*.npz'))), 1)
+        for maps in (first, second):
+            self.assertIsNone(maps['probe'])
+            self.assertEqual(maps['source'], 'lightgrid')
+            self.assertEqual(maps['sun_rgb'], [0.03, 0.02, 0.05])
+            np.testing.assert_allclose(maps['sun'], np.array([0.03, 0.02, 0.05]) * pl.DIFFUSE_LIGHT_SCALE, rtol=1e-6)
+            np.testing.assert_allclose(maps['sun_direction'], (0.0, 0.0, 1.0), atol=1e-6)
+            self.assertEqual(maps['exposure'], pl.REVIEW_EXPOSURE_STOPS)
+        np.testing.assert_array_equal(first['sh'], second['sh'])
+
+    def test_a_probe_still_wins_and_no_probe_without_a_grid_raises(self):
+        with self.assertRaises(ValueError):
+            pl.level_environment(None, self.sky)
+        with self.assertRaises(ValueError):
+            pl.level_environment(None, None, lightgrid=vertical_grid())
+        with_probe = dict(self.sky, reflection='textures/atmosphere/volumereflections/0x1/reflection.texture')
+        with mock.patch.object(pl, 'probe_faces', side_effect=RuntimeError('probe path taken')):
+            with self.assertRaises(RuntimeError):
+                pl.level_environment(None, with_probe, lightgrid=vertical_grid())
+
 if __name__ == '__main__':
     unittest.main()

@@ -515,7 +515,8 @@ vec3 puddleShade(vec3 G, vec3 V, vec3 c, vec2 g) {
     vec3 S=ggx(N,V,L1,F0,F90,aa)*C1+ggx(N,V,L2,F0,F90,aa)*C2;
     S+=envSpecular(N,V,F0,F90,aa,E);
 #endif
-    S=clamp(mix(S,F0*E,uPuddle3.x),0.0,1.0); // probe opacity=0, instance fade=0
+    // probe opacity=0, instance fade=0. The sludge's parameter 12 is 75.0, a different quantity from the DB75867B probe mix, so it has no probe term.
+    S=clamp(sludge?S:mix(S,F0*E,uPuddle3.x),0.0,1.0);
     sceneCaptureNormal=N;return uLightingEnabled ? S+D*Dl : D; // unlit inspection; same source surface
 }
 void main() {
