@@ -9,6 +9,7 @@ from rc2016.levels import actor_format as af
 from rc2016.formats.container import game_crc32
 
 
+ARCHIVE = Path(__file__).resolve().parents[1] / 'Research' / '2026-10-22_moved-from-PS4-models-Animation-pipeline-Research'
 def container(bodies, strings):
     base = 16 + 12 * len(bodies)
     pool, offsets = bytearray(), {}
@@ -182,14 +183,13 @@ class ActorCorpusTests(unittest.TestCase):
     def test_recorded_corpus_and_live_airlock_control(self):
         from rc2016.research.source import Corpus
         from rc2016.levels.scene import asset_bytes
-        root = Path(os.environ['RC2016_RESEARCH'])
-        report = root / 'Animation/pipeline/Research/Levels/Actors/out/corpus_validation.json'
+        report = ARCHIVE / 'levels/Actors/out/corpus_validation.json'
         if not report.is_file():
             self.skipTest('actor corpus evidence not available')
         r = json.loads(report.read_text(encoding='utf-8'))
         self.assertEqual(r['invariant_failures'], [])
         self.assertEqual(r['archive_errors'], {})
-        with Corpus(r['root'], root / 'Animation/pipeline/Research/Levels/Actors/out', extensions=('.zone',)).opened() as corpus:
+        with Corpus(r['root'], ARCHIVE / 'levels/Actors/out', extensions=('.zone',)).opened() as corpus:
             zone_path = 'levels/nebula/openarea/openworld/default_region/gp_base.zone'
             data = asset_bytes(corpus.archive, zone_path)
             actors = af.decode_zone_actors(data)['actors']

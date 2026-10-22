@@ -7,7 +7,8 @@ from rc2016.viewer import textures as tp
 from rc2016.viewer.loader import mesh_payload
 
 # Game source assets from the research workspace (RC2016_RESEARCH); they are not in git.
-MATERIALS = Path(os.environ.get('RC2016_RESEARCH', 'missing')) / 'Animation/pipeline/Research/Materials'
+ARCHIVE = Path(__file__).resolve().parents[1] / 'Research' / '2026-10-22_moved-from-PS4-models-Animation-pipeline-Research'
+MATERIALS = ARCHIVE / 'decodes/Materials'
 
 
 class FakeArchive:

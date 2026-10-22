@@ -96,7 +96,7 @@ def family(name, kind):
 
 
 # Default when FULL and SSC0 both fit the inverse binds but diverge on animated scale and
-# no hash-bound profile chooses. See Research/AnimationCoverage/Inheritance/SSC0Generalization.
+# no hash-bound profile chooses. See Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/animation/AnimationCoverage/Inheritance/SSC0Generalization.
 SSC0_DEFAULT_EVIDENCE = (
     'Engine reference-pose builder (eboot 0x193a410) tests joint-record byte +6 bit 0 and folds the '
     'parent local scale into only those joints, so the runtime compensates parent scale for bit-0 '

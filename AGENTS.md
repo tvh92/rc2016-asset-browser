@@ -1,6 +1,6 @@
 # R&C 2016 Asset Browser — agent guide
 
-A Windows desktop tool that reads the Ratchet & Clank (PS4, 2016) game archive directly: an asset browser with an interactive 3D model, level and Flash UI viewer, plus exporters (glTF/GLB/OBJ, FBX/USD/.blend through Blender, and a validated research Blender pipeline). The code is the Python package `rc2016/`. Its history and evidence live in a private research workspace that is not part of this repository.
+A Windows desktop tool that reads the Ratchet & Clank (PS4, 2016) game archive directly: an asset browser with an interactive 3D model, level and Flash UI viewer, plus exporters (glTF/GLB/OBJ, FBX/USD/.blend through Blender, and a validated research Blender pipeline). The code is the Python package `rc2016/`. Its history and evidence live in the local-only `Research/` folder inside this checkout. It is gitignored and never committed; the index and sorting rules are in [Research/research.md](Research/research.md).
 
 ## Layout
 
@@ -25,7 +25,7 @@ Read the doc for the subsystem before changing it: [viewer](docs/viewer.md), [le
 
 - Treat agent usage as limited: reason carefully about the uncertainty that matters, reuse validated mappings and scripts, prefer targeted inspection and deterministic checks over long trial loops, diagnose a failure from its log before retrying, and stop once the result is correct and verified.
 - Never add game data to the repository: no extracted assets, `.model`/`.texture`/`.material` files, DDS or PNG exports, renders, `.blend` outputs, reports or logs. The repository holds code, small configuration/profile data, docs and the CC0 HDRI.
-- Paths such as `Other models/...`, `Research/...` or `*_DECODE.md` in code comments and in recorded evidence strings cite the private research notes. They are provenance, not files in this repository; do not link them from docs.
+- Paths such as `Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/...`, `decodes/...` or `*_DECODE.md` in code comments and recorded evidence strings cite notes inside the local `Research/` folder. They are provenance, not files in git; do not link them from tracked docs. Full layout: [Research/research.md](Research/research.md).
 - Never present an inferred shader or lighting value as decoded game data. Keep unknown parameters, runtime tints, time-driven terms and VFX as visible limitations.
 - Runtime output goes to the user's output root, caches to `.cache/` (ignored), settings to `%APPDATA%/RC2016 Asset Browser/`. Nothing writes into the source folders.
 - Scripts, smoke tests and manual runs must pass an explicit temporary `--output-root` (or `APPDATA`) under the session scratchpad. Never rely on the default output root, and never let a check write into the repository.
@@ -59,7 +59,7 @@ Run from the repository root. Before committing, also run the lint check (instal
 python -m ruff check rc2016 tests
 ```
 
-`ruff.toml` selects the undefined-name rule (F821), which catches a missing import or a name lost in a code splice before anything runs. It must report no errors. Headless GUI smoke tests (Tkinter, background workers) must run under a timeout, must not set the `'source'` setting (it starts a scan that can stall the run), and must use a temporary `APPDATA`. Tests that need game files read the `RC2016_RESEARCH` environment variable (the private research workspace) and skip without it. For changes to decoding, rendering, export or the pipeline, also check against the real game archive: an archive scan (`python rc2016/pipeline/run.py --extracted-root <game> --output-root <new folder> --blender <blender.exe> --list-models-json <file>`), the affected models in the viewer or exporter, and for pipeline changes a research build that passes reopen validation. Blender-side modules (`builder.py`, `game_shader.py`, weapon merges) only import inside Blender.
+`ruff.toml` selects the undefined-name rule (F821), which catches a missing import or a name lost in a code splice before anything runs. It must report no errors. Headless GUI smoke tests (Tkinter, background workers) must run under a timeout, must not set the `'source'` setting (it starts a scan that can stall the run), and must use a temporary `APPDATA`. Tests that need game files read the `RC2016_RESEARCH` environment variable (the game archive folder, `CUSA01073`) and skip without it; tests that need saved evidence read `Research/` relative to the checkout and skip when it is absent. For changes to decoding, rendering, export or the pipeline, also check against the real game archive: an archive scan (`python rc2016/pipeline/run.py --extracted-root <game> --output-root <new folder> --blender <blender.exe> --list-models-json <file>`), the affected models in the viewer or exporter, and for pipeline changes a research build that passes reopen validation. Blender-side modules (`builder.py`, `game_shader.py`, weapon merges) only import inside Blender.
 
 ## Git and GitHub
 

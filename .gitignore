@@ -13,3 +13,6 @@ __pycache__/
 # Local shortcuts and Blender backups
 *.lnk
 *.blend1
+
+# Local-only research archive (game-derived evidence, captures, binaries); see Research/research.md
+/Research/

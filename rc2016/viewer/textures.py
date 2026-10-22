@@ -90,7 +90,7 @@ SKIN_DEFAULTS = dict(cap=0.5, gloss_fresnel=0.5, spec_fresnel=1.4, exponent=0.5,
                      gloss2=1.0, spec2=1.0)
 SKIN_DETAIL_SLOT, SKIN_DETAIL_BLEND_KEY, SKIN_DETAIL_UV_KEY = 0x49A7866B7DF1B1FC, 0x59011FBD, 0xB7ABB64A
 SKIN_FRESNEL_TINT = (0.745404183864593505859375, 0.644479691982269287109375, 0.60382735729217529296875)
-# mo_gbl_color_tint_01 writer BE8C3EE0 (Animation/pipeline/Research/Materials/ColorTint01/COLOR_TINT_DECODE.md)
+# mo_gbl_color_tint_01 writer BE8C3EE0 (Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/decodes/Materials/ColorTint01/COLOR_TINT_DECODE.md)
 TINT_KEYS = dict(spec_tint=0x6B591974, mask_b=0x8ED5C5E8, colour_a=0xA815C29F, colour_b=0x311C9325, power_a=0x9E7A020A,
                  weight_b=0x482ECFEB, weight_a=0xD1279E51, power_b=0x077353B0)
 TINT_G_SWITCH = 0x7107A2D8   # < 0.5: grey _g (R gloss, G spec); >= 0.5: coloured _g (rgb F0, gloss a^2)
@@ -204,7 +204,7 @@ GRAPH_RULES = (
     # grey F0/gloss and an independent CB2[0..2] * CB2[3] additive colour term.
     ('materialgraph/global/basic_flat_color/basic_flat_color.',
      dict(flat_surface='basic_flat_color', _graph_sha256=BASIC_FLAT_COLOR_SHA256)),
-    # Cached SPIR-V E08357DC; Materials/ZaBasicNormalGloss/ZA_BASIC_NORMAL_GLOSS_DECODE.md.
+    # Cached SPIR-V E08357DC; Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/decodes/Materials/ZaBasicNormalGloss/ZA_BASIC_NORMAL_GLOSS_DECODE.md.
     ('required/materials/za_basic_normal_gloss.',
      dict(g_mode='grey', self_lit_key=None, za_fresnel_key=0x4D385B45)),
     # Writers 9AAD640B / 567FE897 and 0E6CC87B (see SKIN_KEYS); the other graphs of the folder keep the prefix reading.
@@ -225,7 +225,7 @@ GRAPH_RULES = (
     ('required/materials/basic_normal_gloss_aniso.', dict(g_mode='grey', self_lit_key=None, alpha_cut=True)),
     # Other basic_normal_gloss* graphs (emissive, fresnel, ...) have undecoded writers: grey _g by name
     # only (as before 2026-10-08), self-lit key from the graph's own table.
-    # Six independently traced writers; Materials/BasicNormalGlossVariants/BASIC_NORMAL_GLOSS_VARIANTS_DECODE.md.
+    # Six independently traced writers; Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/decodes/Materials/BasicNormalGlossVariants/BASIC_NORMAL_GLOSS_VARIANTS_DECODE.md.
     ('required/materials/basic_normal_gloss_emissive.',
      dict(g_mode='grey', self_lit='g_blue', self_lit_key=0x66EFA55B, bng=1)),
     ('required/materials/basic_normal_gloss_emissive_detail.',
@@ -283,7 +283,7 @@ GRAPH_RULES = (
     ('materialgraph/global/basic_colored_spec_emmisive_in_c_alpha/blarg_saucer_colorpick.',
      dict(g_mode='grey', self_lit='g_blue', self_lit_key=0x06F19114, pick=(0x40520184, 0xD257B634, 0x124A2F94))),
     # Cached SPIR-V 63EEBF51 (ID in the graph's OrbShdr): coloured F0 = P*_g.rgb, gloss = sqrt(Q*_g.a^2), no self-lit;
-    # Materials/BasicColoredSpec/BASIC_COLORED_SPEC_DECODE.md. Exact graph only; 1BC3FDDF/F8FBB38F are undecoded.
+    # Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/decodes/Materials/BasicColoredSpec/BASIC_COLORED_SPEC_DECODE.md. Exact graph only; 1BC3FDDF/F8FBB38F are undecoded.
     ('materialgraph/global/basic_colored_spec/basic_colored_spec.',
      dict(g_mode='colored', self_lit_key=None, linear_z=True)),   # 63EEBF51 normal z = 1 - x*x - y*y (no square root)
     # basic_colored_spec_emmisive_in_c_alpha_swap, pass-0 writer 63278DBA (pass 1 is D1DDEB45, the same surface without the
@@ -306,7 +306,7 @@ GRAPH_RULES = (
     # character_glass_02: writer 4DF1D438 (table-0 key set, rim colour/multiplier/exponent/cap present). Captured on
     # veh_micron_ship_glass (flags 0x00200839); module 10182 supplies the flag gates (0x20 diffuse x L, 0x40 specular A).
     # The normal map is the _n slot (fs_img2) at (U * attr0.x, V * attr0.y). Table 1 (7445DF75, no rim keys) is not selected.
-    # Decode: Animation/pipeline/Research/Materials/NoRuleDecodes/character_glass_02/decode.md; flag gates re-read here.
+    # Decode: Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/decodes/Materials/NoRuleDecodes/character_glass_02/decode.md; flag gates re-read here.
     ('materialgraph/global/basic_glass/character_glass_02.',
      dict(forward='glass_cg02', writer='4DF1D438', slots={'_n': 0x49A7866B7AE34E7A}, params=(
          ('rim_colour', 0xC483F1CB, 3), ('gloss', 0x24F4CA4C, 1), ('body', 0x7C456482, 3), ('tint_scale', 0xEF9CE5DD, 1),
@@ -316,7 +316,7 @@ GRAPH_RULES = (
     # basic_glass writer 4FC5703F (table 0), captured on pri_amb_hallway_light_glass_01 (event 5540, 268 fragments matched,
     # median colour error 0.03%). alpha = sat(P3 + rim), rim = sat(4 (1 - N.V)^P9); F0 = sat(T / luma(T)) (P8 + rim^10).
     # Table 1 (81FA6EFC, alpha sat(attr0.w), no rim keys) is the sibling program; no draw binds it, so it is not selected.
-    # Decode: Animation/pipeline/Research/Materials/NoRuleDecodes/basic_glass/decode.md (passes 4 to 6).
+    # Decode: Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/decodes/Materials/NoRuleDecodes/basic_glass/decode.md (passes 4 to 6).
     ('materialgraph/global/basic_glass/basic_glass.',
      dict(forward='glass_basic', writer='4FC5703F', params=(
          ('tint', 0x4B4DAB19, 3), ('rim_bias', 0x42170E5E, 1), ('body', 0x7C456482, 3), ('gloss', 0x24F4CA4C, 1),
@@ -346,10 +346,10 @@ GRAPH_RULES = (
      dict(forward='glass_patterned', slots={'_pick': 0x628AD5A840ED6C83, '_n': 0x49A7866B7AE34E7A}, params=(
          ('tiling', 0x375AF9AC, 1), ('normal_strength', 0xCC7457CD, 1), ('f0', 0x223DC13C, 1),
          ('gloss', 0xD2891F48, 1), ('pick_u', 0x124A2F94, 1), ('rim_bias', 0xAF7D5E6B, 1), ('rim_exp', 0x6D6903B7, 1)))),
-    # AAED778C at t=0; Materials/ArchEmissiveSequence/ARCH_EMISSIVE_SEQUENCE_DECODE.md.
+    # AAED778C at t=0; Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/decodes/Materials/ArchEmissiveSequence/ARCH_EMISSIVE_SEQUENCE_DECODE.md.
     ('materialgraph/environment/global/architecture/gbl_arch_emissive_sequence_01/mo_gbl_arch_emissive_sequence_01.',
      dict(g_mode='grey', self_lit_key=None, arch_sequence=True)),
-    # EB1AC2CD bounded deferred writer; Materials/VehicleRandomColor/VEHICLE_RANDOM_COLOR_DECODE.md.
+    # EB1AC2CD bounded deferred writer; Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/decodes/Materials/VehicleRandomColor/VEHICLE_RANDOM_COLOR_DECODE.md.
     ('materialgraph/vehicle/mo_veh_random_color_01/mo_veh_random_color_01.',
      dict(g_mode='vehicle', self_lit_key=None, vehicle=True)),
     # ColorTintVariants exact writers; complete tint-POM writer 4E4D7894.
@@ -363,24 +363,24 @@ GRAPH_RULES = (
      dict(g_mode='grey', self_lit_key=None, tint=True, tint_variant='world')),
     ('materialgraph/environment/global/gbl_color_tint_01/jn_gbl_color_tint_01_world_detail_normal.',
      dict(g_mode='grey', self_lit_key=None, tint=True, tint_variant='world_normal')),
-    # 5FADAD33 / cached E80EA4C1; Materials/ParallaxOcclusion/PARALLAX_OCCLUSION_DECODE.md.
+    # 5FADAD33 / cached E80EA4C1; Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/decodes/Materials/ParallaxOcclusion/PARALLAX_OCCLUSION_DECODE.md.
     # Native 5FADAD33 height-alpha march/intersection and seven-sample albedo shadows.
     ('materialgraph/global/basic_parallax_occlusion/basic_parallax_occlusion.',
      dict(g_mode='grey', self_lit_key=None, parallax_outputs=True, parallax=True)),
-    # 2685144F cached forward material kernel and CA81B14F deferred writer; Materials/GlowMask.
+    # 2685144F cached forward material kernel and CA81B14F deferred writer; Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/decodes/Materials/GlowMask.
     ('required/materials/jn_basic_normal_gloss_glow_mask.',
      dict(g_mode='grey', self_lit='glow_mask', self_lit_key=0x06F19114, glow=1)),
     ('required/materials/jn_basic_normal_gloss_glow_mask_02.',
      dict(g_mode='grey', self_lit='glow_mask02', self_lit_key=0x06F19114, glow=2)),
 
-    # 886AAC94 resource-table deferred writer; Materials/RockBlend/ROCK_BLEND_DECODE.md.
+    # 886AAC94 resource-table deferred writer; Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/decodes/Materials/RockBlend/ROCK_BLEND_DECODE.md.
     ('materialgraph/environment/global/rock/mo_blend_01/mo_blend_01.',
      dict(g_mode='grey', self_lit_key=None, rock_blend=True)),
     # A3DAA047 deferred writer (same vertex programs as 886AAC94): one breakup colour sample at native
     # world (x, z) / T, layer g/n at U * UV0, no layer colour or tint; RockBlend/ROCK_BLEND_DECODE.md.
     ('materialgraph/environment/global/rock/mo_blend_01/rp_mo_blend_color_breakup_01.',
      dict(g_mode='grey', self_lit_key=None, rock_blend='color_breakup')),
-    # FE32FE79/B01E7CB2 cached deferred outputs; Materials/Foliage/FOLIAGE_DECODE.md.
+    # FE32FE79/B01E7CB2 cached deferred outputs; Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/decodes/Materials/Foliage/FOLIAGE_DECODE.md.
     ('materialgraph/global/basic_foliage/basic_foliage.',
      dict(g_mode='grey', self_lit_key=None, foliage=True, alpha_cut=True)),
     # Tree leaves and shrubs: decoded pass-0 overlay (Novalis 0476D929 / global CDD7CD94),
@@ -398,14 +398,14 @@ GRAPH_RULES = (
     # albedo/specular colours, _c alpha cut-out, ZA-style rim weight. See docs/viewer.md (Hair).
     ('required/materials/hair_newspec_01.',
      dict(g_mode='grey', self_lit_key=None, alpha_cut=True, hair=True)),
-    # Cached forward 8716DC7A at t=0; Materials/StaleSelfLitKeys/STALE_SELF_LIT_KEYS_DECODE.md.
+    # Cached forward 8716DC7A at t=0; Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/decodes/Materials/StaleSelfLitKeys/STALE_SELF_LIT_KEYS_DECODE.md.
     ('materialgraph/environment/nebula/ambient/neb_amb_screen_01/mo_neb_amb_screen_01.',
      dict(self_lit_key=None, screen=True)),
-    # 1012E99D/EC1E7CD3 source forward composition; Materials/TwoColorGlossMetal.
+    # 1012E99D/EC1E7CD3 source forward composition; Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/decodes/Materials/TwoColorGlossMetal.
     # Viewer lights, no SSR/fog, instance opacity 1, close-range normal/AA; no runtime draw join.
     ('materialgraph/global/basic_normal_gloss_metal/basic_normal_two_color_gloss_metal.',
      dict(g_mode='grey', self_lit_key=None, two_color_metal=True)),
-    # DB75867B forward terminal, explicit viewer leaves; Materials/GroundPuddles/GROUND_PUDDLES_DECODE.md.
+    # DB75867B forward terminal, explicit viewer leaves; Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/decodes/Materials/GroundPuddles/GROUND_PUDDLES_DECODE.md.
     ('materialgraph/environment/kalebo/jn_ground_puddles.',
      dict(g_mode='grey', self_lit_key=None, puddles=True)),
     *((path.removesuffix('materialgraph'), dict(lava_surface=True, _graph_sha256=digest))
@@ -425,7 +425,7 @@ GRAPH_RULES = (
     ('materialgraph/visualeffect/environment/pokitaru/unique/pok_uniq_water/',
      dict(forward='water', slots={'_n': 0x49A7866B69E7942C, '_pick': 0x49A7866B0D86F9E5}, params=(
          ('body', 0x1DAF77B8, 3),))),
-    # Forward colour pass 0CD2AAFB rel 12552-12672: white base + red facing glow; Materials/QwarkBulb/README.md.
+    # Forward colour pass 0CD2AAFB rel 12552-12672: white base + red facing glow; Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/decodes/Materials/QwarkBulb/README.md.
     ('materialgraph/character/npc/npc_qwark_robot_bulb/npc_qwark_robot_bulb.',
      dict(self_lit_key=None, facing_glow=True, bright_center_preview=True)),
     # Deferred writer D14A48D7 (material-bound DAG, pass 0): t = (1.001 - sat(N.V))^(0.2 (1 - S)) with the
@@ -465,7 +465,7 @@ GRAPH_RULES = (
 # alpha (basic_foliage FE32FE79/B01E7CB2; the tree graphs' 0476D929/6F0C1A0C), is below the
 # interpolated vertex output attr0.z. CPU static-mesh builder 0x182a9b0 fills record byte 268
 # from material section E1275683 bytes 20/21: min((byte20 + byte21) * float32(1/255), 1)
-# at the no-LOD-fade baseline (writer 0x1841990). Levels/Foliage/README.md: Threshold recovery.
+# at the no-LOD-fade baseline (writer 0x1841990). Research/2026-10-22_moved-from-PS4-models-Animation-pipeline-Research/levels/Foliage/README.md: Threshold recovery.
 # Runtime draw cut/fade and the special flag-8 override are omitted. Missing/truncated state
 # retains the INFERRED half-coverage preview fallback; it is not an engine default.
 FOLIAGE_ALPHA_CUTOFF_FALLBACK = 0.5

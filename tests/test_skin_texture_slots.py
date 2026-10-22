@@ -11,6 +11,7 @@ from rc2016.viewer import textures as tp
 from rc2016.shaders.families import FAMILY_REGISTRY, SKIN_TEXTURE_SLOTS
 
 
+ARCHIVE = Path(__file__).resolve().parents[1] / 'Research' / '2026-10-22_moved-from-PS4-models-Animation-pipeline-Research'
 class SkinSlotTests(unittest.TestCase):
     GRAPH = 'materialgraph/global/basic_skin/basic_skin.materialgraph'
 
@@ -57,13 +58,12 @@ class SkinSlotTests(unittest.TestCase):
     def test_live_pufferfish_model_and_level_material_loaders_agree(self):
         from rc2016.research.source import Corpus
         from rc2016.levels.scene import material_entries
-        research = Path(os.environ['RC2016_RESEARCH'])
-        evidence = research / 'Animation/pipeline/Research/Levels/Actors/out/corpus_validation.json'
+        evidence = ARCHIVE / 'levels/Actors/out/corpus_validation.json'
         if not evidence.is_file():
             self.skipTest('actor source-root receipt unavailable')
         root = json.loads(evidence.read_text())['root']
         material = 'material/character/enemy/enm_sandshark/enm_puffer_fish.material'
-        with Corpus(root, research / 'Animation/pipeline/Research/Levels/Actors/out', extensions=('.zone',)).opened() as c:
+        with Corpus(root, ARCHIVE / 'levels/Actors/out', extensions=('.zone',)).opened() as c:
             got = tp.material_texture_paths(c.archive, material)
             expected = {r: 'textures/character/enemy/enm_pufferfish/enm_pufferfish' + r + '.texture'
                         for r in ('_c', '_g', '_n')}

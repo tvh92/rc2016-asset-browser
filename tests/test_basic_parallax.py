@@ -9,6 +9,8 @@ from rc2016.formats.materials import viewer_graph_rule,_viewer_rule_wins_transla
 from rc2016.shaders.families import graph_parameter_tables
 GRAPH='materialgraph/global/basic_parallax_occlusion/basic_parallax_occlusion.materialgraph'
 SLOTS={'_c':0x49A7866BABDAD780,'_g':0x49A7866B1576D848,'_n':0x49A7866B7AE34E7A,'_parallax_height':0x49A7866BB521DFCB}
+ARCHIVE = Path(__file__).resolve().parents[1] / 'Research' / '2026-10-22_moved-from-PS4-models-Animation-pipeline-Research'
+
 class RouteTests(unittest.TestCase):
  def test_explicit_exceptional_parameter_policy(self):
   from rc2016.viewer.viewport import parallax_preview_parameters_valid
@@ -34,9 +36,8 @@ class RouteTests(unittest.TestCase):
 class SourceTests(unittest.TestCase):
  @classmethod
  def setUpClass(cls):
-  base=os.environ.get('RC2016_RESEARCH')
-  if not base:raise unittest.SkipTest('RC2016_RESEARCH source copies required')
-  cls.here=Path(base)/'Animation/pipeline/Research/Materials/ParallaxOcclusion'
+  cls.here=ARCHIVE/'decodes/Materials/ParallaxOcclusion'
+  if not cls.here.is_dir():raise unittest.SkipTest('local research archive not present')
   manifest=json.loads((cls.here/'source_assets/manifest.json').read_text())['assets']
   records=[];cls.sources=[]
   for row in manifest:
