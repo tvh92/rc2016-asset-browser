@@ -182,6 +182,8 @@ CLANK_ANTENNA_BLINK_RATE = 4.2                    # phase = 4.2 CB0[99]; no per-
 FLAT_SURFACE_GOO = dict(colour_key=0x34392B3C, f0_key=0x17DE448C, gloss_key=GLOSS_SCALE_KEY)
 BASIC_FLAT_COLOR_SHA256 = '6d9bcad5a9dab38dd5988195cc9e87514c08a90c6b8fa899c2d21f3e42c14f95'
 GRASS_BLEND_GRAPH_SHA256 = '3634199da89150f03c56b21d855f83d840e4dd06eeb33b748f8e16df1bd7ba65'
+MUD_BLEND_GRAPH_SHA256 = 'f7cd132b3f0b99144c1551aca88371f1f20c5a96e7c088969e435ad2a7aebc12'
+SLUDGE_PUDDLE_GRAPH_SHA256 = '57149f5756f3b27f2ad704458f30ca6ac7b49c9b52e50698c7877675e3ed1c77'
 CORAL_BLEND_GRAPH_SHA256 = 'b97b38326b95942a3000aa36f591bec1c425366da27605531bc30851a97ecb43'
 # Volume slice order of the coral blend rule (rock_texture_volume on unit 15): the roles are the Blender image roles too.
 CORAL_BLEND_VOLUME_ROLES = ('_coral_n_wavy', '_coral_n_coral', '_coral_c_wavy', '_coral_c_rock', '_coral_g_rock', '_coral_g_sand',
@@ -402,6 +404,15 @@ GRAPH_RULES = (
     # world-planar breakup colours and the two F0/gloss images; Research/decodes/2026-10-22_pokitaru-grass-tile-blend/README.md.
     ('materialgraph/environment/pokitaru/rock/pok_rock_blend_01/rp_pok_grass_blend_01.',
      dict(g_mode='grey', self_lit_key=None, grass_blend=True, _graph_sha256=GRASS_BLEND_GRAPH_SHA256)),
+    # 8A581B9D deferred writer (pass 0): Aridia sand and mud. Mask, squared vertex alpha and sharpness give one weight that
+    # blends the darkened mud colour into the world-planar sand breakup colour and the two F0/gloss images;
+    # Research/decodes/2026-10-22_aridia-ground/README.md.
+    ('materialgraph/environment/pokitaru/rock/pok_rock_blend_01/rp_ari_sand_mud_blend_colorbreak_01.',
+     dict(g_mode='grey', self_lit_key=None, mud_blend=True, _graph_sha256=MUD_BLEND_GRAPH_SHA256)),
+    # CC985D80 forward program (pass 0) of the Aridia sludge: the GroundPuddles material front end with a UV0 x CB2[2] colour
+    # and normal, an unrotated noise coordinate and wet/dry scales on the gloss input and F0; same research folder.
+    ('materialgraph/environment/kalebo/rp_ari_sludge_puddle.',
+     dict(g_mode='grey', self_lit_key=None, puddles='sludge', _graph_sha256=SLUDGE_PUDDLE_GRAPH_SHA256)),
     # 35571F99 deferred writer (pass 0): vertex-paint and cma blend of wavy sand, coral and rock layers (colour, F0/gloss, normal)
     # plus the world-planar caustic term; Research/decodes/2026-10-22_pokitaru-coral-underwater-blend/README.md.
     # Self-lit: the writer encodes 0.2 log2(1 + coral _c.R) with no material multiplier, so K is the constant 1.
@@ -1080,11 +1091,18 @@ def material_texture_paths(archive, material_path: str) -> dict:
         if not all(math.isfinite(x) for x in p) or p[6] == p[0] or p[3] == p[2] or p[6] == 1:
             raise ValueError('Undefined GroundPuddles threshold/parameter')
         result.update(k=0., spec=1., gloss=1., self_lit='none')
-        result['puddles'] = dict(params=p, writer='DB75867B', time=0., time_input='CB0 dword 99',
+        sludge = rule['puddles'] == 'sludge'
+        result['puddles'] = dict(params=p, writer='CC985D80' if sludge else 'DB75867B', time=0., time_input='CB0 dword 99',
             frozen_inputs=dict(origin=(0.,0.,0.), instance_axis_lengths=(1.,1.), fade=0.,
                 normal_scale=2., geometric_aa=1., opacity=1., fog=1., ssr=False, debug=0,
                 light_flags=96, light_multiplier=(1.,1.,1.), probe_opacity=0.,
                 diffuse_specular_environment='viewer rig'), runtime_pass_verified=False)
+        if sludge:
+            # CC985D80 CB2: dw2 colour and normal UV scale (UV0 x dw2, scroll dw10 x CB0[99] is zero at t=0), dw13 scales the gloss
+            # input and dw14 F0 where the ripple weight is 0. The noise coordinate is CB2[15] x (camera - position).xz, unrotated.
+            result['graph_identity'] = dict(path=rule['graph_path'], sha256=rule['graph_sha256'])
+            result['puddles'].update(variant='sludge', uv_scale=value(0xB442E48F, 1.0), dry_gloss=value(0x44742A49, 1.0),
+                dry_f0=value(0x5D18582D, 1.0))
     if rule.get('rock_blend'):
         # 886AAC94 resource table: mask, gA/gB, nA/nB, cA/cB, in bounded source table order.
         # A3DAA047 (color_breakup): mask, gA/gB, nA/nB and one breakup colour (pass contract api 5-10).
@@ -1127,6 +1145,25 @@ def material_texture_paths(archive, material_path: str) -> dict:
         result['grass_blend'] = dict(threshold=value(0x2C23F963, 0.6), uv_scale=value(0x461F69B4, 1.0),
             layer_uv_scale=value(0xD83AB5FE, 1.0), world_tile=value(0xFD70EF49, 10.0),
             world_axes='native x, z', writer='A814EDCF')
+    if rule.get('mud_blend'):
+        # 8A581B9D pass 0, API = 5 + resource index: 5 mask (H), 6 mud F0/gloss (_g), 7 sand grain normal, 8 sand normal,
+        # 9 sand F0/gloss, 10 mud normal (_n), 11 mud colour (graph default, a sludge image), 12 the world-planar sand breakup
+        # colour (_c).
+        instance = texture_slots(data, MATERIAL_SLOT_SECTION)
+        wanted = {'_n': 0x49A7866B58C225CF, '_g': 0x49A7866B7F7F3A98, '_c': 0x49A7866BF9937BC9,
+                  '_mud_h': 0x49A7866B3404C763, '_mud_c': 0x49A7866B15DC21C7, '_mud_g2': 0x49A7866B3554933E,
+                  '_mud_n7': 0x49A7866B7AE34E7A, '_mud_n8': 0x49A7866B44CAA4AD}
+        for role, slot in wanted.items():
+            path = instance.get(slot) or slots.get(slot)
+            if path: result[role] = path
+            else: result.pop(role, None)
+        result.update(spec=1.0, gloss=1.0)
+        result['graph_identity'] = dict(path=rule['graph_path'], sha256=rule['graph_sha256'])
+        result['mud_blend'] = dict(mask_strength=value(0x21C2A812, 0.5), sharpness=value(0xF2634949, 1.0),
+            world_tile=value(0xFD70EF49, 10.0), sand_uv_scale=value(0xB1EE9E1D, 1.0), mud_uv_scale=value(0x7448EACC, 1.0),
+            mud_darken=value(0x4295546E, 0.0), gloss_scale=value(0x1740B4FC, 1.0), f0_scale=value(0x178F50EF, 1.0),
+            f0_bias=value(0x6F0C6E9C, 0.0), grain_uv_scale=value(0xE57867BC, 1.0), sand_normal_uv_scale=value(0xEAFB70CB, 1.0),
+            sand_normal_strength=value(0x75BDFD17, 1.0), world_axes='native x, z', writer='8A581B9D')
     if rule.get('coral_blend'):
         # 35571F99 pass 0, API = 5 + resource index: 5 rock normal (_n), 6 coral colour (_c), 9 coral F0/gloss (_g), 11 wavy and
         # 12 coral normals, 16 wavy and 17 rock colours, 7 and 8 the rock-file and default sand F0/gloss images, 10 the cma
@@ -1915,6 +1952,26 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             entry['_puddle_atlas']=atlas
             entry['puddles']=dict(entry['puddles'], scales=atlas['scales'])
             if not entry.get('_n'): entry['puddles']['writer']='4A6CDAAA'
+        if paths.get('mud_blend'):
+            entry['mud_blend'] = paths['mud_blend']
+            # Mask, mud colour, sand F0/gloss and the two sand normals share the rock volume on unit 15 (five slices, all
+            # the same size: the shader addresses them without per-slice scales).
+            extra = []
+            for role in ('_mud_h', '_mud_c', '_mud_g2', '_mud_n7', '_mud_n8'):
+                path = paths.get(role)
+                if path: cached(archive, cache, path)
+                extra.append(with_pixels(archive, cache, path))
+            if all(extra) and all(entry.get(role) for role in ('_c', '_g', '_n')):
+                try:
+                    volume = rock_texture_volume(extra)
+                    if any(scale != (1.0, 1.0) for scale in volume['scales']):
+                        raise ValueError('mud blend layers differ in size')
+                    entry['_rock_volume'] = volume
+                    entry['mud_blend']['extra_srgb'] = [bool(t.get('srgb')) for t in extra]
+                except ValueError as exc:
+                    entry['mud_blend'] = dict(entry['mud_blend'], unresolved_layers=True, volume_error=str(exc))
+            else:
+                entry['mud_blend'] = dict(entry['mud_blend'], unresolved_layers=True)
         if paths.get('grass_blend'):
             entry['grass_blend'] = paths['grass_blend']
             # Rock colour, tile colour and the second F0/gloss image share the rock volume on unit 15

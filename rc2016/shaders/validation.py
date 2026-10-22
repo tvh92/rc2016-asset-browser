@@ -463,6 +463,9 @@ def _viewer_expected_constants(rule):
                   "metal texture scale": m["texture_scale"], "metal normal strength": m["normal_strength"]})
     if "puddles" in ported:
         e.update({"puddle p%02d" % i: x for i, x in enumerate(terms["puddles"]["params"])})
+        if terms["puddles"].get("variant") == "sludge":
+            e.update({"sludge uv scale": terms["puddles"]["uv_scale"], "sludge dry gloss scale": terms["puddles"]["dry_gloss"],
+                      "sludge dry F0 scale": terms["puddles"]["dry_f0"]})
     if "za_fresnel_power" in ported:
         e["za fresnel power"] = terms["za_fresnel_power"]
     if "rock_blend" in ported:
@@ -476,6 +479,14 @@ def _viewer_expected_constants(rule):
         r = terms["grass_blend"]
         e.update({"grass blend threshold": r["threshold"], "grass blend tile uv scale": r["uv_scale"],
                   "grass blend rock uv scale": r["layer_uv_scale"], "grass blend world tile": r["world_tile"]})
+    if "mud_blend" in ported:
+        r = terms["mud_blend"]
+        e.update({"mud blend sharpness": r["sharpness"], "mud blend mask strength": r["mask_strength"],
+                  "mud blend mud uv scale": r["mud_uv_scale"], "mud blend sand uv scale": r["sand_uv_scale"],
+                  "mud blend world tile": r["world_tile"], "mud blend mud colour scale": 1.0 - r["mud_darken"],
+                  "mud blend gloss scale": r["gloss_scale"], "mud blend grain uv scale": r["grain_uv_scale"],
+                  "mud blend sand normal uv scale": r["sand_normal_uv_scale"], "mud blend sand normal strength": r["sand_normal_strength"],
+                  "mud blend mud F0 factor": r["f0_scale"] * min(1.0, max(0.0, .3 + .3 * r["f0_bias"]))})
     if "coral_blend" in ported:
         r = terms["coral_blend"]
         e.update({"coral blend height width": r["height_width"], "coral blend water top": r["water_top"],
@@ -627,7 +638,11 @@ def _viewer_required(rule, has_n):
         names += ["metal diffuse A", "metal diffuse B", "metal spec A", "metal spec B", "metal power", "metal gloss power",
                   "metal texture scale"] + (["metal normal strength"] if has_n else [])
     if "puddles" in ported:
-        names += ["puddle p%02d" % i for i in (0, 2, 3, 4, 6, 8, 9, 10, 11, 14)] + (["puddle p01", "puddle p07", "puddle p13"] if has_n else [])
+        sludge = terms["puddles"].get("variant") == "sludge"   # CC985D80: the noise coordinate has no rotation (p14)
+        names += ["puddle p%02d" % i for i in (0, 2, 3, 4, 6, 8, 9, 10, 11) + (() if sludge else (14,))]
+        names += ["puddle p01", "puddle p07", "puddle p13"] if has_n else []
+        if sludge:
+            names += ["sludge uv scale", "sludge dry gloss scale", "sludge dry F0 scale"]
         req("_puddle_noise", *(("_puddle_ripple",) if has_n else ()))
     if "za_fresnel_power" in ported:
         names.append("za fresnel power")
@@ -641,6 +656,12 @@ def _viewer_required(rule, has_n):
     if "grass_blend" in ported:
         names += ["grass blend threshold", "grass blend tile uv scale", "grass blend rock uv scale", "grass blend world tile"]
         req("_grass_r", "_grass_g", "_grass_g9")
+    if "mud_blend" in ported:
+        names += ["mud blend sharpness", "mud blend mask strength", "mud blend mud uv scale", "mud blend sand uv scale",
+                  "mud blend world tile", "mud blend mud colour scale", "mud blend gloss scale", "mud blend mud F0 factor"]
+        if has_n:
+            names += ["mud blend grain uv scale", "mud blend sand normal uv scale", "mud blend sand normal strength"]
+        req("_mud_h", "_mud_c", "_mud_g2", *(("_mud_n7", "_mud_n8") if has_n else ()))
     if "coral_blend" in ported:
         names += ["coral blend height width", "coral blend water top", "coral blend water fade", "coral blend coral F0",
                   "coral blend coral gloss", "coral blend base F0", "coral blend base gloss", "coral blend blur scale",

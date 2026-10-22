@@ -1109,7 +1109,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 19
+VIEWER_RULE_FRONTEND_VERSION = 20
 
 
 def _viewer_rule_images(nt):
@@ -1788,18 +1788,34 @@ def apply_viewer_graph_rule(mat, source):
 
     if on('puddles'):             # DB75867B material terms (forward lighting composition not reproduced)
         pp = terms['puddles']['params']
+        sludge = terms['puddles'].get('variant') == 'sludge'     # CC985D80
         q = [P.const('puddle p%02d' % i, x) for i, x in enumerate(pp)]
         wx, wy, wz = P.sep(P.v('SCALE', P.native_position(), -1.0))
         qx, qz = P.m('SUBTRACT', wx, .5), P.m('SUBTRACT', wz, .5)
         sn, cn = P.m('SINE', q[14]), P.m('COSINE', q[14])
-        nu = P.m('MULTIPLY', q[10], P.m('ADD', .5, P.m('SUBTRACT', P.m('MULTIPLY', cn, qx), P.m('MULTIPLY', sn, qz))))
-        nv = P.m('MULTIPLY', q[10], P.m('ADD', .5, P.m('ADD', P.m('MULTIPLY', sn, qx), P.m('MULTIPLY', cn, qz))))
+        if sludge:    # CC985D80 rel1276: CB2[15] x (camera - position).xz, no rotation
+            nu, nv = P.m('MULTIPLY', q[10], wx), P.m('MULTIPLY', q[10], wz)
+        else:
+            nu = P.m('MULTIPLY', q[10], P.m('ADD', .5, P.m('SUBTRACT', P.m('MULTIPLY', cn, qx), P.m('MULTIPLY', sn, qz))))
+            nv = P.m('MULTIPLY', q[10], P.m('ADD', .5, P.m('ADD', P.m('MULTIPLY', sn, qx), P.m('MULTIPLY', cn, qz))))
         noise = P.sep(P.tex(img('_puddle_noise'), P.gl_coord(nu, nv), 'puddle noise').outputs['Color'])[0]
         pm = P.sat(P.m('DIVIDE', P.m('SUBTRACT', noise, q[0]), P.m('SUBTRACT', q[6], q[0])))
         pr = P.sat(P.m('DIVIDE', P.m('SUBTRACT', noise, q[2]), P.m('SUBTRACT', q[3], q[2])))
         pb = P.m('MULTIPLY_ADD', q[9], P.m('MULTIPLY_ADD', pr, -2.0, 1.0), pr)
-        gloss_in = P.m('SQRT', P.sat(P.m('MULTIPLY_ADD', P.m('MULTIPLY', q[8], gR), P.m('SUBTRACT', 1.0, pb), pb)))
-        f0v = P.m('MULTIPLY', gG, P.sat(P.m('MULTIPLY_ADD', q[4], pm, .30000001192092896)))
+        gloss_raw = P.m('MULTIPLY_ADD', P.m('MULTIPLY', q[8], gR), P.m('SUBTRACT', 1.0, pb), pb)
+        f0raw = P.m('MULTIPLY', gG, P.sat(P.m('MULTIPLY_ADD', q[4], pm, .30000001192092896)))
+        if sludge:    # the dry (ripple weight 0) gloss input and F0 are scaled by CB2[13] and CB2[14]
+            sp = terms['puddles']
+            rw_dry = P.sat(P.m('DIVIDE', P.m('MULTIPLY_ADD', q[6], -.5, pm), P.m('SUBTRACT', 1.0, q[6])))
+            gloss_raw = P.lerp(P.m('MULTIPLY', P.const('sludge dry gloss scale', sp['dry_gloss']), gloss_raw), gloss_raw, rw_dry)
+            f0raw = P.lerp(P.m('MULTIPLY', P.const('sludge dry F0 scale', sp['dry_f0']), f0raw), f0raw, rw_dry)
+            su = P.const('sludge uv scale', sp['uv_scale'])    # colour and normal at UV0 x CB2[2]
+            sludge_uv = P.game_uv(su, su)
+            albedo = P.tex(c, sludge_uv, 'sludge colour').outputs['Color']
+            if n is not None:
+                n = P.tex(n, sludge_uv, 'sludge normal')
+        gloss_in = P.m('SQRT', P.sat(gloss_raw))
+        f0v = f0raw
         f0 = P.comb(f0v, f0v, f0v)
         albedo = P.v('SCALE', albedo, P.m('SUBTRACT', 1.0, P.m('MULTIPLY', P.m('MULTIPLY', noise, q[11]), pm)))
         spec = gloss_scale = 1.0
@@ -1824,6 +1840,9 @@ def apply_viewer_graph_rule(mat, source):
         final_n = normal if normal is not None else Ng
         limits.append('puddles: forward light/probe/reflection composition (probe mix p12, specular clamp, fog) is replaced by '
                       'the deferred BRDF; ripple scroll at t=0; world origin 0')
+        if sludge:
+            limits.append('sludge CC985D80: the normal scroll (CB2[10]) is zero at t=0; the two layered ripple samples (amplitude '
+                          'CB2[11] = %.4g per axis) are drawn with the DB75867B single-sample ripple form' % float(pp[13]))
     else:
         if on('pick') and c is not None and not on('vehicle') and not tint:   # 66744D01 colour pick
             pk = terms['pick']
@@ -1832,7 +1851,7 @@ def apply_viewer_graph_rule(mat, source):
             ta = P.m('MULTIPLY', P.const('pick scale', pk['scale']), a)
             r = P.v('SCALE', P.v('SUBTRACT', P.v('SCALE', pal, ta), 1.0), P.m('MULTIPLY', P.const('pick blend', pk['blend']), a))
             albedo = P.v('MAXIMUM', P.v('MULTIPLY_ADD', albedo, r, albedo), 0.0)
-        rock_w = rock_g = None
+        rock_w = rock_g = mud_w = mud_sand_n = None
         if on('rock_blend'):          # 886AAC94 two-layer blend through H, squared vertex alpha and sharpness
             rb = terms['rock_blend']
             attr = P.N.new('ShaderNodeAttribute'); attr.attribute_name = 'Color'; attr.name = 'VR vertex colour (missing = alpha 1)'
@@ -1865,6 +1884,42 @@ def apply_viewer_graph_rule(mat, source):
             rock_g = P.vlerp(g_rgb if g is not None else (0.0, 0.0, 0.0), g2.outputs['Color'], rock_w)
             limits.append('rock_blend: vertex alpha is squared after interpolation (the vertex shader squares it before); '
                           'models without a colour stream use alpha 1 as the viewer does')
+        if on('mud_blend'):           # 8A581B9D: mask, squared vertex alpha and sharpness blend the mud colour into the sand breakup colour
+            mb = terms['mud_blend']
+            attr = P.N.new('ShaderNodeAttribute'); attr.attribute_name = 'Color'; attr.name = 'VR vertex colour (missing = alpha 1)'
+            va = P.m('MULTIPLY', attr.outputs['Alpha'], attr.outputs['Alpha'])
+            h = P.sep(P.tex(img('_mud_h'), P.game_uv(1.0, 1.0), 'mud blend mask').outputs['Color'])[0]
+            mm = P.m('SUBTRACT', 1.0, P.sat(P.m('MULTIPLY', P.m('SUBTRACT', 1.0, va), P.m('MULTIPLY_ADD', h, -5.0, 6.0))))
+            target = P.m('POWER', P.m('ABSOLUTE', mm), P.const('mud blend sharpness', mb['sharpness']))
+            target = P.m('MULTIPLY', target, P.m('GREATER_THAN', mm, 0.0))
+            mw = P.lerp(va, target, P.const('mud blend mask strength', mb['mask_strength']))
+            ms, ss = P.const('mud blend mud uv scale', mb['mud_uv_scale']), P.const('mud blend sand uv scale', mb['sand_uv_scale'])
+            mud_c = P.tex(img('_mud_c'), P.game_uv(ms, ms), 'mud blend mud colour').outputs['Color']
+            wx, _, wz = P.sep(P.native_position())
+            inv_t = P.m('DIVIDE', 1.0, P.m('MAXIMUM', P.const('mud blend world tile', mb['world_tile']), 1e-5))
+            sand_c = P.tex(c, P.gl_coord(P.m('MULTIPLY', wx, inv_t), P.m('MULTIPLY', wz, inv_t)), 'mud blend sand colour').outputs['Color']
+            albedo = P.vlerp(P.v('SCALE', mud_c, P.const('mud blend mud colour scale', 1.0 - mb['mud_darken'])), sand_c, mw)
+            sand_g = P.sep(P.tex(img('_mud_g2'), P.game_uv(ss, ss), 'mud blend sand g').outputs['Color'])
+            mud_gloss = P.m('MULTIPLY', gR, P.const('mud blend gloss scale', mb['gloss_scale']))
+            mud_f0 = P.m('MULTIPLY', gG, P.const('mud blend mud F0 factor', mb['f0_scale'] * min(1.0, max(0.0, .3 + .3 * mb['f0_bias']))))
+            rock_g = P.comb(P.lerp(mud_gloss, sand_g[0], mw), P.sat(P.lerp(mud_f0, sand_g[1], mw)), 0.0)
+            if n is not None:
+                n = P.tex(n, P.game_uv(ms, ms), 'mud blend mud normal')
+                gsc = P.const('mud blend grain uv scale', mb['grain_uv_scale'])
+                sns = P.const('mud blend sand normal uv scale', mb['sand_normal_uv_scale'])
+                kst = P.const('mud blend sand normal strength', mb['sand_normal_strength'])
+                g1x, g1y = P.rg(P.tex(img('_mud_n7'), P.game_uv(gsc, gsc), 'mud blend grain normal sample').outputs['Color'])
+                g2x, g2y = P.rg(P.tex(img('_mud_n8'), P.game_uv(sns, sns), 'mud blend sand normal sample').outputs['Color'])
+                z1, z2 = P.m('SUBTRACT', 1.0, P.dot2(g1x, g1y)), P.m('SUBTRACT', 1.0, P.dot2(g2x, g2y))
+                kz1 = P.m('MULTIPLY', kst, z1)
+                mud_sand_n = P.tangent_normal(P.m('MULTIPLY_ADD', g1x, z2, P.m('MULTIPLY', kz1, g2x)),
+                                              P.m('MULTIPLY_ADD', g1y, z2, P.m('MULTIPLY', kz1, g2y)), P.m('MULTIPLY', z1, z2),
+                                              'VR mud blend sand normal')
+                mud_w = mw
+            limits.append('mud_blend: the vertex alpha is squared after interpolation (the vertex shader squares it before) and '
+                          'models without a colour stream use alpha 1; the sand breakup colour uses object-space (model) native x, z, '
+                          'the game world position; normal strength CB0[95] and the instance fade are taken as 1 and 0; the F0 '
+                          'is clamped to 1 for display')
         world_uv = detail_mask = None
         if tint and variant in ('world', 'world_normal'):   # 69424FA0: dominant-axis native world projection
             wn = P.native_normal(); nx, ny, nz = P.sep(wn); ax, ay, az = P.sep(P.v('ABSOLUTE', wn))
@@ -1981,6 +2036,8 @@ def apply_viewer_graph_rule(mat, source):
                 x, y = P.m('MULTIPLY_ADD', x, dz, P.m('MULTIPLY', dx, zw)), P.m('MULTIPLY_ADD', y, dz, P.m('MULTIPLY', dy, zw))
                 z = P.m('MULTIPLY', z, dz)
                 normal = P.tangent_normal(x, y, z, 'VR skin detailed normal')
+            if mud_w is not None:
+                normal = P.v('NORMALIZE', P.vlerp(base_normal, mud_sand_n, mud_w))
             if rock_w is not None:
                 n2 = img('_rock_n2')
                 if terms['rock_blend'].get('variant') == 'color_breakup':

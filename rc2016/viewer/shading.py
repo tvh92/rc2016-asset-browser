@@ -253,6 +253,9 @@ uniform bool uRockBlend; uniform sampler3D uRockTex; uniform vec3 uRockSrgb;
 uniform vec4 uRockScale0; uniform vec4 uRockScale1;
 uniform vec3 uRockTint; uniform vec4 uRockP; // exponent, tint amount, mask strength, sharpness
 uniform vec3 uRockBreakup; // A3DAA047: enabled, 1/max(1e-5, world tile T), layer UV scale U
+uniform bool uMudBlend; uniform vec4 uMudP0; uniform vec4 uMudP1; uniform vec4 uMudP2; // uMudP2: grain UV scale CB2[10], sand normal UV scale CB2[9], sand normal strength CB2[2]
+// // 8A581B9D: (CB2[1], CB2[6], 1/world tile CB2[8], 1 - CB2[5]), (sand UV scale CB2[4], mud UV scale CB2[7], gloss scale CB2[0], mud F0 factor)
+uniform vec4 uPuddleSludge; // CC985D80: (CB2[2] UV scale, CB2[13] dry gloss scale, CB2[14] dry F0 scale, enabled)
 uniform bool uGrassBlend; uniform vec4 uGrassP; // A814EDCF: CB2[0], tile/g9 UV scale CB2[1], rock UV scale CB2[6], 1/world tile CB2[4]
 // 35571F99 (Coral Underwater): ten layers on the unit-15 volume (slice order CORAL_BLEND_VOLUME_ROLES), each with its own texel scale and
 // stored-value sRGB flag. uCoralA = height-blend width CB2[13], water top CB2[14], fade range CB2[15], 0.333 CB0[99] (static: 0);
@@ -448,19 +451,33 @@ vec3 deferredSpecular(vec3 N, vec3 V, vec3 F0, float gloss) {
     return S;
 #endif
 }
+// 8A581B9D blend weight: m = 1 - sat((1 - a)(6 - 5 H)), w = a + CB2[1] (m^CB2[6] - a) with a the squared vertex alpha and H the mask at UV0.
+float mudWeight() {
+    float mh = texture3D(uRockTex, vec3(fract(vUV) * uRockScale0.xy, 0.1)).r;
+    if (uRockSrgb.x > 0.5) mh = linear(vec3(mh)).r;
+    float mm = 1.0 - clamp((1.0 - vRockAlpha) * (6.0 - 5.0 * mh), 0.0, 1.0);
+    float mt = mm > 0.0 ? pow(mm, uMudP0.y) : 0.0;
+    return vRockAlpha + uMudP0.x * (mt - vRockAlpha);
+}
 // DB75867B material and terminal terms; frozen runtime leaves are stored in metadata.
 vec3 puddleShade(vec3 G, vec3 V, vec3 c, vec2 g) {
     vec3 wp = -vTintWorldPos; // CB0[28..30] origin frozen to zero; native Y-up
     vec2 q = wp.xz - vec2(0.5);
     float sn=sin(uPuddle3.z), cn=cos(uPuddle3.z);
+    bool sludge = uPuddleSludge.w > 0.5;
     vec2 noiseUV = uPuddle2.z*(vec2(0.5)+vec2(cn*q.x-sn*q.y,sn*q.x+cn*q.y));
+    if (sludge) noiseUV = uPuddle2.z*wp.xz; // CC985D80 rel1276: CB2[15] x (camera - position).xz, no rotation
     float n=texture2D(uPuddleTex,fract(noiseUV)*uPuddleNoiseScale.xy+uPuddleNoiseScale.zw).r;
     float m=clamp((n-uPuddle0.x)/(uPuddle1.z-uPuddle0.x),0.0,1.0);
     float r=clamp((n-uPuddle0.z)/(uPuddle0.w-uPuddle0.z),0.0,1.0);
     float b=r+uPuddle2.y*(1.0-2.0*r);
-    float h=sqrt(clamp(b+uPuddle2.x*g.x*(1.0-b),0.0,1.0));
+    float rwS=clamp((m-.5*uPuddle1.z)/(1.0-uPuddle1.z),0.0,1.0);
+    float hin=b+uPuddle2.x*g.x*(1.0-b);
+    if (sludge) hin=mix(uPuddleSludge.y*hin,hin,rwS); // CC985D80: the dry (ripple weight 0) gloss input is scaled by CB2[13]
+    float h=sqrt(clamp(hin,0.0,1.0));
     float gloss=-0.09090909361839294*log2(1.0-(1.0-exp2(-11.0*h))); // geometric AA=1
     vec3 F0=vec3(g.y*clamp(0.30000001192092896+uPuddle1.x*m,0.0,1.0));
+    if (sludge) F0=mix(uPuddleSludge.z*F0,F0,rwS); // CC985D80: the dry F0 is scaled by CB2[14]
     vec3 D=c*(1.0-n*uPuddle2.w*m);
     vec3 N=G; float face=gl_FrontFacing?1.0:-1.0;
     if (uHasN) {
@@ -469,7 +486,7 @@ vec3 puddleShade(vec3 G, vec3 V, vec3 c, vec2 g) {
         vec3 p2=cross(dp2,G),p1=cross(G,dp1);
         vec3 T=p2*du1.x+p1*du2.x, B=p2*du1.y+p1*du2.y;
         T=normalize(T);B=normalize(-B);
-        vec2 xy=texture2D(uTexN,vUV).rg*2.0-1.0;
+        vec2 xy=texture2D(uTexN,sludge?vUV*uPuddleSludge.x:vUV).rg*2.0-1.0;
         vec3 baseN=face*normalize(T*xy.x+B*xy.y+G*(1.0-dot(xy,xy)));
         vec3 wn=normalize(vTintWorldNrm);vec3 an=abs(wn);vec2 p;
         bool yd=an.y>=an.x && an.y>=an.z, xd=an.x>=an.y && an.x>=an.z;
@@ -514,6 +531,8 @@ void main() {
     if (uMode == 2 && uLiquidFlow) materialUV += uLiquidUV.xy;
     bool rockBreakup = uMode == 2 && uRockBlend && uRockBreakup.x > 0.5;
     if (rockBreakup) materialUV = vUV * uRockBreakup.z; // A3DAA047 rel448/472: U scales the layer g/n samples only
+    if (uMode == 2 && uMudBlend) materialUV = vUV * uMudP1.y; // 8A581B9D: the mud normal is read at UV0 x CB2[7]
+    if (uMode == 2 && uPuddles && uPuddleSludge.w > 0.5) materialUV = vUV * uPuddleSludge.x; // CC985D80: colour and normal at UV0 x CB2[2]
     vec3 pomT=vec3(0.0),pomB=vec3(0.0),pomN=normalize(vNrm);
     vec2 pomDx=dFdx(vUV),pomDy=dFdy(vUV);
     if(uMode==2 && uParallaxNormal) {
@@ -690,7 +709,7 @@ void main() {
             }
         }
         // Image "up" is decreasing t (top row first), so the bitangent is -B.
-        if (uRockBlend || uGrassBlend || uCoralBlend || uSedKind != 0) z = 1.0 - dot(rg, rg);
+        if (uRockBlend || uGrassBlend || uMudBlend || uCoralBlend || uSedKind != 0) z = 1.0 - dot(rg, rg);
         vec3 baseN = normalize(T * scale * rg.x - B * scale * rg.y + N * z);
         if (uBngKind == 3 || uBngKind == 6 || uBngKind == 8 || uBngKind == 9) {
             float rim = 1.00100004673 - clamp(dot(baseN, V), 0.0, 1.0);
@@ -748,6 +767,17 @@ void main() {
             vec3 nCliff = normalize(T * scale * rg.x - B * scale * rg.y + N * z);
             vec3 nWall = normalize(T * scale * rw.x - B * scale * rw.y + N * (1.0 - dot(rw, rw)));
             N = normalize(mix(nWall, nCliff, sp));
+        } else if (uMudBlend) {
+            // 8A581B9D MRT0: N = lerp(mud n, sand normal, w). The sand normal combines the grain map (x1, y1; UV0 x CB2[10]) and the sand
+            // map (x2, y2; UV0 x CB2[9]) as (x1 z2 + k z1 x2, y1 z2 + k z1 y2, z1 z2), k = CB2[2], z = 1 - x*x - y*y; each map is a unit
+            // normal in the same frame (engine strength CB0[95] and close-range fade taken as 1 and 0).
+            vec2 g1 = texture3D(uRockTex, vec3(fract(vUV * uMudP2.x), 0.7)).rg * 2.0 - 1.0;
+            vec2 g2 = texture3D(uRockTex, vec3(fract(vUV * uMudP2.y), 0.9)).rg * 2.0 - 1.0;
+            float z1 = 1.0 - dot(g1, g1), z2 = 1.0 - dot(g2, g2);
+            vec3 sandC = vec3(g1 * z2 + uMudP2.z * z1 * g2, z1 * z2);
+            vec3 nMud = normalize(T * scale * rg.x - B * scale * rg.y + N * z);
+            vec3 nSand = normalize(T * scale * sandC.x - B * scale * sandC.y + N * sandC.z);
+            N = normalize(mix(nMud, nSand, mudWeight()));
         } else if (uRockBlend) {
             vec2 r2 = texture3D(uRockTex, vec3(fract(materialUV)*uRockScale1.zw, 0.875)).rg*2.0-1.0;
             vec3 n2 = normalize(T*scale*r2.x - B*scale*r2.y + N*(1.0-dot(r2,r2)));
@@ -774,6 +804,21 @@ void main() {
         vec3 g9 = texture3D(uRockTex, vec3(fract(vUV * uGrassP.y) * uRockScale1.xy, 0.625)).rgb;
         if (uRockSrgb.z > 0.5) g9 = linear(g9);
         rockG = mix(g8, g9, gw);
+    }
+    if (uMode == 2 && uMudBlend) {
+        // 8A581B9D: weight w (mudWeight); albedo = lerp((1 - CB2[5]) mud colour at UV0 x CB2[7], breakup colour at native world
+        // (x, z) / CB2[8], w); F0 = lerp(CB2[3] sat(0.3 + 0.3 CB2[11]) mud g.G, sand g.G at UV0 x CB2[4], w);
+        // gloss input = lerp(CB2[0] mud g.R, sand g.R, w); the normal is mixed in the tangent branch above.
+        float mw = mudWeight();
+        vec3 mudC = texture3D(uRockTex, vec3(fract(vUV * uMudP1.y) * uRockScale0.zw, 0.3)).rgb;
+        if (uRockSrgb.y > 0.5) mudC = linear(mudC);
+        vec3 sandC = uHasC ? texture2D(uTexC, vTintWorldPos.xz * uMudP0.z).rgb : vec3(0.0);
+        if (uSrgbC) sandC = linear(sandC);
+        albedo = mix(mudC * uMudP0.w, sandC, mw);
+        vec3 gm = uHasG ? texture2D(uTexG, vUV).rgb : vec3(0.0); if (uSrgbG) gm = linear(gm);
+        vec3 gs = texture3D(uRockTex, vec3(fract(vUV * uMudP1.x) * uRockScale1.xy, 0.5)).rgb;
+        if (uRockSrgb.z > 0.5) gs = linear(gs);
+        rockG = vec3(mix(uMudP1.z * gm.r, gs.r, mw), clamp(mix(uMudP1.w * gm.g, gs.g, mw), 0.0, 1.0), 0.0); // F0 above 1 (mud g.G x 4.5 reaches 2) is clamped for display
     }
     if (uMode == 2 && uCoralBlend) {
         // 35571F99 MRT1/MRT2 (pass 0): m = sat((cma.r - (p.x - CB2[13])) / CB2[13]) with p the vertex red and green (squared in the vertex stage);
@@ -934,7 +979,7 @@ void main() {
             if (uFlatSurface) { F0 = vec3(uFlatSpec.x); gloss = sqrt(clamp(uFlatSpec.y, 0.0, 1.0)); }
             if (uVictorReticle) { F0 = uReticleF0; gloss = 0.0; }
             if (uTintVariant >= 3) gloss = sqrt(clamp(uGlossScale * gl.r * 2.0 * tintDetailMask, 0.0, 1.0));
-            if (uRockBlend || uGrassBlend || uCoralBlend || uSedKind != 0) { F0 = vec3(uSpecScale*rockG.g); gloss = sqrt(clamp(uGlossScale*rockG.r, 0.0, 1.0)); }
+            if (uRockBlend || uGrassBlend || uMudBlend || uCoralBlend || uSedKind != 0) { F0 = vec3(uSpecScale*rockG.g); gloss = sqrt(clamp(uGlossScale*rockG.r, 0.0, 1.0)); }
             if (uTwoColorMetal) gloss = sqrt(clamp(uGlossScale * gl.r * (1.0 - metalRim), 0.0, 1.0));
             F0 *= uSpecTint;
             vec3 F90 = clamp(60.0 * F0, 0.0, 1.0);
@@ -1365,7 +1410,7 @@ def glass_uniforms(forward, time=None):
 
 OPAQUE_UNIFORMS = (
     "uPuddles", "uPuddleTex", "uHasPuddleAtlas", "uPuddle0", "uPuddle1", "uPuddle2", "uPuddle3", "uPuddleNoiseScale", "uPuddleRippleScale",
-    "uRockBlend", "uGrassBlend", "uGrassP", "uSedKind", "uSedA", "uSedB", "uSedPaint", "uSedScale", "uSedSrgb", "uCoralBlend", "uCoralA", "uCoralB", "uCoralNoise", "uCoralScroll", "uCoralPaint", "uCoralScale", "uCoralSrgb", "uRockTex", "uRockSrgb", "uRockScale0", "uRockScale1", "uRockTint", "uRockP", "uRockBreakup",
+    "uRockBlend", "uMudBlend", "uMudP0", "uMudP1", "uMudP2", "uPuddleSludge", "uGrassBlend", "uGrassP", "uSedKind", "uSedA", "uSedB", "uSedPaint", "uSedScale", "uSedSrgb", "uCoralBlend", "uCoralA", "uCoralB", "uCoralNoise", "uCoralScroll", "uCoralPaint", "uCoralScale", "uCoralSrgb", "uRockTex", "uRockSrgb", "uRockScale0", "uRockScale1", "uRockTint", "uRockP", "uRockBreakup",
     "uSkin", "uBoneTex", "uBoneWidth", "uMode", "uColor", "uTexC", "uTexG", "uTexN", "uHasC", "uHasG", "uHasN",
     "uSrgbC", "uSrgbG", "uGMode", "uSpecScale", "uGlossScale", "uSelfLitG", "uK",
     "uTwoColorMetal", "uMetalDiffuseA", "uMetalDiffuseB", "uMetalSpecA", "uMetalSpecB", "uMetalP",
