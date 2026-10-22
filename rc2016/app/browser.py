@@ -292,6 +292,7 @@ class AssetBrowser:
         holder=split.first;holder.columnconfigure(0,weight=1);holder.rowconfigure(0,weight=1)
         side=split.second;side.configure(padding=(8,0,0,0));side.columnconfigure(0,weight=1);side.rowconfigure(8,weight=1)
         self.viewport=ModelViewport(holder,width=380,height=560)
+        self.viewport.animate_effects=True
         self.viewport.grid(row=0,column=0,sticky='nsew')
         tip=app._tip
         # View: camera and draw mode.

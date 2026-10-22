@@ -414,6 +414,9 @@ class ModelViewport(_TkFrame):
         self.native_translation = True
         self.lighting_enabled = True
         self.experimental_materials = False
+        self.animate_effects = False   # the browser turns it on; offscreen renders keep the rules' static time
+        self._effects_job = None
+        self._effect_origin = None
         self.native_program_switches = 0
         self._gl_textures = None   # material slot -> {role: (GL id, sRGB)} + 'k', built lazily
         self._compressed_upload = None
@@ -1585,6 +1588,28 @@ class ModelViewport(_TkFrame):
             sh.glUniform1i(u[name], int(bool(texture and texture[1])))
         texture = entry.get('_n'); sh.glUniform1i(u['uScreenSrgbN'], int(bool(texture and texture[1])))
 
+    EFFECT_KINDS = frozenset({'ion_tubes'})   # forward rules with a time term (CB0[99])
+    EFFECT_PERIOD = 1024.0                    # seconds; every decoded scroll has period 1, so the wrap is invisible
+
+    def _effect_time(self, forward):
+        """Presentation clock (seconds) for a time-driven forward rule while ``animate_effects`` is on, else None."""
+        if not self.animate_effects or forward.get('kind') not in self.EFFECT_KINDS:
+            return None
+        import time
+        if self._effect_origin is None:
+            self._effect_origin = time.perf_counter()
+        if self._effects_job is None:
+            self._effects_job = self.after(33, self._effects_tick)
+        return (time.perf_counter() - self._effect_origin) % self.EFFECT_PERIOD
+
+    def _effects_tick(self):
+        self._effects_job = None
+        try:
+            if self.animate_effects and self.winfo_exists() and self.winfo_viewable():
+                self._schedule_draw()   # the draw re-arms the tick while a time-driven material is on screen
+        except tk.TclError:
+            pass
+
     def _draw_glass(self, index_array, batches, skin):
         """Forward batches: the material's blend state and culling, no depth write, farthest batch first.
 
@@ -1635,7 +1660,7 @@ class ModelViewport(_TkFrame):
                     sh.glActiveTexture(self.GL_TEXTURE0 + unit)
                     gl.glBindTexture(self.GL_TEXTURE_2D, texture[0] if texture else 0)
                     sh.glUniform1i(u[name], unit)
-            kind, *vectors = glass_uniforms(forward)
+            kind, *vectors = glass_uniforms(forward, self._effect_time(forward))
             sh.glUniform1i(u["uKind"], kind)
             for name, vector in zip(("uA", "uB", "uC", "uD", "uE"), vectors):
                 sh.glUniform4f(u[name], *(float(x) for x in vector))

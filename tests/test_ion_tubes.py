@@ -51,18 +51,20 @@ class IonTubesRuleTests(unittest.TestCase):
     def test_amplitude_is_the_labelled_presentation_value(self):
         c = tp.ION_TUBES_CONSTANTS
         self.assertEqual((c['amplitude'], c['amplitude_input'], c['presentation'], c['writer']), (0.5, 'CB0 dword 115', True, '86DDE345'))
-        self.assertEqual(c['frozen_inputs'], dict(cb0_99=0.0, cb0_107=0.0, fog_blend=1.0, vertex_alpha=1.0, cb2_4_power=0.0,
+        self.assertEqual((c['time'], c['time_input']), (0.0, 'CB0 dword 99'))
+        self.assertEqual(c['frozen_inputs'], dict(cb0_107=0.0, fog_blend=1.0, vertex_alpha=1.0, cb2_4_power=0.0,
                                                   cutoff='discard predicate not translated'))
 
     def test_uniform_packing(self):
         kind, a, b, c, d = glass_uniforms(forward())
         self.assertEqual((kind, GLASS_KINDS['ion_tubes']), (12, 12))
         self.assertEqual(a, (0.0953, 0.5906, 1.0, 6.0)); self.assertEqual(b, (0.5, 0.0, 0.0, 0.0))
+        self.assertEqual(glass_uniforms(forward(), 2.5)[2], (0.5, 2.5, 0.0, 0.0))   # the viewer clock replaces the static time
         self.assertEqual(c, (*BASE, 0.0)); self.assertEqual(d, (*RIM, 0.0))
 
     def test_glsl_branch_carries_the_decoded_equations(self):
         branch = GLASS_FRAGMENT.split('uKind == 12')[1].split('uKind == 7')[0]
-        for text in ('vec2(1.0 - 2.0 * vUV.y, 0.25 * vUV.x)).g', 'vec2(2.0 * vUV.x + 0.3, 0.5 * vUV.y)).r',
+        for text in ('vec2(1.0 - 2.0 * vUV.y + uB.y, 0.25 * vUV.x - uB.y)).g', 'vec2(2.0 * vUV.x + 0.3, 0.5 * vUV.y - uB.y)).r',
                      'float m = sat(t5 + t6)', 'max(ndv - 0.00100004673, 0.0)', 'F2 * F2 * F',
                      '2.0 * uB.x * (1.0 + m) * (uC.rgb + uD.rgb * (F2 * F2 * F) + m * uA.w * uA.rgb)', 'alpha = 1.0'):
             self.assertIn(text, branch)
@@ -81,11 +83,11 @@ class IonTubesRuleTests(unittest.TestCase):
         rule = dict(applies=True, ported=['ion_tubes'], terms={'ion_tubes': forward()}, textures={'_c': None, '_g': None, '_n': None, '_pick': TEXTURE})
         expected = validation._viewer_expected_constants(rule)
         names, roles = validation._viewer_required(rule, False)
-        wanted = ['VR ion tubes ' + n for n in ('tint', 'gain', 'amplitude', 'base', 'rim')]
+        wanted = ['VR ion tubes ' + n for n in ('tint', 'gain', 'amplitude', 'base', 'rim', 'time')]
         self.assertEqual((sorted(names), roles), (sorted(wanted), ['_pick']))
         self.assertEqual(set(expected), set(wanted))
         self.assertEqual(expected['VR ion tubes tint'], [0.0953, 0.5906, 1.0])
-        self.assertEqual((expected['VR ion tubes gain'], expected['VR ion tubes amplitude']), (6.0, 0.5))
+        self.assertEqual((expected['VR ion tubes gain'], expected['VR ion tubes amplitude'], expected['VR ion tubes time']), (6.0, 0.5, 0.0))
         text = (pathlib.Path(__file__).resolve().parents[1] / 'rc2016/pipeline/game_shader.py').read_text(encoding='utf-8')
         body = text.split('def _viewer_rule_ion_tubes')[1].split('def _finish_viewer_rule')[0]
         for name in names:
@@ -148,27 +150,28 @@ class IonTubesArchiveTests(unittest.TestCase):
                 continue                       # F = 0 reaches log2(0), which the Python evaluator rejects
             amp, tint, gain = rng.uniform(0.01, 1.0), [rng.random() for _ in range(3)], rng.uniform(0.5, 7.0)
             t5, t6 = rng.random(), rng.random()
-            inputs = {'ps.FRONT_FACE': 1.0, 'CB0[99]': 0.0, 'CB0[107]': 0.0, 'CB0[112]': 0.3, 'CB0[113]': 0.4, 'CB0[114]': 0.5,
+            inputs = {'ps.FRONT_FACE': 1.0, 'CB0[99]': rng.uniform(0.0, 5.0), 'CB0[107]': 0.0, 'CB0[112]': 0.3, 'CB0[113]': 0.4, 'CB0[114]': 0.5,
                       'CB0[115]': amp, 'attribute0.0': rng.random(), 'attribute0.1': rng.random(), 'attribute0.3': 1.0,
                       'attribute2.3': 1.0, 'attribute1.0': n[0], 'attribute1.1': n[1], 'attribute1.2': n[2],
                       'attribute2.0': v[0], 'attribute2.1': v[1], 'attribute2.2': v[2],
                       'CB2[0]': tint[0], 'CB2[1]': tint[1], 'CB2[2]': tint[2], 'CB2[3]': gain, 'CB2[4]': 1e-30}
+            # CB0[99] only moves the sample coordinates: with the sampled values fixed, the colour does not depend on it
             got = [ir.evaluate(compiler.exports[0][j], inputs, {(0, 1): t5, (1, 0): t6}) for j in range(3)]
             for a, b in zip(got, closed_form(amp, tint, gain, ndv, t5, t6)):
                 self.assertAlmostEqual(a / b, 1.0, places=9)
             checked += 1
         self.assertGreater(checked, 50)
 
-    def test_texture_coordinates_at_frozen_time_and_dissolve(self):
+    def test_texture_coordinates_scroll_with_time_at_zero_dissolve(self):
         compiler = self.programs['0x86dde345'][1]; ir = compiler.ir
-        u, v = 0.3, 0.7
-        inputs = {'CB0[99]': 0.0, 'CB0[107]': 0.0, 'attribute0.0': u, 'attribute0.1': v}
         api5, api6 = compiler.samples
         self.assertEqual((api5['api'], api6['api']), (5, 6))
-        for got, want in zip([ir.evaluate(c, inputs) for c in api5['coordinates']], (1.0 - 2.0 * v, 0.25 * u)):
-            self.assertAlmostEqual(got, want, places=6)
-        for got, want in zip([ir.evaluate(c, inputs) for c in api6['coordinates']], (2.0 * u + 0.3, 0.5 * v)):
-            self.assertAlmostEqual(got, want, places=6)
+        for u, v, t in ((0.3, 0.7, 0.0), (0.3, 0.7, 0.37), (0.81, 0.12, 2.5)):
+            inputs = {'CB0[99]': t, 'CB0[107]': 0.0, 'attribute0.0': u, 'attribute0.1': v}
+            for got, want in zip([ir.evaluate(c, inputs) for c in api5['coordinates']], (1.0 - 2.0 * v + t, 0.25 * u - t)):
+                self.assertAlmostEqual(got, want, places=6)
+            for got, want in zip([ir.evaluate(c, inputs) for c in api6['coordinates']], (2.0 * u + 0.3, 0.5 * v - t)):
+                self.assertAlmostEqual(got, want, places=6)
 
     def test_material_binds_one_image_and_the_viewer_rule_resolves(self):
         paths = tp.material_texture_paths(self.archive, MATERIAL)

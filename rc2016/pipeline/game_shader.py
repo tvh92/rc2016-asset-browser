@@ -1600,7 +1600,7 @@ def apply_viewer_graph_rule(mat, source):
         return True
     if ion:
         limits += _viewer_rule_ion_tubes(mat, rule, img)
-        _finish_viewer_rule(mat, rule, 'forward ion tubes %s (t=0, unlit, opaque)' % terms['ion_tubes']['params']['writer'], limits)
+        _finish_viewer_rule(mat, rule, 'forward ion tubes %s (t=%g, unlit, opaque)' % (terms['ion_tubes']['params']['writer'], terms['ion_tubes']['params']['time']), limits)
         return True
     if number:
         limits += _viewer_rule_number_display(mat, rule, img)
@@ -2231,17 +2231,18 @@ def _viewer_rule_number_display(mat, rule, img):
 
 
 def _viewer_rule_ion_tubes(mat, rule, img):
-    """Victor von Ion tubes forward colour (86DDE345; gl_shading.GLASS_FRAGMENT uKind 12) at t = 0.
+    """Victor von Ion tubes forward colour (86DDE345; gl_shading.GLASS_FRAGMENT uKind 12), t = the "ion tubes time" constant (0).
 
-    rgb = 2 amp (1 + m) (base + rim F^5 + m C g); m = sat(API6.R(2u + 0.3, v/2) + API5.G(1 - 2v, u/4)) from one image,
+    rgb = 2 amp (1 + m) (base + rim F^5 + m C g); m = sat(API6.R(2u + 0.3, v/2 - t) + API5.G(1 - 2v + t, u/4 - t)) from one image,
     F = max(N.V - 0.00100005, 0). The emission is unlit and opaque (flags 0x38), back faces culled.
     """
     nt = mat.node_tree; P = _ViewerNodes(nt)
     f = rule['terms']['ion_tubes']; p = f['params']
     pick = img('_pick')
     u, vb, _ = P.uv_split(); v = P.m('SUBTRACT', 1.0, vb)   # game v counts from the top row
-    t5 = P.sep(P.tex(pick, P.gl_coord(P.m('SUBTRACT', 1.0, P.m('MULTIPLY', v, 2.0)), P.m('MULTIPLY', u, 0.25)), 'ion tubes API5').outputs['Color'])[1]
-    t6 = P.sep(P.tex(pick, P.gl_coord(P.m('ADD', P.m('MULTIPLY', u, 2.0), 0.3), P.m('MULTIPLY', v, 0.5)), 'ion tubes API6').outputs['Color'])[0]
+    t = P.const('ion tubes time', p['time'])   # CB0[99]; key or drive this node to scroll the bolts
+    t5 = P.sep(P.tex(pick, P.gl_coord(P.m('ADD', P.m('SUBTRACT', 1.0, P.m('MULTIPLY', v, 2.0)), t), P.m('SUBTRACT', P.m('MULTIPLY', u, 0.25), t)), 'ion tubes API5').outputs['Color'])[1]
+    t6 = P.sep(P.tex(pick, P.gl_coord(P.m('ADD', P.m('MULTIPLY', u, 2.0), 0.3), P.m('SUBTRACT', P.m('MULTIPLY', v, 0.5), t)), 'ion tubes API6').outputs['Color'])[0]
     m = P.sat(P.m('ADD', t5, t6))
     geo = P.geo()
     ndv = P.sat(P.v('DOT_PRODUCT', P.v('NORMALIZE', geo.outputs['Normal']), P.v('NORMALIZE', geo.outputs['Incoming'])))

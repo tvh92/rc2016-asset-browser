@@ -861,7 +861,8 @@ void main() {
 # uKind 12, ion_tubes 86DDE345 (enm_victor_von_ion_tubes_w_rust; docs/material-decoding/victor-von-ion-tubes.md): uA = tint C
 #   (CB2[0..2]) and gain g (CB2[3]); uB.x = amplitude (CB0[115], labelled presentation value); uC = base colour; uD = rim colour.
 #   rgb = 2 amp (1 + m) (base + rim F^5 + m C g), m = sat(API6.R + API5.G) from the one electricity image, F = max(N.V - 0.001, 0);
-#   CB0[99] = CB0[107] = 0, fog blend 1, CB2[4] = 0, vertex alpha 1 (opaque, back faces culled).
+#   uB.y = t = CB0[99] scrolls both bolt samples (time-like, upload unverified: 0 for static renders, the viewer clock when animating);
+#   CB0[107] = 0, fog blend 1, CB2[4] = 0, vertex alpha 1 (opaque, back faces culled).
 GLASS_FRAGMENT = """
 #version 120
 uniform sampler2D uWaterHeightA; uniform sampler2D uWaterHeightB; uniform bool uHasWaterHeights;
@@ -994,8 +995,8 @@ void main() {
         if (uScreenSrgbB) nb = screenLinear(nb);
         color = (1.0 + mix(uB.w, uA.w, h)) * (1.0 - (1.0-na)*(1.0-nb)*(1.0-tint));
     } else if (uKind == 12) { // 86DDE345 Victor von Ion tubes forward colour (see the uKind 12 comment)
-        float t5 = uHasP ? texture2D(uTexP, vec2(1.0 - 2.0 * vUV.y, 0.25 * vUV.x)).g : 0.0;   // API5 .G
-        float t6 = uHasP ? texture2D(uTexP, vec2(2.0 * vUV.x + 0.3, 0.5 * vUV.y)).r : 0.0;    // API6 .R
+        float t5 = uHasP ? texture2D(uTexP, vec2(1.0 - 2.0 * vUV.y + uB.y, 0.25 * vUV.x - uB.y)).g : 0.0;   // API5 .G
+        float t6 = uHasP ? texture2D(uTexP, vec2(2.0 * vUV.x + 0.3, 0.5 * vUV.y - uB.y)).r : 0.0;    // API6 .R
         if (uSrgbP) { t5 = screenLinear(t5); t6 = screenLinear(t6); }
         float m = sat(t5 + t6);
         float F = max(ndv - 0.00100004673, 0.0), F2 = F * F;
@@ -1143,8 +1144,10 @@ GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water":
                "ion_tubes": 12}
 
 
-def glass_uniforms(forward):
-    """(uKind, uA, uB, uC, uD) for a texture_preview 'forward' entry."""
+def glass_uniforms(forward, time=None):
+    """(uKind, uA, uB, uC, uD) for a texture_preview 'forward' entry.
+
+    ``time`` replaces the rule's static CB0[99] for the time-driven kinds (ion_tubes); None keeps it."""
     p = forward["params"]
     if forward["kind"] == "screen":
         return (3, (*p["colour_a"], p["intensity_a"]), (*p["colour_b"], p["intensity_b"]),
@@ -1153,7 +1156,7 @@ def glass_uniforms(forward):
         return (GLASS_KINDS["number_display"], (p["distort"], p["b_scale"], p["vignette_w"], 1.0 if p["alpha_channel"] else 0.0), (0.0, 0.0, 0.0, p["amplitude"]),
                 (*p["kc"], 0.0), (*p["ko"], 0.0))
     if forward["kind"] == "ion_tubes":
-        return (GLASS_KINDS["ion_tubes"], (*p["colour"], p["gain"]), (p["amplitude"], 0.0, 0.0, 0.0),
+        return (GLASS_KINDS["ion_tubes"], (*p["colour"], p["gain"]), (p["amplitude"], p["time"] if time is None else time, 0.0, 0.0),
                 (*p["base"], 0.0), (*p["rim"], 0.0))
     if forward["kind"] == "bright_glow":
         return (5, (*p["colour"], p["gain"]), (*p["colour_lo"], p["sharp"]),

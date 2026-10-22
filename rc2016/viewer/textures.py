@@ -141,9 +141,10 @@ NUMBER_DISPLAY_SHIV = dict(_NUMBER_DISPLAY_COMMON, variant='shiv', writer='8CEC8
 NUMBER_DISPLAY_QWARK = dict(_NUMBER_DISPLAY_COMMON, variant='qwark', writer='37C85F4C', distort=0.005, b_scale=0.2, s3_weight=0.1, alpha_channel=True)
 # Victor von Ion tubes forward colour program 86DDE345 (graph enm_victor_von_ion_tubes_w_rust; its deferred writers export zero
 # albedo, F0 and gloss, so the colour is this single-target forward pass; docs/material-decoding/victor-von-ion-tubes.md).
-# With CB0[99] = CB0[107] = 0, attribute2.w = 1 (a vertex fog transmittance: exactly 1 in some vertex variants, sat(exp2(-tau)) in
+# With CB0[107] = 0, attribute2.w = 1 (a vertex fog transmittance: exactly 1 in some vertex variants, sat(exp2(-tau)) in
 # others; frozen at no fog, so the CB0[112..114] fog colour drops out) and CB2[4] = 0:
-#   rgb = 2 amp (1 + m) (base + rim F^5 + m C g), m = sat(API6.R(2u + 0.3, v/2) + API5.G(1 - 2v, u/4)), F = max(N.V - 0.00100005, 0),
+#   rgb = 2 amp (1 + m) (base + rim F^5 + m C g), m = sat(API6.R(2u + 0.3, v/2 - t) + API5.G(1 - 2v + t, u/4 - t)), F = max(N.V - 0.00100005, 0),
+#   t = CB0[99] (time-like; engine upload unverified: the static value is 0 and the viewer clock is a labelled presentation value),
 #   C = CB2[0..2], g = CB2[3]; APIs 5 and 6 read one image. amp = CB0 dword 115 (labelled presentation value, as bright_glow).
 ION_TUBES_GRAPH_SHA256 = '8cdc2c05c2e934ecc56e6765992ee8734ada8af530dc9d42c1265578ff21b901'
 ION_TUBES_SLOTS = (0x49A7866B4AC18E9F, 0x49A7866B39DBF715)
@@ -151,7 +152,8 @@ ION_TUBES_POWER_KEY = 0xEC98DCA7
 ION_TUBES_CONSTANTS = dict(amplitude=0.5, amplitude_input='CB0 dword 115', presentation=True, writer='86DDE345',
     base=(0.0074990298599004745, 0.012286489829421043, 0.019382359459996223),
     rim=(0.030705338343977928, 0.12897680699825287, 0.19647814333438873),
-    frozen_inputs=dict(cb0_99=0.0, cb0_107=0.0, fog_blend=1.0, vertex_alpha=1.0, cb2_4_power=0.0,
+    time=0.0, time_input='CB0 dword 99',
+    frozen_inputs=dict(cb0_107=0.0, fog_blend=1.0, vertex_alpha=1.0, cb2_4_power=0.0,
                        cutoff='discard predicate not translated'))
 # basic_emissive writer 452EDC8C (pass 0 record 4, CB2 layout 7F058428@0..2, 06F19114@3, 62835AF9@4, 4069EA80@5):
 # MRT1 rgb = CB2[0..2], MRT2 rgb = CB2[4], gloss = sqrt(sat(CB2[5])), emission K = CB2[3]. The pass-1 variant E921A79B
