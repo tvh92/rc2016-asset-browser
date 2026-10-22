@@ -379,6 +379,7 @@ class AssetBrowserApp:
         self.table.configure(yscrollcommand=scroll.set, xscrollcommand=hscroll.set)
         self._tip(HELP["tree"], self.table)
         self.table.bind("<<TreeviewSelect>>", lambda _event: self.update_selection_label())
+        self.table.bind("<Button-1>", self._table_click)
         self.table.bind("<Double-1>", self._table_double_click)
 
         from rc2016.app.browser import AssetBrowser
@@ -407,7 +408,7 @@ class AssetBrowserApp:
         selection_row.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 10))
         select_button = ttk.Button(selection_row, text="Select visible", command=self.select_visible)
         select_button.pack(side="left")
-        clear_button = ttk.Button(selection_row, text="Clear selection", command=self.clear_selection)
+        clear_button = ttk.Button(selection_row, text="Deselect all", command=self.clear_selection)
         clear_button.pack(side="left", padx=(6, 12))
         ttk.Label(selection_row, textvariable=self.selection_var, anchor="w").pack(side="left")
         self._tip(HELP["select_visible"], select_button)
@@ -977,10 +978,25 @@ class AssetBrowserApp:
         kept = {key: record for key, record in self.selected_map.items() if key not in visible}
         self.selected_map = {**kept, **chosen}
 
-    def _table_double_click(self, event) -> None:
+    def _table_click(self, event) -> str | None:
+        """A plain click on a selected model deselects only that model; Ctrl and Shift clicks keep Tk's own rules."""
+        if event.state & 0x0005:   # Shift (0x1) or Control (0x4)
+            return None
+        row = self.table.identify_row(event.y)
+        if row in self.item_by_record and row in self.table.selection():
+            self.table.selection_remove(row)
+            return "break"   # stops Tk's default, which would select only this row and drop the others
+        return None
+
+    def _table_double_click(self, event) -> str | None:
         # Double-clicking a folder just opens/closes it (Tk's default).
-        if self.table.identify_row(event.y) in self.item_by_record:
+        row = self.table.identify_row(event.y)
+        if row in self.item_by_record:
+            # The first click of a double-click may have deselected the model; it is selected again, with the others kept.
+            self.table.selection_add(row)
             self._show_selected_details()
+            return "break"
+        return None
 
 
     def select_visible(self) -> None:
@@ -1323,6 +1339,7 @@ class AssetBrowserApp:
             item = f"queue-{number}"
             self._queue_rows.setdefault(self._queue_key(self._record_path(record)), item)
             tree.insert("", "end", iid=item, text=record.display_name, values=("queued",), tags=("queued",))
+        tree.heading("#0", text=f"Extracting {len(records)} model{'' if len(records) == 1 else 's'}")
 
     @staticmethod
     def _queue_key(path: str) -> str:
@@ -1340,6 +1357,7 @@ class AssetBrowserApp:
 
     def _queue_finish(self, running: str) -> None:
         """The batch ended: a model still queued was not run; one still running has no result (shown as ``running``)."""
+        self.queue_tree.heading("#0", text="Extraction queue")
         for item in self.queue_tree.get_children():
             state = self.queue_tree.set(item, "status")
             if state in ("queued", "running"):
