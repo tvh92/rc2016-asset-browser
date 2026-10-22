@@ -848,6 +848,11 @@ class ModelViewport(_TkFrame):
             if entry.get('_rock_volume'):
                 uploaded['_rock_volume'] = (self._upload_rock_volume(entry['_rock_volume']), False)
                 uploaded['rock_blend']['scales'] = entry['_rock_volume']['scales']
+        if entry.get('grass_blend'):
+            uploaded['grass_blend'] = dict(entry['grass_blend'])
+            if entry.get('_rock_volume'):
+                uploaded['_rock_volume'] = (self._upload_rock_volume(entry['_rock_volume']), False)
+                uploaded['grass_blend']['scales'] = entry['_rock_volume']['scales']
         for key in ('parallax', 'parallax_normal'):
             if key in entry: uploaded[key] = entry[key]
         if "bng" in entry:
@@ -1484,11 +1489,15 @@ class ModelViewport(_TkFrame):
         sh.glUniform4f(u['uParallaxP'], *(float((pom if valid else {}).get(k,d)) for k,d in
             (('height_scale',0.),('steps_front',16.),('steps_grazing',64.),('fade',1.))))
         rock = entry.get('rock_blend') or {}
+        grass = entry.get('grass_blend') or {}
         volume = entry.get('_rock_volume')
         sh.glActiveTexture(self.GL_TEXTURE0 + 15); gl.glBindTexture(0x806F, volume[0] if volume else 0)
         sh.glUniform1i(u['uRockTex'],15); sh.glUniform1i(u['uRockBlend'],1 if rock and volume and level == 2 else 0)
-        sh.glUniform3f(u['uRockSrgb'],*(float(x) for x in rock.get('extra_srgb',(False,)*3)))
-        scales = rock.get('scales',[(1.,1.)]*4)
+        sh.glUniform1i(u['uGrassBlend'],1 if grass and volume and not grass.get('unresolved_layers') and level == 2 else 0)
+        sh.glUniform4f(u['uGrassP'],*(float(grass.get(k,d)) for k,d in (('threshold',.6),('uv_scale',1.),('layer_uv_scale',1.))),
+                       1./max(1e-5,float(grass.get('world_tile',1.))))
+        sh.glUniform3f(u['uRockSrgb'],*(float(x) for x in (rock or grass).get('extra_srgb',(False,)*3)))
+        scales = (rock or grass).get('scales',[(1.,1.)]*4)
         sh.glUniform4f(u['uRockScale0'],*scales[0],*scales[1]); sh.glUniform4f(u['uRockScale1'],*scales[2],*scales[3])
         sh.glUniform3f(u['uRockTint'],*(float(x) for x in rock.get('tint',(1.,)*3)))
         sh.glUniform4f(u['uRockP'],*(float(rock.get(k,d)) for k,d in (('exponent',1.),('tint_amount',0.),('mask_strength',1.),('sharpness',1.))))

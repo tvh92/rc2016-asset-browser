@@ -180,6 +180,7 @@ CLANK_ANTENNA_GLOSS_SQ = (-math.log2(1.0 - 0.9890101552009583) / 11.0) ** 2
 CLANK_ANTENNA_BLINK_RATE = 4.2                    # phase = 4.2 CB0[99]; no per-vertex phase term
 FLAT_SURFACE_GOO = dict(colour_key=0x34392B3C, f0_key=0x17DE448C, gloss_key=GLOSS_SCALE_KEY)
 BASIC_FLAT_COLOR_SHA256 = '6d9bcad5a9dab38dd5988195cc9e87514c08a90c6b8fa899c2d21f3e42c14f95'
+GRASS_BLEND_GRAPH_SHA256 = '3634199da89150f03c56b21d855f83d840e4dd06eeb33b748f8e16df1bd7ba65'
 # Thumper glove glass forward program 5226F404 (pass contract 0). Graph and program identity are pinned by
 # tests/test_thumper_glove_glass_rule.py. Slots: API5/API6 fx_noisetile02 (0x0056CBD0, 0x39DBF715) and API7/API8
 # patterns_cma (0xABDAD780 alpha, 0x7AE34E7A rg), each pair bound to one texture by the graph defaults.
@@ -380,6 +381,10 @@ GRAPH_RULES = (
     # world (x, z) / T, layer g/n at U * UV0, no layer colour or tint; RockBlend/ROCK_BLEND_DECODE.md.
     ('materialgraph/environment/global/rock/mo_blend_01/rp_mo_blend_color_breakup_01.',
      dict(g_mode='grey', self_lit_key=None, rock_blend='color_breakup')),
+    # A814EDCF deferred writer (pass 0): up-facing weight w from the bump-mapped normal blends rock, tile and
+    # world-planar breakup colours and the two F0/gloss images; Research/decodes/2026-10-22_pokitaru-grass-tile-blend/README.md.
+    ('materialgraph/environment/pokitaru/rock/pok_rock_blend_01/rp_pok_grass_blend_01.',
+     dict(g_mode='grey', self_lit_key=None, grass_blend=True, _graph_sha256=GRASS_BLEND_GRAPH_SHA256)),
     # FE32FE79/B01E7CB2 cached deferred outputs; Research/2026-10-22_from-PS4-animation-pipeline/decodes/Materials/Foliage/FOLIAGE_DECODE.md.
     ('materialgraph/global/basic_foliage/basic_foliage.',
      dict(g_mode='grey', self_lit_key=None, foliage=True, alpha_cut=True)),
@@ -1076,6 +1081,21 @@ def material_texture_paths(archive, material_path: str) -> dict:
             result['rock_blend'] = dict(tint=vec3(0x1AAD6A99, (1.0, 1.0, 1.0)),
                 exponent=value(0x965B2DCD, 1.0), tint_amount=value(0xF0A64F9B, 0.0),
                 mask_strength=value(0x21C2A812, 1.0), sharpness=value(0xF2634949, 1.0), writer='886AAC94')
+    if rule.get('grass_blend'):
+        # A814EDCF pass 0, API = 5 + resource index: 5 normal (_n), 8/9 F0 and gloss images, 10/12 tile and rock
+        # colours, 11 the world-planar breakup colour (_c). The graph declares no spec or gloss scale.
+        instance = texture_slots(data, MATERIAL_SLOT_SECTION)
+        wanted = {'_n': 0x49A7866B7AE34E7A, '_g': 0x49A7866B1576D848, '_grass_g9': 0x49A7866B93CA35AB,
+                  '_grass_g': 0x49A7866B0D1A9760, '_c': 0x49A7866BF9937BC9, '_grass_r': 0x49A7866B0056CBD0}
+        for role, slot in wanted.items():
+            path = instance.get(slot) or slots.get(slot)
+            if path: result[role] = path
+            else: result.pop(role, None)
+        result.update(spec=1.0, gloss=1.0)
+        result['graph_identity'] = dict(path=rule['graph_path'], sha256=rule['graph_sha256'])
+        result['grass_blend'] = dict(threshold=value(0x2C23F963, 0.6), uv_scale=value(0x461F69B4, 1.0),
+            layer_uv_scale=value(0xD83AB5FE, 1.0), world_tile=value(0xFD70EF49, 10.0),
+            world_axes='native x, z', writer='A814EDCF')
     if rule.get('liquid_flow'):
         result.update(g_mode='grey', self_lit='g_blue', spec=flow['spec'], gloss=flow['gloss'], k=flow['k'])
     if rule.get('screen'):
@@ -1814,6 +1834,23 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             entry['_puddle_atlas']=atlas
             entry['puddles']=dict(entry['puddles'], scales=atlas['scales'])
             if not entry.get('_n'): entry['puddles']['writer']='4A6CDAAA'
+        if paths.get('grass_blend'):
+            entry['grass_blend'] = paths['grass_blend']
+            # Rock colour, tile colour and the second F0/gloss image share the rock volume on unit 15
+            # (the fourth slice repeats the last so the layout stays four slices).
+            extra = []
+            for role in ('_grass_r', '_grass_g', '_grass_g9'):
+                path = paths.get(role)
+                if path: cached(archive, cache, path)
+                extra.append(with_pixels(archive, cache, path))
+            if all(extra) and all(entry.get(role) for role in ('_c', '_g', '_n')):
+                try:
+                    entry['_rock_volume'] = rock_texture_volume(extra + extra[-1:])
+                    entry['grass_blend']['extra_srgb'] = [bool(t.get('srgb')) for t in extra]
+                except ValueError as exc:
+                    entry['grass_blend'] = dict(entry['grass_blend'], unresolved_layers=True, volume_error=str(exc))
+            else:
+                entry['grass_blend'] = dict(entry['grass_blend'], unresolved_layers=True)
         if paths.get('rock_blend'):
             entry['rock_blend'] = paths['rock_blend']
             extra = []

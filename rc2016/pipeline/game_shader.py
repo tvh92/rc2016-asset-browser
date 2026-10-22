@@ -1109,7 +1109,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 15
+VIEWER_RULE_FRONTEND_VERSION = 16
 
 
 def _viewer_rule_images(nt):
@@ -1990,6 +1990,27 @@ def apply_viewer_graph_rule(mat, source):
                 n2 = P.tangent_normal(r2x, r2y, P.m('SUBTRACT', 1.0, P.dot2(r2x, r2y)), 'VR rock layer B normal')
                 normal = P.v('NORMALIZE', P.vlerp(base_normal, n2, rock_w))
         final_n = normal if normal is not None else Ng
+        if on('grass_blend'):          # A814EDCF: up-facing weight w blends rock, tile and world-planar breakup colours
+            gb = terms['grass_blend']
+            to_native = P.N.new('ShaderNodeVectorTransform'); to_native.name = 'VR grass blend native normal'
+            to_native.vector_type = 'NORMAL'; to_native.convert_from = 'WORLD'; to_native.convert_to = 'OBJECT'
+            P._set(to_native.inputs[0], final_n)
+            q = P.sep(P.v('NORMALIZE', to_native.outputs[0]))[1]
+            c_thr = P.const('grass blend threshold', gb['threshold'])
+            gw = P.sat(P.m('DIVIDE', P.m('SUBTRACT', q, P.m('MULTIPLY', c_thr, 0.5)), P.m('SUBTRACT', 1.0, c_thr)))
+            su, sr = P.const('grass blend tile uv scale', gb['uv_scale']), P.const('grass blend rock uv scale', gb['layer_uv_scale'])
+            tile = P.tex(img('_grass_g'), P.game_uv(su, su), 'grass tile colour')
+            rock = P.tex(img('_grass_r'), P.game_uv(sr, sr), 'grass rock colour')
+            g9 = P.tex(img('_grass_g9'), P.game_uv(su, su), 'grass second F0 gloss')
+            wx, _, wz = P.sep(P.native_position())
+            inv_t = P.m('DIVIDE', 1.0, P.m('MAXIMUM', P.const('grass blend world tile', gb['world_tile']), 1e-5))
+            breakup = P.tex(c, P.gl_coord(P.m('MULTIPLY', wx, inv_t), P.m('MULTIPLY', wz, inv_t)), 'grass breakup colour')
+            albedo = P.vlerp(rock.outputs['Color'], P.vlerp(tile.outputs['Color'], breakup.outputs['Color'], gw), gw)
+            rock_g = P.vlerp(g_rgb if g is not None else (0.0, 0.0, 0.0), g9.outputs['Color'], gw)
+            limits.append('grass_blend: the up-facing term q uses the object-space (model) native y of the mapped normal and the '
+                          'breakup colour its native x, z; the game uses world space, equal only for an unrotated model at the origin. '
+                          'Back faces rely on Blender flipping the shading normal (the source flips q by the front-face sign); '
+                          'normal strength CB0[95] and the instance fade are taken as 1 and 0')
         if leaf and leaf.get('mapped_fresnel'): albedo = leaf_albedo(albedo, final_n)
         metal_tint = None
         if metal:                     # 1012E99D forward two-colour terms with the final normal

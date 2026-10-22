@@ -471,6 +471,10 @@ def _viewer_expected_constants(rule):
             e.update({"rock world tile": r["world_tile"], "rock layer uv scale": r["layer_uv_scale"]})
         else:
             e.update({"rock tint": r["tint"], "rock exponent": r["exponent"], "rock tint amount": r["tint_amount"]})
+    if "grass_blend" in ported:
+        r = terms["grass_blend"]
+        e.update({"grass blend threshold": r["threshold"], "grass blend tile uv scale": r["uv_scale"],
+                  "grass blend rock uv scale": r["layer_uv_scale"], "grass blend world tile": r["world_tile"]})
     if "bng" in ported or "bng_detail" in ported:
         b = terms["bng"]
         e.update({"bng colour": b["colour"], **{"bng P%d" % i: x for i, x in enumerate(b["params"])},
@@ -608,6 +612,9 @@ def _viewer_required(rule, has_n):
         else:
             names += ["rock tint", "rock exponent", "rock tint amount", "rock mask strength", "rock sharpness"]
             req("_rock_mask", "_rock_c2", "_rock_g2", *(("_rock_n2",) if has_n else ()))
+    if "grass_blend" in ported:
+        names += ["grass blend threshold", "grass blend tile uv scale", "grass blend rock uv scale", "grass blend world tile"]
+        req("_grass_r", "_grass_g", "_grass_g9")
     if "bng" in ported:
         kind = int(terms["bng"]["kind"])
         names += ["bng colour"] if kind == 1 or (kind == 4 and lit) else [] if kind in (4, 10) else ["bng P0", "bng P1"] if kind == 7 else (["bng P0", "bng P1"] + (["bng P2"] if kind == 6 else []) if has_n else [])

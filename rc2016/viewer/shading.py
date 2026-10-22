@@ -251,6 +251,7 @@ uniform bool uRockBlend; uniform sampler3D uRockTex; uniform vec3 uRockSrgb;
 uniform vec4 uRockScale0; uniform vec4 uRockScale1;
 uniform vec3 uRockTint; uniform vec4 uRockP; // exponent, tint amount, mask strength, sharpness
 uniform vec3 uRockBreakup; // A3DAA047: enabled, 1/max(1e-5, world tile T), layer UV scale U
+uniform bool uGrassBlend; uniform vec4 uGrassP; // A814EDCF: CB2[0], tile/g9 UV scale CB2[1], rock UV scale CB2[6], 1/world tile CB2[4]
 varying float vRockAlpha; varying vec3 vGroundBlend;
 uniform int uMode;           // 0 solid, 1 base colour, 2 game BRDF, 3 flat colour (wireframe)
 uniform vec3 uColor;
@@ -518,6 +519,7 @@ void main() {
         albedo = max(albedo + uPick.y * c.a * albedo * (uPick.x * c.a * p - 1.0), 0.0);
     }
     float rockWeight = 0.0; vec3 rockG = vec3(0.0);
+    float grassQ = -2.0; // A814EDCF up-facing term q; below -1 = not computed (no normal map)
     if (uMode == 2 && uRockBlend) {
         float h = texture3D(uRockTex, vec3(fract(vUV)*uRockScale0.xy, 0.125)).r;
         if (uRockSrgb.x > 0.5) h = linear(vec3(h)).r;
@@ -642,7 +644,7 @@ void main() {
             }
         }
         // Image "up" is decreasing t (top row first), so the bitangent is -B.
-        if (uRockBlend) z = 1.0 - dot(rg, rg);
+        if (uRockBlend || uGrassBlend) z = 1.0 - dot(rg, rg);
         vec3 baseN = normalize(T * scale * rg.x - B * scale * rg.y + N * z);
         if (uBngKind == 3 || uBngKind == 6 || uBngKind == 8 || uBngKind == 9) {
             float rim = 1.00100004673 - clamp(dot(baseN, V), 0.0, 1.0);
@@ -665,6 +667,16 @@ void main() {
             rg = rg * dz + drg * z * (uSkinC.z * bngGl.b);
             z *= dz;
         }
+        if (uMode == 2 && uGrassBlend) {
+            // A814EDCF q = sigma * N'.y / |N'|: the same tangent-space normal in the native Y-up world frame
+            // (derivative frame of vTintWorldPos); front face is taken from the flipped normal.
+            vec3 wn = normalize(vTintWorldNrm); if (!gl_FrontFacing) wn = -wn;
+            vec3 wp1 = dFdx(vTintWorldPos), wp2 = dFdy(vTintWorldPos);
+            vec3 q2 = cross(wp2, wn), q1 = cross(wn, wp1);
+            vec3 wT = q2 * du1.x + q1 * du2.x, wB = q2 * du1.y + q1 * du2.y;
+            float ws = inversesqrt(max(max(dot(wT, wT), dot(wB, wB)), 1e-20));
+            grassQ = normalize(wT * ws * rg.x - wB * ws * rg.y + wn * z).y;
+        }
         if (uRockBlend) {
             vec2 r2 = texture3D(uRockTex, vec3(fract(materialUV)*uRockScale1.zw, 0.875)).rg*2.0-1.0;
             vec3 n2 = normalize(T*scale*r2.x - B*scale*r2.y + N*(1.0-dot(r2,r2)));
@@ -674,6 +686,23 @@ void main() {
     if(uMode==2 && uParallaxNormal && uTintVariant==0 && dot(pomT,pomT)>0.0 && uHasN) {
         vec2 xy=texture2D(uTexN,materialUV).rg*2.0-1.0;
         N=(gl_FrontFacing?1.0:-1.0)*normalize(pomT*xy.x+pomB*xy.y+pomN*(1.0-dot(xy,xy)));
+    }
+    if (uMode == 2 && uGrassBlend) {
+        // A814EDCF: w = sat((q - c/2)/(1 - c)); albedo = lerp(R, lerp(G, B, w), w) with R rock and G tile colour at UV0 times
+        // CB2[6] and CB2[1], B the breakup colour at native world (x, z) / CB2[4]; F0 and gloss inputs lerp(API8, API9, w).
+        if (grassQ < -1.5) { vec3 gn = normalize(vTintWorldNrm); if (!gl_FrontFacing) gn = -gn; grassQ = gn.y; }
+        float gw = clamp((grassQ - 0.5 * uGrassP.x) / (1.0 - uGrassP.x), 0.0, 1.0);
+        vec3 rockC = texture3D(uRockTex, vec3(fract(vUV * uGrassP.z) * uRockScale0.xy, 0.125)).rgb;
+        vec3 tileC = texture3D(uRockTex, vec3(fract(vUV * uGrassP.y) * uRockScale0.zw, 0.375)).rgb;
+        if (uRockSrgb.x > 0.5) rockC = linear(rockC);
+        if (uRockSrgb.y > 0.5) tileC = linear(tileC);
+        vec3 breakC = uHasC ? texture2D(uTexC, vTintWorldPos.xz * uGrassP.w).rgb : vec3(0.0);
+        if (uSrgbC) breakC = linear(breakC);
+        albedo = mix(rockC, mix(tileC, breakC, gw), gw);
+        vec3 g8 = uHasG ? texture2D(uTexG, vUV).rgb : vec3(0.0); if (uSrgbG) g8 = linear(g8);
+        vec3 g9 = texture3D(uRockTex, vec3(fract(vUV * uGrassP.y) * uRockScale1.xy, 0.625)).rgb;
+        if (uRockSrgb.z > 0.5) g9 = linear(g9);
+        rockG = mix(g8, g9, gw);
     }
     if (uMode == 2 && uLeafColour && uHasCma) {
         // 0476D929 / CDD7CD94: F = (1.001 - sat(N.V))^CB2[0]; L = S * mix(c.rgb, cma.r, F); (Novalis material S; global literal 0.5)
@@ -776,7 +805,7 @@ void main() {
             if (uFlatSurface) { F0 = vec3(uFlatSpec.x); gloss = sqrt(clamp(uFlatSpec.y, 0.0, 1.0)); }
             if (uVictorReticle) { F0 = uReticleF0; gloss = 0.0; }
             if (uTintVariant >= 3) gloss = sqrt(clamp(uGlossScale * gl.r * 2.0 * tintDetailMask, 0.0, 1.0));
-            if (uRockBlend) { F0 = vec3(uSpecScale*rockG.g); gloss = sqrt(clamp(uGlossScale*rockG.r, 0.0, 1.0)); }
+            if (uRockBlend || uGrassBlend) { F0 = vec3(uSpecScale*rockG.g); gloss = sqrt(clamp(uGlossScale*rockG.r, 0.0, 1.0)); }
             if (uTwoColorMetal) gloss = sqrt(clamp(uGlossScale * gl.r * (1.0 - metalRim), 0.0, 1.0));
             F0 *= uSpecTint;
             vec3 F90 = clamp(60.0 * F0, 0.0, 1.0);
@@ -1206,7 +1235,7 @@ def glass_uniforms(forward, time=None):
 
 OPAQUE_UNIFORMS = (
     "uPuddles", "uPuddleTex", "uHasPuddleAtlas", "uPuddle0", "uPuddle1", "uPuddle2", "uPuddle3", "uPuddleNoiseScale", "uPuddleRippleScale",
-    "uRockBlend", "uRockTex", "uRockSrgb", "uRockScale0", "uRockScale1", "uRockTint", "uRockP", "uRockBreakup",
+    "uRockBlend", "uGrassBlend", "uGrassP", "uRockTex", "uRockSrgb", "uRockScale0", "uRockScale1", "uRockTint", "uRockP", "uRockBreakup",
     "uSkin", "uBoneTex", "uBoneWidth", "uMode", "uColor", "uTexC", "uTexG", "uTexN", "uHasC", "uHasG", "uHasN",
     "uSrgbC", "uSrgbG", "uGMode", "uSpecScale", "uGlossScale", "uSelfLitG", "uK",
     "uTwoColorMetal", "uMetalDiffuseA", "uMetalDiffuseB", "uMetalSpecA", "uMetalSpecB", "uMetalP",
