@@ -77,6 +77,7 @@ class OnDemandPreviewTests(unittest.TestCase):
         from rc2016.viewer.experimental_materials import MATERIAL
         with patch('rc2016.viewer.textures.material_texture_paths',return_value={}), \
              patch('rc2016.viewer.native_glsl.selected_translation',return_value=None), \
+             patch('rc2016.viewer.native_glsl.exact_rule_wins',return_value=False), \
              patch('rc2016.viewer.experimental_materials.prepare_preview') as prepare:
             entry=material_textures(None,[dict(index=0,path=MATERIAL)],{},previews=False)[0]
             prepare.assert_not_called()

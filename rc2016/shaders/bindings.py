@@ -168,6 +168,24 @@ def _rotated_evidence(data):
     return _pooled(rotated_evidence,data)
 
 
+def frame_evidence(data):
+    """{PS attribute: vertex frame kind} from interpolants.frame_stream_attributes (module-level: it
+    runs in a worker process). Empty where analysis fails."""
+    from rc2016.shaders.interpolants import frame_stream_attributes
+    try:found=frame_stream_attributes(data)
+    except (ValueError,KeyError,IndexError,struct.error):return {}
+    return {a:FRAME_SEMANTICS[k] for a,k in found.items() if k in FRAME_SEMANTICS}
+
+
+@lru_cache(maxsize=64)
+def _frame_evidence(data):
+    return _pooled(frame_evidence,data)
+
+
+def graph_frame_evidence(data):
+    return dict(_once('frame_evidence',bytes(data),_frame_evidence))
+
+
 @lru_cache(maxsize=64)
 def _squared_evidence(data):
     return _pooled(squared_evidence,data)
@@ -350,8 +368,8 @@ def _lowered(program):
 VERTEX_FRAME_KINDS=('vertex_normal','vertex_tangent','vertex_handedness')
 
 
-def _handedness_sign(ir,i):
-    """True when node i depends on attribute3.w alone: the integer sign chain of the bitangent handedness."""
+def _handedness_sign(ir,i,attribute=3):
+    """True when node i depends on the tangent attribute's w alone: the integer sign chain of the bitangent handedness."""
     names,stack,seen=set(),[i],set()
     while stack:
         j=stack.pop()
@@ -359,10 +377,29 @@ def _handedness_sign(ir,i):
         seen.add(j);n=ir.nodes[j]
         if n['op']=='input':names.add(n.get('name'))
         stack.extend(n['args'])
-    return names=={'attribute3.3'}
+    return names=={f'attribute{attribute}.3'}
 
 
-def _bind(program,contract,material_data,instance,world_position=False,normal_attributes=(),stream_channels=None,static_attributes=(),source_preview_policy=None,vertex_frame=False):
+# Vertex streams of the frame: semantic 1 is the +8 normal word, semantic 2 the +12 tangent word.
+FRAME_SEMANTICS={1:'vertex_normal',2:'vertex_tangent'}
+
+
+def _frame_substitutions(ir,roots,frame,exclude=()):
+    """Live attribute inputs read as vertex frame vectors ({attribute: kind}), and the handedness
+    sign chain on the tangent attribute's w, as explicit vertex frame inputs."""
+    tangent=next((a for a,k in frame.items() if k=='vertex_tangent'),None);subs={}
+    for i in ir.reachable(roots):
+        n=ir.nodes[i]
+        if n['op']=='input' and n.get('kind')=='attribute' and n.get('channel') in (0,1,2) \
+                and n.get('attribute') in frame and n.get('attribute') not in exclude:
+            kind=frame[n['attribute']]
+            subs[i]=ir.node('input',name=f"{kind}.{n['channel']}",kind=kind,channel=n['channel'])
+        elif tangent is not None and n['op']=='i2f' and _handedness_sign(ir,i,tangent):
+            subs[i]=ir.node('input',name='vertex_handedness',kind='vertex_handedness')
+    return subs
+
+
+def _bind(program,contract,material_data,instance,world_position=False,normal_attributes=(),stream_channels=None,static_attributes=(),source_preview_policy=None,vertex_frame=False,frame_attributes=None):
     from rc2016.formats.materials import texture_slot_records, MATERIAL_TEXTURE_SLOTS
     overrides={}
     for row in texture_slot_records(material_data,MATERIAL_TEXTURE_SLOTS):
@@ -470,8 +507,25 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
                 masked=ir.node('input',name=f'preview_ground_blend.{component}',kind='preview_ground_blend',channel=component)
                 present=ir.node('input',name='preview_ground_blend.2',kind='preview_ground_blend',channel=2)
                 colours[i]=ir.op('add',masked,ir.op('sub',ir.const(1.),present))
-        if not adapted and not colours and not static_used:
-            raise ValueError('No camera + ray * POS_W world-position expression or proven squared colour channel')
+        # Vertex frame evidence is per graph and slow to trace, so it is read only when an
+        # interpolant other than UV0 is still live.
+        frame_subs={}
+        if frame_attributes is not None and any(ir.nodes[i]['op']=='input' and ir.nodes[i].get('kind')=='attribute'
+                                                and ir.nodes[i].get('attribute')!=0 for i in ir.reachable(replaced)):
+            frame=dict(frame_attributes() if callable(frame_attributes) else frame_attributes)
+            frame_subs=_frame_substitutions(ir,replaced,frame,exclude=set(normal_attributes) if adapted else ())
+            frame_subs={i:v for i,v in frame_subs.items() if i not in colours}
+        if not adapted and not colours and not static_used and not frame_subs:
+            raise ValueError('No camera + ray * POS_W world-position expression, proven squared colour channel or vertex frame')
+        if frame_subs:
+            frame_inputs={(ir.nodes[i]['attribute'],ir.nodes[v]['kind']) for i,v in frame_subs.items()
+                          if ir.nodes[i]['op']=='input'}
+            replaced=ir.replace(replaced,frame_subs)
+            lowered['limitations'].append('Experimental vertex frame: '+', '.join(f'attribute{a}.xyz as {k}' for a,k in sorted(frame_inputs))+
+                '. Some exporting vertex program, on some per-draw flag path, gives each as a per-draw rotation of vertex stream 1 '
+                '(the +8 normal word) or 2 (the +12 tangent word), and no exporter gives another stream; other exporters and paths '
+                '(skinning, deformation, buffer fetches) are not proven, nor is the path the game draws. The bitangent handedness '
+                'sign(tangent attribute w) is the viewer-inferred sign of the UV winding, not game data.')
         if colours:
             lowered['limitations'].append(f'Experimental: interpolants of this pixel program trace to vertex semantic {COLOUR_SEMANTIC} squared components '+','.join(sorted(painted))+'. The runtime flag path and colour-stream identity are inferred; level instances use candidate keyed channels where available. Generic red/green fallback is white 1, not Novalis review controls; standalone red/green stream transport remains unresolved.')
             normals.update(colours)
@@ -484,15 +538,7 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
         # Vertex normal (attribute2.xyz) and tangent (attribute3.xyz) are the decoded per-vertex words; the
         # bitangent handedness sign(attribute3.w) is the integer select/u_sub/i2f chain. The archive does not
         # store the handedness (docs/pipeline.md), so the caller supplies it from the UV winding: inferred.
-        frame={}
-        for i in ir.reachable(replaced):
-            n=ir.nodes[i]
-            if n['op']=='input' and n.get('kind')=='attribute' and n.get('attribute')==2 and n.get('channel') in (0,1,2):
-                frame[i]=ir.node('input',name=f"vertex_normal.{n['channel']}",kind='vertex_normal',channel=n['channel'])
-            elif n['op']=='input' and n.get('kind')=='attribute' and n.get('attribute')==3 and n.get('channel') in (0,1,2):
-                frame[i]=ir.node('input',name=f"vertex_tangent.{n['channel']}",kind='vertex_tangent',channel=n['channel'])
-            elif n['op']=='i2f' and _handedness_sign(ir,i):
-                frame[i]=ir.node('input',name='vertex_handedness',kind='vertex_handedness')
+        frame=_frame_substitutions(ir,replaced,{2:'vertex_normal',3:'vertex_tangent'})
         if frame:
             replaced=ir.replace(replaced,frame)
             lowered['limitations'].append('Vertex frame: attribute2.xyz and attribute3.xyz are the decoded vertex normal and tangent '
@@ -511,7 +557,7 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
         n=ir.nodes[i]
         if n['op'] not in PORTABLE_OPS:errors.append(dict(node=i,reason=n.get('reason',n['op'])))
         elif n['op']=='input' and not (n.get('kind')=='attribute' and n.get('attribute')==0 and n.get('channel') in (0,1)) and n.get('kind')!='front_facing' \
-                and not (vertex_frame and n.get('kind') in VERTEX_FRAME_KINDS) \
+                and not ((vertex_frame or frame_attributes is not None) and n.get('kind') in VERTEX_FRAME_KINDS) \
                 and not (world_position and n.get('kind') in (('preview_position','preview_normal','preview_view_offset') if adapted else ()) + ('preview_vertex_alpha_squared','preview_ground_blend','preview_static_vector')):
             errors.append(dict(node=i,reason='Unbound engine/interpolant input '+n['name']))
         elif n['op']=='texture' and not bound.get(n['api'],{}).get('path'):
@@ -542,6 +588,9 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
         **({'painted_channel_evidence':sorted(painted_evidence,key=lambda row:(row['attribute'],row['channel']))}
            if world_position and colours else {}),
         **({'world_position_terms':adapted} if adapted else {}),
+        **({'vertex_frame_inputs':sorted({n['kind'] for n in compact.nodes if n['op']=='input'
+                                          and n.get('kind') in VERTEX_FRAME_KINDS})}
+           if any(n['op']=='input' and n.get('kind') in VERTEX_FRAME_KINDS for n in compact.nodes) else {}),
         **({'static_vector_inputs':[dict(attribute=a,channel=c) for a,c in sorted(static_used)]} if static_used else {}),
         **({'neutral_blend_mask_inputs':neutral_masks} if neutral_masks else {}),
         **({'independent_sampler_inputs':[dict(api=a,sampler_api=s,sample=i)
@@ -637,6 +686,56 @@ def surface_components(bound):
     return result
 
 
+def numeric_equivalence(bounds,points=64,tolerance=1e-6):
+    """{'points', 'max_difference'} when every bound surface gives the same outputs (albedo, F0,
+    gloss, emission and normal) at deterministic random inputs; None otherwise.
+
+    Pass variants of one graph often differ only by API numbering and re-associated arithmetic.
+    Textures are pseudo-random per source image identity (path, type, normal interpretation),
+    channel and sample coordinates, so API labels do not matter but the image and its UVs do.
+    Inputs are random per kind, attribute and channel: front facing 0/1, handedness +-1.
+    Sampled evidence, not an algebraic proof: it fails closed on any disagreement."""
+    from rc2016.shaders.ir import compute
+    if len(bounds)<2 or len({b['normal'] is None for b in bounds})!=1:return None
+    def images(b):
+        normal=b['normal']['api'] if b['normal'] else None
+        return sorted((t['path'],t['type_hash'],t['api']==normal) for t in b['texture_bindings'])
+    if any(images(b)!=images(bounds[0]) for b in bounds[1:]):return None
+    def random(key):
+        return int.from_bytes(hashlib.sha256(key.encode()).digest()[:8],'little')/2**64
+    def outputs(b,point):
+        rows={t['api']:t for t in b['texture_bindings']};normal=b['normal']['api'] if b['normal'] else None
+        values=[]
+        for n in b['nodes']:
+            op=n['op'];args=[values[j] for j in n['args']]
+            if op=='const':v=n['value']
+            elif op=='input':
+                kind=n.get('kind');r=random(f"{point}|{kind}|{n.get('attribute')}|{n.get('channel')}")
+                v=(float(r<.5) if kind in ('front_facing','preview_front_face') else
+                   (1. if r<.5 else -1.) if kind=='vertex_handedness' else 4*r-2)
+            elif op=='texture':
+                t=rows[n['api']]
+                v=random(json.dumps([point,t['path'],t['type_hash'],n['api']==normal,n['channel'],[round(x,9) for x in args]]))
+            else:
+                try:v=compute(op,args)
+                except (ValueError,ZeroDivisionError,OverflowError):v=math.nan
+            values.append(v)
+        o=b['outputs'];roots=[*o['albedo'],*o['F0'],o['gloss'],o['emission'],*(b['normal']['xyz'] if b['normal'] else [])]
+        return [values[i] for i in roots]
+    worst=0.
+    for point in range(points):
+        first=outputs(bounds[0],point)
+        for b in bounds[1:]:
+            for x,y in zip(first,outputs(b,point)):
+                if math.isnan(x) or math.isnan(y):
+                    if math.isnan(x)!=math.isnan(y):return None
+                    continue
+                d=abs(x-y)
+                if d>tolerance*max(1.,abs(x),abs(y)):return None
+                worst=max(worst,d)
+    return dict(points=points,max_difference=worst)
+
+
 def surface_signature(bound):
     """Combined structural identity, unchanged by diagnostic receipt metadata."""
     return hashlib.sha256(json.dumps(surface_components(bound),sort_keys=True).encode()).hexdigest()
@@ -649,6 +748,7 @@ def surface_component_signatures(bound):
 
 
 WORLD_POSITION_CONTRACT='world-position-reconstruction-v1'
+VERTEX_FRAME_CONTRACT='vertex-frame-preview-v1'
 PAINT_STREAM_CONTRACT='squared-colour-stream-v1'
 # Vertex input semantic read as the model RGBA8 colour stream by the experimental adapter
 # (traced exports carry semantic 3 as UV0); an inference, not a decoded binding.
@@ -882,7 +982,8 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False,
             preview_policy=None if world_position else _source_preview_policy(
                 source_graph_paths,graph['graph_sha256'],source_material_path,material_sha256,program)
             try:bound=_bind(program,contract,material_data,instance,world_position,normal_attributes,
-                stream_channels,static_attributes,preview_policy,vertex_frame=vertex_frame)
+                stream_channels,static_attributes,preview_policy,vertex_frame=vertex_frame,
+                frame_attributes=(lambda:graph_frame_evidence(data)) if world_position else None)
             except ValueError as exc:
                 result['diagnostics'].append(dict(shader_id=program['shader_id'],contract=contract['index'],reason=str(exc)));continue
             if static_proof:bound['static_vector_evidence']=static_proof
@@ -892,7 +993,8 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False,
     if not candidates:
         result['diagnostics'].append('No portable deferred writer with a bounded source pass contract');return result
     signatures={c['surface_signature'] for c in candidates}
-    if len(signatures)!=1:
+    numeric=numeric_equivalence([c['bound'] for c in candidates]) if len(signatures)!=1 else None
+    if len(signatures)!=1 and not numeric:
         result['candidate_surfaces']=[dict(shader_id=c['program']['shader_id'],code_sha256=c['program']['code_sha256'],
             pass_contract_index=c['bound']['pass_contract_index'],surface_sha256=c['surface_signature'],
             texture_bindings=c['bound']['texture_bindings'],component_sha256=surface_component_signatures(c['bound']),
@@ -901,6 +1003,12 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False,
             if len({c['component_sha256'][key] for c in result['candidate_surfaces']})>1]
         result['diagnostics'].append('Multiple portable native variants produce different material programs');return result
     candidate=candidates[0];program=candidate['program']
+    if numeric:
+        result['numeric_equivalence']=numeric
+        candidate['bound']['limitations'].append(
+            f"Pass variants with different source expressions agree numerically: {len(candidates)} candidates give the same "
+            f"outputs at {numeric['points']} deterministic random inputs (largest difference {numeric['max_difference']:.3g}); "
+            "the first is used. This is sampled evidence, not an algebraic proof, and runtime pass selection is not established.")
     result.update(candidate['bound'],status='ready',graph_sha256=graph['graph_sha256'],
         code_sha256=program['code_sha256'],code_offset=program['code_offset'],shader_id=program['shader_id'],
         equivalent_candidates=len(candidates),translator_version=graph['translator_version'],binding_version=9,
@@ -933,10 +1041,12 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False,
         'Shared deferred BRDF is the existing Blender approximation; this is not full game shader equivalence.']
     if world_position:
         position_preview=bool(candidate['bound'].get('world_position_terms'))
-        result.update(status='experimental',preview_contract=('static-packed-vector-preview-v1' if static_vector else WORLD_POSITION_CONTRACT if position_preview else PAINT_STREAM_CONTRACT),automatic_ready=False,
+        frame_preview=bool(candidate['bound'].get('vertex_frame_inputs')) and not candidate['bound'].get('painted_channel_evidence')
+        result.update(status='experimental',preview_contract=('static-packed-vector-preview-v1' if static_vector else WORLD_POSITION_CONTRACT if position_preview else VERTEX_FRAME_CONTRACT if frame_preview else PAINT_STREAM_CONTRACT),automatic_ready=False,
             material_sha256=hashlib.sha256(bytes(material_data)).hexdigest())
         result['limitations'].insert(0,
             'Experimental world-position preview: an inferred engine meaning of CB0 and pixel position replaces runtime data; not a ready translation.' if position_preview else
+            'Experimental vertex-frame preview: interpolants are read as the decoded vertex normal and tangent with an inferred handedness; not a ready translation.' if frame_preview else
             'Experimental squared-colour preview: source-proven vertex squares use candidate colour streams; their runtime binding and flag selection remain inferred. No world-position or normal substitution; not a ready translation.')
     result['translation_sha256']=hashlib.sha256(candidate['signature'].encode()).hexdigest()
     return result

@@ -62,6 +62,41 @@ def _frontend(translation,images):
             negate = nodes.new('ShaderNodeMath');negate.operation='MULTIPLY';negate.inputs[1].default_value=-1
             links.new(native[2],negate.inputs[0]);native[2]=negate.outputs[0]
             for channel, value in enumerate(native):preview_inputs[(kind,channel)] = value
+        if any(n.get('kind') in ('vertex_normal','vertex_tangent','vertex_handedness') for n in translation['nodes']):
+            # Experimental vertex frame: the geometry normal; the decoded +12 tangent word (SourceTangent,
+            # native mesh space) taken to world, or Blender's UV0 tangent when the mesh lacks it; and the
+            # handedness that tilts the _n green towards Blender's UV0 bitangent (game -grad v, as the viewer).
+            def native_basis(socket,kind):
+                separate=nodes.new('ShaderNodeSeparateXYZ');links.new(socket,separate.inputs[0])
+                negate=nodes.new('ShaderNodeMath');negate.operation='MULTIPLY';negate.inputs[1].default_value=-1
+                links.new(separate.outputs[1],negate.inputs[0])
+                for channel,value in enumerate((separate.outputs[0],separate.outputs[2],negate.outputs[0])):
+                    preview_inputs[(kind,channel)]=value
+            def vector_math(operation,*sockets):
+                n=nodes.new('ShaderNodeVectorMath');n.operation=operation
+                for j,socket in enumerate(sockets):links.new(socket,n.inputs[j])
+                return n
+            native_basis(geometry.outputs['Normal'],'vertex_normal')
+            source=nodes.new('ShaderNodeAttribute');source.attribute_type='GEOMETRY';source.attribute_name='SourceTangent'
+            source.name='Experimental decoded vertex tangent'
+            world=nodes.new('ShaderNodeVectorTransform');world.vector_type='VECTOR';world.convert_from='OBJECT';world.convert_to='WORLD'
+            links.new(source.outputs['Vector'],world.inputs[0])
+            fallback=nodes.new('ShaderNodeTangent');fallback.direction_type='UV_MAP';fallback.uv_map='UV0'
+            present=nodes.new('ShaderNodeMath');present.operation='GREATER_THAN';present.inputs[1].default_value=0
+            links.new(vector_math('LENGTH',world.outputs[0]).outputs['Value'],present.inputs[0])
+            chosen=vector_math('SCALE',vector_math('SUBTRACT',world.outputs[0],fallback.outputs[0]).outputs[0])
+            links.new(present.outputs[0],chosen.inputs['Scale'])
+            tangent=vector_math('ADD',fallback.outputs[0],chosen.outputs[0]).outputs[0]
+            native_basis(tangent,'vertex_tangent')
+            green=nodes.new('ShaderNodeNormalMap');green.space='TANGENT';green.uv_map='UV0'
+            green.inputs['Color'].default_value=(.5,1.,.5,1.);green.inputs['Strength'].default_value=1
+            side=vector_math('DOT_PRODUCT',vector_math('CROSS_PRODUCT',geometry.outputs['Normal'],tangent).outputs[0],green.outputs[0])
+            sign=nodes.new('ShaderNodeMath');sign.operation='GREATER_THAN';sign.inputs[1].default_value=0
+            links.new(side.outputs['Value'],sign.inputs[0])
+            handedness=nodes.new('ShaderNodeMath');handedness.operation='MULTIPLY_ADD'
+            handedness.inputs[1].default_value=2;handedness.inputs[2].default_value=-1
+            links.new(sign.outputs[0],handedness.inputs[0])
+            preview_inputs[('vertex_handedness',None)]=handedness.outputs[0]
         if any(n.get('kind') == 'preview_view_offset' for n in translation['nodes']):
             # World position minus camera, -Incoming x View Distance, in the same native basis.
             camera=nodes.new('ShaderNodeCameraData');camera.name='Experimental viewer camera adapter'

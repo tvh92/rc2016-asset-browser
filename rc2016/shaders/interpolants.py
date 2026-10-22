@@ -643,6 +643,63 @@ def _stream_terms(ir, form, powers):
     return streams.pop() if streams else False
 
 
+def frame_stream_attributes(data, max_flags=MAX_FLAGS):
+    """{PS attribute index: vertex semantic K} for interpolants that some exporting vertex
+    program gives, on some per-draw flag setting, as a rotated stream M * (2s - 1) of K in all
+    of x, y and z (the forms rotated_stream_attributes accepts), while no exporter on any
+    setting gives a different stream.
+
+    Weaker than rotated_stream_attributes: exporters or flag paths with other forms (skinning,
+    wind deformation, buffer fetches) are tolerated, not proven. Evidence for the experimental
+    vertex frame only; the per-draw path the game takes is not established.
+    """
+    headers = shader_headers(data)
+    pixel = [h for h in headers if h['type'] == PIXEL]
+    vertex = [h for h in headers if h['type'] != PIXEL and h.get('layout') == 'verified']
+    compiled, found = {}, {}
+    count = max((len(p['inputs']) for p in pixel), default=0)
+    for index in range(count):
+        semantics = {p['inputs'][index]['semantic'] for p in pixel if index < len(p['inputs'])}
+        if len(semantics) != 1:
+            continue
+        streams = set()
+        for row in [r for r in vertex if any(e['semantic'] in semantics for e in r.get('exports', []))]:
+            key = row['header_offset']
+            if key not in compiled:
+                compiled[key] = vertex_exports(row)
+            exports, _ = compiled[key]
+            if exports is None:
+                continue
+            params, ir = exports
+            for slot in [e['slot'] for e in row['exports'] if e['semantic'] in semantics]:
+                channels = (params.get(slot) or [])[:3]
+                if len(channels) < 3 or any(c is None for c in channels):
+                    continue
+                # Expand the flags symbolically once, then specialise per setting of the flags
+                # left in the polynomials (as _symbolic_identity): a term is live when its flags are set.
+                forms = [linear_form(ir, c, SYMBOLIC_TERMS) for c in channels]
+                if any(f is None for f in forms):
+                    continue
+                names = sorted({f for form in forms for k in form for f in k if f.startswith(FLAG)})
+                if len(names) > max_flags:
+                    continue
+                for bits in range(1 << len(names)):
+                    ones = {f for k, f in enumerate(names) if bits >> k & 1}
+                    terms = set()
+                    for form in forms:
+                        special = {}
+                        for k, v in form.items():
+                            if {f for f in k if f.startswith(FLAG)} <= ones:
+                                rest = tuple(f for f in k if not f.startswith(FLAG))
+                                special[rest] = special.get(rest, 0.) + v
+                        terms.add(_stream_terms(ir, {k: v for k, v in special.items() if v}, 1))
+                    if len(terms) == 1 and isinstance(next(iter(terms)), int) and next(iter(terms)) is not False:
+                        streams.add(next(iter(terms)))
+        if len(streams) == 1:
+            found[index] = streams.pop()
+    return found
+
+
 def rotated_stream_attributes(data):
     """{PS attribute index: vertex semantic K} for interpolants whose xyz is, in every
     vertex program exporting them and on every per-draw flag path, per-draw words times

@@ -1827,6 +1827,16 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
                             raise ValueError('Experimental source texture unavailable: '+binding['path'])
                         preview_textures[binding['api']] = texture
                     entry['experimental_preview'] = preview_with_fallback(preview, entry)
+                    if preview.get('vertex_frame_inputs'):
+                        from rc2016.viewer.native_glsl import exact_rule_wins
+                        if exact_rule_wins(archive, material['path'], paths):
+                            # The vertex-frame writers keep one recovered _n slice, so a composed detail
+                            # normal is lost; the exact hand-ported rule reproduces it (the Aridia boulder).
+                            reason = ('Viewer override suppressed: an exact, fully ported viewer rule covers this graph, and '
+                                      'the translated normal output keeps one recovered _n slice (a composed detail normal is lost).')
+                            entry['experimental_preview'] = dict(entry['experimental_preview'], viewer_override=False,
+                                viewer_override_limitation=reason,
+                                limitations=[reason, *entry['experimental_preview'].get('limitations', [])])
                     entry['experimental_textures'] = preview_textures
             except (ValueError, KeyError, IndexError, OSError, StopIteration) as exc:
                 entry['experimental_error'] = str(exc)

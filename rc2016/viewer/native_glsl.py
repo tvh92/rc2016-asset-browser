@@ -76,6 +76,12 @@ def emit_surface(translation, srgb=None, *, experimental=False, rule_preview=Fal
                 expr = ('vTintWorldPos' if n['kind'] == 'preview_position' else 'vTintWorldNrm') + '.' + 'xyz'[n['channel']]
             elif preview and n.get('kind') == 'preview_view_offset' and n.get('channel') in (0,1,2):
                 expr = 'vTintViewOffset.' + 'xyz'[n['channel']]   # world position minus camera, same frame
+            elif preview and n.get('kind') == 'vertex_normal' and n.get('channel') in (0,1,2):
+                expr = 'vTintWorldNrm.' + 'xyz'[n['channel']]
+            elif preview and n.get('kind') == 'vertex_tangent' and n.get('channel') in (0,1,2):
+                expr = 'nativeFrameTangent.' + 'xyz'[n['channel']]
+            elif preview and n.get('kind') == 'vertex_handedness':
+                expr = 'nativeHandedness'
             elif preview and n.get('kind') == 'preview_static_vector' and n.get('channel') in (0,1,2):
                 expr = 'vStaticPackedVector.' + 'xyz'[n['channel']]
             elif preview and n.get('kind') == 'preview_ground_blend' and n.get('channel') in (0,1,2):
@@ -127,6 +133,10 @@ def emit_surface(translation, srgb=None, *, experimental=False, rule_preview=Fal
         return name
 
     outputs = translation['outputs']
+    if any(n.get('kind') in ('vertex_tangent', 'vertex_handedness') for n in translation['nodes']):
+        # Declared before any use: the frame inputs are emitted as these two names.
+        lines.append('    vec3 nativeFrameTangent = nativeVertexTangent();')
+        lines.append('    float nativeHandedness = nativeFrameHandedness(nativeFrameTangent);')
     for label in ('albedo', 'F0'):
         values = [visit(i) for i in outputs[label]]
         lines.append(f'    vec3 {label} = vec3({", ".join(values)});')
@@ -168,13 +178,31 @@ vec3 nativeTangentNormal(vec3 N, vec3 tangentNormal) {
 """
 
 
+FRAME_HELPERS = """
+// Experimental vertex frame, in the vTintWorldPos frame. The level viewer draws no tangent
+// stream, so the UV derivative tangent (grad u, the viewer's cotangent frame) stands in there.
+vec3 nativeVertexTangent() {
+    if (dot(vTintWorldTan, vTintWorldTan) > 0.0) return vTintWorldTan;
+    vec3 dp1 = dFdx(vTintWorldPos), dp2 = dFdy(vTintWorldPos); vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
+    return cross(dp2, vTintWorldNrm) * du1.x + cross(vTintWorldNrm, dp1) * du2.x;
+}
+// The writers tilt the _n green towards h * cross(N, T); the viewer's hand rules tilt it towards
+// -grad v (game V). The game's sign is not stored in the vertex word: the UV winding decides.
+float nativeFrameHandedness(vec3 T) {
+    vec3 dp1 = dFdx(vTintWorldPos), dp2 = dFdy(vTintWorldPos); vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
+    vec3 B = cross(dp2, vTintWorldNrm) * du1.y + cross(vTintWorldNrm, dp1) * du2.y;
+    return dot(cross(vTintWorldNrm, T), B) < 0.0 ? 1.0 : -1.0;
+}
+"""
+
+
 def fragment_source(translation, srgb=None, *, experimental=False, rule_preview=False):
     from rc2016.viewer.shading import FRAGMENT
     surface = emit_surface(translation, srgb, experimental=experimental, rule_preview=rule_preview)
     # Reuse all shared lighting, tonemap and BRDF helpers. Unused hand-rule code
     # is eliminated by the GLSL compiler; only the material-value source changes.
     prefix = FRAGMENT.split('void main() {', 1)[0]
-    source = prefix + surface['declarations'] + HELPERS + '\nvoid main() {\n'
+    source = prefix + surface['declarations'] + HELPERS + FRAME_HELPERS + '\nvoid main() {\n'
     source += '    vec3 N = normalize(vNrm) * (gl_FrontFacing ? 1.0 : -1.0); sceneCaptureNormal=N;\n'
     source += '    vec3 V = normalize(-vPos);\n' + surface['body'] + '\n'
     source += '    vec3 color = deferredDiffuse(N, albedo) + deferredSpecular(N, V, F0, gloss);\n'
@@ -390,21 +418,28 @@ def prepare_material_translation(archive, path):
     return found
 
 
-def selected_translation(archive, path, paths=None):
-    """Fully ported exact viewer rules win; native replaces generic/family guesses."""
+def exact_rule_wins(archive, path, paths):
+    """True when a fully ported exact viewer rule applies to the material and takes precedence."""
     from rc2016.formats.links import EXACT, rule_coverage
     from rc2016.formats.materials import _viewer_rule_wins_translation, viewer_graph_rule
-    from rc2016.viewer.textures import material_texture_paths
     from rc2016.formats.archive import asset_references
+    ids = [i for i in archive.resolve(path) if archive.entries[i]['type'] == 'material']
+    if len(ids) != 1: return False
+    graphs = [r['path'] for r in asset_references(archive, ids[0]) if r['path'].endswith('.materialgraph')]
+    if rule_coverage(graphs)[0] != EXACT: return False
+    bound = [v for v in paths.values() if isinstance(v, str) and v.endswith('.texture')]
+    rule = viewer_graph_rule(archive, path, bound)
+    return bool(rule.get('applies') and _viewer_rule_wins_translation(True, rule))
+
+
+def selected_translation(archive, path, paths=None):
+    """Fully ported exact viewer rules win; native replaces generic/family guesses."""
+    from rc2016.viewer.textures import material_texture_paths
     paths = paths if paths is not None else material_texture_paths(archive, path)
     if paths.get('forward'): return None
     ids = [i for i in archive.resolve(path) if archive.entries[i]['type'] == 'material']
     if len(ids) != 1: return None
-    graphs = [r['path'] for r in asset_references(archive, ids[0]) if r['path'].endswith('.materialgraph')]
-    if rule_coverage(graphs)[0] == EXACT:
-        bound = [v for v in paths.values() if isinstance(v, str) and v.endswith('.texture')]
-        rule = viewer_graph_rule(archive, path, bound)
-        if rule.get('applies') and _viewer_rule_wins_translation(True, rule): return None
+    if exact_rule_wins(archive, path, paths): return None
     translation = prepare_material_translation(archive, path)
     if translation.get('status') != 'ready': return None
     # Validate portable GLSL shape before advertising the route in coverage/UI.

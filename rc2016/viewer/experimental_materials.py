@@ -232,7 +232,8 @@ def valid_contract(receipt):
     """Admit explicit source-hashed generic or independently pinned previews."""
     from rc2016.shaders import terrain_preview
     identity = tuple(receipt.get(k) for k in ('preview_contract','code_sha256','graph_sha256','material_sha256'))
-    if receipt.get('preview_contract') in (bindings.WORLD_POSITION_CONTRACT, bindings.PAINT_STREAM_CONTRACT, 'static-packed-vector-preview-v1'):
+    if receipt.get('preview_contract') in (bindings.WORLD_POSITION_CONTRACT, bindings.PAINT_STREAM_CONTRACT,
+                                           bindings.VERTEX_FRAME_CONTRACT, 'static-packed-vector-preview-v1'):
         # Generic adapter: source-hashed per receipt; the emitters still admit only
         # UV0, front facing and explicit position/normal/colour preview inputs.
         if receipt.get('preview_contract') == 'static-packed-vector-preview-v1':
