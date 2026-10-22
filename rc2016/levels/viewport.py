@@ -20,6 +20,8 @@ from rc2016.viewer.viewport import ModelViewport
 
 # Column-major native -> presentation basis: (x, y, z) -> (x, -z, y).
 BASIS = (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+BOOST_RANGE = (1.0, 200.0)
+FINE_FACTOR = 0.1
 MOVE_KEYS = {"w": (1, 0, 0), "s": (-1, 0, 0), "d": (0, 1, 0), "a": (0, -1, 0), "e": (0, 0, 1), "q": (0, 0, -1)}
 FOV_DEGREES = 60.0
 SHADOW_SLOPE_BIAS = 2.0   # glPolygonOffset factor of the key-shadow depth pass: the viewer map has texels of about a unit, so a constant offset alone leaves acne on sloped ground
@@ -329,6 +331,9 @@ class LevelViewport(ModelViewport):
         self._eye, self._yaw, self._pitch, self._speed = (0.0, -50.0, 20.0), 90.0, -20.0, 20.0
         self._far = 10000.0
         self._keys, self._release_pending = set(), {}
+        self.boost = 4.0           # Shift speed as a multiple of the fly speed; the wheel changes it
+        self.fine_enabled = True   # Ctrl moves at FINE_FACTOR of the fly speed
+        self.on_boost_change = None   # called with the new boost after the wheel changes it
         self._last_tick = None
         self._press = None
         self.bind("<ButtonPress-1>", self._begin_look)
@@ -1754,20 +1759,16 @@ class LevelViewport(ModelViewport):
             self._eye = tuple(e + r[i] * dx + up[i] * dy for i, e in enumerate(eye))
             self._schedule_draw()
 
-    def _wheel(self, event):
-        if event.state & 0x4:   # Ctrl: change fly speed
-            self._speed = max(0.05, min(1e5, self._speed * (1.25 if event.delta > 0 else 0.8)))
-        else:
-            f, _r, _u = look_vectors(self._yaw, self._pitch)
-            step = self._speed * (0.5 if event.delta > 0 else -0.5)
-            self._eye = tuple(e + fi * step for e, fi in zip(self._eye, f))
-        self._schedule_draw()
+    def set_boost(self, value):
+        self.boost = max(BOOST_RANGE[0], min(BOOST_RANGE[1], float(value)))
+        if self.on_boost_change:
+            self.on_boost_change(self.boost)
+
+    def _wheel(self, event):   # the wheel sets the Shift speed; it no longer moves the camera
+        self._zoom_by(1.25 if event.delta > 0 else 0.8)
 
     def _zoom_by(self, factor):   # Button-4/5 (X11 wheel) from ModelViewport
-        f, _r, _u = look_vectors(self._yaw, self._pitch)
-        step = self._speed * (0.5 if factor > 1 else -0.5)
-        self._eye = tuple(e + fi * step for e, fi in zip(self._eye, f))
-        self._schedule_draw()
+        self.set_boost(self.boost * (1.25 if factor > 1 else 0.8))
 
     def _key_down(self, event):
         key = event.keysym.lower()
@@ -1778,7 +1779,7 @@ class LevelViewport(ModelViewport):
             self._speed = max(0.05, self._speed * 0.8)
         elif key in ("home", "f"):
             self._reset_camera()
-        if key in MOVE_KEYS or key.startswith("shift"):
+        if key in MOVE_KEYS or key.startswith(("shift", "control")):
             self._keys.add(key)
             if self._last_tick is None:
                 self._last_tick = time.perf_counter()
@@ -1800,7 +1801,12 @@ class LevelViewport(ModelViewport):
         dt = min(0.1, now - self._last_tick)
         self._last_tick = now
         f, r, _u = look_vectors(self._yaw, self._pitch)
-        boost = 4.0 if any(k.startswith("shift") for k in self._keys) else 1.0
+        if any(k.startswith("shift") for k in self._keys):
+            boost = self.boost
+        elif self.fine_enabled and any(k.startswith("control") for k in self._keys):
+            boost = FINE_FACTOR
+        else:
+            boost = 1.0
         step = self._speed * boost * dt
         dx = sum(m[0] for m in moving); dy = sum(m[1] for m in moving); dz = sum(m[2] for m in moving)
         self._eye = tuple(e + (f[i] * dx + r[i] * dy + (1.0 if i == 2 else 0.0) * dz) * step for i, e in enumerate(self._eye))

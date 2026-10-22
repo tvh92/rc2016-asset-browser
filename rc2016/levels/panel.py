@@ -18,12 +18,12 @@ from rc2016.app.layout import Splitter, regrid
 from rc2016.app.theme import track
 from rc2016.common import remember_var
 from rc2016.levels import scene as level_scene
-from rc2016.levels.viewport import LevelViewport
+from rc2016.levels.viewport import BOOST_RANGE, LevelViewport
 from rc2016.viewer.viewport import GL_TEXTURE_ROLES
 
 DEFAULT_LEVEL = "levels/novalis/novalis.level"
-HELP = ("Left drag look · right drag pan · WASD move · Q/E down/up · Shift faster · wheel dolly · "
-        "Ctrl+wheel or [ ] speed · F overview · click a model to identify it, right click to clear it, double click to open it")
+HELP = ("Left drag look · right drag pan · WASD move · Q/E down/up · Shift faster (wheel sets how much) · "
+        "Ctrl slower (10%) · [ ] speed · F overview · click a model to identify it, right click to clear it, double click to open it")
 
 
 def zone_names(zones):
@@ -36,6 +36,34 @@ def zone_names(zones):
             stem = f"{stem} ({parent})"
         names[zone] = stem
     return names
+
+
+# Zone name prefix -> (display order, group title); anything else falls under "Other".
+ZONE_GROUPS = {"art": (0, "Art"), "gp": (1, "Gameplay"), "lgt": (2, "Lighting & atmosphere"), "lighting": (2, "Lighting & atmosphere"),
+               "atm": (2, "Lighting & atmosphere"), "atmosphere": (2, "Lighting & atmosphere"), "vfx": (3, "Effects"), "fx": (3, "Effects"),
+               "neb": (3, "Effects"), "sound": (4, "Audio"), "music": (4, "Audio"), "nav": (5, "Navigation")}
+OTHER_GROUP = (6, "Other")
+
+
+def zone_group(label):
+    """(order, title) of the group a zone label belongs to, from its prefix (`art_terrain` -> Art)."""
+    base = label[:-len("_imposter")] if label.endswith("_imposter") else label
+    return ZONE_GROUPS.get(base.split("_", 1)[0].lower(), OTHER_GROUP)
+
+
+def zone_order(zones):
+    """[(group title, [zone path])] with groups in a fixed logical order; inside a group the zones are
+    alphabetical, each followed by its `_imposter` twin."""
+    names = zone_names(zones)
+
+    def key(zone):
+        label = names[zone].lower()
+        base = label.replace("_imposter", "")
+        return (base, label != base, label)
+    groups = {}
+    for zone in sorted(zones, key=key):
+        groups.setdefault(zone_group(level_scene.zone_label(zone)), []).append(zone)
+    return [(title, members) for (_order, title), members in sorted(groups.items())]
 
 
 def override_summary(overrides):
@@ -504,6 +532,22 @@ class LevelPanel:
         native_check = ttk.Checkbutton(display, text="Native translation", variable=self.native_translation_var,
                                        command=lambda: self.view.set_native_translation(self.native_translation_var.get()))
         native_check.grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        from rc2016.app.theme import _Tooltip
+        self.boost_var = tk.StringVar(value="4.0")
+        self.fine_var = kept(remember, tk.BooleanVar(value=True), "level.fine_ctrl")
+        boost_label = ttk.Label(display, text="Shift speed ×")
+        boost_label.grid(row=3, column=0, sticky="w", pady=(2, 0))
+        self.boost_box = ttk.Spinbox(display, from_=BOOST_RANGE[0], to=BOOST_RANGE[1], increment=0.5, width=7, textvariable=self.boost_var,
+                                     command=self._boost_typed)
+        self.boost_box.grid(row=3, column=1, sticky="w", padx=4, pady=(2, 0))
+        self.boost_box.bind("<Return>", self._boost_typed)
+        self.boost_box.bind("<FocusOut>", self._boost_typed)
+        fine_check = ttk.Checkbutton(display, text="Ctrl = fine move (10%)", variable=self.fine_var,
+                                     command=lambda: setattr(self.view, "fine_enabled", self.fine_var.get()))
+        fine_check.grid(row=4, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        _Tooltip(tk, boost_label, "How much faster Shift moves than the normal fly speed. The mouse wheel over the view changes it; type a value if you have no wheel.")
+        _Tooltip(tk, self.boost_box, "How much faster Shift moves than the normal fly speed. The mouse wheel over the view changes it; type a value if you have no wheel.")
+        _Tooltip(tk, fine_check, "Holding Ctrl moves at 10% of the normal fly speed, for fine positioning.")
         scene = ttk.LabelFrame(side, text="Scene", padding=(4, 2)); scene.grid(row=6, column=0, sticky="ew", pady=(3, 0))
         self.overrides_var = kept(remember, tk.BooleanVar(value=material_overrides), "level.material_overrides")
         overrides_check = ttk.Checkbutton(scene, text="Material overrides", variable=self.overrides_var,
@@ -576,6 +620,8 @@ class LevelPanel:
         zones_label = ttk.Label(head, text="Zones")
         zones_label.pack(side="left")
         _Tooltip(tk, zones_label, "A level is made of zones. Untick one to hide it; the view updates at once.")
+        for text, visible in (("None", False), ("All", True)):
+            ttk.Button(head, text=text, width=5, command=lambda v=visible: self._set_all_zones(v)).pack(side="right", padx=(2, 0))
         side.rowconfigure(9, weight=1)
         holder = ttk.Frame(side); holder.grid(row=9, column=0, sticky="nsew")
         holder.columnconfigure(0, weight=1); holder.rowconfigure(0, weight=1)
@@ -595,6 +641,9 @@ class LevelPanel:
         self.view = LevelViewport(main, width=420, height=300)
         self.view.grid(row=0, column=0, sticky="nsew")
         # The starting values (remembered or the defaults) reach the view through the same setters the checkboxes call.
+        self.view.fine_enabled = self.fine_var.get()
+        self.view.on_boost_change = lambda value: self.boost_var.set(f"{value:.1f}")
+        self.view.set_boost(float(self.boost_var.get()))
         self.view.set_lighting(lighting=self.lighting_var.get(), tonemap=self.tonemap_var.get())
         self.view.set_scene_effects(ao=self.scene_ao_var.get(), shadows=self.scene_shadows_var.get(),
                                     authored=self.scene_authored_var.get())
@@ -847,15 +896,30 @@ class LevelPanel:
             self.picked_var.set("Click a model in the view to identify it.")
             self.open_button.configure(state="disabled")
 
+    def _boost_typed(self, _event=None):
+        try:
+            self.view.set_boost(float(self.boost_var.get()))
+        except ValueError:
+            self.boost_var.set(f"{self.view.boost:.1f}")
+
     def _add_zone_rows(self, zones):
         names = zone_names(zones)
-        for zone in zones:
-            var = self.tk.BooleanVar(value=True)
-            row = self.ttk.Checkbutton(self.zone_list, text=names[zone] + " …", variable=var,
-                                       command=lambda z=zone, v=var: self.view.set_zone_visible(z, v.get()))
-            row.pack(anchor="w")
-            self.zone_vars[zone], self.zone_rows[zone] = var, row
-            row.name = names[zone]
+        for title, members in zone_order(zones):
+            self.ttk.Label(self.zone_list, text=title, style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
+            for zone in members:
+                var = self.tk.BooleanVar(value=True)
+                row = self.ttk.Checkbutton(self.zone_list, text=names[zone] + " …", variable=var,
+                                           command=lambda z=zone, v=var: self.view.set_zone_visible(z, v.get()))
+                row.pack(anchor="w", padx=(8, 0))
+                self.zone_vars[zone], self.zone_rows[zone] = var, row
+                row.name = names[zone]
+
+    def _set_all_zones(self, visible):
+        for zone, var in self.zone_vars.items():
+            if str(self.zone_rows[zone].cget("state")) == "disabled":
+                continue
+            var.set(visible)
+            self.view.set_zone_visible(zone, visible)
 
     def _poll(self):
         if self.closed:
