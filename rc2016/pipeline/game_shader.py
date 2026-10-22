@@ -1109,7 +1109,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 18
+VIEWER_RULE_FRONTEND_VERSION = 19
 
 
 def _viewer_rule_images(nt):
@@ -2064,6 +2064,112 @@ def apply_viewer_graph_rule(mat, source):
             limits.append('coral_blend: the vertex paint (red and green squared) comes from the explicit RC zone ground blend attribute, '
                           'inferred from zone-keyed colours, and unpainted vertices use the review fallback; the caustic scroll is frozen at '
                           'game time 0, the planes and height use object-space (model) native axes, and normal strength and fade are taken as 1')
+        if on('sediment_blend'):       # 0440BD68 (gas) / 2CF602BD (gbl): see Research/decodes/2026-10-22_rock-sediment
+            sb = terms['sediment_blend']; sed_kind = sb['kind']
+            uv0 = P.game_uv(1.0, 1.0)
+            tex0 = lambda role, label: P.tex(img(role), uv0, label).outputs['Color']
+            def overlay(a, b):         # per channel: a < 0.5 ? 2ab : 1 - 2(1 - a)(1 - b), a the ramp (the base)
+                out = []
+                for ca, cb_ in zip(P.sep(a), P.sep(b)):
+                    low = P.m('LESS_THAN', ca, 0.5)
+                    lo = P.m('MULTIPLY', P.m('MULTIPLY', ca, cb_), 2.0)
+                    hi = P.m('SUBTRACT', 1.0, P.m('MULTIPLY', P.m('MULTIPLY', P.m('SUBTRACT', 1.0, ca), P.m('SUBTRACT', 1.0, cb_)), 2.0))
+                    out.append(P.m('MULTIPLY_ADD', low, P.m('SUBTRACT', lo, hi), hi))
+                return P.comb(*out)
+            def layer_normal(sample, label):
+                lx, ly = P.rg(sample)
+                return P.tangent_normal(lx, ly, P.m('SUBTRACT', 1.0, P.dot2(lx, ly)), label)
+            px, py, pz = P.sep(P.native_position())
+            if sed_kind == 'gas':
+                gs, ge_, w0, w1 = (P.const('sediment blend ' + n, sb[ci]) for n, ci in (('gradient start', 'gradient_start'), ('gradient end', 'gradient_end'),
+                                                                                   ('weight start', 'weight_start'), ('weight end', 'weight_end')))
+                sed_w = P.sat(P.m('DIVIDE', P.m('SUBTRACT', py, w1), P.m('SUBTRACT', w0, w1)))
+                sed_d = P.m('SUBTRACT', py, gs)
+                cma = P.sep(P.tex(img('_sed_noise'), P.gl_coord(P.m('MULTIPLY', px, 0.005), P.m('MULTIPLY', pz, 0.005)), 'sediment noise cma').outputs['Color'])
+                sed_e = P.sat(P.m('DIVIDE', sed_d, P.m('SUBTRACT', ge_, gs)))
+                mix_b = P.m('MULTIPLY_ADD', sed_e, P.m('SUBTRACT', cma[0], cma[2]), cma[2])
+                grad = P.sat(P.m('DIVIDE', sed_d, P.m('ADD', P.m('MULTIPLY', mix_b, 40.0), P.m('SUBTRACT', ge_, gs))))
+                ramp = P.tex(img('_sed_gm'), P.gl_coord(grad, grad), 'sediment gradient map').outputs['Color']
+                # Cube-face projection of the native position by the dominant axis of the (front-face corrected) geometry normal.
+                nx, ny, nz = P.sep(P.native_normal()); ax, ay, az = P.sep(P.v('ABSOLUTE', P.native_normal()))
+                xd = P.m('MULTIPLY', P.ge(ax, ay), P.ge(ax, az))
+                yd = P.m('MULTIPLY', P.m('SUBTRACT', 1.0, xd), P.m('MULTIPLY', P.ge(ay, ax), P.ge(ay, az)))
+                zd = P.m('SUBTRACT', 1.0, P.m('ADD', xd, yd))
+                sed_pos = lambda v: P.m('GREATER_THAN', v, 0.0)
+                faces = {'xp': P.m('MULTIPLY', xd, sed_pos(nx)), 'xn': P.m('MULTIPLY', xd, P.m('SUBTRACT', 1.0, sed_pos(nx))),
+                         'yp': P.m('MULTIPLY', yd, sed_pos(ny)), 'yn': P.m('MULTIPLY', yd, P.m('SUBTRACT', 1.0, sed_pos(ny))),
+                         'zp': P.m('MULTIPLY', zd, sed_pos(nz)), 'zn': P.m('MULTIPLY', zd, P.m('SUBTRACT', 1.0, sed_pos(nz)))}
+                sed_neg = lambda v: P.m('MULTIPLY', v, -1.0)
+                pp = P.m('ADD', P.m('ADD', P.m('MULTIPLY', faces['xp'], sed_neg(pz)), P.m('MULTIPLY', faces['xn'], pz)),
+                         P.m('ADD', P.m('ADD', P.m('MULTIPLY', P.m('ADD', faces['yp'], faces['yn']), px), P.m('MULTIPLY', faces['zp'], px)),
+                             P.m('MULTIPLY', faces['zn'], sed_neg(px))))
+                qq = P.m('ADD', P.m('MULTIPLY', P.m('ADD', P.m('ADD', faces['xp'], faces['xn']), P.m('ADD', faces['zp'], faces['zn'])), sed_neg(py)),
+                         P.m('ADD', P.m('MULTIPLY', faces['yp'], pz), P.m('MULTIPLY', faces['yn'], sed_neg(pz))))
+                cs, sn = math.cos(1.0), math.sin(1.0)
+                su = P.m('MULTIPLY', P.m('SUBTRACT', P.m('MULTIPLY', pp, cs), P.m('MULTIPLY', qq, sn)), 0.125)
+                sv = P.m('MULTIPLY', P.m('ADD', P.m('MULTIPLY', pp, sn), P.m('MULTIPLY', qq, cs)), 0.125)
+                slag_uv = P.gl_coord(su, sv)
+                slag_cma_r = P.sep(P.tex(img('_sed_slag_cma'), slag_uv, 'sediment slag cma').outputs['Color'])[0]
+                sed_tan = P.N.new('ShaderNodeTangent'); sed_tan.direction_type = 'UV_MAP'; sed_tan.uv_map = 'UV0'; sed_tan.name = 'VR sediment UV0 tangent'
+                tan_o = P.N.new('ShaderNodeVectorTransform'); tan_o.name = 'VR sediment tangent to object'
+                tan_o.vector_type = 'VECTOR'; tan_o.convert_from = 'WORLD'; tan_o.convert_to = 'OBJECT'; P._set(tan_o.inputs[0], sed_tan.outputs[0])
+                ty = P.sep(P.v('NORMALIZE', tan_o.outputs[0]))[1]
+                gma = P.tex(img('_sed_slag_gma'), P.gl_coord(slag_cma_r, ty), 'sediment slag gma').outputs['Color']
+                albedo = P.vlerp(overlay(ramp, c.outputs['Color']), gma, sed_w)
+                # Slag normal: its tangent-space x, y (z = 1 - x*x - y*y) taken to native axes by the face's columns, then to world.
+                sx, sy = P.rg(P.tex(img('_sed_slag_n'), slag_uv, 'sediment slag normal sample').outputs['Color'])
+                sz = P.m('SUBTRACT', 1.0, P.dot2(sx, sy))
+                c_, s_ = cs, sn
+                cols = {0: dict(xp=(0, s_, -c_), xn=(0, s_, c_), yp=(c_, 0, -s_), yn=(c_, 0, s_), zp=(c_, s_, 0), zn=(c_, -s_, 0)),
+                        1: dict(xp=(0, c_, s_), xn=(0, c_, -s_), yp=(-s_, 0, -c_), yn=(-s_, 0, c_), zp=(-s_, c_, 0), zn=(s_, c_, 0)),
+                        2: dict(xp=(1, 0, 0), xn=(-1, 0, 0), yp=(0, 1, 0), yn=(0, -1, 0), zp=(0, 0, 1), zn=(0, 0, -1))}
+                sed_total = None
+                for ci, comp in enumerate((sx, sy, sz)):
+                    sed_col = None
+                    for face, weight in faces.items():
+                        sed_term = P.v('SCALE', P.const3('sediment face %s column %d' % (face, ci), cols[ci][face]), weight)
+                        sed_col = sed_term if sed_col is None else P.v('ADD', sed_col, sed_term)
+                    sed_term = P.v('SCALE', sed_col, comp)
+                    sed_total = sed_term if sed_total is None else P.v('ADD', sed_total, sed_term)
+                to_world = P.N.new('ShaderNodeVectorTransform'); to_world.name = 'VR sediment slag normal to world'
+                to_world.vector_type = 'NORMAL'; to_world.convert_from = 'OBJECT'; to_world.convert_to = 'WORLD'
+                P._set(to_world.inputs[0], P.v('NORMALIZE', sed_total))
+                slag_world = P.v('NORMALIZE', to_world.outputs[0])
+                normal = final_n = P.v('NORMALIZE', P.vlerp(base_normal, slag_world, sed_w))
+                gr, gg, _ = P.sep(g_rgb if g is not None else (0.0, 0.0, 0.0))
+                keep = P.m('SUBTRACT', 1.0, sed_w)
+                rock_g = P.comb(P.m('MULTIPLY', P.m('MULTIPLY', gr, keep), P.const('sediment blend gloss scale', sb['gloss_scale'])),
+                                P.m('MULTIPLY', P.m('MULTIPLY', gg, keep), P.const('sediment blend F0 scale', sb['f0_scale'])), 0.0)
+                limits.append('sediment_blend (gas): the slag cube projection, height and gradient use object-space (model) native axes; the front-face flip of '
+                              'the face selection is Blender\'s flipped geometry normal; the tangent y of the slag gradient lookup is the UV0 tangent (the '
+                              'decoded tangent stream is not rebuilt; the gradient images are one texel high, so it has no visible effect); normal strength '
+                              'and fade are taken as 1 and the geometric specular-AA width is 0; pass 1 (no slag, no normals) is not used')
+            else:
+                paint = P.N.new('ShaderNodeAttribute'); paint.attribute_name = 'RC zone ground blend'; paint.name = 'VR sediment blend vertex paint'
+                split = P.N.new('ShaderNodeSeparateColor'); split.mode = 'RGB'; P._set(split.inputs[0], paint.outputs['Color'])
+                unpainted = P.m('SUBTRACT', 1.0, split.outputs[2])      # missing attribute: zero, so the review fallback applies
+                fb = P.const('sediment blend paint fallback red', float(sb['paint_fallback']) ** 2)
+                pr = P.m('MULTIPLY_ADD', unpainted, fb, split.outputs[0])
+                tile, na, nb, htile = (P.const('sediment blend ' + n, sb[ci]) for n, ci in (('world tile', 'world_tile'), ('noise a', 'noise_a'),
+                                                                                       ('noise b', 'noise_b'), ('height tile', 'height_tile')))
+                cma = P.sep(P.tex(img('_sed_noise'), P.gl_coord(P.m('DIVIDE', px, tile), P.m('DIVIDE', pz, tile)), 'sediment noise cma').outputs['Color'])[0]
+                sed_h = P.m('DIVIDE', py, htile)
+                ramp_u = P.m('ADD', P.m('MULTIPLY_ADD', na, cma, sed_h),
+                             P.m('MULTIPLY', P.sat(P.m('MULTIPLY_ADD', sed_h, 2.0, -0.5)), P.m('SUBTRACT', P.m('MULTIPLY', nb, cma), P.m('MULTIPLY', na, cma))))
+                wall_g = P.sep(tex0('_sed_wall_g', 'sediment wall F0 gloss'))
+                cliff_g = P.sep(g_rgb if g is not None else (0.0, 0.0, 0.0))
+                wg = P.m('MULTIPLY', wall_g[0], P.const('sediment blend wall gloss scale', sb['wall_gloss_scale']))
+                cg = P.m('MULTIPLY', cliff_g[0], P.const('sediment blend cliff gloss scale', sb['cliff_gloss_scale']))
+                sed_gloss = P.sat(P.m('MULTIPLY_ADD', P.m('SUBTRACT', cg, wg), pr, wg))
+                ramp_v = P.m('SUBTRACT', 1.0, P.m('POWER', 2.0, P.m('MULTIPLY', P.m('SQRT', sed_gloss), -11.0)))
+                ramp = P.tex(img('_sed_sediment'), P.gl_coord(ramp_u, ramp_v), 'sediment ramp').outputs['Color']
+                albedo = overlay(ramp, P.vlerp(tex0('_sed_wall_c', 'sediment wall colour'), c.outputs['Color'], pr))
+                n_wall = layer_normal(tex0('_sed_wall_n', 'sediment wall normal sample'), 'VR sediment wall normal')
+                normal = final_n = P.v('NORMALIZE', P.vlerp(n_wall, base_normal, pr))
+                rock_g = P.comb(sed_gloss, P.m('MULTIPLY', cliff_g[1], P.const('sediment blend F0 scale', sb['f0_scale'])), 0.0)
+                limits.append('sediment_blend (gbl): the vertex paint (red squared) comes from the explicit RC zone ground blend attribute, inferred from '
+                              'zone-keyed colours, and unpainted vertices use the review fallback; the noise and height use object-space (model) native axes; '
+                              'normal strength and fade are taken as 1 and the geometric specular-AA width is 0; pass 1 (no normals, blended F0) is not used')
         if leaf and leaf.get('mapped_fresnel'): albedo = leaf_albedo(albedo, final_n)
         metal_tint = None
         if metal:                     # 1012E99D forward two-colour terms with the final normal

@@ -19,8 +19,6 @@ GREY_G_GRAPHS = {
         'e32b777f5cce0f4d7affdf83990d8a7e4e7661a8332ccaf9103974c6b6c8fa72',
     'materialgraph/environment/deplanetizer/ground/dep_gnd_world_space_stains_01/dep_gnd_world_space_stains_01.materialgraph':
         '1694d9c41a6bf4618b3dc3152cf78debd8ffa85276e0c1abbd195ab3aebd464b',
-    'materialgraph/environment/gaspar/rock/gas_rock_sediment_01/gas_rock_sediment_01.materialgraph':
-        'c3cb11996d49d042b3dc46943e62282cd8d8249a805c97be9a794d7efc598edd',
     'materialgraph/environment/global/decal/mo_decal_gnormal.materialgraph':
         '7849348e0e69b686b28d581f271ec3441a4e914fb486243b7cdbd564462c31a8',
     'materialgraph/environment/global/prop/gbl_prop_blarg_mercenary_bomb_01/gbl_prop_blarg_mercenary_bomb_01.materialgraph':
@@ -29,8 +27,6 @@ GREY_G_GRAPHS = {
         'bc1974d6e18c1cb11f41d4dd3398937e84fec97f53f8baf2ec99b718384d9664',
     'materialgraph/environment/global/rock/gbl_rock_ds_sediment_01/ari_rock_ds_sediment_01.materialgraph':
         '4a8ba721d85c48b544b7248a562ed6b2d2b195540fc30e82ae184add71edb99d',
-    'materialgraph/environment/global/rock/gbl_rock_ds_sediment_01/gbl_rock_ds_sediment_01.materialgraph':
-        'ba6885adedae49101d11e954f1e96ff231192b23b63336945ad7409783a3d877',
     'materialgraph/environment/metropolis/ambient/met_amb_water_pool_01/rb_ari_amb_quick_sand_01.materialgraph':
         'b8282b409880a81f9f050c124f06c028925f3587116e0c2b45fe35f14f688d8c',
     'materialgraph/environment/metropolis/ground/met_gnd_grass_01/met_gnd_grass_01.materialgraph':

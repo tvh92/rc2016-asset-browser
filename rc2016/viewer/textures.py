@@ -186,6 +186,12 @@ CORAL_BLEND_GRAPH_SHA256 = 'b97b38326b95942a3000aa36f591bec1c425366da27605531bc3
 # Volume slice order of the coral blend rule (rock_texture_volume on unit 15): the roles are the Blender image roles too.
 CORAL_BLEND_VOLUME_ROLES = ('_coral_n_wavy', '_coral_n_coral', '_coral_c_wavy', '_coral_c_rock', '_coral_g_rock', '_coral_g_sand',
                             '_coral_cma', '_caustic_blur', '_caustic_noise', '_caustic_smoke')
+# Sediment rock writers (pass 0): gas_rock_sediment_01 (0440BD68) and gbl_rock_ds_sediment_01 (2CF602BD);
+# Research/decodes/2026-10-22_rock-sediment/README.md. Volume slice order per writer (rock_texture_volume on unit 15).
+GAS_SEDIMENT_GRAPH_SHA256 = 'c3cb11996d49d042b3dc46943e62282cd8d8249a805c97be9a794d7efc598edd'
+GBL_SEDIMENT_GRAPH_SHA256 = 'ba6885adedae49101d11e954f1e96ff231192b23b63336945ad7409783a3d877'
+SEDIMENT_VOLUME_ROLES = {'gas': ('_sed_slag_n', '_sed_noise', '_sed_gm', '_sed_slag_cma', '_sed_slag_gma'),
+                         'gbl': ('_sed_wall_g', '_sed_wall_n', '_sed_noise', '_sed_wall_c', '_sed_sediment')}
 # Thumper glove glass forward program 5226F404 (pass contract 0). Graph and program identity are pinned by
 # tests/test_thumper_glove_glass_rule.py. Slots: API5/API6 fx_noisetile02 (0x0056CBD0, 0x39DBF715) and API7/API8
 # patterns_cma (0xABDAD780 alpha, 0x7AE34E7A rg), each pair bound to one texture by the graph defaults.
@@ -475,6 +481,12 @@ GRAPH_RULES = (
      dict(self_lit_key=None, forward='ion_tubes', constants=ION_TUBES_CONSTANTS, _graph_sha256=ION_TUBES_GRAPH_SHA256,
           slots={'_pick': ION_TUBES_SLOTS[0]}, params=(
          ('colour', 0x427C868D, 3), ('gain', 0x8A063007, 1), ('power', ION_TUBES_POWER_KEY, 1)))),
+    # Sediment rocks (exact graph + SHA): height-blended slag with a cube-projected normal (gas), and a vertex-painted two-rock
+    # blend over a height/gloss sediment ramp (gbl). Pass 0 of each; the grey _g reading is part of the rule.
+    ('materialgraph/environment/gaspar/rock/gas_rock_sediment_01/gas_rock_sediment_01.',
+     dict(g_mode='grey', self_lit_key=None, sediment_blend='gas', _graph_sha256=GAS_SEDIMENT_GRAPH_SHA256)),
+    ('materialgraph/environment/global/rock/gbl_rock_ds_sediment_01/gbl_rock_ds_sediment_01.',
+     dict(g_mode='grey', self_lit_key=None, sediment_blend='gbl', _graph_sha256=GBL_SEDIMENT_GRAPH_SHA256)),
     # Family fallbacks (no trailing dot, so native translation replaces them): graphs whose lowered writers read a grey _g
     # (F0 = G, gloss = R) and that no rule above covers; exact graph SHA-256 only (grey_g_graphs.py, shaders/g_layout.py).
     *((path.removesuffix('.materialgraph'), dict(g_mode='grey', _graph_sha256=digest)) for path, digest in GREY_G_GRAPHS.items()),
@@ -1131,6 +1143,34 @@ def material_texture_paths(archive, material_path: str) -> dict:
                         [value(0x3C127C84, -2.4), value(0x669F65E8, -2.6), value(0x3C127C84, -2.4)],
                         [value(0x38E7ACB9, 0.105), value(0x48694D6E, 0.095), value(0x38E7ACB9, 0.105)]],
                 paint_fallback=[float(DEFAULT_CONTROLS[0]), float(DEFAULT_CONTROLS[1])], world_axes='native x, y, z', writer='35571F99')
+    if rule.get('sediment_blend'):
+        # API = 5 + resource index of pass 0. gas: 5 _g, 6 slag normal (cube projection), 7 _n, 8 noise cma (world x, z), 9 gradient map
+        # (g, g), 10 _c, 11 slag cma, 12 slag gma (slag cma R, tangent y). gbl: 5/6 wall/cliff _g, 7/8 wall/cliff _n, 9 noise cma
+        # (world x, z), 10/11 wall/cliff _c, 12 sediment ramp (height u, gloss-encoded v).
+        kind = rule['sediment_blend']
+        instance = texture_slots(data, MATERIAL_SLOT_SECTION)
+        wanted = {'gas': {'_g': 0x1576D848, '_n': 0x7AE34E7A, '_c': 0xABDAD780, '_sed_slag_n': 0x641CFAC2, '_sed_noise': 0xC6A10D1E,
+                          '_sed_gm': 0xA5DECBB3, '_sed_slag_cma': 0x1D05016C, '_sed_slag_gma': 0xC9406348},
+                  'gbl': {'_g': 0x48C6D420, '_n': 0xDE04F5DA, '_c': 0xB993691F, '_sed_wall_g': 0xCBA07ED1, '_sed_wall_n': 0x143D51FA,
+                          '_sed_noise': 0x7DDEE77C, '_sed_wall_c': 0x0CBC5F08, '_sed_sediment': 0x02325D3E}}[kind]
+        def slot_path(low):   # the slot's high word differs between slots (0x49A7866B for most, 0x628AD5A8 for one), so match the low word
+            keys = {k for k in (*instance, *slots) if k & 0xFFFFFFFF == low}
+            return instance.get(next(iter(keys))) or slots.get(next(iter(keys))) if len(keys) == 1 else None
+        found = {role: slot_path(key) for role, key in wanted.items()}
+        if all(found.values()):
+            from rc2016.shaders.terrain_preview import DEFAULT_CONTROLS
+            result.update(found)
+            result.update(spec=1.0, gloss=1.0)
+            result['graph_identity'] = dict(path=rule['graph_path'], sha256=rule['graph_sha256'])
+            if kind == 'gas':
+                result['sediment_blend'] = dict(kind=kind, gloss_scale=value(0x24F4CA4C, 1.0), f0_scale=value(0x62835AF9, 1.0),
+                    gradient_start=value(0x6C066C10, 25.0), gradient_end=value(0x2111F1E4, 120.0),
+                    weight_start=value(0xCCF85E5B, 25.0), weight_end=value(0x8CF53258, 30.0), writer='0440BD68')
+            else:
+                result['sediment_blend'] = dict(kind=kind, world_tile=value(0xDD78DE02, 128.0), noise_a=value(0xB5049F8E, 0.2),
+                    noise_b=value(0x9EC2286A, 0.1), f0_scale=value(0x95D87517, 1.0), cliff_gloss_scale=value(0xB0418736, 1.0),
+                    wall_gloss_scale=value(0xCB1F05C8, 1.0), height_tile=value(0xA02C7A56, 60.0),
+                    paint_fallback=float(DEFAULT_CONTROLS[0]), writer='2CF602BD')
     if rule.get('liquid_flow'):
         result.update(g_mode='grey', self_lit='g_blue', spec=flow['spec'], gloss=flow['gloss'], k=flow['k'])
     if rule.get('screen'):
@@ -1902,6 +1942,22 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
                     entry['coral_blend'] = dict(entry['coral_blend'], unresolved_layers=True, volume_error=str(exc))
             else:
                 entry['coral_blend'] = dict(entry['coral_blend'], unresolved_layers=True)
+        if paths.get('sediment_blend'):
+            entry['sediment_blend'] = paths['sediment_blend']
+            # Five further layers share the rock volume on unit 15 in SEDIMENT_VOLUME_ROLES order.
+            extra = []
+            for role in SEDIMENT_VOLUME_ROLES[paths['sediment_blend']['kind']]:
+                path = paths.get(role)
+                if path: cached(archive, cache, path)
+                extra.append(with_pixels(archive, cache, path))
+            if all(extra) and all(entry.get(role) for role in ('_c', '_g', '_n')):
+                try:
+                    entry['_rock_volume'] = rock_texture_volume(extra)
+                    entry['sediment_blend']['extra_srgb'] = [bool(t.get('srgb')) for t in extra]
+                except ValueError as exc:
+                    entry['sediment_blend'] = dict(entry['sediment_blend'], unresolved_layers=True, volume_error=str(exc))
+            else:
+                entry['sediment_blend'] = dict(entry['sediment_blend'], unresolved_layers=True)
         if paths.get('rock_blend'):
             entry['rock_blend'] = paths['rock_blend']
             extra = []

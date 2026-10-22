@@ -205,6 +205,7 @@ attribute vec4 aJoints0; attribute vec4 aJoints1;
 attribute vec4 aWeights0; attribute vec4 aWeights1;
 varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
 varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm; varying vec3 vTintViewOffset; varying vec3 vTintWorldTan;
+varying mat3 vNativeToView;   // native Y-up vectors to view space (the model payload is in the display basis (x, -z, y))
 attribute float aRockAlpha; varying float vRockAlpha;
 attribute vec3 aGroundBlend; varying vec3 vGroundBlend;
 attribute vec3 aStaticPackedVector; varying vec3 vStaticPackedVector;
@@ -240,6 +241,7 @@ void main() {
     // Camera-to-vertex offset in the vTintWorldPos frame (affine, so it interpolates exactly).
     vec3 o = (gl_ModelViewMatrixInverse * vec4(view.xyz, 0.0)).xyz; vTintViewOffset = vec3(o.x, o.z, -o.y);
     vPos = view.xyz; vNrm = gl_NormalMatrix * n; vUV = gl_MultiTexCoord0.xy;
+    vNativeToView = gl_NormalMatrix * mat3(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0);
     gl_Position = gl_ProjectionMatrix * view;
 }
 """
@@ -258,6 +260,14 @@ uniform bool uGrassBlend; uniform vec4 uGrassP; // A814EDCF: CB2[0], tile/g9 UV 
 // CB2[10]; uCoralScroll = per-noise (x, y, z) scroll; uCoralPaint = squared review fallback for vertices without paint.
 uniform bool uCoralBlend; uniform vec4 uCoralA; uniform vec4 uCoralB; uniform vec3 uCoralNoise; uniform vec3 uCoralScroll[3];
 uniform vec2 uCoralPaint; uniform vec2 uCoralScale[10]; uniform float uCoralSrgb[10];
+// 0440BD68 (gas_rock_sediment_01, uSedKind 1) and 2CF602BD (gbl_rock_ds_sediment_01, uSedKind 2): five layers on the unit-15 volume
+// (SEDIMENT_VOLUME_ROLES). gas: uSedA = gradient start CB2[1], end CB2[2], slag weight start CB2[4], end CB2[5]; uSedB = gloss scale CB2[0],
+// F0 scale CB2[3]. gbl: uSedA = world tile CB2[0], noise scales CB2[1], CB2[2], height tile CB2[6]; uSedB = F0 scale CB2[3], cliff gloss
+// scale CB2[4], wall gloss scale CB2[5]. uSedPaint = squared review fallback of the vertex red for vertices without paint (gbl).
+uniform int uSedKind; uniform vec4 uSedA; uniform vec4 uSedB; uniform float uSedPaint; uniform vec2 uSedScale[5]; uniform float uSedSrgb[5];
+varying mat3 vNativeToView;
+#define SED(I, UV) texture3D(uRockTex, vec3(fract(UV) * uSedScale[I], (float(I) + 0.5) / 5.0))
+#define SED_LIN(I, UV) (uSedSrgb[I] > 0.5 ? linear(SED(I, UV).rgb) : SED(I, UV).rgb)
 #define CORAL(I, UV) texture3D(uRockTex, vec3(fract(UV) * uCoralScale[I], (float(I) + 0.5) / 10.0))
 #define CORAL_LIN(I, UV) (uCoralSrgb[I] > 0.5 ? linear(CORAL(I, UV).rgb) : CORAL(I, UV).rgb)
 varying float vRockAlpha; varying vec3 vGroundBlend;
@@ -326,6 +336,34 @@ varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm; varying vec3 vTangent; v
 varying vec3 vTintWorldTan; varying float vTangentSign;
 const float PI = 3.14159265;
 vec3 linear(vec3 c) { return pow(max(c, 0.0), vec3(2.2)); }
+// 0440BD68 t853..t976: cube-face projection of the native position by the dominant axis of the front-face corrected normal (ties go to X,
+// then Y), rotated 1 radian and scaled 0.125. Returns the slag texture coordinate; `cols` takes the slag tangent normal (sx, sy, sz) to a
+// native vector (the columns were read off the writer's output for each face).
+vec2 sedimentFace(out mat3 cols) {
+    vec3 wn = normalize(vTintWorldNrm), an = abs(wn); if (!gl_FrontFacing) wn = -wn;
+    vec3 wp = vTintWorldPos; float c = 0.5403023, s = 0.8414710; vec2 pq;
+    if (an.x >= an.y && an.x >= an.z) {
+        float sg = wn.x > 0.0 ? 1.0 : -1.0; pq = vec2(-sg * wp.z, -wp.y);
+        cols = sg > 0.0 ? mat3(0.0, s, -c, 0.0, c, s, 1.0, 0.0, 0.0) : mat3(0.0, s, c, 0.0, c, -s, -1.0, 0.0, 0.0);
+    } else if (an.y >= an.x && an.y >= an.z) {
+        float sg = wn.y > 0.0 ? 1.0 : -1.0; pq = vec2(wp.x, sg * wp.z);
+        cols = sg > 0.0 ? mat3(c, 0.0, -s, -s, 0.0, -c, 0.0, 1.0, 0.0) : mat3(c, 0.0, s, -s, 0.0, c, 0.0, -1.0, 0.0);
+    } else {
+        float sg = wn.z > 0.0 ? 1.0 : -1.0; pq = vec2(sg * wp.x, -wp.y);
+        cols = sg > 0.0 ? mat3(c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0) : mat3(c, -s, 0.0, s, c, 0.0, 0.0, 0.0, -1.0);
+    }
+    return 0.125 * vec2(c * pq.x - s * pq.y, s * pq.x + c * pq.y);
+}
+// Native y of the normalised vertex tangent (attribute3); where no tangent stream is drawn the UV-derivative tangent stands in.
+float sedimentTangentY() {
+    vec3 t = vTintWorldTan;
+    if (dot(t, t) == 0.0) {
+        vec3 dp1 = dFdx(vTintWorldPos), dp2 = dFdy(vTintWorldPos); vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
+        t = cross(dp2, vTintWorldNrm) * du1.x + cross(vTintWorldNrm, dp1) * du2.x;
+    }
+    return dot(t, t) > 0.0 ? normalize(t).y : 0.0;
+}
+vec3 overlayBlend(vec3 a, vec3 b) { return mix(2.0 * a * b, 1.0 - 2.0 * (1.0 - a) * (1.0 - b), step(vec3(0.5), a)); }
 // @lighting
 #ifdef GL_ARB_shader_texture_lod
 // 5FADAD33 rel764-920: positive counts, original IMAGE_SAMPLE_D UV gradients.
@@ -652,7 +690,7 @@ void main() {
             }
         }
         // Image "up" is decreasing t (top row first), so the bitangent is -B.
-        if (uRockBlend || uGrassBlend || uCoralBlend) z = 1.0 - dot(rg, rg);
+        if (uRockBlend || uGrassBlend || uCoralBlend || uSedKind != 0) z = 1.0 - dot(rg, rg);
         vec3 baseN = normalize(T * scale * rg.x - B * scale * rg.y + N * z);
         if (uBngKind == 3 || uBngKind == 6 || uBngKind == 8 || uBngKind == 9) {
             float rim = 1.00100004673 - clamp(dot(baseN, V), 0.0, 1.0);
@@ -695,6 +733,21 @@ void main() {
             vec3 nW = normalize(T * scale * rW.x - B * scale * rW.y + N * (1.0 - dot(rW, rW)));
             vec3 nC = normalize(T * scale * rC.x - B * scale * rC.y + N * (1.0 - dot(rC, rC)));
             N = normalize(mix(mix(nW, nC, paintC.y), nR, mC));
+        } else if (uSedKind == 1) {
+            // 0440BD68 MRT0: N = lerp(mapped _n, slag normal, w), w = sat((y - CB2[5]) / (CB2[4] - CB2[5])) from the native height; the slag
+            // normal is its cube-face tangent normal rotated to native axes (z = 1 - x*x - y*y), normalised, then taken to view space.
+            float sw = clamp((vTintWorldPos.y - uSedA.w) / (uSedA.z - uSedA.w), 0.0, 1.0);
+            mat3 fc; vec2 suv = sedimentFace(fc);
+            vec2 sr = SED(0, suv).rg * 2.0 - 1.0;
+            vec3 slag = normalize(vNativeToView * normalize(fc * vec3(sr, 1.0 - dot(sr, sr))));
+            N = normalize(mix(normalize(T * scale * rg.x - B * scale * rg.y + N * z), slag, sw));
+        } else if (uSedKind == 2) {
+            // 2CF602BD MRT0: N = lerp(wall n, cliff n, p) with p the vertex red (squared); both mapped in one frame, strength 1.
+            float sp = vGroundBlend.x + (1.0 - vGroundBlend.z) * uSedPaint;
+            vec2 rw = SED(1, vUV).rg * 2.0 - 1.0;
+            vec3 nCliff = normalize(T * scale * rg.x - B * scale * rg.y + N * z);
+            vec3 nWall = normalize(T * scale * rw.x - B * scale * rw.y + N * (1.0 - dot(rw, rw)));
+            N = normalize(mix(nWall, nCliff, sp));
         } else if (uRockBlend) {
             vec2 r2 = texture3D(uRockTex, vec3(fract(materialUV)*uRockScale1.zw, 0.875)).rg*2.0-1.0;
             vec3 n2 = normalize(T*scale*r2.x - B*scale*r2.y + N*(1.0-dot(r2,r2)));
@@ -748,6 +801,37 @@ void main() {
         vec3 gC = uHasG ? texture2D(uTexG, vUV).rgb : vec3(0.0); if (uSrgbG) gC = linear(gC);
         rockG = vec3(mix(uCoralB.w * mix(gA.r, gB.r, paintC.y), uCoralB.y * gC.r, mC),
                      mix(uCoralB.z * mix(gA.g, gB.g, paintC.y), uCoralB.x * gC.g, mC), 0.0);
+    }
+    if (uMode == 2 && uSedKind == 1) {
+        // 0440BD68 MRT1/MRT2: albedo = lerp(overlay(gradient(g, g), _c), slag gma(slag cma R, tangent y), w); g = sat(d / (40 lerp(cma B, R, e) +
+        // CB2[2] - CB2[1])) with d = y - CB2[1], e = sat(d / (CB2[2] - CB2[1])), cma the noise at 0.005 (x, z). F0 = CB2[3] (1 - w) _g.G and the gloss
+        // input CB2[0] (1 - w) _g.R. Sampler addressing is the viewer's repeat; the gradient images are one texel high.
+        float sy = vTintWorldPos.y;
+        float sw = clamp((sy - uSedA.w) / (uSedA.z - uSedA.w), 0.0, 1.0);
+        float sd = sy - uSedA.x;
+        vec3 cmaN = SED_LIN(1, vTintWorldPos.xz * 0.005);
+        float se = clamp(sd / (uSedA.y - uSedA.x), 0.0, 1.0);
+        float sg = clamp(sd / (40.0 * (cmaN.b + se * (cmaN.r - cmaN.b)) + uSedA.y - uSedA.x), 0.0, 1.0);
+        mat3 fc; vec2 suv = sedimentFace(fc);
+        vec3 gma = SED_LIN(4, vec2(SED_LIN(3, suv).r, sedimentTangentY()));
+        albedo = mix(overlayBlend(SED_LIN(2, vec2(sg)), albedo), gma, sw);
+        vec3 gS = uHasG ? texture2D(uTexG, vUV).rgb : vec3(0.0); if (uSrgbG) gS = linear(gS);
+        rockG = vec3(uSedB.x * (1.0 - sw) * gS.r, uSedB.y * (1.0 - sw) * gS.g, 0.0);
+    }
+    if (uMode == 2 && uSedKind == 2) {
+        // 2CF602BD MRT1/MRT2: p = vertex red (squared); colour = lerp(wall c, cliff c, p); the gloss input gl = sat(lerp(CB2[5] wall g.R, CB2[4] cliff g.R, p));
+        // albedo = overlay(ramp(u, 1 - 2^(-11 sqrt(gl))), colour) with u = h + CB2[1] cma + sat(2 h - 0.5) (CB2[2] - CB2[1]) cma, h = y / CB2[6],
+        // cma the noise at (x, z) / CB2[0]. F0 = CB2[3] cliff g.G; the gloss is sqrt(gl).
+        float sp = vGroundBlend.x + (1.0 - vGroundBlend.z) * uSedPaint;
+        float cma = SED_LIN(2, vTintWorldPos.xz / uSedA.x).r;
+        float sh = vTintWorldPos.y / uSedA.w;
+        float su = sh + uSedA.y * cma + clamp(2.0 * sh - 0.5, 0.0, 1.0) * (uSedA.z * cma - uSedA.y * cma);
+        vec3 gWall = SED_LIN(0, vUV);
+        vec3 gCliff = uHasG ? texture2D(uTexG, vUV).rgb : vec3(0.0); if (uSrgbG) gCliff = linear(gCliff);
+        float gl = clamp(uSedB.z * gWall.r + sp * (uSedB.y * gCliff.r - uSedB.z * gWall.r), 0.0, 1.0);
+        float sv = 1.0 - exp2(-11.0 * sqrt(gl));
+        albedo = overlayBlend(SED_LIN(4, vec2(su, sv)), mix(SED_LIN(3, vUV), albedo, sp));
+        rockG = vec3(gl, uSedB.x * gCliff.g, 0.0);
     }
     if (uMode == 2 && uLeafColour && uHasCma) {
         // 0476D929 / CDD7CD94: F = (1.001 - sat(N.V))^CB2[0]; L = S * mix(c.rgb, cma.r, F); (Novalis material S; global literal 0.5)
@@ -850,7 +934,7 @@ void main() {
             if (uFlatSurface) { F0 = vec3(uFlatSpec.x); gloss = sqrt(clamp(uFlatSpec.y, 0.0, 1.0)); }
             if (uVictorReticle) { F0 = uReticleF0; gloss = 0.0; }
             if (uTintVariant >= 3) gloss = sqrt(clamp(uGlossScale * gl.r * 2.0 * tintDetailMask, 0.0, 1.0));
-            if (uRockBlend || uGrassBlend || uCoralBlend) { F0 = vec3(uSpecScale*rockG.g); gloss = sqrt(clamp(uGlossScale*rockG.r, 0.0, 1.0)); }
+            if (uRockBlend || uGrassBlend || uCoralBlend || uSedKind != 0) { F0 = vec3(uSpecScale*rockG.g); gloss = sqrt(clamp(uGlossScale*rockG.r, 0.0, 1.0)); }
             if (uTwoColorMetal) gloss = sqrt(clamp(uGlossScale * gl.r * (1.0 - metalRim), 0.0, 1.0));
             F0 *= uSpecTint;
             vec3 F90 = clamp(60.0 * F0, 0.0, 1.0);
@@ -1281,7 +1365,7 @@ def glass_uniforms(forward, time=None):
 
 OPAQUE_UNIFORMS = (
     "uPuddles", "uPuddleTex", "uHasPuddleAtlas", "uPuddle0", "uPuddle1", "uPuddle2", "uPuddle3", "uPuddleNoiseScale", "uPuddleRippleScale",
-    "uRockBlend", "uGrassBlend", "uGrassP", "uCoralBlend", "uCoralA", "uCoralB", "uCoralNoise", "uCoralScroll", "uCoralPaint", "uCoralScale", "uCoralSrgb", "uRockTex", "uRockSrgb", "uRockScale0", "uRockScale1", "uRockTint", "uRockP", "uRockBreakup",
+    "uRockBlend", "uGrassBlend", "uGrassP", "uSedKind", "uSedA", "uSedB", "uSedPaint", "uSedScale", "uSedSrgb", "uCoralBlend", "uCoralA", "uCoralB", "uCoralNoise", "uCoralScroll", "uCoralPaint", "uCoralScale", "uCoralSrgb", "uRockTex", "uRockSrgb", "uRockScale0", "uRockScale1", "uRockTint", "uRockP", "uRockBreakup",
     "uSkin", "uBoneTex", "uBoneWidth", "uMode", "uColor", "uTexC", "uTexG", "uTexN", "uHasC", "uHasG", "uHasN",
     "uSrgbC", "uSrgbG", "uGMode", "uSpecScale", "uGlossScale", "uSelfLitG", "uK",
     "uTwoColorMetal", "uMetalDiffuseA", "uMetalDiffuseB", "uMetalSpecA", "uMetalSpecB", "uMetalP",
@@ -1316,6 +1400,7 @@ attribute vec3 aStaticPackedVector;
 varying vec3 vGroundBlend;
 varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
 varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm; varying vec3 vTintViewOffset; varying vec3 vTintWorldTan;
+varying mat3 vNativeToView;
 varying float vRockAlpha; varying vec3 vStaticPackedVector;
 varying vec3 vTangent; varying float vTangentSign;   // the level viewer draws no tangent stream: zero keeps the derivative frame
 void main() {
@@ -1343,6 +1428,7 @@ void main() {
     vec4 view = gl_ModelViewMatrix * vec4(p, 1.0);
     vTintViewOffset = (gl_ModelViewMatrixInverse * vec4(view.xyz, 0.0)).xyz;   // p minus the camera, native world
     vPos = view.xyz; vNrm = gl_NormalMatrix * n; vUV = gl_MultiTexCoord0.xy;
+    vNativeToView = gl_NormalMatrix;
     gl_Position = gl_ProjectionMatrix * view;
 }
 """

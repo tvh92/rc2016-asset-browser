@@ -1,5 +1,6 @@
 """Fresh-process structural checks for preflight-selected shader previews."""
 import json
+import math
 import struct
 
 from rc2016.shaders.families import FAMILY_REGISTRY
@@ -484,6 +485,22 @@ def _viewer_expected_constants(rule):
                   "coral blend noise scale": r["noise_scale"][1], "coral blend smoke scale": r["noise_scale"][2],
                   "coral blend paint fallback red": r["paint_fallback"][0] ** 2,
                   "coral blend paint fallback green": r["paint_fallback"][1] ** 2})
+    if "sediment_blend" in ported:
+        r = terms["sediment_blend"]
+        if r["kind"] == "gas":
+            e.update({"sediment blend gradient start": r["gradient_start"], "sediment blend gradient end": r["gradient_end"],
+                      "sediment blend weight start": r["weight_start"], "sediment blend weight end": r["weight_end"],
+                      "sediment blend gloss scale": r["gloss_scale"], "sediment blend F0 scale": r["f0_scale"]})
+            c, s = math.cos(1.0), math.sin(1.0)   # slag tangent normal (sx, sy, sz) -> native axes, per cube face (0440BD68 writer)
+            columns = {0: dict(xp=(0, s, -c), xn=(0, s, c), yp=(c, 0, -s), yn=(c, 0, s), zp=(c, s, 0), zn=(c, -s, 0)),
+                       1: dict(xp=(0, c, s), xn=(0, c, -s), yp=(-s, 0, -c), yn=(-s, 0, c), zp=(-s, c, 0), zn=(s, c, 0)),
+                       2: dict(xp=(1, 0, 0), xn=(-1, 0, 0), yp=(0, 1, 0), yn=(0, -1, 0), zp=(0, 0, 1), zn=(0, 0, -1))}
+            e.update({"sediment face %s column %d" % (face, k): vec for k, row in columns.items() for face, vec in row.items()})
+        else:
+            e.update({"sediment blend world tile": r["world_tile"], "sediment blend noise a": r["noise_a"],
+                      "sediment blend noise b": r["noise_b"], "sediment blend height tile": r["height_tile"],
+                      "sediment blend wall gloss scale": r["wall_gloss_scale"], "sediment blend cliff gloss scale": r["cliff_gloss_scale"],
+                      "sediment blend F0 scale": r["f0_scale"], "sediment blend paint fallback red": r["paint_fallback"] ** 2})
     if "bng" in ported or "bng_detail" in ported:
         b = terms["bng"]
         e.update({"bng colour": b["colour"], **{"bng P%d" % i: x for i, x in enumerate(b["params"])},
@@ -630,6 +647,16 @@ def _viewer_required(rule, has_n):
                   "coral blend noise scale", "coral blend smoke scale", "coral blend paint fallback red", "coral blend paint fallback green"]
         req("_coral_n_wavy", "_coral_n_coral", "_coral_c_wavy", "_coral_c_rock", "_coral_g_rock", "_coral_g_sand", "_coral_cma",
             "_caustic_blur", "_caustic_noise", "_caustic_smoke")
+    if "sediment_blend" in ported:
+        if terms["sediment_blend"]["kind"] == "gas":
+            names += ["sediment blend gradient start", "sediment blend gradient end", "sediment blend weight start", "sediment blend weight end",
+                      "sediment blend gloss scale", "sediment blend F0 scale"]
+            req("_sed_slag_n", "_sed_noise", "_sed_gm", "_sed_slag_cma", "_sed_slag_gma")
+        else:
+            names += ["sediment blend world tile", "sediment blend noise a", "sediment blend noise b", "sediment blend height tile",
+                      "sediment blend wall gloss scale", "sediment blend cliff gloss scale", "sediment blend F0 scale",
+                      "sediment blend paint fallback red"]
+            req("_sed_wall_g", "_sed_wall_n", "_sed_noise", "_sed_wall_c", "_sed_sediment")
     if "bng" in ported:
         kind = int(terms["bng"]["kind"])
         names += ["bng colour"] if kind == 1 or (kind == 4 and lit) else [] if kind in (4, 10) else ["bng P0", "bng P1"] if kind == 7 else (["bng P0", "bng P1"] + (["bng P2"] if kind == 6 else []) if has_n else [])

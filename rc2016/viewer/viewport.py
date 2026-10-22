@@ -858,6 +858,11 @@ class ModelViewport(_TkFrame):
             if entry.get('_rock_volume'):
                 uploaded['_rock_volume'] = (self._upload_rock_volume(entry['_rock_volume']), False)
                 uploaded['coral_blend']['scales'] = entry['_rock_volume']['scales']
+        if entry.get('sediment_blend'):
+            uploaded['sediment_blend'] = dict(entry['sediment_blend'])
+            if entry.get('_rock_volume'):
+                uploaded['_rock_volume'] = (self._upload_rock_volume(entry['_rock_volume']), False)
+                uploaded['sediment_blend']['scales'] = entry['_rock_volume']['scales']
         for key in ('parallax', 'parallax_normal'):
             if key in entry: uploaded[key] = entry[key]
         if "bng" in entry:
@@ -1515,6 +1520,20 @@ class ModelViewport(_TkFrame):
             sh.glUniform2fv(u['uCoralPaint'], 1, (ctypes.c_float * 2)(float(fallback[0]) ** 2, float(fallback[1]) ** 2))
             sh.glUniform2fv(u['uCoralScale'], 10, (ctypes.c_float * 20)(*(float(x) for pair in scales for x in pair)))
             sh.glUniform1fv(u['uCoralSrgb'], 10, (ctypes.c_float * 10)(*(1.0 if x else 0.0 for x in flags)))
+        sed = entry.get('sediment_blend') or {}
+        sed_on = bool(sed and volume and not sed.get('unresolved_layers') and level == 2)
+        sh.glUniform1i(u['uSedKind'], ({'gas': 1, 'gbl': 2}.get(sed.get('kind'), 0) if sed_on else 0))
+        if sed_on:
+            if sed['kind'] == 'gas':
+                sh.glUniform4f(u['uSedA'], *(float(sed[k]) for k in ('gradient_start', 'gradient_end', 'weight_start', 'weight_end')))
+                sh.glUniform4f(u['uSedB'], float(sed['gloss_scale']), float(sed['f0_scale']), 0.0, 0.0)
+            else:
+                sh.glUniform4f(u['uSedA'], *(float(sed[k]) for k in ('world_tile', 'noise_a', 'noise_b', 'height_tile')))
+                sh.glUniform4f(u['uSedB'], float(sed['f0_scale']), float(sed['cliff_gloss_scale']), float(sed['wall_gloss_scale']), 0.0)
+            fallback = getattr(self, 'ground_preview_controls', None) or (sed.get('paint_fallback', 0.75),)
+            sh.glUniform1f(u['uSedPaint'], float(fallback[0]) ** 2)
+            sh.glUniform2fv(u['uSedScale'], 5, (ctypes.c_float * 10)(*(float(x) for pair in sed.get('scales', [(1., 1.)] * 5) for x in pair)))
+            sh.glUniform1fv(u['uSedSrgb'], 5, (ctypes.c_float * 5)(*(1.0 if x else 0.0 for x in sed.get('extra_srgb', (False,) * 5))))
         sh.glUniform3f(u['uRockSrgb'],*(float(x) for x in (rock or grass).get('extra_srgb',(False,)*3)))
         scales = (rock or grass).get('scales',[(1.,1.)]*4)
         sh.glUniform4f(u['uRockScale0'],*scales[0],*scales[1]); sh.glUniform4f(u['uRockScale1'],*scales[2],*scales[3])
