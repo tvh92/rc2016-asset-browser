@@ -18,13 +18,15 @@ So the deferred path draws a black, zero-specular, zero-emission cut-out and the
 
 The pass contract binds the CB2 words and two texture APIs (5 and 6). Both resolve to `textures/visualeffect/electricity/electricity_line_01/electricity_line_01.texture` (64x512, non-sRGB), in the graph slots `0x4AC18E9F` and `0x39DBF715`; the material overrides neither. The material stores `CB2[0..2]` (key `0x427C868D`) = (0.0953, 0.5906, 1.0) and `CB2[3]` (key `0x8A063007`) = 6.0. `CB2[4]` (key `0xEC98DCA7`) is not stored and defaults to 0. Flags `0x38`: opaque, one-sided.
 
-With `CB0[107]` (a fade/dissolve threshold) = 0, `attribute2.w` = 1 and `CB2[4]` = 0, the compiled program equals, to double precision at 200 random inputs (random `CB0[99]` included):
+With `attribute2.w` = 1 and `CB2[4]` = 0, the compiled program equals, to double precision at 200 random inputs (random `CB0[99]` and `CB0[107]` included):
 
 ```text
 rgb = 2 A (1 + m) (base + rim F^5 + m C g)
-m   = sat(API6.R(2u + 0.3, v/2 - t) + API5.G(1 - 2v + t, u/4 - t)),   t = CB0[99]
+m   = sat((s - c) / max(1e-5, 1 - c)),   s = API6.R(2u + 0.3, v/2 - t) + API5.G(1 - 2v + t, u/4 - t),   t = CB0[99],   c = CB0[107]
 F   = max(N.V - 0.00100005, 0)
 ```
+
+`c` is a dissolve threshold: below it the streak is cut, above it the remainder is stretched to 1, so 0 shows the full bolts and 1 removes them. Twenty-odd other effect programs (thrusters, scorch marks, laser beams, shields, the prisoner number displays) read `CB0[107]` the same way, which is the evidence for the role; the viewer and Blender front-end carry it as the input `fade` (`VR ion tubes fade`) and default it to 0.
 
 Here `C` is `CB2[0..2]`, `g` is `CB2[3]`, `A` is the engine-owned `CB0[115]`, `base` = (0.0074990, 0.0122865, 0.0193824) and `rim` = (0.0307053, 0.1289768, 0.1964781) are literals of the program, and `(u, v)` is UV0. `N` is the interpolant `attribute1.xyz`, which the sibling deferred writer packs as its normal. `V` is `attribute2.xyz`, which the vertex programs export as a camera-relative vector (the eye position minus the vertex position; the form is read from the vertex code, not verified against a capture). The sign of `N.V` follows `FRONT_FACE`, as in the viewer.
 
@@ -32,8 +34,8 @@ The `CB2[4]` terms are `|CB2[4]|^1.5` powers (sat of it, and exp2 of 1.5 log2 of
 
 ## What is not decoded
 
-- `CB0[115]` is engine-owned. The preview uses the labelled presentation value 0.5, the established convention for the other forward rules. Its game value is unknown, so the brightness is not a decoded value.
-- `CB0[99]` (`t`) enters only through the sample coordinates above: both bolt samples scroll with it at unit rate per texture repeat, so the bolts crawl along the tubes. It is time-like (the other forward rules use it the same way) but its engine upload, unit and rate are unverified. The model view therefore runs `t` as a wall clock in seconds while an animation clip plays, a labelled presentation value (held while paused); the rest pose, static renders, thumbnails and the Blender front-end keep `t` = 0 (the Blender `VR ion tubes time` node can be keyed or driven to scroll the bolts). `CB0[107]` is frozen at 0; its runtime upload is unverified.
+- `CB0[115]` (`A`) and `CB0[107]` (`c`) are engine-owned: neither is stored in the material, graph, atmosphere, level, zone, config, visual-effect or actor data (a byte search for the captured values over those 17,000-odd assets finds no 0.5245 float), so the archive cannot supply them. The one capture that has them (the Veldin lighting event, `CB0` at the frame's constant buffer) reads `CB0[115]` = 0.01 and `CB0[107]` = 0.5245 next to the fog colour in `CB0[112..114]`, and the lighting program reads neither. Those are Veldin frame values, not Victor's draw: at 0.5245 the streaks would be cut to thin cores, and at 0.01 the tubes would be dim. The preview therefore keeps `A` = 0.5 (the labelled presentation value, the established convention for the other forward rules; `2A` = 1) and `c` = 0 (full streaks). Through the captured display chain (exposure 4.55, tone curve, sRGB; `rc2016/levels/display.py`), a streak core (`m` = 1, facing the camera) shows as roughly (0.07, 0.34, 0.47) at `A` = 0.01, (0.46, 0.93, 0.99) at 0.1 and (0.88, 1, 1) at 0.5 (identity colour grade), so the brightness of the effect rests on `A`, and a capture of a frame with Victor's tubes on screen is what would settle it.
+- `CB0[99]` (`t`) enters only through the sample coordinates above: both bolt samples scroll with it at unit rate per texture repeat, so the bolts crawl along the tubes. It is time-like (the other forward rules use it the same way) but its engine upload, unit and rate are unverified. The model view therefore runs `t` as a wall clock in seconds while an animation clip plays, a labelled presentation value (held while paused); the rest pose, static renders, thumbnails and the Blender front-end keep `t` = 0 (the Blender `VR ion tubes time` node can be keyed or driven to scroll the bolts).
 - `attribute2.w` is a vertex fog transmittance: exactly 1 in some vertex variants and `sat(exp2(-tau))` in others. It is frozen at 1 (no fog), so the fog colour `CB0[112..114]` drops out.
 - The vertex alpha `attribute0.3` is unused for an opaque material. The discard predicate on `attribute0.2` is not translated, and which pass the engine selects at draw time is not established.
 - Viewer lighting, tonemapping and the dirty glass shell are separate from this term. `game_equivalence` is false.

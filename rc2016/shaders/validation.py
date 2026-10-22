@@ -525,7 +525,7 @@ def _viewer_expected_constants(rule):
     if "ion_tubes" in ported:
         p = terms["ion_tubes"]["params"]
         e.update({"ion tubes tint": p["colour"], "ion tubes gain": p["gain"], "ion tubes amplitude": p["amplitude"],
-                  "ion tubes base": p["base"], "ion tubes rim": p["rim"], "ion tubes time": p["time"]})
+                  "ion tubes base": p["base"], "ion tubes rim": p["rim"], "ion tubes time": p["time"], "ion tubes fade": p["fade"]})
     if "victor_reticle" in ported:
         p = terms["victor_reticle"]["params"]
         e.update({"Victor reticle CB2[0] material UV phase": p["uv_phase"],
@@ -658,7 +658,7 @@ def _viewer_required(rule, has_n):
         names += ["number distort", "number b scale", "number vignette w", "number kc", "number ko", "number amplitude"]
         req("_c", "_n", "_pick", "_g")
     if "ion_tubes" in ported:
-        names += ["ion tubes tint", "ion tubes gain", "ion tubes amplitude", "ion tubes base", "ion tubes rim", "ion tubes time"]
+        names += ["ion tubes tint", "ion tubes gain", "ion tubes amplitude", "ion tubes base", "ion tubes rim", "ion tubes time", "ion tubes fade"]
         req("_pick")
     if "victor_reticle" in ported:
         names += ["Victor reticle CB2[0] material UV phase", "Victor reticle CB2[1] API8 gain",

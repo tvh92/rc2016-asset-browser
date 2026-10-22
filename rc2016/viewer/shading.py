@@ -862,7 +862,8 @@ void main() {
 #   (CB2[0..2]) and gain g (CB2[3]); uB.x = amplitude (CB0[115], labelled presentation value); uC = base colour; uD = rim colour.
 #   rgb = 2 amp (1 + m) (base + rim F^5 + m C g), m = sat(API6.R + API5.G) from the one electricity image, F = max(N.V - 0.001, 0);
 #   uB.y = t = CB0[99] scrolls both bolt samples (time-like, upload unverified: 0 for static renders, the viewer clock when animating);
-#   CB0[107] = 0, fog blend 1, CB2[4] = 0, vertex alpha 1 (opaque, back faces culled).
+#   uB.z = c = CB0[107], the dissolve threshold: m = sat((t5 + t6 - c) / max(1e-5, 1 - c)) (0 = full streaks, upload unverified);
+#   fog blend 1, CB2[4] = 0, vertex alpha 1 (opaque, back faces culled).
 GLASS_FRAGMENT = """
 #version 120
 uniform sampler2D uWaterHeightA; uniform sampler2D uWaterHeightB; uniform bool uHasWaterHeights;
@@ -998,7 +999,7 @@ void main() {
         float t5 = uHasP ? texture2D(uTexP, vec2(1.0 - 2.0 * vUV.y + uB.y, 0.25 * vUV.x - uB.y)).g : 0.0;   // API5 .G
         float t6 = uHasP ? texture2D(uTexP, vec2(2.0 * vUV.x + 0.3, 0.5 * vUV.y - uB.y)).r : 0.0;    // API6 .R
         if (uSrgbP) { t5 = screenLinear(t5); t6 = screenLinear(t6); }
-        float m = sat(t5 + t6);
+        float m = sat((t5 + t6 - uB.z) / max(0.00001, 1.0 - uB.z));
         float F = max(ndv - 0.00100004673, 0.0), F2 = F * F;
         color = 2.0 * uB.x * (1.0 + m) * (uC.rgb + uD.rgb * (F2 * F2 * F) + m * uA.w * uA.rgb);
         alpha = 1.0;
@@ -1156,7 +1157,7 @@ def glass_uniforms(forward, time=None):
         return (GLASS_KINDS["number_display"], (p["distort"], p["b_scale"], p["vignette_w"], 1.0 if p["alpha_channel"] else 0.0), (0.0, 0.0, 0.0, p["amplitude"]),
                 (*p["kc"], 0.0), (*p["ko"], 0.0))
     if forward["kind"] == "ion_tubes":
-        return (GLASS_KINDS["ion_tubes"], (*p["colour"], p["gain"]), (p["amplitude"], p["time"] if time is None else time, 0.0, 0.0),
+        return (GLASS_KINDS["ion_tubes"], (*p["colour"], p["gain"]), (p["amplitude"], p["time"] if time is None else time, p["fade"], 0.0),
                 (*p["base"], 0.0), (*p["rim"], 0.0))
     if forward["kind"] == "bright_glow":
         return (5, (*p["colour"], p["gain"]), (*p["colour_lo"], p["sharp"]),
