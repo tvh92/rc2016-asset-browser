@@ -8,6 +8,7 @@ import queue
 import re
 import threading
 
+from rc2016.app.clip_picker import ClipPickerDialog, needs_picker
 from rc2016.app.batch import (
     BatchRunner, ExportBatchRunner, ModelCandidate, PipelineBatchRunner, PipelineIndexScanner,
     PipelineModelCandidate, discover_models, ensure_disjoint, folder_layout, parse_prefixes, status_for)
@@ -1149,7 +1150,6 @@ class AssetBrowserApp:
         """Read each model's animation clips, then let the user untick the ones to leave out. Returns the clips
         for each model whose choice is not every clip (a model left fully ticked, or with no clips, is absent),
         or None when cancelled. When no model has clips, the user is told why and asked whether to export without them."""
-        import tkinter.font as tkfont
         from rc2016.export.models import ModelExporter
         tk, ttk = self.tk, self.ttk
         cancel = threading.Event()
@@ -1210,78 +1210,9 @@ class AssetBrowserApp:
                 return None
             return {}
 
-        top = tk.Toplevel(self.root)
-        top.withdraw()
-        top.title("Choose animations to export")
-        top.transient(self.root)
-        top.columnconfigure(0, weight=1)
-        top.rowconfigure(1, weight=1)
-        ttk.Label(top, text="Every animation starts ticked. Untick the ones to leave out.", style="Muted.TLabel",
-                  padding=(12, 12, 12, 6)).grid(row=0, column=0, sticky="w")
-        body = ttk.Frame(top)
-        body.grid(row=1, column=0, sticky="nsew", padx=12)
-        body.rowconfigure(0, weight=1)
-        body.columnconfigure(0, weight=1)
-        canvas = tk.Canvas(body, highlightthickness=0, width=520, height=420)
-        track(canvas, background="bg")
-        scrollbar = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
-        inner = ttk.Frame(canvas)
-        inner_id = canvas.create_window(0, 0, window=inner, anchor="nw")
-        inner.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(inner_id, width=event.width))
-        canvas.bind("<Enter>", lambda _event: canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units")))
-        canvas.bind("<Leave>", lambda _event: canvas.unbind_all("<MouseWheel>"))
-        heading_font = tkfont.nametofont("TkDefaultFont").copy()
-        heading_font.configure(weight="bold")
-
-        def set_all(variables, value: bool) -> None:
-            for variable in variables:
-                variable.set(value)
-
-        boxes = []   # (record, labels, variables) per listed model
-        row = 0
-        for record, labels in listed:
-            heading = ttk.Frame(inner)
-            heading.grid(row=row, column=0, sticky="ew", pady=(10 if row else 0, 2))
-            row += 1
-            ttk.Label(heading, text=f"{record.display_name}  ({len(labels)})", font=heading_font).pack(side="left")
-            variables = [tk.BooleanVar(value=True) for _label in labels]
-            ttk.Button(heading, text="None", command=lambda v=variables: set_all(v, False)).pack(side="right")
-            ttk.Button(heading, text="All", command=lambda v=variables: set_all(v, True)).pack(side="right", padx=(0, 6))
-            for variable, label in zip(variables, labels):
-                ttk.Checkbutton(inner, text=label, variable=variable).grid(row=row, column=0, sticky="w", padx=(18, 0))
-                row += 1
-            boxes.append((record, labels, variables))
-
-        chosen: dict[str, tuple[str, ...]] = {}
-        confirmed = []
-
-        def ok() -> None:
-            for record, labels, variables in boxes:
-                ticked = tuple(label for label, variable in zip(labels, variables) if variable.get())
-                if len(ticked) < len(labels):
-                    chosen[record.model_id] = ticked
-            confirmed.append(True)
-            top.destroy()
-
-        buttons = ttk.Frame(top)
-        buttons.grid(row=2, column=0, sticky="e", padx=12, pady=12)
-        ttk.Button(buttons, text="Cancel", command=top.destroy).pack(side="right")
-        ttk.Button(buttons, text="OK", command=ok).pack(side="right", padx=(0, 8))
-        top.protocol("WM_DELETE_WINDOW", top.destroy)
-        top.deiconify()
-        top.update()
-        apply_titlebar(top)
-        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - top.winfo_reqwidth()) // 2)
-        y = self.root.winfo_rooty() + 60
-        top.geometry(f"+{x}+{y}")
-        top.grab_set()
-        top.focus_set()
-        self.root.wait_window(top)
-        return chosen if confirmed else None
+        if not needs_picker(listed):
+            return {}   # every model has few enough clips to export them all without asking
+        return ClipPickerDialog(tk, ttk, self.root, listed).show()
 
     def _batch_worker(self, runner: BatchRunner) -> None:
         try:
