@@ -23,6 +23,9 @@ except ImportError:          # Blender's bundled Python, or lz4 not installed
     _lz4_c = None
 
 METADATA = ('layout.csv', 'toc', 'dag', 'chunkmap.txt')
+# Locale archives are named aNNsMMM.xx with a two-letter locale suffix (a00s003.us, a00s010.jp).
+# The install may omit them, so a missing one is not reported.
+LOCALE_ARCHIVE = re.compile(r'[a-z]\d+s\d+\.[a-z]{2}')
 # Parsed layout.csv cache, keyed by the metadata hashes and archive-file availability.
 LAYOUT_CACHE_DIR = Path(__file__).resolve().parents[2]/'.cache'/'shared_index'
 LAYOUT_CACHE_VERSION = 1
@@ -256,7 +259,8 @@ class Archive:
         self.by_path = {}
         for e in self.entries.values():
             self.by_path.setdefault(e['path'], []).append(e['id'])
-        self.warnings = ['Missing archive (may be an uninstalled language): '+p for p in sorted(missing)]
+        self.warnings = ['Missing archive (may be an uninstalled language): '+p for p in sorted(missing)
+                         if not LOCALE_ARCHIVE.fullmatch(p)]
         for warning in self.warnings:
             log('warning', message=warning)
         self.map_path = self.output/'reports/source_mapping.json'

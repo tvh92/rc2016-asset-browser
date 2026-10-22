@@ -13,6 +13,7 @@ import queue
 import threading
 
 from rc2016.app.layout import Splitter
+from rc2016.app.theme import track
 from rc2016.app.workers import LatestWork
 
 # Where the pause-menu planet maps live; offered first when it exists.
@@ -63,7 +64,8 @@ class FlashTab:
         self.tree.bind('<<TreeviewSelect>>', lambda _e: self._symbol_selected())
         tip('The symbols (movie clips, shapes, sprites) in the open file. Click one to draw it.', self.tree)
         body.second.columnconfigure(0, weight=1); body.second.rowconfigure(0, weight=1)
-        self.canvas = tk.Canvas(body.second, width=420, height=260, background='#2b2b2b', highlightthickness=0)
+        self.canvas = tk.Canvas(body.second, width=420, height=260, highlightthickness=0)
+        track(self.canvas, background='canvas')
         self.canvas.grid(row=0, column=0, sticky='nsew', padx=(6, 0) if not (layout and layout.stacked) else 0)
         self.canvas.bind('<Configure>', lambda _e: self._draw())
         # What to draw: a labelled frame (a screen state), a frame number, and the backdrop behind transparent art.
@@ -113,7 +115,7 @@ class FlashTab:
         info.grid(row=4, column=0, sticky='ew', pady=(6, 0))
         note = ttk.Label(tab, text='Basic vector renderer: shapes, sprites, frames, masks and gradients. Text, filters and '
                                    'ActionScript-driven colours are not drawn, so menus appear in their authored base colours.',
-                         foreground='#6b7280', wraplength=410)
+                         style='Muted.TLabel', wraplength=410)
         note.grid(row=5, column=0, sticky='ew', pady=(2, 0))
         for label in (info, note):   # wrap to the pane's width
             label.bind('<Configure>', lambda e, w=label: w.configure(wraplength=max(200, e.width - 8)))

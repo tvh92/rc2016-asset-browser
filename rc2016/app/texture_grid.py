@@ -10,7 +10,9 @@ import queue
 import threading
 import tkinter as tk
 import tkinter.font as tkfont
+from tkinter import ttk
 
+from rc2016.app.theme import color, listen, track
 from rc2016.app.gallery import (ImageCache, column_count, elide, photo_from_image, row_count, scroll_to_show,
                                 tile_at, visible_tiles)
 
@@ -80,9 +82,11 @@ class TextureGrid:
         self.failed = set()
         self.font = tkfont.nametofont('TkDefaultFont')
         self.frame = parent
-        self.canvas = tk.Canvas(parent, background='#2b2b2b', highlightthickness=0, takefocus=1,
-                                yscrollincrement=TILE_H)
-        self.scroll = tk.Scrollbar(parent, orient='vertical', command=self._scrolled_by)
+        self.canvas = tk.Canvas(parent, highlightthickness=0, takefocus=1, yscrollincrement=TILE_H)
+        track(self.canvas, background='canvas')
+        listen(self.redraw)
+        # A ttk scrollbar: the classic one ignores the theme on Windows.
+        self.scroll = ttk.Scrollbar(parent, orient='vertical', command=self._scrolled_by)
         self.canvas.configure(yscrollcommand=self.scroll.set)
         self.canvas.grid(row=0, column=0, sticky='nsew')
         self.scroll.grid(row=0, column=1, sticky='ns')
@@ -222,22 +226,24 @@ class TextureGrid:
             row = self.rows[index]
             left = (index % columns) * TILE_W
             top = (index // columns) * TILE_H
-            if index in self.selected:
+            selected = index in self.selected
+            if selected:
                 canvas.create_rectangle(left + 2, top + 2, left + TILE_W - 2, top + TILE_H - 2,
-                                        fill='#3b6ea5', outline='#8ab4e8' if index == self.focus else '#3b6ea5')
+                                        fill=color('accent'), outline=color('focus_ring' if index == self.focus else 'accent'))
             path = row['path']
             photo = self.photos.get(path)
             if photo is not None:
                 canvas.create_image(left + TILE_W // 2, top + 6 + THUMB // 2, image=photo, anchor='center')
             else:
                 canvas.create_rectangle(left + 12, top + 6, left + TILE_W - 12, top + 6 + THUMB,
-                                        fill='#3a3a3a', outline='')
-                canvas.create_text(left + TILE_W // 2, top + 6 + THUMB // 2, fill='#777777',
+                                        fill=color('tile'), outline='')
+                canvas.create_text(left + TILE_W // 2, top + 6 + THUMB // 2, fill=color('tile_text'),
                                    text='✕' if path in self.failed else '…')
                 if path not in self.failed:
                     wanted.append(path)
             name = elide(row_name(path), self.font.measure, name_width)
-            canvas.create_text(left + TILE_W // 2, top + THUMB + 14, text=name, fill='#e8e8e8',
+            canvas.create_text(left + TILE_W // 2, top + THUMB + 14, text=name,
+                               fill=color('select_fg') if selected else color('fg'),
                                font=self.font, anchor='center')
         self.feed.want(wanted)
 

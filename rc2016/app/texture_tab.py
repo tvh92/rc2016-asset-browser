@@ -1,7 +1,7 @@
 """One texture viewer: the preview on the left, the texture list with its export controls on the right.
 
 The Model asset type's Textures tab (archive=False) lists the textures of the selected model. The Texture
-asset type (archive=True) lists every texture in the archive, with the Maps menu and Filter. Each viewer keeps
+asset type (archive=True) lists every texture in the archive, with the Maps menu; its Search and List|Grid are the window toolbar's. Each viewer keeps
 its own list, filter, preview and export state, so the two never share anything."""
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from PIL import Image
 
 from rc2016.app.layout import Splitter
 from rc2016.app.texture_grid import TextureGrid
+from rc2016.app.theme import track
 from rc2016.app.workers import LatestWork
 
 
@@ -54,7 +55,8 @@ class TextureTab:
         left.columnconfigure(0,weight=1);left.rowconfigure(0,weight=1)
         split.second.configure(padding=(8,0,0,0));right.columnconfigure(0,weight=1);right.rowconfigure(1,weight=1)
         # Left: the image, how to read it, and what it is.
-        self.texture_canvas=tk.Canvas(left,width=380,height=300,background='#2b2b2b',highlightthickness=0)
+        self.texture_canvas=tk.Canvas(left,width=380,height=300,highlightthickness=0)
+        track(self.texture_canvas,background='canvas')
         self.texture_canvas.grid(row=0,column=0,sticky='nsew')
         self.texture_canvas.bind('<Configure>',lambda _e:self._draw_texture())
         self.texture_canvas.bind('<ButtonPress-1>',self._texture_press)
@@ -98,20 +100,26 @@ class TextureTab:
         # Right: which textures, then export, then who uses the selected one.
         top=ttk.Frame(right);top.grid(row=0,column=0,sticky='ew',pady=(0,4))
         top.columnconfigure(1,weight=1)
-        filter_label=ttk.Label(top,text='Filter');filter_label.grid(row=0,column=0,padx=(0,4))
-        self.texture_filter=tk.StringVar()
-        filter_entry=ttk.Entry(top,textvariable=self.texture_filter);filter_entry.grid(row=0,column=1,sticky='ew')
-        self.texture_filter.trace_add('write',lambda *_a:self._schedule_texture_filter())
-        view_box=ttk.Frame(top);view_box.grid(row=1,column=0,columnspan=2,sticky='w',pady=(4,0))
-        for kind in (self.LIST_VIEW,self.GRID_VIEW):   # the same List | Grid segments as the Model list
-            ttk.Radiobutton(view_box,text=kind,value=kind,variable=self.texture_view,style='Segment.Toolbutton',width=6,
-                            command=self._texture_view_changed).pack(side='left',padx=(0,2))
-        tip('Words that must all appear in the texture path. A word with a leading - must not appear, e.g. -planet.',filter_label,filter_entry)
-        tip('List: one row per texture with its format and size. Grid: a thumbnail per texture, drawn only where it is on screen.\n'
-            'Arrow keys move, Shift extends, Ctrl-click toggles, Ctrl+A selects all, Escape clears.',view_box)
         if self.archive:
-            self.texture_maps_button=ttk.Menubutton(top,text='');self.texture_maps_button.grid(row=1,column=2,sticky='w',padx=(8,0),pady=(4,0))
-            self.texture_maps_menu=tk.Menu(self.texture_maps_button,tearoff=False);self.texture_maps_button.configure(menu=self.texture_maps_menu)
+            # The Texture type uses the window toolbar's Search entry and List|Grid switch: its filter is the shared variable.
+            self.texture_filter=self.app.filter_var
+        else:
+            filter_label=ttk.Label(top,text='Filter');filter_label.grid(row=0,column=0,padx=(0,4))
+            self.texture_filter=tk.StringVar()
+            filter_entry=ttk.Entry(top,textvariable=self.texture_filter);filter_entry.grid(row=0,column=1,sticky='ew')
+            self.texture_filter.trace_add('write',lambda *_a:self._schedule_texture_filter())
+            view_box=ttk.Frame(top);view_box.grid(row=1,column=0,columnspan=2,sticky='w',pady=(4,0))
+            for kind in (self.LIST_VIEW,self.GRID_VIEW):   # the same List | Grid segments as the Model list
+                ttk.Radiobutton(view_box,text=kind,value=kind,variable=self.texture_view,style='Segment.Toolbutton',width=6,
+                                command=self._texture_view_changed).pack(side='left',padx=(0,2))
+            tip('Words that must all appear in the texture path. A word with a leading - must not appear, e.g. -planet.',filter_label,filter_entry)
+            tip('List: one row per texture with its format and size. Grid: a thumbnail per texture, drawn only where it is on screen.\n'
+                'Arrow keys move, Shift extends, Ctrl-click toggles, Ctrl+A selects all, Escape clears.',view_box)
+        if self.archive:
+            self.texture_maps_button=ttk.Menubutton(top,text='');self.texture_maps_button.grid(row=0,column=0,sticky='w')
+            self.texture_maps_menu=tk.Menu(self.texture_maps_button,tearoff=False)
+            track(self.texture_maps_menu,background='panel',foreground='fg',activebackground='accent',activeforeground='select_fg',disabledforeground='disabled_fg')
+            self.texture_maps_button.configure(menu=self.texture_maps_menu)
             self._update_map_button()
             tip('Textures whose name ends in a ticked suffix are hidden (the part after the last _ in the name). '
                 '_g and _n are hidden by default; the count is how many archive textures have that suffix.',self.texture_maps_button)
@@ -178,7 +186,7 @@ class TextureTab:
         self.texture_zoom.set('Fit');self._texture_zoom_changed()
         if self._archive_mode():
             self.texture_folder_tree.selection_set('all')   # its selection event lists every texture again
-            self.texture_view.set(self.LIST_VIEW);self._texture_view_changed()
+            self.show_list_view(self.LIST_VIEW)
             self.hidden_maps=set(self.DEFAULT_HIDDEN_MAPS)
             for suffix,var in self.map_vars.items():var.set(suffix in self.hidden_maps)
             self._update_map_button()
@@ -272,6 +280,14 @@ class TextureTab:
         else:
             self.texture_grid_frame.grid_remove();self.texture_tree_frame.grid()
         self._fill_texture_tree()
+
+    def show_list_view(self,kind):
+        """List | Grid for the archive viewer, from the window toolbar's switch (or Reset): the same switch as the Model list."""
+        self.texture_view.set(kind);self.app.list_view_var.set(kind);self._texture_view_changed()
+
+    def shared_filter_changed(self):
+        """The window toolbar's Search changed while the Texture type shows: filter the archive list after the usual delay."""
+        self._schedule_texture_filter()
 
     def _texture_grid_changed(self):
         self._texture_selected()

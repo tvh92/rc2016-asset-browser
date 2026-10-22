@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import queue
 
+from rc2016.app.theme import TOOLTIP_COLORS, color, listen, track
 from rc2016.app.thumbnails import (DEFAULT_SIZE, RendererProcess, ThumbnailIndex, cache_dir)
 from rc2016.app.workers import LatestWork
 
@@ -234,9 +235,9 @@ class Gallery:
         self.render_all_button.grid(row=0, column=1, padx=(6, 2))
         self.cancel_button = ttk.Button(bar, text='Cancel', command=self.cancel_render, state='disabled')
         self.cancel_button.grid(row=0, column=2)
-        background = ttk.Style(self.app.root).lookup('TFrame', 'background') or '#1e1f22'
-        self.background = background
-        self.canvas = tk.Canvas(self.frame, background=background, highlightthickness=0, takefocus=True)
+        self.canvas = tk.Canvas(self.frame, highlightthickness=0, takefocus=True)
+        track(self.canvas, background='bg')
+        listen(self._schedule_redraw)
         self.canvas.grid(row=1, column=0, sticky='nsew')
         self.scrollbar = ttk.Scrollbar(self.frame, orient='vertical', command=self._scroll_command)
         self.scrollbar.grid(row=1, column=1, sticky='ns')
@@ -498,11 +499,7 @@ class Gallery:
         offset = self._offset()
         first, last = visible_tiles(offset, height, self.cell_h, self.columns, total)
         self._visible = (first, last)
-        dark = self.app.dark
-        text_colour = '#e6e6e6' if dark else '#1f2937'
-        muted = '#9aa0a6' if dark else '#6b7280'
-        placeholder = '#2b2d31' if dark else '#e5e7eb'
-        accent = '#3d6fb6'
+        text_colour, muted, placeholder, accent = color('fg'), color('muted'), color('placeholder'), color('accent')
         width = self.cell_w - 2 * self.pad
         picked = set(self.app.table.selection())
         for number in range(first, last):
@@ -525,7 +522,7 @@ class Gallery:
                 canvas.create_text(left + self.THUMB // 2, top + self.THUMB // 2, text=label, fill=muted, font=self.font)
             name = elide(display_name(record), self.font.measure, width)
             canvas.create_text(left + self.THUMB // 2, top + self.THUMB + self.pad, anchor='n', text=name,
-                               fill='#ffffff' if selected else text_colour, font=self.font)
+                               fill=color('select_fg') if selected else text_colour, font=self.font)
 
     def _schedule_redraw(self):
         if self.redraw_job is None and not self.closed:
@@ -692,8 +689,8 @@ class Gallery:
             lines.append('Thumbnail not rendered yet')
         window = self.tip_window = self.tk.Toplevel(self.canvas)
         window.wm_overrideredirect(True)
-        self.tk.Label(window, text='\n'.join(lines), justify='left', wraplength=520, background='#fffbe6',
-                      foreground='#1f2937', relief='solid', borderwidth=1, padx=8, pady=6).pack()
+        self.tk.Label(window, text='\n'.join(lines), justify='left', wraplength=520, relief='solid', borderwidth=1, padx=8, pady=6,
+                      **TOOLTIP_COLORS).pack()
         window.wm_geometry(f'+{x + 14}+{y + 18}')
 
     def _hide_tip(self):

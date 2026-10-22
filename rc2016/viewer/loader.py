@@ -216,9 +216,9 @@ class SourcePreviewLoader:
         """Every texture in the archive, model or not: [{'path', 'folder'}] sorted by path."""
         with self.lock:
             archive=self._ensure_archive(source_root)
+        from rc2016.viewer.textures import _suffix, is_placeholder_texture
         paths=sorted({e['path'] for e in archive.entries.values()
-                      if e['type']=='texture' and e['built_path'].lower().endswith('.built')})
-        from rc2016.viewer.textures import _suffix
+                      if e['type']=='texture' and e['built_path'].lower().endswith('.built') and not is_placeholder_texture(e['path'])})
         return [dict(path=p,suffix=_suffix(p),materials=[],via_graph=False) for p in paths]
 
     # Flash UI (.gfx/.swf) ---------------------------------------------------

@@ -15,6 +15,7 @@ import threading
 import time
 
 from rc2016.app.layout import Splitter, regrid
+from rc2016.app.theme import track
 from rc2016.common import remember_var
 from rc2016.levels import scene as level_scene
 from rc2016.levels.viewport import LevelViewport
@@ -22,7 +23,7 @@ from rc2016.viewer.viewport import GL_TEXTURE_ROLES
 
 DEFAULT_LEVEL = "levels/novalis/novalis.level"
 HELP = ("Left drag look · right drag pan · WASD move · Q/E down/up · Shift faster · wheel dolly · "
-        "Ctrl+wheel or [ ] speed · F overview · click a model to identify it, double click to open it")
+        "Ctrl+wheel or [ ] speed · F overview · click a model to identify it, right click to clear it, double click to open it")
 
 
 def zone_names(zones):
@@ -481,9 +482,9 @@ class LevelPanel:
         grid_check.grid(row=1, column=1, columnspan=2, sticky="w")
         scene_tips.append((grid_check, "The decoded light grid: baked ambient light that varies through the level. Off uses the reflection-probe ambient. Only used by the Level atmosphere lighting."))
         self.atmosphere_checks.append(grid_check)
-        self.scene_note=ttk.Label(light,text='Scene preview; game caster/probe allocation is unverified.',foreground='gray',wraplength=240)
+        self.scene_note=ttk.Label(light,text='Scene preview; game caster/probe allocation is unverified.',style='Muted.TLabel',wraplength=240)
         self.scene_note.grid(row=2,column=0,columnspan=2,sticky="w")
-        self.lighting_note = ttk.Label(light, text="", foreground="gray", wraplength=240)
+        self.lighting_note = ttk.Label(light, text="", style="Muted.TLabel", wraplength=240)
         self.lighting_note.grid(row=3, column=0, columnspan=2, sticky="w")
         display = ttk.LabelFrame(side, text="Display", padding=(4, 2)); display.grid(row=5, column=0, sticky="ew", pady=(3, 0))
         ttk.Label(display, text="Tonemap").grid(row=0, column=0, sticky="w")
@@ -552,7 +553,7 @@ class LevelPanel:
         _Tooltip(tk, spawn_check, "Mark where the level data places enemy spawns. A preview.")
         _Tooltip(tk, previews_check, "Best-effort material previews (Novalis mountain, terrain, and a generic adapter). Matte lighting; inferred inputs; not game-equivalent.")
         ttk.Label(body, text="Mountains: matte. Paint and UVs inferred. Empty blend mask: review value 1; game behavior unverified.",
-                  foreground="gray", wraplength=250).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
+                  style="Muted.TLabel", wraplength=250).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
         from rc2016.shaders.terrain_preview import DEFAULT_CONTROLS
         self.ground_controls = [tk.DoubleVar(value=value) for value in DEFAULT_CONTROLS]
         ground = ttk.Frame(body); ground.grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
@@ -574,24 +575,19 @@ class LevelPanel:
         head = ttk.Frame(side); head.grid(row=8, column=0, sticky="ew", pady=(6, 2))
         zones_label = ttk.Label(head, text="Zones")
         zones_label.pack(side="left")
-        none_button = ttk.Button(head, text="None", width=5, command=lambda: self._set_all(False))
-        none_button.pack(side="right")
-        all_button = ttk.Button(head, text="All", width=5, command=lambda: self._set_all(True))
-        all_button.pack(side="right", padx=4)
         _Tooltip(tk, zones_label, "A level is made of zones. Untick one to hide it; the view updates at once.")
-        _Tooltip(tk, all_button, "Show every zone.")
-        _Tooltip(tk, none_button, "Hide every zone.")
         side.rowconfigure(9, weight=1)
         holder = ttk.Frame(side); holder.grid(row=9, column=0, sticky="nsew")
         holder.columnconfigure(0, weight=1); holder.rowconfigure(0, weight=1)
         self.zone_canvas = tk.Canvas(holder, highlightthickness=0, width=250)
+        track(self.zone_canvas, background="bg")
         self.zone_canvas.grid(row=0, column=0, sticky="nsew")
         scroll = ttk.Scrollbar(holder, orient="vertical", command=self.zone_canvas.yview); scroll.grid(row=0, column=1, sticky="ns")
         self.zone_canvas.configure(yscrollcommand=scroll.set)
         self.zone_list = ttk.Frame(self.zone_canvas)
         self.zone_canvas.create_window((0, 0), window=self.zone_list, anchor="nw")
         self.zone_list.bind("<Configure>", lambda _e: self.zone_canvas.configure(scrollregion=self.zone_canvas.bbox("all")))
-        self.help_label = ttk.Label(side, text=HELP, wraplength=250, foreground="gray")
+        self.help_label = ttk.Label(side, text=HELP, wraplength=250, style="Muted.TLabel")
         self.help_label.grid(row=10, column=0, sticky="ew", pady=(8, 0))
         self._groups = dict(options=options, light=light, display=display, scene=scene, experimental=experimental,
                             head=head, holder=holder, help=self.help_label)
@@ -617,10 +613,14 @@ class LevelPanel:
             self.experimental_body.grid_remove()
         self._update_lighting_controls()
         self.view.set_mode(mode)
-        self.view.clear("Choose a level and click Load.")
+        self.view.clear("Choose a level from the list.")
         self.view.on_stats = self._show_stats
         self.view.on_pick = self._picked
         self.view.on_open = self._open_model
+        # Right-button press and release without a drag clears the pick; a right drag still pans (the view's own binding).
+        self._right_press = None
+        self.view.bind("<ButtonPress-3>", lambda e: setattr(self, "_right_press", (e.x, e.y)), add="+")
+        self.view.bind("<ButtonRelease-3>", self._right_released, add="+")
         self.view.on_lighting_changed = lambda: self.lighting_note.configure(text=self.view.lighting_note or "")
         self.status_var = tk.StringVar(value="")
         ttk.Label(main, textvariable=self.status_var, width=1, anchor="w", padding=(4, 3)).grid(row=1, column=0, sticky="ew")
@@ -655,11 +655,8 @@ class LevelPanel:
     def _build_level_list(self, parent, height):
         """Level list (selecting a row loads it) plus an entry for a typed .level/.zone path."""
         tk, ttk = self.tk, self.ttk
-        parent.columnconfigure(0, weight=1); parent.rowconfigure(1, weight=1)
-        head = ttk.Frame(parent); head.grid(row=0, column=0, sticky="ew")
-        list_button = ttk.Button(head, text="List levels", command=self.list_levels)
-        list_button.pack(side="right")
-        box = ttk.Frame(parent); box.grid(row=1, column=0, sticky="nsew", pady=(4, 4))
+        parent.columnconfigure(0, weight=1); parent.rowconfigure(0, weight=1)
+        box = ttk.Frame(parent); box.grid(row=0, column=0, sticky="nsew", pady=(0, 4))
         box.columnconfigure(0, weight=1); box.rowconfigure(0, weight=1)
         self.level_list = ttk.Treeview(box, show="tree", selectmode="browse", height=height)
         self.level_list.column("#0", width=230, stretch=True)
@@ -667,17 +664,13 @@ class LevelPanel:
         scroll = ttk.Scrollbar(box, orient="vertical", command=self.level_list.yview); scroll.grid(row=0, column=1, sticky="ns")
         self.level_list.configure(yscrollcommand=scroll.set)
         self.level_list.bind("<<TreeviewSelect>>", lambda _e: self._level_chosen())
-        pick = ttk.Frame(parent); pick.grid(row=2, column=0, sticky="ew"); pick.columnconfigure(0, weight=1)
+        pick = ttk.Frame(parent); pick.grid(row=1, column=0, sticky="ew"); pick.columnconfigure(0, weight=1)
         self.level_entry = ttk.Entry(pick, textvariable=self.level_var, width=30)
         self.level_entry.grid(row=0, column=0, sticky="ew")
         self.level_entry.bind("<Return>", lambda _e: self.load())
-        load_button = ttk.Button(pick, text="Load", width=6, command=self.load)
-        load_button.grid(row=0, column=1, padx=(4, 0))
         from rc2016.app.theme import _Tooltip
-        _Tooltip(tk, list_button, "Read the .level files in the game archive again.")
         _Tooltip(tk, self.level_list, "Click a level to load it. Loading builds every zone's geometry and places its models.")
         _Tooltip(tk, self.level_entry, "An archive path to a .level or .zone file, for files the list does not show. Enter loads it.")
-        _Tooltip(tk, load_button, "Load the level named in the box.")
 
     def _fill_level_list(self, levels):
         self.levels = list(levels)
@@ -844,11 +837,15 @@ class LevelPanel:
         if path and self.on_open_model:
             self.on_open_model(path)
 
-    def _set_all(self, visible):
-        for zone, var in self.zone_vars.items():
-            if str(self.zone_rows[zone].cget("state")) != "disabled":
-                var.set(visible)
-                self.view.set_zone_visible(zone, visible)
+    def _right_released(self, event):
+        """Cancel the left-click selection (the outline and the picked model) when the right button was
+        released where it was pressed; a right drag pans and cancels nothing."""
+        press, self._right_press = self._right_press, None
+        if press and abs(event.x - press[0]) <= 3 and abs(event.y - press[1]) <= 3:
+            self.view.select(None)
+            self.view.picked_actor = None
+            self.picked_var.set("Click a model in the view to identify it.")
+            self.open_button.configure(state="disabled")
 
     def _add_zone_rows(self, zones):
         names = zone_names(zones)

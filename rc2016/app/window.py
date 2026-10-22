@@ -14,8 +14,8 @@ from rc2016.app.batch import (
 from rc2016.app.settings import _default_blender, _default_interpreter, _load_settings, _save_settings
 from rc2016.common import remember_var, reset_remembered
 from rc2016.app.theme import (
-    UI_SCALES, _Tooltip, _configure_tk_runtime, apply_dark_theme, apply_ui_scale,
-    themed_scrolled_text_class, windows_prefers_dark)
+    UI_SCALES, _Tooltip, _configure_tk_runtime, apply_theme, apply_titlebar, apply_ui_scale, color, listen,
+    themed_scrolled_text_class, track, windows_prefers_dark)
 
 
 ALWAYS_COLLAPSED_FOLDERS = {"chunk", "bangle_set"}
@@ -43,6 +43,7 @@ HELP = {
         "Found automatically when installed in the default place. Browsing "
         "the model list works without it."),
     "scale": "Make all text and controls bigger or smaller. Remembered for next time.",
+    "dark": "Dark or light colours for the whole window. Applies at once.",
     "reset": ("Put every option, toggle and window setting back to its first-start value: Vertical layout, 100% text size, "
               "the window maximised and the Browser split in its default place. The game folder, output folder, Python and "
               "Blender paths are kept. No files are deleted."),
@@ -52,7 +53,7 @@ HELP = {
               "its own .blend as well."),
     "combine": ("Portable export only. After the selected models are exported, their .glb files are merged into one "
                 "file under groups/: every model keeps its own nodes, skins and animations, at its native place. "
-                "Needs GLB among the formats; FBX, USD or .blend are then made from the combined file by Blender."),
+                "Needs GLB among the formats; FBX or USD are then made from the combined file by Blender."),
     "skeleton": ("Keeps the joints and skin weights, so the model can be posed and animated. Off exports the meshes only, "
                  "as static geometry, and no animations are written.\n\nUseful for props or for a model that is only "
                  "needed for its shape."),
@@ -67,15 +68,11 @@ HELP = {
         "GLB/glTF: model, skeleton, materials and animations in one standard file; opens in Blender, "
         "Unity, Unreal, Godot, three.js and most viewers.\n"
         "OBJ: the model and its textures only, in the rest pose (OBJ has no skeleton or animation).\n"
-        "FBX, USD and .blend are converted from the glTF by Blender, so they need Blender."),
+        "FBX and USD are converted from the glTF by Blender, so they need Blender."),
     "full_pipeline": (
         "Instead of the portable export, run the research pipeline: a validated Blender scene with "
         "the RC PS4 game shader, shared lighting, every animation as an action, and many reports. "
         "Slow and needs Blender; most users want the normal export."),
-    "blend_only": (
-        "Keep only the finished .blend files and the index the viewer uses to find animations. After a fully "
-        "successful run, the other reports, meshes, textures, caches and validation files are deleted. A later run "
-        "rebuilds everything, because nothing is left to reuse."),
     "cancel": "Stop the running extraction. Finished models are kept.",
     "filter": (
         "Search by file name, folder, asset ID, or the actor/animset that uses the model "
@@ -107,7 +104,7 @@ HELP = {
         "Level: the game levels, in a 3D level viewer.\n"
         "Flash UI: the menu and HUD movies.\n"
         "Texture: every texture in the archive, with or without a model.\n\n"
-        "The search, filters and List/Grid switch belong to the model list and show only for Model."),
+        "The List/Grid switch and Search belong to the model and texture lists; State, Shading and Expand all are for models only."),
     "layout": (
         "Vertical: each viewer has its viewport on the left and its controls on the right.\n"
         "Horizontal: the viewport on top and the controls below it, in columns.\n"
@@ -167,9 +164,9 @@ class AssetBrowserApp:
                 f"Details: {error}"
             ) from error
         self.root.title("R&C 2016 Asset Browser and Extractor")
-        self.dark = windows_prefers_dark()
-        if self.dark:
-            apply_dark_theme(self.root, ttk)
+        appearance = _load_settings().get("appearance", "")
+        self.dark = appearance == "dark" if appearance in ("dark", "light") else windows_prefers_dark()
+        apply_theme(self.root, ttk, self.dark)
         scale = _load_settings().get("ui_scale", "100%")
         self.ui_scale_var = tk.StringVar(value=scale if scale in UI_SCALES else "100%")
         apply_ui_scale(self.root, ttk, int(self.ui_scale_var.get().rstrip("%")))
@@ -204,9 +201,11 @@ class AssetBrowserApp:
         self.backend_var = remember_var(tk.StringVar(value="Full archive pipeline"), "export.backend",
                                         ("Transform only", "Full archive pipeline"))
         self.filter_var = tk.StringVar()
+        self.model_filter_stale = False   # the shared Search changed while the Texture type showed; the model list refreshes on return
         self.folder_mode = "auto"  # "auto", "expanded" or "collapsed"; see toggle_expand_all
         self.folder_scope = ""     # "" lists every model; otherwise the folder, and the folders in it, the list shows
         self.selected_map: dict = {}  # record key -> record, for every selected model, including those the list hides
+        self._queue_rows: dict[str, str] = {}   # queue key (model path) -> item of the extraction queue; see _fill_queue
         self._rebuilding = False   # True while the folder tree and the list are refilled; their selection events are ignored
         self.state_var = tk.StringVar(value="All")
         self.shading_var = tk.StringVar(value="All")
@@ -217,11 +216,10 @@ class AssetBrowserApp:
         self.export_format_vars = {key: remember_var(tk.BooleanVar(value=key == "glb"), f"export.format.{key}") for key in FORMATS}
         self.export_textures_var = remember_var(tk.BooleanVar(value=True), "export.textures")
         self.export_dds_var = remember_var(tk.BooleanVar(value=False), "export.dds")
-        self.export_animations_var = remember_var(tk.StringVar(value="all"), "export.animations", ("all", "none"))
+        self.export_animations_var = remember_var(tk.BooleanVar(value=False), "export.animations")
         self.export_skeleton_var = remember_var(tk.BooleanVar(value=True), "export.skeleton")
         self.export_lod_var = remember_var(tk.StringVar(value="Highest"), "export.lod", ("Highest", "Lowest", "All"))
         self.full_pipeline_var = remember_var(tk.BooleanVar(value=False), "export.full_pipeline")
-        self.blend_only_var = remember_var(tk.BooleanVar(value=False), "export.blend_only")
         self.group_blend_var = remember_var(tk.BooleanVar(value=False), "export.group_blend")
         self.group_name_var = remember_var(tk.StringVar(value="Selected models"), "export.group_name")
         self.combine_var = remember_var(tk.BooleanVar(value=False), "export.combine")
@@ -249,8 +247,7 @@ class AssetBrowserApp:
         option_row.grid(row=2, column=1, columnspan=2, sticky="ew", pady=(0, 6))
         options_button = ttk.Button(option_row, text="Options…", command=self.show_options)
         options_button.pack(side="left")
-        ttk.Label(option_row, textvariable=self.export_summary_var, foreground="#9aa0a6" if self.dark else "#6b7280"
-                  ).pack(side="left", padx=10)
+        ttk.Label(option_row, textvariable=self.export_summary_var, style="Muted.TLabel").pack(side="left", padx=10)
         self._tip(HELP["options"], options_button)
         self._build_options_window()
 
@@ -260,19 +257,17 @@ class AssetBrowserApp:
         # The status text, the bar and the three buttons stretch to the row's height (Extract selected is the tallest).
         scan_button = ttk.Button(actions, text="Scan archive", command=self.scan)
         scan_button.grid(row=0, column=0, padx=(0, 8), sticky="ns")
-        # Fixed width, so the bar does not move as the text changes.
-        ttk.Label(actions, textvariable=self.progress_var, width=46, anchor="w").grid(row=0, column=1, padx=(0, 8), sticky="ns")
+        # Sized to its text, so the bar gets the room the text does not use; the bar moves as the text changes.
+        ttk.Label(actions, textvariable=self.progress_var, anchor="w").grid(row=0, column=1, padx=(0, 8), sticky="ns")
         # A scan reports fractions of PROGRESS_STEPS; a batch counts models.
         self.progressbar = ttk.Progressbar(actions, mode="determinate", maximum=1, value=0)
         # The 4 px right pad matches Extract's left pad, so the bar is centred between the two buttons.
         self.progressbar.grid(row=0, column=2, sticky="nsew", padx=(0, 4))
-        accent_bg, accent_active, accent_disabled = (("#3d6fb6", "#2f5a97", "#8ea6c9") if self.dark
-                                                     else ("#2563eb", "#1d4ed8", "#c7d2fe"))
         self.start_button = tk.Button(actions, text="Extract selected", command=self.start_batch, state="disabled",
                                       font="AccentButtonFont", relief="flat", borderwidth=0, padx=18, pady=6,
-                                      cursor="hand2", foreground="#ffffff", disabledforeground=accent_disabled,
-                                      background=accent_bg, activebackground=accent_active,
-                                      activeforeground="#ffffff")
+                                      cursor="hand2")
+        track(self.start_button, foreground="select_fg", disabledforeground="accent_disabled", background="accent",
+              activebackground="accent_active", activeforeground="select_fg")
         self.start_button.grid(row=0, column=3, padx=4, sticky="ns")
         self.cancel_button = ttk.Button(actions, text="Cancel", command=self.cancel_batch, state="disabled")
         self.cancel_button.grid(row=0, column=4, padx=(4, 0), sticky="ns")
@@ -296,7 +291,7 @@ class AssetBrowserApp:
         # Each asset type has its own list (left) and viewer (right); see AssetBrowser.show_asset_type.
         self.asset_type_var = tk.StringVar(value="Model")
         self.asset_type_buttons = {}
-        for kind in ("Model", "Level", "Flash UI", "Texture"):
+        for kind in ("Model", "Level", "Texture", "Flash UI"):
             button = ttk.Radiobutton(types, text=kind, value=kind, variable=self.asset_type_var, style="Segment.Toolbutton", width=9,
                                      command=lambda: self.browser.show_asset_type(self.asset_type_var.get()))
             button.pack(side="left", padx=(0, 2))
@@ -308,6 +303,7 @@ class AssetBrowserApp:
         view_box = ttk.Frame(filters)
         view_box.grid(row=0, column=0, padx=(0, 18))
         self.list_view_var = tk.StringVar(value="List")
+        self.model_list_view = "List"   # the model list's own mode, kept while the Texture type uses the shared toggle
         for kind in ("List", "Grid"):
             button = ttk.Radiobutton(view_box, text=kind, value=kind, variable=self.list_view_var, style="Segment.Toolbutton", width=6,
                                      command=lambda: self.show_list_view(self.list_view_var.get()))
@@ -335,6 +331,8 @@ class AssetBrowserApp:
         shading.grid(row=0, column=8)
         self._tip(HELP["shading"], shading_label, shading)
         shading.bind("<<ComboboxSelected>>", lambda _event: self.refresh_table())
+        # Model-only controls: hidden for the Texture type, which shares the Search and List|Grid switch.
+        self.model_only_tools = (self.expand_button, state_label, state, shading_label, shading)
         # Layout of the viewers (all asset types): Vertical = viewport left, controls right; Horizontal = stacked.
         layout_box = ttk.Frame(toolbar)
         layout_box.grid(row=0, column=2, sticky="e", padx=(18, 0))
@@ -395,14 +393,20 @@ class AssetBrowserApp:
         self.prefix_entry.configure(state="disabled")
 
         bottom = ttk.Frame(main)
-        bottom.columnconfigure(0, weight=1)
+        bottom.columnconfigure(1, weight=1)
         bottom.rowconfigure(0, weight=1)
         main.add(bottom, weight=1)
+        # The extraction queue: one row per model of the batch, marked queued, running, done, failed or cancelled.
+        self.queue_tree = ttk.Treeview(bottom, columns=("status",), show="tree headings", height=4, selectmode="none")
+        self.queue_tree.heading("#0", text="Extraction queue")
+        self.queue_tree.heading("status", text="Status")
+        self.queue_tree.column("#0", width=280, minwidth=160, anchor="w")
+        self.queue_tree.column("status", width=90, anchor="center", stretch=False)
+        self.queue_tree.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         self.log = self.ScrolledText(bottom, height=4, state="disabled", wrap="none", font="TkFixedFont")
-        self.log.grid(row=0, column=0, sticky="nsew")
-        self.log.tag_configure("error", foreground="#f87171" if self.dark else "#b91c1c")
-        self.log.tag_configure("success", foreground="#34d399" if self.dark else "#047857")
-        self.log.tag_configure("muted", foreground="#9aa0a6" if self.dark else "#6b7280")
+        self.log.grid(row=0, column=1, sticky="nsew")
+        self._status_colors()
+        listen(self._status_colors)
 
         # Selection: the actions on the model list, then how many models are selected.
         selection_row = ttk.Frame(self.root)
@@ -415,6 +419,14 @@ class AssetBrowserApp:
         self._tip(HELP["select_visible"], select_button)
         self._tip(HELP["clear_selection"], clear_button)
 
+    def _status_colors(self) -> None:
+        """Queue-row and log-line colours; tags are not widget options, so a theme switch calls this again."""
+        for state, token in (("queued", "muted"), ("running", "running"), ("done", "ok"), ("failed", "error"),
+                             ("cancelled", "muted")):
+            self.queue_tree.tag_configure(state, foreground=color(token))
+        for tag, token in (("error", "error"), ("success", "ok"), ("muted", "muted")):
+            self.log.tag_configure(tag, foreground=color(token))
+
     def _build_options_window(self) -> None:
         """All optional yes/no settings, in a window that is built once and shown by Options…"""
         tk, ttk = self.tk, self.ttk
@@ -425,7 +437,6 @@ class AssetBrowserApp:
         window.transient(self.root)
         window.protocol("WM_DELETE_WINDOW", self._close_options)
         window.columnconfigure(0, weight=1)
-        muted = "#9aa0a6" if self.dark else "#6b7280"
 
         formats = ttk.LabelFrame(window, text="Export formats  ⓘ", padding=8)
         formats.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
@@ -441,18 +452,14 @@ class AssetBrowserApp:
                         variable=self.export_textures_var).grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
         ttk.Checkbutton(include, text="Also the original game textures (.dds, unchanged)",
                         variable=self.export_dds_var).grid(row=1, column=0, columnspan=3, sticky="w", pady=2)
-        skeleton = ttk.Checkbutton(include, text="Skeleton (joints and skin weights; off exports static meshes)",
-                                   variable=self.export_skeleton_var)
-        skeleton.grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 2))
-        self._tip(HELP["skeleton"], skeleton)
-        ttk.Label(include, text="Animations").grid(row=3, column=0, sticky="w", pady=(6, 2))
-        all_radio = ttk.Radiobutton(include, text="All", value="all", variable=self.export_animations_var)
-        all_radio.grid(row=3, column=1, sticky="w", padx=8, pady=(6, 2))
-        none_radio = ttk.Radiobutton(include, text="None", value="none", variable=self.export_animations_var)
-        none_radio.grid(row=3, column=2, sticky="w", pady=(6, 2))
-        self.animation_radios = (all_radio, none_radio)
+        self.skeleton_check = ttk.Checkbutton(include, text="Skeleton (joints and skin weights; off exports static meshes)",
+                                              variable=self.export_skeleton_var)
+        self.skeleton_check.grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 2))
+        self._tip(HELP["skeleton"], self.skeleton_check)
+        self.animation_check = ttk.Checkbutton(include, text="Include animations", variable=self.export_animations_var)
+        self.animation_check.grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 2))
         ttk.Label(include, text="To export one clip, pick it under the 3D view and tick 'Export only this clip'.",
-                  foreground=muted).grid(row=4, column=0, columnspan=3, sticky="w")
+                  style="Muted.TLabel").grid(row=4, column=0, columnspan=3, sticky="w")
         ttk.Label(include, text="Detail level (LOD)").grid(row=5, column=0, sticky="w", pady=(6, 2))
         ttk.Combobox(include, textvariable=self.export_lod_var, values=("Highest", "Lowest", "All"), state="readonly",
                      width=10).grid(row=5, column=1, columnspan=2, sticky="w", padx=8, pady=(6, 2))
@@ -473,46 +480,46 @@ class AssetBrowserApp:
                                variable=self.full_pipeline_var)
         full.grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
         self._tip(HELP["full_pipeline"], full)
-        self.blend_only_check = ttk.Checkbutton(advanced, text="Keep only the .blend files (delete the other output)",
-                                                variable=self.blend_only_var)
-        self.blend_only_check.grid(row=1, column=0, columnspan=3, sticky="w", padx=(22, 0), pady=2)
-        self._tip(HELP["blend_only"], self.blend_only_check)
         backend_label = ttk.Label(advanced, text="Backend  ⓘ")
-        backend_label.grid(row=2, column=0, sticky="w", pady=4)
+        backend_label.grid(row=1, column=0, sticky="w", pady=4)
         backend = ttk.Combobox(advanced, textvariable=self.backend_var, state="readonly",
                                 values=("Transform only", "Full archive pipeline"), width=28)
-        backend.grid(row=2, column=1, sticky="w", padx=6, pady=4)
+        backend.grid(row=1, column=1, sticky="w", padx=6, pady=4)
         backend.bind("<<ComboboxSelected>>", lambda _event: self._backend_changed())
         self._tip(HELP["backend"], backend_label, backend)
         self.prefix_label = ttk.Label(advanced, text="Clip prefixes")
-        self.prefix_label.grid(row=3, column=0, sticky="w", pady=4)
+        self.prefix_label.grid(row=2, column=0, sticky="w", pady=4)
         self.prefix_entry = ttk.Entry(advanced, textvariable=self.prefix_var)
-        self.prefix_entry.grid(row=3, column=1, sticky="ew", padx=6, pady=4)
-        ttk.Label(advanced, text="transform only; comma-separated", foreground=muted).grid(row=3, column=2, sticky="w")
+        self.prefix_entry.grid(row=2, column=1, sticky="ew", padx=6, pady=4)
+        ttk.Label(advanced, text="transform only; comma-separated", style="Muted.TLabel").grid(row=2, column=2, sticky="w")
         self._tip(HELP["prefixes"], self.prefix_label, self.prefix_entry)
         self.group_check = ttk.Checkbutton(advanced, text="Also put the selected models into one .blend, framed by one camera",
                                            variable=self.group_blend_var)
-        self.group_check.grid(row=4, column=0, columnspan=3, sticky="w", padx=(22, 0), pady=(6, 2))
+        self.group_check.grid(row=3, column=0, columnspan=3, sticky="w", padx=(22, 0), pady=(6, 2))
         self._tip(HELP["group"], self.group_check)
         self.group_name_label = ttk.Label(advanced, text="Group file name")
-        self.group_name_label.grid(row=5, column=0, sticky="w", pady=4)
+        self.group_name_label.grid(row=4, column=0, sticky="w", pady=4)
         self.group_name_entry = ttk.Entry(advanced, textvariable=self.group_name_var)
-        self.group_name_entry.grid(row=5, column=1, sticky="ew", padx=6, pady=4)
-        ttk.Label(advanced, text="saved under groups/", foreground=muted).grid(row=5, column=2, sticky="w")
+        self.group_name_entry.grid(row=4, column=1, sticky="ew", padx=6, pady=4)
+        ttk.Label(advanced, text="saved under groups/", style="Muted.TLabel").grid(row=4, column=2, sticky="w")
         self._tip(HELP["group"], self.group_name_label, self.group_name_entry)
         self.combine_check = ttk.Checkbutton(advanced, text="Also write the selected models as one combined file",
                                              variable=self.combine_var)
-        self.combine_check.grid(row=6, column=0, columnspan=3, sticky="w", padx=(22, 0), pady=(6, 2))
+        self.combine_check.grid(row=5, column=0, columnspan=3, sticky="w", padx=(22, 0), pady=(6, 2))
         self._tip(HELP["combine"], self.combine_check)
         self.combine_name_label = ttk.Label(advanced, text="Combined file name")
-        self.combine_name_label.grid(row=7, column=0, sticky="w", pady=4)
+        self.combine_name_label.grid(row=6, column=0, sticky="w", pady=4)
         self.combine_name_entry = ttk.Entry(advanced, textvariable=self.combine_name_var)
-        self.combine_name_entry.grid(row=7, column=1, sticky="ew", padx=6, pady=4)
-        ttk.Label(advanced, text="saved under groups/", foreground=muted).grid(row=7, column=2, sticky="w")
+        self.combine_name_entry.grid(row=6, column=1, sticky="ew", padx=6, pady=4)
+        ttk.Label(advanced, text="saved under groups/", style="Muted.TLabel").grid(row=6, column=2, sticky="w")
         self._tip(HELP["combine"], self.combine_name_label, self.combine_name_entry)
 
         display = ttk.Frame(window, padding=(12, 6))
         display.grid(row=4, column=0, sticky="ew")
+        self.dark_mode_var = tk.BooleanVar(value=self.dark)
+        dark_box = ttk.Checkbutton(display, text="Dark mode  ⓘ", variable=self.dark_mode_var, command=self._dark_mode_changed)
+        dark_box.pack(side="left", padx=(0, 18))
+        self._tip(HELP["dark"], dark_box)
         scale_label = ttk.Label(display, text="UI scale  ⓘ")
         scale_label.pack(side="left", padx=(0, 6))
         scale_box = ttk.Combobox(display, textvariable=self.ui_scale_var, values=UI_SCALES, state="readonly", width=6)
@@ -525,7 +532,7 @@ class AssetBrowserApp:
         self._tip(HELP["reset"], reset)
 
         for variable in (*self.export_format_vars.values(), self.export_textures_var, self.export_dds_var,
-                         self.export_animations_var, self.export_skeleton_var, self.export_lod_var, self.full_pipeline_var, self.blend_only_var,
+                         self.export_animations_var, self.export_skeleton_var, self.export_lod_var, self.full_pipeline_var,
                          self.backend_var, self.group_blend_var, self.combine_var):
             variable.trace_add("write", lambda *_args: self._options_changed())
         self._options_changed()
@@ -534,6 +541,7 @@ class AssetBrowserApp:
         window = self.options_window
         window.deiconify()
         window.update_idletasks()
+        apply_titlebar(window)
         x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - window.winfo_reqwidth()) // 2)
         y = self.root.winfo_rooty() + 60
         window.geometry(f"+{x}+{y}")
@@ -544,11 +552,15 @@ class AssetBrowserApp:
         """Every option, toggle and window setting back to its first-start value. The folder and program paths stay."""
         from rc2016.app.layout import VERTICAL
         reset_remembered()
-        window_keys = ("window.geometry", "window.zoomed", "window.split", "ui_scale")
+        window_keys = ("window.geometry", "window.zoomed", "window.split", "ui_scale", "appearance")
         _save_settings({key: value for key, value in _load_settings().items() if key not in window_keys})
         self.set_layout(VERTICAL)
         self.ui_scale_var.set("100%")
         self._ui_scale_changed()
+        # The saved choice is gone, so the Windows app mode applies again (and is not written back).
+        self.dark = windows_prefers_dark()
+        self.dark_mode_var.set(self.dark)
+        apply_theme(self.root, self.ttk, self.dark)
         self.root.state("normal")
         self.root.geometry("1420x980")
         self.root.state("zoomed")
@@ -562,11 +574,12 @@ class AssetBrowserApp:
         return tuple(key for key, variable in self.export_format_vars.items() if variable.get())
 
     def _options_changed(self) -> None:
+        # Only the portable export reads the skeleton and animation options; the research pipeline and Transform only ignore them.
+        portable = self.backend_var.get() == "Full archive pipeline" and not self.full_pipeline_var.get()
+        self.skeleton_check.configure(state="normal" if portable else "disabled")
         # Without a skeleton there is nothing to animate, so the animation choice is switched off.
-        for radio in self.animation_radios:
-            radio.configure(state="normal" if self.export_skeleton_var.get() else "disabled")
+        self.animation_check.configure(state="normal" if portable and self.export_skeleton_var.get() else "disabled")
         full_research = self.backend_var.get() == "Full archive pipeline" and self.full_pipeline_var.get()
-        self.blend_only_check.configure(state="normal" if full_research else "disabled")
         group_state = "normal" if full_research else "disabled"
         self.group_check.configure(state=group_state)
         self.group_name_entry.configure(state=group_state)
@@ -574,14 +587,14 @@ class AssetBrowserApp:
         if self.backend_var.get() != "Full archive pipeline":
             text = "Transform only: animation data from loose files"
         elif self.full_pipeline_var.get():
-            text = "Full research Blender scene (needs Blender)" + (", .blend files only" if self.blend_only_var.get() else "")
+            text = "Full research Blender scene (needs Blender)"
         else:
             from rc2016.export.models import FORMATS
             formats = [FORMATS[key][1] for key in self._export_formats()] or ["no format chosen"]
             parts = [", ".join(formats)]
             parts.append("textures" if self.export_textures_var.get() else "no textures")
             if self.export_skeleton_var.get():
-                parts.append("all animations" if self.export_animations_var.get() == "all" else "no animations")
+                parts.append("all animations" if self.export_animations_var.get() else "no animations")
             else:
                 parts.append("no skeleton or animations")
             if self.export_lod_var.get() != "Highest":
@@ -592,7 +605,7 @@ class AssetBrowserApp:
     def export_options(self):
         from rc2016.export.models import ExportOptions
         return ExportOptions(formats=self._export_formats(), textures=self.export_textures_var.get(),
-                             source_textures=self.export_dds_var.get(), animations=self.export_animations_var.get(),
+                             source_textures=self.export_dds_var.get(), animations="all" if self.export_animations_var.get() else "none",
                              skeleton=self.export_skeleton_var.get(),
                              lod=self.export_lod_var.get(), blender=self.blender_var.get().strip(),
                              skip_existing=self.skip_verified_var.get())
@@ -623,6 +636,13 @@ class AssetBrowserApp:
         _save_settings({**_load_settings(), "source": self.source_var.get().strip(), "output": self.output_var.get().strip(),
                         "python": self.interpreter_var.get().strip(), "blender": self.blender_var.get().strip(),
                         "ui_scale": self.ui_scale_var.get()})
+
+    def _dark_mode_changed(self) -> None:
+        self.dark = self.dark_mode_var.get()
+        settings = _load_settings()
+        settings["appearance"] = "dark" if self.dark else "light"
+        _save_settings(settings)
+        apply_theme(self.root, self.ttk, self.dark)
 
     def _ui_scale_changed(self) -> None:
         apply_ui_scale(self.root, self.ttk, int(self.ui_scale_var.get().rstrip("%")))
@@ -673,7 +693,7 @@ class AssetBrowserApp:
         self.records = []
         widget_state = "disabled" if self.backend_var.get() == "Full archive pipeline" else "normal"
         self.prefix_entry.configure(state=widget_state)
-        self.prefix_label.configure(foreground="#9ca3af" if widget_state == "disabled" else "")
+        self.prefix_label.configure(style="Disabled.TLabel" if widget_state == "disabled" else "TLabel")
         self.refresh_table()
         self.progress_var.set("Scan the source root for this backend")
 
@@ -810,14 +830,19 @@ class AssetBrowserApp:
 
 
     def show_list_view(self, kind: str) -> None:
-        """List: the folder's models as rows. Grid: the same models as thumbnails. The folder tree stays on the left in both."""
-        gallery = self.browser.gallery.frame
-        if kind == "Grid":
-            self.table_frame.grid_remove()
-            gallery.grid(row=0, column=1, sticky="nsew")
+        """List: the folder's models as rows. Grid: the same models as thumbnails. The folder tree stays on the left in both.
+        The Texture type uses this same switch for its own list."""
+        if self.browser.asset_type == "Texture":
+            self.browser.archive_textures.show_list_view(kind)
         else:
-            gallery.grid_remove()
-            self.table_frame.grid(row=0, column=1, sticky="nsew")
+            gallery = self.browser.gallery.frame
+            if kind == "Grid":
+                self.table_frame.grid_remove()
+                gallery.grid(row=0, column=1, sticky="nsew")
+            else:
+                gallery.grid_remove()
+                self.table_frame.grid(row=0, column=1, sticky="nsew")
+            self.model_list_view = kind
         self.list_view_var.set(kind)
 
     def _build_folder_tree(self, parent) -> None:
@@ -855,6 +880,10 @@ class AssetBrowserApp:
             gallery.invalidate()
 
     def on_filter_changed(self) -> None:
+        if self.browser.asset_type == "Texture":   # the shared Search filters the texture list
+            self.model_filter_stale = True
+            self.browser.archive_textures.shared_filter_changed()
+            return
         # Typing a search returns the tree to automatic folding so matches are visible.
         if self.folder_mode != "auto":
             self.folder_mode = "auto"
@@ -1049,9 +1078,9 @@ class AssetBrowserApp:
                 self.messagebox.showinfo("Export formats", "Choose at least one export format under Options….")
                 self.show_options()
                 return
-            needs_blender = [key for key in options.formats if key in ("fbx", "usd", "blend")]
+            needs_blender = [key for key in options.formats if key in ("fbx", "usd")]
             if needs_blender and not Path(options.blender or "\0").is_file():
-                self.messagebox.showerror("Blender needed", "FBX, USD and .blend are converted by Blender. Set its "
+                self.messagebox.showerror("Blender needed", "FBX and USD are converted by Blender. Set its "
                                           "location under Options…, or untick those formats.")
                 self.show_options()
                 return
@@ -1068,6 +1097,14 @@ class AssetBrowserApp:
                 self.messagebox.showinfo("Combined file", "Tick GLB among the export formats and type a name for the combined file under Options….")
                 self.show_options()
                 return
+        # Include animations: each model's clips are read first, and the user picks which to export.
+        clip_choices: dict[str, tuple[str, ...]] = {}
+        if export_mode and options.animations == "all":
+            picked = self._choose_clips([r for r in selected if isinstance(r, PipelineModelCandidate)], output, options)
+            if picked is None:
+                self._append_log("Export cancelled", "muted")
+                return
+            clip_choices = picked
         self._append_log(f"Batch started: {len(selected)} model(s)", "success")
         self._set_busy(running=True)
         self.progress_done = 0
@@ -1079,7 +1116,7 @@ class AssetBrowserApp:
                 [record for record in selected if isinstance(record, PipelineModelCandidate)],
                 Path(self.source_var.get()), output, options, clip_only,
                 event=lambda kind, **values: self.events.put((kind, values)),
-                combine_name=self.combine_name_var.get() if self.combine_var.get() else "")
+                combine_name=self.combine_name_var.get() if self.combine_var.get() else "", clip_choices=clip_choices)
         elif pipeline_mode:
             blender = Path(self.blender_var.get().strip())
             if not blender.is_file():
@@ -1103,7 +1140,7 @@ class AssetBrowserApp:
                     return
             self.runner = PipelineBatchRunner(
                 selectors, Path(self.source_var.get()), output, interpreter, blender,
-                skip_verified=self.skip_verified_var.get(), blend_only=self.blend_only_var.get(),
+                skip_verified=self.skip_verified_var.get(),
                 event=lambda kind, **values: self.events.put((kind, values)), clip_only=research_clip,
                 group_blend=group_name)
         else:
@@ -1111,8 +1148,146 @@ class AssetBrowserApp:
                 [record for record in selected if isinstance(record, ModelCandidate)], output, interpreter,
                 parse_prefixes(self.prefix_var.get()), self.skip_verified_var.get(),
                 event=lambda kind, **values: self.events.put((kind, values)))
+        self._fill_queue(selected)
         self.worker = threading.Thread(target=self._batch_worker, args=(self.runner,), daemon=True)
         self.worker.start()
+
+    def _choose_clips(self, records, output: Path, options) -> dict[str, tuple[str, ...]] | None:
+        """Read each model's animation clips, then let the user untick the ones to leave out. Returns the clips
+        for each model whose choice is not every clip (a model left fully ticked, or with no clips, is absent),
+        or None when cancelled. When no model has clips, the user is told why and asked whether to export without them."""
+        import tkinter.font as tkfont
+        from rc2016.export.models import ModelExporter
+        tk, ttk = self.tk, self.ttk
+        cancel = threading.Event()
+        found = []   # (record, clip labels) in the order the models were read
+        errors = []  # (record, error) of the models that could not be read
+        reader = ModelExporter(Path(self.source_var.get()), output)
+
+        def read() -> None:
+            for record in records:
+                if cancel.is_set():
+                    return
+                try:
+                    labels = reader.clip_labels(record.model_id, record.archive_path, options)
+                except Exception as error:   # a model that cannot be read has no clips to choose from
+                    labels = []
+                    errors.append((record, error))
+                found.append((record, labels))
+
+        worker = threading.Thread(target=read, daemon=True)
+        progress = tk.Toplevel(self.root)
+        progress.withdraw()
+        progress.title("Reading animations")
+        progress.transient(self.root)
+        progress.protocol("WM_DELETE_WINDOW", cancel.set)
+        progress.columnconfigure(0, weight=1)
+        status = tk.StringVar(value="")
+        ttk.Label(progress, textvariable=status, padding=12).grid(row=0, column=0, sticky="w")
+        ttk.Button(progress, text="Cancel", command=cancel.set).grid(row=1, column=0, sticky="e", padx=12, pady=(0, 12))
+
+        def poll() -> None:
+            status.set(f"Reading animations: {len(found)} of {len(records)} model(s)")
+            if worker.is_alive():
+                progress.after(100, poll)
+            else:
+                progress.destroy()
+
+        worker.start()
+        apply_titlebar(progress)
+        progress.deiconify()
+        progress.grab_set()
+        progress.after(0, poll)
+        self.root.wait_window(progress)
+        if cancel.is_set():
+            return None
+        listed = [(record, labels) for record, labels in found if labels]
+        if not listed:
+            # Say why nothing is offered instead of exporting without animations unannounced.
+            if records and reader.animation_index() is None:
+                reason = ("This output folder has no usable archive index, which links models to their animation sets. "
+                          "Press Scan archive with this output folder first, then export again.")
+            elif errors:
+                reason = f"{errors[0][0].display_name} could not be read: {errors[0][1]}"
+            else:
+                reason = "None of the selected models has animation clips (static models have none)."
+            if not self.messagebox.askokcancel("No animations found", f"{reason}\n\nExport without animations?",
+                                               icon="warning", parent=self.root):
+                return None
+            return {}
+
+        top = tk.Toplevel(self.root)
+        top.withdraw()
+        top.title("Choose animations to export")
+        top.transient(self.root)
+        top.columnconfigure(0, weight=1)
+        top.rowconfigure(1, weight=1)
+        ttk.Label(top, text="Every animation starts ticked. Untick the ones to leave out.", style="Muted.TLabel",
+                  padding=(12, 12, 12, 6)).grid(row=0, column=0, sticky="w")
+        body = ttk.Frame(top)
+        body.grid(row=1, column=0, sticky="nsew", padx=12)
+        body.rowconfigure(0, weight=1)
+        body.columnconfigure(0, weight=1)
+        canvas = tk.Canvas(body, highlightthickness=0, width=520, height=420)
+        track(canvas, background="bg")
+        scrollbar = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        inner = ttk.Frame(canvas)
+        inner_id = canvas.create_window(0, 0, window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(inner_id, width=event.width))
+        canvas.bind("<Enter>", lambda _event: canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units")))
+        canvas.bind("<Leave>", lambda _event: canvas.unbind_all("<MouseWheel>"))
+        heading_font = tkfont.nametofont("TkDefaultFont").copy()
+        heading_font.configure(weight="bold")
+
+        def set_all(variables, value: bool) -> None:
+            for variable in variables:
+                variable.set(value)
+
+        boxes = []   # (record, labels, variables) per listed model
+        row = 0
+        for record, labels in listed:
+            heading = ttk.Frame(inner)
+            heading.grid(row=row, column=0, sticky="ew", pady=(10 if row else 0, 2))
+            row += 1
+            ttk.Label(heading, text=f"{record.display_name}  ({len(labels)})", font=heading_font).pack(side="left")
+            variables = [tk.BooleanVar(value=True) for _label in labels]
+            ttk.Button(heading, text="None", command=lambda v=variables: set_all(v, False)).pack(side="right")
+            ttk.Button(heading, text="All", command=lambda v=variables: set_all(v, True)).pack(side="right", padx=(0, 6))
+            for variable, label in zip(variables, labels):
+                ttk.Checkbutton(inner, text=label, variable=variable).grid(row=row, column=0, sticky="w", padx=(18, 0))
+                row += 1
+            boxes.append((record, labels, variables))
+
+        chosen: dict[str, tuple[str, ...]] = {}
+        confirmed = []
+
+        def ok() -> None:
+            for record, labels, variables in boxes:
+                ticked = tuple(label for label, variable in zip(labels, variables) if variable.get())
+                if len(ticked) < len(labels):
+                    chosen[record.model_id] = ticked
+            confirmed.append(True)
+            top.destroy()
+
+        buttons = ttk.Frame(top)
+        buttons.grid(row=2, column=0, sticky="e", padx=12, pady=12)
+        ttk.Button(buttons, text="Cancel", command=top.destroy).pack(side="right")
+        ttk.Button(buttons, text="OK", command=ok).pack(side="right", padx=(0, 8))
+        top.protocol("WM_DELETE_WINDOW", top.destroy)
+        top.deiconify()
+        top.update_idletasks()
+        apply_titlebar(top)
+        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - top.winfo_reqwidth()) // 2)
+        y = self.root.winfo_rooty() + 60
+        top.geometry(f"+{x}+{y}")
+        top.grab_set()
+        top.focus_set()
+        self.root.wait_window(top)
+        return chosen if confirmed else None
 
     def _batch_worker(self, runner: BatchRunner) -> None:
         try:
@@ -1160,6 +1335,7 @@ class AssetBrowserApp:
         self._remember_settings()
         self._remember_window()
         self.browser.cancel_review()
+        self.browser._close_clip_picker()   # the Animation list is a grabbed popup; release it first
         if self.browser.review or self.runner:
             self._append_log("Closing after the active extractor stops…", "muted")
             if self.runner:
@@ -1193,6 +1369,47 @@ class AssetBrowserApp:
         else:
             self.cancel_button.configure(state="disabled")
             self.start_button.configure(state="normal" if self.records else "disabled")
+
+    @staticmethod
+    def _queue_label(status: str) -> str:
+        """The queue row state for a model_done status."""
+        if status == "cancelled":
+            return "cancelled"
+        if status in {"failed", "model_failed", "model_unsupported"}:
+            return "failed"
+        return "done"
+
+    def _fill_queue(self, records) -> None:
+        """One queue row per model the batch runs, all queued, in the order they run."""
+        tree = self.queue_tree
+        tree.delete(*tree.get_children())
+        self._queue_rows = {}
+        for number, record in enumerate(records):
+            item = f"queue-{number}"
+            self._queue_rows.setdefault(self._queue_key(self._record_path(record)), item)
+            tree.insert("", "end", iid=item, text=record.display_name, values=("queued",), tags=("queued",))
+
+    @staticmethod
+    def _queue_key(path: str) -> str:
+        return path.replace("\\", "/").casefold()
+
+    def _queue_set(self, values: dict[str, object], state: str) -> None:
+        """Mark the queue row of the model an event names (its candidate, or its archive path)."""
+        candidate = values.get("candidate")
+        path = self._record_path(candidate) if candidate is not None else str(values.get("model", ""))
+        item = self._queue_rows.get(self._queue_key(path))
+        if item is None and values.get("index"):   # an event without a known path: its place in the queue
+            item = f"queue-{int(values['index']) - 1}"
+        if item is not None and self.queue_tree.exists(item):
+            self.queue_tree.item(item, values=(state,), tags=(state,))
+
+    def _queue_finish(self, running: str) -> None:
+        """The batch ended: a model still queued was not run; one still running has no result (shown as ``running``)."""
+        for item in self.queue_tree.get_children():
+            state = self.queue_tree.set(item, "status")
+            if state in ("queued", "running"):
+                label = "cancelled" if state == "queued" else running
+                self.queue_tree.item(item, values=(label,), tags=(label,))
 
     def _append_log(self, message: str, tag: str | None = None) -> None:
         self.log.configure(state="normal")
@@ -1243,6 +1460,7 @@ class AssetBrowserApp:
             self.progressbar.configure(maximum=max(1, self.progress_total), value=0)
             self._append_log(f"Running {values['total']} model(s)…", "muted")
         elif kind == "model_started":
+            self._queue_set(values, "running")
             if "candidate" in values:
                 candidate = values["candidate"]
                 name = candidate.display_name
@@ -1256,6 +1474,7 @@ class AssetBrowserApp:
             self._append_log(str(values["message"]), "error" if values.get("level") == "error" else None)
         elif kind == "model_done":
             status = str(values["status"])
+            self._queue_set(values, self._queue_label(status))
             if "candidate" in values:
                 candidate = values["candidate"]
                 name = candidate.display_name
@@ -1294,12 +1513,14 @@ class AssetBrowserApp:
                 message = f"exit code {values.get('returncode')}"
                 cancelled = bool(values.get("cancelled"))
             self._append_log(f"Batch finished: {message}", "error" if failed else "success")
+            self._queue_finish("failed")
             self.runner = None
             self._set_busy()
             self.progress_var.set("Batch cancelled" if cancelled else "Batch complete")
             self.browser.reload()
         elif kind == "batch_error":
             self._append_log(str(values["message"]), "error")
+            self._queue_finish("failed")
             self.runner = None
             self._set_busy()
             self.progress_var.set("Batch failed before completion")

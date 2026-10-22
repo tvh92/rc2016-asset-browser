@@ -10,6 +10,8 @@ except ImportError:  # Blender's bundled Python may omit Tk; keep pure math impo
     tk = None
 from ctypes import wintypes
 
+from rc2016.app.theme import gl_color, listen, track
+
 _TkFrame = tk.Frame if tk is not None else object
 
 
@@ -443,6 +445,8 @@ class ModelViewport(_TkFrame):
         self._environment_texture_stale = False
         self._environment_loading = False
         self._label = tk.Label(self, text=self._error, justify="center", anchor="center", wraplength=440)
+        track(self._label, background="viewport", foreground="fg")
+        listen(self._schedule_draw)   # the clear colour follows the theme
         self._label.place(relx=0.5, rely=0.5, anchor="center", relwidth=1.0, relheight=1.0)
         self.bind("<Configure>", self._on_configure)
         self.bind("<Expose>", lambda _e: self._schedule_draw())
@@ -1126,7 +1130,7 @@ class ModelViewport(_TkFrame):
         gl = self._gl
         width, height = max(1, self.winfo_width()), max(1, self.winfo_height())
         gl.glViewport(0, 0, width, height)
-        gl.glClearColor(0.14, 0.15, 0.17, 1.0)
+        gl.glClearColor(*gl_color("viewport"))
         gl.glClear(self.GL_COLOR_BUFFER_BIT | self.GL_DEPTH_BUFFER_BIT)
         if self._mesh:
             vertices, triangles, normals = self._mesh

@@ -11,6 +11,8 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
+from rc2016.app.theme import color, track
+
 VERTICAL, HORIZONTAL = "Vertical", "Horizontal"
 MODES = (VERTICAL, HORIZONTAL)
 
@@ -39,12 +41,11 @@ class Splitter(ttk.Frame):
         self.fixed_first = fixed_first
         self.is_stacked = False
         self.first, self.second = ttk.Frame(self), ttk.Frame(self)
-        style = ttk.Style(self)
-        self._sash_colour = style.lookup("TButton", "background") or "#c8c8c8"
-        self.sash = tk.Frame(self, background=self._sash_colour, borderwidth=0, highlightthickness=0)
+        self.sash = tk.Frame(self, borderwidth=0, highlightthickness=0)
+        track(self.sash, background="sash")
         self.sash.bind("<B1-Motion>", self._drag)
-        self.sash.bind("<Enter>", lambda _event: self.sash.configure(background="#3d6fb6"))
-        self.sash.bind("<Leave>", lambda _event: self.sash.configure(background=self._sash_colour))
+        self.sash.bind("<Enter>", lambda _event: self.sash.configure(background=color("accent")))
+        self.sash.bind("<Leave>", lambda _event: self.sash.configure(background=color("sash")))
         self.bind("<Configure>", lambda _event: self._place())
         self.set_stacked(False)
 

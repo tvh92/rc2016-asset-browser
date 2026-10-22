@@ -9,6 +9,7 @@ import uuid
 from rc2016.app import catalog
 from rc2016.common import remember_var
 from rc2016.app.layout import SplitLayout, Splitter, regrid
+from rc2016.app.theme import color, track
 from rc2016.viewer.loader import SourcePreviewLoader
 from rc2016.viewer.viewport import ModelViewport
 from rc2016.app.texture_tab import TextureTab
@@ -16,6 +17,7 @@ from rc2016.app.workers import LatestWork, ReviewProcess, open_local, review_com
 
 ROOT = Path(__file__).resolve().parents[2]
 REST_POSE = 'Rest pose (no animation)'
+FOLDER_MIN, TABLE_MIN = 160, 300   # narrowest folder tree and model list when the divider between them is dragged
 
 
 def source_details(payload, used_by='', native_translation=True):
@@ -107,7 +109,7 @@ def lighting_controls(ttk, parent, viewport, lighting_var, tonemap_var, note_par
         viewport.set_lighting(lighting_var.get(), tonemap_var.get())
     box = ttk.Combobox(parent, textvariable=lighting_var, values=viewport.LIGHTINGS, state='readonly', width=12)
     box.pack(side='left', padx=(4, 0)); box.bind('<<ComboboxSelected>>', lighting_changed)
-    note = ttk.Label(note_parent or parent, text='', foreground='#6b7280')
+    note = ttk.Label(note_parent or parent, text='', style='Muted.TLabel')
     note.pack(side='left', padx=4)
     viewport.on_lighting_changed = lambda: note.configure(text=viewport.lighting_note or '')
     return box
@@ -125,7 +127,34 @@ def clip_tokens(name):
     return parts
 
 
-def group_clips(labels):
+def record_model_path(record):
+    """Archive path of a model-list record for comparison: ``archive_path`` (pipeline records) or
+    ``relative_model`` (Model-list records), with '/' separators and case folded."""
+    path = getattr(record, 'archive_path', None) or getattr(record, 'relative_model', None) or ''
+    return path.replace('\\', '/').casefold()
+
+
+def cutscene_clips(labels, animsets):
+    """Indices of the real-time cutscene clips (``cinematic2``) among the clip ``labels``.
+
+    The library's ``animsets`` are the assets its clips come from: ``.animset`` files and ``.cinematic2``
+    cutscenes (``viewer.animation.AnimationLibrary.with_cinematic``). A label is ``stem: name`` only when
+    several assets hold clips, and a cutscene clip has no prefix when its name is unique. So an unprefixed
+    label is a cutscene clip whenever several assets are listed, or when the one asset is a cutscene.
+    """
+    cinematic = {Path(a).stem for a in animsets if a.casefold().endswith('.cinematic2')}
+    animset = {Path(a).stem for a in animsets} - cinematic
+    several = len(animsets) > 1
+    only_cutscene = len(animsets) == 1 and animsets[0].casefold().endswith('.cinematic2')
+    found = []
+    for index, label in enumerate(labels):
+        stem, sep, _name = label.rpartition(': ')
+        if (stem in cinematic and stem not in animset) if sep else (several or only_cutscene):
+            found.append(index)
+    return found
+
+
+def group_clips(labels, cutscene=()):
     """Menu tree for clip labels: [(text, clip index | subtree)], sorted case-insensitively.
 
     Labels are ``"animset: Name"`` when a model has several animsets, else ``"Name"``.
@@ -133,6 +162,8 @@ def group_clips(labels):
     (Jetpack > One Hand > Fire), so the word that separates a clip's family is found wherever it sits.
     Clips alone on their word go under Other. A folder whose only child is a folder is merged
     into it (Aim > Vertical becomes Aim Vertical).
+    ``cutscene``: indices of the cutscene clips. Given any, the menu has two sections, Animset animations
+    and Cutscene animations (an empty one is left out), each grouped as above.
     """
     def ordered(items):
         return sorted(items, key=lambda item: (item[0].lower(), item[1]))
@@ -160,13 +191,21 @@ def group_clips(labels):
             return ordered(alone)
         return folders + ([('Other', ordered(alone))] if alone else [])
 
-    sets = {}
-    for index, label in enumerate(labels):
-        animset, _sep, name = label.rpartition(': ')
-        sets.setdefault(animset, []).append((clip_tokens(name), name, index))
-    if len(sets) <= 1:
-        return build(next(iter(sets.values()), []))
-    return [(animset, build(items)) for animset, items in sorted(sets.items(), key=lambda s: s[0].lower())]
+    def tree(indices):
+        sets = {}
+        for index in indices:
+            animset, _sep, name = labels[index].rpartition(': ')
+            sets.setdefault(animset, []).append((clip_tokens(name), name, index))
+        if len(sets) <= 1:
+            return build(next(iter(sets.values()), []))
+        return [(animset, build(items)) for animset, items in sorted(sets.items(), key=lambda s: s[0].lower())]
+
+    if not cutscene:
+        return tree(range(len(labels)))
+    cut = set(cutscene)
+    sections = (('Animset animations', [i for i in range(len(labels)) if i not in cut]),
+                ('Cutscene animations', [i for i in range(len(labels)) if i in cut]))
+    return [(text, tree(indices)) for text, indices in sections if indices]
 
 
 def count_clips(tree):
@@ -242,6 +281,7 @@ class AssetBrowser:
         notebook.add(result,text='Details')
         from rc2016.app.gallery import Gallery   # thumbnail grid of the selected or searched models: the list's Grid view
         self.gallery=Gallery(self,app.list_host)
+        self._folder_divider()
         self.model_textures=TextureTab(self,textures,archive=False)
         self._build_type_views(type_host if type_host is not None else parent.master,model_view if model_view is not None else parent)
         # The viewport is the big pane and grows with the window; the controls sit beside it (Vertical layout)
@@ -328,7 +368,7 @@ class AssetBrowser:
         self.clip_button.bind('<ButtonPress-1>',self._open_clip_picker)
         self.clip_button.bind('<KeyPress-space>',self._open_clip_picker)
         self.clip_button.grid(row=0,column=1,columnspan=2,sticky='ew')
-        self.clip_labels=[];self.clip_index=-1;self.clip_popup=None
+        self.clip_labels=[];self.clip_cutscene=[];self.clip_index=-1;self.clip_popup=None
         self.play_button=ttk.Button(anim,text='Pause',width=7,command=self._toggle_play,state='disabled')
         self.play_button.grid(row=1,column=0,sticky='ew',padx=(0,6),pady=(4,0))
         self.frame_pos=tk.DoubleVar(value=0)
@@ -339,6 +379,7 @@ class AssetBrowser:
         self.clip_only_check.grid(row=2,column=0,columnspan=2,sticky='w',pady=(2,0))
         tip('Export option: when ticked, Extract selected exports just this clip for the model shown here instead of all its clips.\nPick a clip first.',self.clip_only_check)
         self._fill_clip_menu([])
+        self.anim_box.grid_remove()   # shown only for a model with clips (_show_animation)
         self.frame_text=tk.StringVar(value='')
         ttk.Label(anim,textvariable=self.frame_text,width=18,anchor='e').grid(row=2,column=2,sticky='e',pady=(2,0))   # fits '1234/1234 @ 29.97 fps'
         tip('Play or pause the clip.',self.play_button)
@@ -351,7 +392,7 @@ class AssetBrowser:
         self.info_label=ttk.Label(side,textvariable=self.model_info,wraplength=400)
         self.info_label.grid(row=5,column=0,sticky='ew')
         self.model_info.trace_add('write',lambda *_a:self.info_label.grid() if self.model_info.get() else self.info_label.grid_remove())
-        self.view_hint=ttk.Label(side,text='Drag: orbit · Right drag: pan · Wheel: zoom',foreground='#6b7280');self.view_hint.grid(row=6,column=0,sticky='w',pady=5)
+        self.view_hint=ttk.Label(side,text='Drag: orbit · Right drag: pan · Wheel: zoom',style='Muted.TLabel');self.view_hint.grid(row=6,column=0,sticky='w',pady=5)
         self.layout.listen(self._arrange_view_controls)
         result.columnconfigure(0,weight=1);result.rowconfigure(0,weight=1)
         self.description=app.ScrolledText(result,height=8,wrap='word',state='disabled',font='TkDefaultFont')
@@ -375,10 +416,30 @@ class AssetBrowser:
         self.selector_note=tk.StringVar(value='Variants and LODs are available only when source identities are recorded in this saved scene.')
         ttk.Label(controls,textvariable=self.selector_note,wraplength=390).grid(row=6,column=0,columnspan=2,sticky='ew',pady=6)
         ttk.Button(controls,text='Cancel review',command=self.cancel_review).grid(row=8,column=0,columnspan=2,sticky='ew')
-        ttk.Label(controls,text='Shared review HDRI · Cycles OptiX RTX 3060\nSource timing; additive clips are standalone previews.',wraplength=390,foreground='#6b7280').grid(row=9,column=0,columnspan=2,sticky='ew',pady=8)
+        ttk.Label(controls,text='Shared review HDRI · Cycles OptiX RTX 3060\nSource timing; additive clips are standalone previews.',wraplength=390,style='Muted.TLabel').grid(row=9,column=0,columnspan=2,sticky='ew',pady=8)
         self.clip_box.bind('<<ComboboxSelected>>',lambda _e:self._clip_changed())
         self.reload()
         app.root.after(100,self._drain)
+
+    def _folder_divider(self):
+        """Draggable divider between the folder tree and the model list. Both sit in ``app.list_host``, a grid
+        rather than a Panedwindow, so the folder column gets a fixed width that a sash in the gap sets."""
+        tk,ttk,host,folder=self.tk,self.ttk,self.app.list_host,self.app.folder_frame
+        folder.grid_propagate(False);folder.configure(width=230)
+        sash=tk.Frame(host,width=6,borderwidth=0,highlightthickness=0,cursor='sb_h_double_arrow')
+        track(sash,background='sash')
+        def place(width):
+            folder.configure(width=width);host.columnconfigure(0,minsize=width)
+            host.update_idletasks()
+            folder.grid(row=0,column=0,sticky='nsew',padx=(0,6))   # re-grids the column at the new width
+            sash.place(x=width,y=0,width=6,relheight=1)
+        def drag(event):
+            width=event.x_root-host.winfo_rootx()-3
+            place(max(FOLDER_MIN,min(width,host.winfo_width()-6-TABLE_MIN)))
+        sash.bind('<B1-Motion>',drag)
+        sash.bind('<Enter>',lambda _e:sash.configure(background=color('accent')))
+        sash.bind('<Leave>',lambda _e:sash.configure(background=color('sash')))
+        place(230)
 
     def _arrange_view_controls(self,stacked):
         """Vertical layout: one column of controls. Horizontal (stacked) layout: two columns, so the viewport keeps the height."""
@@ -430,16 +491,24 @@ class AssetBrowser:
             if name!=kind:widget.grid_remove()
         self.type_views[kind].grid(**self._type_grid)
         self.asset_type=kind
-        tools=getattr(self.app,'model_tools',None)
+        app=self.app
+        tools=getattr(app,'model_tools',None)
         if tools is not None:
-            tools.grid() if kind=='Model' else tools.grid_remove()
+            tools.grid() if kind in ('Model','Texture') else tools.grid_remove()
+        for widget in getattr(app,'model_only_tools',()):
+            widget.grid_remove() if kind=='Texture' else widget.grid()
+        # The List|Grid switch shows the visible list's own mode; the model list keeps its mode while Texture is shown.
+        if kind=='Texture':app.list_view_var.set(self.archive_textures.texture_view.get())
+        elif kind=='Model':app.show_list_view(app.model_list_view)
+        if kind=='Model' and getattr(app,'model_filter_stale',False):   # Search was changed on the Texture type
+            app.model_filter_stale=False;app.refresh_table()
         first=kind not in self._types_shown
         self._types_shown.add(kind)
         if kind=='Level' and not self.level_panel.levels:
             self.level_panel.list_levels()
         elif kind=='Flash UI' and not self.flash_tab.files:
             self.flash_tab.load_files()
-        elif kind=='Texture' and first:
+        elif kind=='Texture':   # refills the list too, so a Search typed on the Model type shows here
             self.archive_textures.activate()
         if first and kind in ('Level','Flash UI'):
             pane=self.type_views[kind]
@@ -452,7 +521,8 @@ class AssetBrowser:
         """Show an archive model in the Model asset type: select it in the tree (which loads it) and
         bring up the 3D model tab. Clears the search and filters when they hide it."""
         app=self.app
-        record=next((r for r in app.records if getattr(r,'archive_path',None)==path),None)
+        wanted=path.replace('\\','/').casefold()
+        record=next((r for r in app.records if record_model_path(r)==wanted),None)
         if record is None:
             self.app._append_log(f'{path} is not in the model list; scan the game folder first.','error');return False
         app.asset_type_var.set('Model');self.show_asset_type('Model')
@@ -566,8 +636,9 @@ class AssetBrowser:
     # Animation playback -------------------------------------------------
     def _set_clips(self,payload):
         clips=payload.get('clips') or []
-        self._fill_clip_menu(clips)
+        self._fill_clip_menu(clips,payload.get('animsets') or [])
         self.clip_choice.set(REST_POSE)
+        self._show_animation(bool(clips))
         usable=bool(clips) and self.viewport.can_animate
         self.clip_button.configure(state='normal' if usable else 'disabled')
         if not clips:
@@ -586,10 +657,19 @@ class AssetBrowser:
         self.source_text=source_details(payload,getattr(self.selected_record,'used_by','') or '',self.viewport.native_translation)
         self._render_details()
 
-    def _fill_clip_menu(self,clips):
+    def _show_animation(self,shown):
+        """The Animation controls are hidden, not disabled, for a model without clips."""
+        if shown:self.anim_box.grid()
+        else:self.anim_box.grid_remove()
+
+    def _fill_clip_menu(self,clips,animsets=()):
         """Clip labels for the picker: rest pose, then folders by animset -> action prefix."""
         self._close_clip_picker()
         self.clip_labels=list(clips)
+        self.clip_cutscene=cutscene_clips(self.clip_labels,list(animsets))
+        # The button is as wide as the longest clip name (or the rest pose), up to a cap that fits the side column.
+        longest=max(len(text) for text in [REST_POSE,*self.clip_labels])
+        self.clip_button.configure(width=min(longest+2,48))
 
     def _open_clip_picker(self,_event=None):
         """Drop-down list under the Animation button: a search box over a folder tree of clips."""
@@ -621,7 +701,7 @@ class AssetBrowser:
                             iid=f'{parent or "group"}/{n}'
                             tree.insert(parent,'end',iid=iid,text=f'{text}  ({count_clips(node)})')
                             add(iid,node)
-                add('',group_clips(self.clip_labels))
+                add('',group_clips(self.clip_labels,self.clip_cutscene))
             current=f'clip:{self.clip_index}'
             if tree.exists(current):
                 tree.see(current);tree.selection_set(current);tree.focus(current)
@@ -785,6 +865,7 @@ class AssetBrowser:
         if reset:
             self.animation=None
             self._fill_clip_menu([]);self.clip_button.configure(state='disabled');self.clip_choice.set(REST_POSE)
+            self._show_animation(False)
             self.clip_index=-1;self.clip_only_var.set(False);self.clip_only_check.configure(state='disabled')
             self.play_button.configure(state='disabled',text='Pause');self.frame_slider.configure(state='disabled')
             self.frame_text.set('')
@@ -1017,6 +1098,7 @@ class AssetBrowser:
         self.app.root.after(100,self._drain)
 
     def close(self):
+        self._close_clip_picker()   # release the grabbed Animation list before anything below can wait
         self.closed=True
         self.playing=False
         if self.play_job is not None:self.app.root.after_cancel(self.play_job);self.play_job=None

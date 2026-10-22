@@ -16,7 +16,7 @@ Module map:
 | `rc2016/app/main.py` | Entry point (`python -m rc2016`, `--scan`, packaged-exe backend); re-exports the app's public names |
 | `rc2016/app/window.py` | `AssetBrowserApp`: main window, Options window, scan and export wiring |
 | `rc2016/app/batch.py` | Model discovery, output verification, `BatchRunner`, `PipelineBatchRunner`, `ExportBatchRunner`, `PipelineIndexScanner` |
-| `rc2016/app/theme.py`, `rc2016/app/settings.py` | Dark theme, tooltips, UI scale, Tk runtime bootstrap; settings file, project paths, Python/Blender discovery |
+| `rc2016/app/theme.py`, `rc2016/app/settings.py` | Light and dark palettes (`apply_theme`, `track` for classic Tk widgets), tooltips, UI scale, Tk runtime bootstrap; settings file, project paths, Python/Blender discovery |
 | `rc2016/app/browser.py` | Model/Level/Flash UI views, 3D/Textures/Details notebook, model details |
 | `rc2016/app/gallery.py` | Grid view of the model list: virtualised thumbnail grid, selection and render-queue rules |
 | `rc2016/app/thumbnails.py` | Thumbnail cache index, offscreen renderer and its CLI (`python -m rc2016.app.thumbnails`) |
@@ -48,7 +48,7 @@ python -m rc2016.flash.planet_maps <source> <out>   # planet maps without the GU
 2. Click **Scan**. It indexes the archive and writes the model index and `reports/asset_references.sqlite` into the output root. Leave the Blender path empty to just browse.
 3. Choose an asset type and select an item.
 
-The window opens maximised, follows Windows' app mode (light or dark, including the title bar), and has a UI scale of 75-200% that resizes fonts live. Dark mode and scale are stored in the settings file.
+The window opens maximised, follows Windows' app mode (light or dark, including the title bar), and has a UI scale of 75-200% that resizes fonts live. The Options window's Dark mode switch restyles every open widget at once (ttk styles, tracked classic widgets, canvases, the 3D view's clear colour); the title bar follows on Windows. Dark mode and scale are stored in the settings file. The level viewport's sky colour and cached thumbnails are not themed.
 
 ## Asset types
 

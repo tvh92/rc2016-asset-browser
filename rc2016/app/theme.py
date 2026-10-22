@@ -1,9 +1,10 @@
-"""Tk look and runtime: dark theme, tooltips, UI scaling and the bundled Tcl/Tk bootstrap."""
+"""Tk look and runtime: light and dark themes, tooltips, UI scaling and the bundled Tcl/Tk bootstrap."""
 from __future__ import annotations
 
 import os
 from pathlib import Path
 import sys
+import weakref
 
 
 _TCL_BOOTSTRAP_DLL = None
@@ -24,76 +25,241 @@ def windows_prefers_dark() -> bool:
 
 TOOLTIP_COLORS = {"background": "#fffbe6", "foreground": "#1f2937"}
 
+# Named colours of both themes. bg: window background; panel: raised controls; field: text fields and list
+# bodies; muted: secondary text; accent*: primary action and selection; hover/scroll_hover/arrow_disabled and
+# the bevel pair: ttk control states; canvas/viewport/tile*/focus_ring/placeholder: drawn previews and
+# thumbnails; sash: pane dividers; ok/error/running: status text.
+PALETTES = {
+    "dark": {
+        "bg": "#1e1f22", "panel": "#2b2d31", "field": "#26282c", "fg": "#e6e6e6", "muted": "#9aa0a6",
+        "accent": "#3d6fb6", "border": "#3c3f44", "select_fg": "#ffffff",
+        # Greyed-out text and controls: dim, but clearly readable on the dark background.
+        "disabled_fg": "#7b8089", "accent_active": "#2f5a97", "accent_disabled": "#8ea6c9",
+        "hover": "#383a40", "scroll_hover": "#4a4d55", "arrow_disabled": "#4a4d55",
+        "bevel_light": "#2b2d31", "bevel_dark": "#1e1f22",
+        "tooltip_bg": "#2b2d31", "tooltip_fg": "#e6e6e6",
+        "canvas": "#2b2b2b", "viewport": "#24262b", "tile": "#3a3a3a", "tile_text": "#777777",
+        "focus_ring": "#8ab4e8", "placeholder": "#2b2d31", "sash": "#2b2d31",
+        "ok": "#34d399", "error": "#f87171", "running": "#60a5fa",
+    },
+    "light": {
+        "bg": "#f0f0f0", "panel": "#e1e1e1", "field": "#ffffff", "fg": "#1f2937", "muted": "#6b7280",
+        "accent": "#2563eb", "border": "#c8c8c8", "select_fg": "#ffffff",
+        "disabled_fg": "#9ca3af", "accent_active": "#1d4ed8", "accent_disabled": "#c7d2fe",
+        "hover": "#d4d7dc", "scroll_hover": "#9ca3af", "arrow_disabled": "#d1d5db",
+        "bevel_light": "#ffffff", "bevel_dark": "#c8c8c8",
+        "tooltip_bg": "#fffbe6", "tooltip_fg": "#1f2937",
+        "canvas": "#d9dce1", "viewport": "#c9cdd3", "tile": "#c3c7ce", "tile_text": "#6b7280",
+        "focus_ring": "#93c5fd", "placeholder": "#e5e7eb", "sash": "#c8c8c8",
+        "ok": "#047857", "error": "#b91c1c", "running": "#1d4ed8",
+    },
+}
+# Light until apply_theme runs, which is how an unthemed window looks.
+_current = {"name": "light"}
+# (weak reference to a classic Tk widget, {Tk option: palette token}), reconfigured on every theme switch.
+_tracked: list = []
+# Weak references to callbacks that redraw things a widget option cannot restyle (canvas items, text tags).
+_listeners: list = []
 
-def apply_dark_theme(root, ttk) -> None:
-    """Dark palette for ttk and classic Tk widgets; call before building widgets."""
 
-    bg, panel, field, fg, muted, accent, border = ("#1e1f22", "#2b2d31", "#26282c", "#e6e6e6",
-                                                  "#9aa0a6", "#3d6fb6", "#3c3f44")
-    style = ttk.Style(root)
-    style.theme_use("clam")
+def current_palette() -> dict[str, str]:
+    return PALETTES[_current["name"]]
+
+
+def color(token: str) -> str:
+    return PALETTES[_current["name"]][token]
+
+
+def is_dark() -> bool:
+    return _current["name"] == "dark"
+
+
+def gl_color(token: str) -> tuple[float, float, float, float]:
+    """A palette colour as an opaque OpenGL RGBA tuple."""
+
+    value = color(token).lstrip("#")
+    return (*(int(value[i:i + 2], 16) / 255.0 for i in (0, 2, 4)), 1.0)
+
+
+def _configure_widget(widget, options: dict[str, str], palette: dict[str, str]) -> bool:
+    """Apply ``{option: token}`` to a widget; False when the widget has been destroyed."""
+
+    try:
+        widget.configure(**{option: palette[token] for option, token in options.items()})
+        return True
+    except Exception:
+        try:
+            exists = bool(widget.winfo_exists())
+        except Exception:
+            exists = False
+        if exists:
+            raise   # a wrong option or token on a live widget is a bug, not a destroyed window
+        return False
+
+
+def track(widget, **options: str):
+    """Keep a classic Tk widget in the theme: ``track(text, background="field", foreground="fg")``.
+
+    Classic widgets ignore ttk styles and later ``option_add`` calls, so each is restyled on every switch.
+    Only a weak reference is kept.
+    """
+
+    _tracked.append((weakref.ref(widget), dict(options)))
+    _configure_widget(widget, options, current_palette())
+    return widget
+
+
+def listen(callback) -> None:
+    """Call ``callback()`` after each theme switch (a bound method is held weakly)."""
+
+    _listeners.append(weakref.WeakMethod(callback) if hasattr(callback, "__self__") else (lambda: callback))
+
+
+def apply_titlebar(window, dark: bool | None = None) -> None:
+    """Dark or light title bar for a Tk window (Windows 10 2004+ / 11); follows the current theme by default."""
+
+    try:
+        import ctypes
+        window.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        value = ctypes.c_int(1 if (is_dark() if dark is None else dark) else 0)
+        for attribute in (20, 19):
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(value), ctypes.sizeof(value)) == 0:
+                break
+        # A visible window keeps its old title bar until its frame is recalculated.
+        ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x37)   # NOSIZE | NOMOVE | NOZORDER | NOACTIVATE | FRAMECHANGED
+    except (AttributeError, OSError):
+        pass
+
+
+def _configure_ttk(style, p: dict[str, str]) -> None:
+    bg, panel, field, fg, muted, accent, border = (p[key] for key in
+                                                  ("bg", "panel", "field", "fg", "muted", "accent", "border"))
+    disabled, hover, select_fg = p["disabled_fg"], p["hover"], p["select_fg"]
     style.configure(".", background=bg, foreground=fg, fieldbackground=field, bordercolor=border,
-                    lightcolor=panel, darkcolor=bg, troughcolor=panel, insertcolor=fg,
-                    selectbackground=accent, selectforeground="#ffffff")
-    for widget in ("TFrame", "TLabel", "TCheckbutton", "TLabelframe", "TPanedwindow"):
+                    lightcolor=p["bevel_light"], darkcolor=p["bevel_dark"], troughcolor=panel, insertcolor=fg,
+                    selectbackground=accent, selectforeground=select_fg)
+    for widget in ("TFrame", "TLabel", "TCheckbutton", "TRadiobutton", "TLabelframe", "TPanedwindow"):
         style.configure(widget, background=bg, foreground=fg)
     style.configure("TLabelframe.Label", background=bg, foreground=fg)
+    # Secondary and greyed-out text; a label's own foreground option would not follow a theme switch.
+    style.configure("Muted.TLabel", foreground=muted)
+    style.configure("Disabled.TLabel", foreground=disabled)
     style.configure("TButton", background=panel, foreground=fg, bordercolor=border, focuscolor=accent)
-    style.map("TButton", background=[("disabled", bg), ("pressed", accent), ("active", "#383a40")],
-              foreground=[("disabled", "#6b6f75")])
+    style.map("TButton", background=[("disabled", bg), ("pressed", accent), ("active", hover)],
+              foreground=[("disabled", disabled)])
     # Same height as a combobox, for buttons that share a row with one.
     style.configure("Compact.TButton", padding=(8, 1))
-    style.map("TCheckbutton", background=[("active", bg)], indicatorbackground=[("selected", accent)])
+    # Checkboxes and radio buttons keep the default indicator size (the native size in both themes); greyed out when disabled.
+    for widget in ("TCheckbutton", "TRadiobutton"):
+        style.configure(widget, indicatorbackground=field, indicatorforeground=select_fg, bordercolor=muted)
+        style.map(widget, background=[("active", bg)], foreground=[("disabled", disabled)],
+                  indicatorbackground=[("disabled", bg), ("selected", accent)],
+                  indicatorforeground=[("disabled", disabled)], bordercolor=[("disabled", disabled)])
     # Asset-type selector (segmented Model / Level / Flash UI radio buttons).
     style.configure("Toolbutton", background=panel, foreground=fg, bordercolor=border)
-    style.map("Toolbutton", background=[("selected", accent), ("active", "#383a40")],
-              foreground=[("selected", "#ffffff")])
+    style.map("Toolbutton", background=[("selected", accent), ("active", hover)],
+              foreground=[("selected", select_fg)])
     style.configure("TEntry", fieldbackground=field, foreground=fg)
-    style.map("TEntry", fieldbackground=[("disabled", bg)], foreground=[("disabled", "#6b6f75")])
+    style.map("TEntry", fieldbackground=[("disabled", bg)], foreground=[("disabled", disabled)])
     style.configure("TCombobox", fieldbackground=field, background=panel, foreground=fg, arrowcolor=fg)
     style.map("TCombobox", fieldbackground=[("readonly", field), ("disabled", bg)],
-              foreground=[("disabled", "#6b6f75")], selectbackground=[("readonly", field)],
+              foreground=[("disabled", disabled)], selectbackground=[("readonly", field)],
               selectforeground=[("readonly", fg)])
     style.configure("TMenubutton", background=panel, foreground=fg, arrowcolor=fg, bordercolor=border, relief="flat")
-    style.map("TMenubutton", background=[("disabled", bg), ("pressed", "#383a40"), ("active", "#383a40")],
-              foreground=[("disabled", "#6b6f75")], arrowcolor=[("disabled", "#6b6f75")])
+    style.map("TMenubutton", background=[("disabled", bg), ("pressed", hover), ("active", hover)],
+              foreground=[("disabled", disabled)], arrowcolor=[("disabled", disabled)])
     style.configure("TSpinbox", fieldbackground=field, background=panel, foreground=fg, arrowcolor=fg)
     style.configure("TNotebook", background=bg, bordercolor=border)
     style.configure("TNotebook.Tab", background=panel, foreground=muted, bordercolor=border)
     style.map("TNotebook.Tab", background=[("selected", bg)], foreground=[("selected", fg)])
     style.configure("Treeview", background=field, fieldbackground=field, foreground=fg, bordercolor=border)
-    style.map("Treeview", background=[("selected", accent)], foreground=[("selected", "#ffffff")])
+    style.map("Treeview", background=[("selected", accent)], foreground=[("selected", select_fg)])
     style.configure("Treeview.Heading", background=panel, foreground=fg, bordercolor=border)
-    style.map("Treeview.Heading", background=[("active", "#383a40")])
+    style.map("Treeview.Heading", background=[("active", hover)])
     style.configure("TScrollbar", background=panel, troughcolor=bg, arrowcolor=muted, bordercolor=border)
-    # clam's default hover colour for scrollbars is light grey; keep every state dark.
-    style.map("TScrollbar", background=[("disabled", bg), ("pressed", accent), ("active", "#4a4d55")],
-              arrowcolor=[("disabled", "#4a4d55"), ("pressed", fg), ("active", fg)])
+    # clam's default hover colour for scrollbars is light grey; keep every state in the palette.
+    style.map("TScrollbar", background=[("disabled", bg), ("pressed", accent), ("active", p["scroll_hover"])],
+              arrowcolor=[("disabled", p["arrow_disabled"]), ("pressed", fg), ("active", fg)])
     style.configure("TProgressbar", background=accent, troughcolor=panel)
-    # Classic Tk widgets (log, details text, combobox lists, viewport label).
-    for pattern, value in (("*Background", bg), ("*Foreground", fg), ("*Text.Background", field),
-                           ("*Text.Foreground", fg), ("*Text.insertBackground", fg),
-                           ("*selectBackground", accent), ("*selectForeground", "#ffffff"),
+
+
+def _apply_option_defaults(root, p: dict[str, str]) -> None:
+    """Defaults for classic Tk widgets created from now on (log, details text, combobox lists, menus)."""
+
+    bg, panel, field, fg, accent, select_fg = (p[key] for key in ("bg", "panel", "field", "fg", "accent", "select_fg"))
+    for pattern, value in (("*Background", bg), ("*Foreground", fg), ("*highlightBackground", bg),
+                           ("*Text.Background", field), ("*Text.Foreground", fg), ("*Text.insertBackground", fg),
+                           ("*selectBackground", accent), ("*selectForeground", select_fg),
+                           ("*Listbox.background", field), ("*Listbox.foreground", fg),
                            ("*TCombobox*Listbox.background", field), ("*TCombobox*Listbox.foreground", fg),
                            ("*TCombobox*Listbox.selectBackground", accent),
                            ("*Menu.background", panel), ("*Menu.foreground", fg),
-                           ("*Menu.activeBackground", accent), ("*Menu.activeForeground", "#ffffff"),
-                           ("*Menu.disabledForeground", "#6b6f75"), ("*Menu.borderWidth", 1),
+                           ("*Menu.activeBackground", accent), ("*Menu.activeForeground", select_fg),
+                           ("*Menu.disabledForeground", p["disabled_fg"]), ("*Menu.borderWidth", 1),
                            ("*Menu.relief", "flat")):
         root.option_add(pattern, value)
-    root.configure(background=bg)
-    TOOLTIP_COLORS.update(background="#2b2d31", foreground="#e6e6e6")
-    try:
-        # Dark title bar (Windows 10 2004+ / 11).
-        import ctypes
-        root.update_idletasks()
-        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
-        value = ctypes.c_int(1)
-        for attribute in (20, 19):
-            if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(value), ctypes.sizeof(value)) == 0:
-                break
-    except (AttributeError, OSError):
-        pass
+
+
+def _descendants(widget):
+    for child in list(widget.winfo_children()):
+        yield child
+        yield from _descendants(child)
+
+
+def _retheme_existing(root, p: dict[str, str]) -> None:
+    """Windows and combobox drop-downs that already exist; the option database only reaches new ones."""
+
+    import tkinter
+    for widget in _descendants(root):
+        kind = widget.winfo_class()
+        try:
+            if kind == "Toplevel":
+                widget.configure(background=p["bg"])
+                if not widget.wm_overrideredirect():
+                    apply_titlebar(widget)
+            elif kind == "TCombobox":
+                popdown = root.tk.call("ttk::combobox::PopdownWindow", str(widget))
+                root.tk.call(f"{popdown}.f.l", "configure", "-background", p["field"], "-foreground", p["fg"],
+                             "-selectbackground", p["accent"], "-selectforeground", p["select_fg"])
+        except tkinter.TclError:
+            pass   # destroyed meanwhile
+
+
+def apply_theme(root, ttk, dark: bool) -> None:
+    """Dark or light palette for ttk and classic Tk widgets. Safe to call again to switch a running window."""
+
+    _current["name"] = "dark" if dark else "light"
+    p = current_palette()
+    style = ttk.Style(root)
+    if style.theme_use() != "clam":
+        style.theme_use("clam")
+    _configure_ttk(style, p)
+    _apply_option_defaults(root, p)
+    root.configure(background=p["bg"])
+    TOOLTIP_COLORS.update(background=p["tooltip_bg"], foreground=p["tooltip_fg"])
+    apply_titlebar(root)
+    _retheme_existing(root, p)
+    _tracked[:] = [(ref, options) for ref, options in _tracked
+                   if (widget := ref()) is not None and _configure_widget(widget, options, p)]
+    live = []
+    for ref in _listeners:
+        callback = ref()
+        if callback is None:
+            continue
+        live.append(ref)
+        try:
+            callback()
+        except Exception:   # one stale redraw must not leave the rest of the window half-switched
+            import traceback
+            traceback.print_exc()
+    _listeners[:] = live
+
+
+def apply_dark_theme(root, ttk) -> None:
+    """Dark palette; kept for callers that predate ``apply_theme``."""
+
+    apply_theme(root, ttk, True)
 
 
 class _Tooltip:
@@ -159,6 +325,9 @@ def themed_scrolled_text_class(base, tk, ttk):
             self.vbar.pack(side=tk.RIGHT, fill=tk.Y)
             tk.Pack.pack_configure(self, side=tk.LEFT, fill=tk.BOTH, expand=True)
             self.configure(yscrollcommand=self.vbar.set)
+            track(self, background="field", foreground="fg", insertbackground="fg", selectbackground="accent",
+                  selectforeground="select_fg", highlightbackground="bg")
+            track(self.frame, background="bg")
 
     return ThemedScrolledText
 

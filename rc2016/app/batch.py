@@ -593,8 +593,10 @@ class ExportBatchRunner:
 
     def __init__(self, records: Sequence[PipelineModelCandidate], extracted_root: Path, output_root: Path,
                  options, clip_only: tuple[str, str] | None = None, event: Callable[..., None] | None = None,
-                 combine_name: str = ""):
+                 combine_name: str = "", clip_choices: dict | None = None):
         self.records = list(records)
+        # model_id -> the clips ticked for it; a model not listed exports the clips of ``options`` as they are.
+        self.clip_choices = dict(clip_choices or {})
         self.combine_name = combine_name.strip()   # also write the exported models as one file under groups/
         self.extracted_root = extracted_root.expanduser().resolve()
         self.output_root = output_root.expanduser().resolve()
@@ -605,9 +607,8 @@ class ExportBatchRunner:
         self.exporter = None
 
     def cancel(self) -> None:
+        # Only the models still queued are stopped: the one running now is left to finish and is recorded.
         self.cancel_requested.set()
-        if self.exporter:
-            self.exporter.cancel()
 
     def run(self) -> dict[str, int | bool]:
         from dataclasses import replace as replace_options
@@ -616,8 +617,7 @@ class ExportBatchRunner:
         self.event("batch_started", total=len(self.records))
         parts = []   # glb files of the models that exported or were already there
         self.exporter = ModelExporter(self.extracted_root, self.output_root,
-                                      log=lambda message: self.event("log", level="output", message=message),
-                                      cancelled=self.cancel_requested.is_set)
+                                      log=lambda message: self.event("log", level="output", message=message))
         for index, record in enumerate(self.records, start=1):
             if self.cancel_requested.is_set():
                 summary["cancelled"] = True
@@ -627,6 +627,10 @@ class ExportBatchRunner:
             if self.clip_only and self.clip_only[0] == record.model_id:
                 # The viewer may have offered a real-time cutscene shot, which only exists in the cutscene scan.
                 options = replace_options(options, animations="clips", clips=(self.clip_only[1],), cinematic=True)
+            elif record.model_id in self.clip_choices:
+                chosen = self.clip_choices[record.model_id]
+                options = replace_options(options, animations="clips", clips=tuple(chosen)) if chosen \
+                    else replace_options(options, animations="none")
             try:
                 result = self.exporter.export(record.model_id, record.archive_path, options)
                 summary[result["status"]] += 1
@@ -650,7 +654,7 @@ class ExportBatchRunner:
         return summary
 
     def _combine(self, parts):
-        """One glTF of every exported model (their own nodes, skins and animations), then FBX/USD/.blend from it
+        """One glTF of every exported model (their own nodes, skins and animations), then FBX/USD from it
         through Blender when those are chosen."""
         from rc2016.export.merge_glb import merge_glb, read_glb
         from rc2016.export.models import FORMATS
@@ -736,6 +740,14 @@ class PipelineIndexScanner:
         report(self.WALK_SHARE)
         reused = bool(previous_stamp) and previous_stamp.get("inputs") == inputs and \
             previous_stamp.get("outputs") == self._output_stamp(reports)
+        if reused:
+            # The reference index also names a shared asset table outside this folder; when that is gone or
+            # changed, animation sets cannot be found, so the scan runs again and rewrites it.
+            from rc2016.formats.index import open_asset_index
+            try:
+                open_asset_index(self.output_root).close()
+            except Exception:
+                reused = False
         if not reused:
             command = [str(self.python_executable), "-u", str(PIPELINE_CLI),
                        "--extracted-root", str(self.extracted_root),

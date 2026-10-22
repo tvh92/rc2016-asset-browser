@@ -157,7 +157,7 @@ Region check against the in-game Novalis frame at 10 to 15 degrees elevation (sR
 Two front ends share one implementation:
 
 - Standalone window: `python -m rc2016.levels.viewer` (`rc2016/levels/viewer.py`).
-- The **Level** asset type in the asset browser (`rc2016/app/browser.py`), where the level list sits in the browser's left pane and the source root is the browser's.
+- The **Level** asset type in the asset browser (`rc2016/app/browser.py`). The level list sits in the browser's left pane; clicking a level loads it, and a typed `.level` or `.zone` archive path loads on Enter. The source root is the browser's.
 
 ### Modules
 
@@ -357,7 +357,7 @@ Models whose path contains `collision` or `environment/template/` (for example `
 | Left click (no drag) | Identify a model or actor; actors report name, actor path, primary model and ID |
 | Double click | Open the identified model in the Model tab (asset browser) and load it; it does not reset the camera |
 
-Zone list: per-zone checkbox with placed-instance count, **All** / **None** buttons. The side column also has the **Lighting** (`Viewer rig` or `Shared HDRI`) and **Tonemap** (`ACES fit` or `Khronos PBR Neutral`) selectors, which work as in the model viewer ([Lighting and tonemap](viewer.md#lighting-and-tonemap)), and the **Collision/helpers**, **Material overrides**, **Native translation**, **Sky** and **Actors** checkboxes. Native translation is on by default, affects Shaded mode only and switches surface frontends without moving the camera. The status line shows load state, zone and model counts, failures, material and texture counts, the number of instances drawn with material overrides and of override entries not applied, the sky (cloud domes drawn, sky meshes not ported, captured clear sky or flat background), visible instances and triangles, draw calls, frame time (ms) and speed. Instances and triangles are those drawn after culling ("showing N of M instances"); frame time is split into the scene passes and the main draw, where M is the placed total of the visible zones and layers.
+Zone list: one checkbox per zone with its placed-instance count; unticking a zone hides it at once. The side column also has the **Lighting** (`Viewer rig` or `Shared HDRI`) and **Tonemap** (`ACES fit` or `Khronos PBR Neutral`) selectors, which work as in the model viewer ([Lighting and tonemap](viewer.md#lighting-and-tonemap)), and the **Collision/helpers**, **Material overrides**, **Native translation**, **Sky** and **Actors** checkboxes. Native translation is on by default, affects Shaded mode only and switches surface frontends without moving the camera. The status line shows load state, zone and model counts, failures, material and texture counts, the number of instances drawn with material overrides and of override entries not applied, the sky (cloud domes drawn, sky meshes not ported, captured clear sky or flat background), visible instances and triangles, draw calls, frame time (ms) and speed. Instances and triangles are those drawn after culling ("showing N of M instances"); frame time is split into the scene passes and the main draw, where M is the placed total of the visible zones and layers.
 
 ### Click to identify
 

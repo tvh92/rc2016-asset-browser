@@ -1394,6 +1394,15 @@ def load_texture(archive, texture_path: str) -> dict:
     return texture
 
 
+PLACEHOLDER_TEXTURE_PREFIX = 'textures/default_pink_shader/'
+
+
+def is_placeholder_texture(path: str) -> bool:
+    """True for the materialgraph default placeholder. Listings hide it because it is
+    a fallback no real model uses; loading and rendering still resolve it as before."""
+    return str(path).lower().startswith(PLACEHOLDER_TEXTURE_PREFIX)
+
+
 def model_texture_list(archive, materials: list[dict]) -> list[dict]:
     """Every `.texture` the model's materials reference, directly or via their graph.
 
@@ -1421,6 +1430,8 @@ def model_texture_list(archive, materials: list[dict]) -> list[dict]:
             continue
         name = material.get('name') or Path(material['path']).stem
         for path, graph_only in [(p, False) for p in direct] + [(p, True) for p in via_graph]:
+            if is_placeholder_texture(path):
+                continue
             row = rows.setdefault(path, dict(path=path, suffix=_suffix(path), materials=[], via_graph=graph_only))
             row['via_graph'] = row['via_graph'] and graph_only
             if name not in row['materials']:

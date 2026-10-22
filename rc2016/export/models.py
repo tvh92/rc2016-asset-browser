@@ -1,10 +1,10 @@
-"""Export one source model to portable files: glTF/GLB and OBJ directly, FBX/USD/.blend through Blender.
+"""Export one source model to portable files: glTF/GLB and OBJ directly, FBX/USD through Blender.
 
 No Blender is needed for GLB, glTF or OBJ. The geometry, skeleton and clips come from the same
 in-memory decoders as the 3D view (``source_preview``, ``animation_preview``); nothing else is
 written. One folder per model::
 
-    <output>/<model>/<model>.glb | .gltf + .bin | .obj + .mtl | .fbx | .usdc | .blend
+    <output>/<model>/<model>.glb | .gltf + .bin | .obj + .mtl | .fbx | .usdc
     <output>/<model>/textures/   material PNGs (and the original DDS textures when asked)
     <output>/<model>/export.json source identity, options, clips and limitations
 
@@ -43,7 +43,6 @@ FORMATS = {   # key: (label, file suffix, needs Blender)
     'obj': ('Wavefront (.obj + .mtl)', '.obj', False),
     'fbx': ('Autodesk FBX (.fbx)', '.fbx', True),
     'usd': ('Universal Scene Description (.usdc)', '.usdc', True),
-    'blend': ('Blender (.blend)', '.blend', True),
 }
 BLENDER_SCRIPT = Path(__file__).with_name('blender_convert.py')
 
@@ -577,7 +576,7 @@ MODEL_TAG = 'rc2016_model'   # glTF node extras: the model a node belongs to, re
 
 
 def tag_model(document, model):
-    """Tag every node that has no model yet, so a .blend, FBX or USD built from the file groups them per model."""
+    """Tag every node that has no model yet, so an FBX or USD built from the file groups them per model."""
     for node in document.get('nodes', []):
         node.setdefault('extras', {}).setdefault(MODEL_TAG, model)
 
@@ -659,6 +658,30 @@ class ModelExporter:
                 pass
         return stem, folder
 
+    def animation_index(self):
+        """The scan's reference index root that links models to animation sets, or None when it is missing or
+        stale (its shared asset table gone or changed), in which case no animation set can be found."""
+        if not (self.index_root / 'reports' / 'asset_references.sqlite').is_file():
+            return None
+        from rc2016.formats.index import open_asset_index
+        try:
+            open_asset_index(self.index_root).close()
+        except Exception:
+            return None
+        return self.index_root
+
+    def clip_labels(self, model_id, source_path, options: ExportOptions):
+        """Animation clip labels that ``export`` offers for this model with these options (the same load, without
+        writing anything). Empty when the export writes no animations."""
+        gltf_based = any(f in options.formats for f in ('glb', 'gltf', 'fbx', 'usd'))
+        if options.animations == 'none' or not (options.skeleton and gltf_based):
+            return []
+        index_root = self.animation_index()
+        self.loader.load(self.source_root, model_id, source_path, options.lod, options.look,
+                         index_root, False, purpose='export')
+        library = self.loader.animation
+        return library.labels() if library is not None and library.rows else []
+
     def export(self, model_id, source_path, options: ExportOptions, cinematic_sources=None):
         """Export one model; returns a summary dict. Raises on failure, Cancelled on cancel.
 
@@ -681,8 +704,8 @@ class ModelExporter:
         if needs_blender and not (options.blender and Path(options.blender).is_file()):
             raise ValueError(f"{', '.join(FORMATS[f][1] for f in needs_blender)} needs Blender: set its path in Options")
         self.log(f'Decoding {source_path}')
-        index_root = self.index_root if (self.index_root / 'reports' / 'asset_references.sqlite').is_file() else None
-        gltf_based = any(f in options.formats for f in ('glb', 'gltf', 'fbx', 'usd', 'blend'))
+        index_root = self.animation_index()
+        gltf_based = any(f in options.formats for f in ('glb', 'gltf', 'fbx', 'usd'))
         load_animation = options.animations != 'none' and options.skeleton and gltf_based   # OBJ is the static rest pose only
         cutscenes = (options.cinematic or options.cinematic_only) and load_animation
         animset_root = index_root if load_animation and not options.cinematic_only else None
@@ -760,7 +783,7 @@ class ModelExporter:
         file_stem = stem + options.file_suffix
         doc = blob = None
         tex_dir = folder / 'textures'
-        need_gltf = any(f in options.formats for f in ('glb', 'gltf', 'fbx', 'usd', 'blend'))
+        need_gltf = any(f in options.formats for f in ('glb', 'gltf', 'fbx', 'usd'))
         texture_files = {}
         if options.textures and any(f in options.formats for f in ('gltf', 'obj')):
             tex_dir.mkdir(exist_ok=True)
@@ -948,7 +971,7 @@ class ModelExporter:
         (folder / f'{stem}.mtl').write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
     def _blender_convert(self, folder, stem, doc, blob, formats, blender):
-        """GLB -> FBX/USD/.blend in a background Blender with factory settings and a private user folder."""
+        """GLB -> FBX/USD in a background Blender with factory settings and a private user folder."""
         with tempfile.TemporaryDirectory(prefix='rcps4-export-') as tmp:
             glb = Path(tmp) / f'{stem}.glb'
             tag_model(doc, stem)
