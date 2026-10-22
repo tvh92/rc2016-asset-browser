@@ -178,6 +178,8 @@ class SourcePreviewLoader:
     """One archive metadata instance and one selected decoded model; no corpus model decode."""
     def __init__(self):
         self.archive=None
+        self.actor_graph=None   # the archive's actor reference graph, read once for borrowed animsets
+        self.graph_lock=threading.Lock()
         self.source_root=None
         self.current=None
         self.identity=None
@@ -205,6 +207,7 @@ class SourcePreviewLoader:
             # Archive initialization reads metadata and prior source_mapping only.
             # This path is never checkpointed or decoded using Archive.decode().
             self.archive=Archive(archive_root,Path(__file__).resolve().parents[2]/'.cache'/'source_preview',lambda *_a,**_k:None)
+            self.actor_graph=None
             self.archive.verify_repeats=False   # preview only: read the first of an asset's repeated copies
             from rc2016.viewer.textures import TextureDiskCache
             self.archive.texture_disk_cache=TextureDiskCache(Path(__file__).resolve().parents[2]/'.cache'/'texture_preview')
@@ -342,8 +345,10 @@ class SourcePreviewLoader:
         if purpose not in self.PURPOSES:raise ValueError('Unknown load purpose: '+str(purpose))
         return self._load(source_root, model_id, source_path, lod, look, output_root, defer_animation, purpose)
 
-    def load_animation(self, source_root, model_id, source_path, output_root=None):
-        """Build (or reuse) the selected model's clip library: {model_id, source_path, clips, animsets, animation_note}."""
+    def load_animation(self, source_root, model_id, source_path, output_root=None, borrowed=False):
+        """Build (or reuse) the selected model's clip library: {model_id, source_path, clips, animsets, animation_note}.
+
+        ``borrowed`` also offers the animsets the game pairs with another model of the same rest rig (opt-in)."""
         with self.lock:
             self._ensure_archive(source_root)
             identity=(model_id,source_path,str(output_root) if output_root else None)
@@ -351,26 +356,36 @@ class SourcePreviewLoader:
             if cached is None:
                 raise ValueError('The model is no longer loaded; select it again')
         # Built outside self.lock, so selecting another model is not blocked behind it.
-        self._build_animation(cached,output_root)
+        self._build_animation(cached,output_root,borrowed,model_id)
         with self.lock:
             if self.identity==identity:self.current,self.animation=cached['decoded'],cached['animation']
             decoded=cached['decoded']
             return dict(model_id=model_id,source_path=source_path,animsets=decoded['animsets'],
                         clips=cached['animation'].labels() if cached['animation'] else [],animation_note=decoded['animation_note'])
 
-    def _build_animation(self, cached, output_root):
+    def _build_animation(self, cached, output_root, borrowed=False, model_id=None):
         with cached['build_lock']:
-            self._build_animation_locked(cached,output_root)
+            self._build_animation_locked(cached,output_root,borrowed,model_id)
 
-    def _build_animation_locked(self, cached, output_root):
+    def _graph(self):
+        with self.graph_lock:
+            if self.actor_graph is None:
+                from rc2016.viewer.animation import actor_graph
+                self.actor_graph=actor_graph(self.archive)
+            return self.actor_graph
+
+    def _build_animation_locked(self, cached, output_root, borrowed=False, model_id=None):
         decoded=cached['decoded']
-        if cached['animation_built']:return
-        cached['animation_built']=True
+        if cached['animation_built']==borrowed:return   # None (not built yet) never equals a bool
+        cached['animation_built']=borrowed
         cached['animation']=None;decoded['animation_note']='';decoded['animsets']=[]
         if not decoded['joint_count']:return
         try:
             from rc2016.viewer.animation import AnimationLibrary, model_animsets
             animsets=model_animsets(self.archive,output_root,decoded['_archive_path']) if output_root else []
+            if borrowed:
+                from rc2016.viewer.animation import borrowable_animsets
+                animsets=animsets+borrowable_animsets(self.archive,self._graph(),model_id,cached['data'],exclude=animsets)
             library=AnimationLibrary(self.archive,cached['data'],animsets)
             # The browser also offers the real-time cutscene shots whose joints cover the whole model (the only
             # motion some NPCs have); exports opt in through ExportOptions instead.
@@ -413,7 +428,7 @@ class SourcePreviewLoader:
         else:
             decoded.update(textures={},texture_list=[],material_rules={})
         decoded['_archive_path']=source_path;decoded['animation_note']='';decoded['animsets']=[]
-        return dict(decoded=decoded,data=data,purpose=purpose,animation=None,animation_built=False,build_lock=threading.Lock(),
+        return dict(decoded=decoded,data=data,purpose=purpose,animation=None,animation_built=None,build_lock=threading.Lock(),
                     vertices=sum(len(m['positions']) for m in decoded['meshes']))
 
     def _load(self, source_root, model_id, source_path, lod, look, output_root, defer_animation=False, purpose='view'):
@@ -439,7 +454,7 @@ class SourcePreviewLoader:
                     raise ValueError('The source archive changed while the model loaded; select it again')
                 cached=self._recent.get(identity) or cached
                 self._remember(identity,cached)
-        pending=bool(defer_animation and cached['decoded']['joint_count'] and not cached['animation_built'])
+        pending=bool(defer_animation and cached['decoded']['joint_count'] and cached['animation_built'] is None)
         if not pending:
             self._build_animation(cached,output_root)
         with self.lock:

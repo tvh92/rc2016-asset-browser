@@ -24,7 +24,9 @@ from rc2016.formats.animation_samples import decode_clip
 from rc2016.formats.animation_transforms import sample_transforms
 from rc2016.formats.archive import decompress
 from rc2016.formats.clips import classify, ordered_containers
-from rc2016.formats.index import open_asset_index, references
+from rc2016.formats.animation_sources import borrowed_animset
+from rc2016.formats.animation_transforms import model_skeleton
+from rc2016.formats.index import AssetIndex, open_asset_index, references
 from rc2016.common import sha
 from rc2016.formats.skeleton import bundled_profile, inheritance_rule, inspect_model, rest_inheritance_rule, worlds
 
@@ -73,6 +75,39 @@ def model_animsets(archive, output_root, model_path):
             elif target.endswith('.config'):
                 queue.append(target)
     return list(dict.fromkeys(found))
+
+
+def actor_graph(archive):
+    """Reference graph of every actor, as the pipeline's actor index builds it (decodes each actor once)."""
+    index = AssetIndex(archive)
+    index.actor_index()
+    return index.graph
+
+
+def borrowable_animsets(archive, graph, model_id, model_bytes, exclude=()):
+    """Animsets the game pairs with another model whose rest rig matches this model, not already in ``exclude``.
+
+    The rule of the pipeline's ``--borrow-animset``: ``borrowed_animset`` accepts an animset only when a model the
+    game pairs it with has the same rest rig. Paths come back in archive order and are not decoded here."""
+    rows = model_skeleton(model_bytes)
+    candidates = []
+    for key, refs in graph.items():
+        if archive.entries[key]['type'] != 'actor':
+            continue
+        for ref in refs:
+            for target in ref.get('resolved_ids') or ():
+                if archive.entries[target]['type'] == 'animset':
+                    candidates.append(archive.entries[target]['path'])
+    found = []
+    for path in dict.fromkeys(candidates):
+        if path in exclude:
+            continue
+        try:
+            borrowed_animset(archive, graph, path, rows, model_id)
+        except (ValueError, KeyError):   # KeyError: a paired model without a joint section (a static prop)
+            continue
+        found.append(path)
+    return found
 
 
 def _quat_mul(a, b):

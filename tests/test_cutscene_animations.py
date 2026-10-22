@@ -176,7 +176,7 @@ class BrowserLoaderTests(unittest.TestCase):
         loader = SourcePreviewLoader.__new__(SourcePreviewLoader)
         loader.archive = archive()
         decoded = dict(joint_count=2, animation_note='', animsets=[], _archive_path='character/npc/npc_test/npc_test.model')
-        cached = dict(decoded=decoded, data=model(JOINTS), purpose=purpose, animation=None, animation_built=False)
+        cached = dict(decoded=decoded, data=model(JOINTS), purpose=purpose, animation=None, animation_built=None)
         loader._build_animation_locked(cached, None)
         return cached, decoded
 

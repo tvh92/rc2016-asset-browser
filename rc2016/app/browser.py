@@ -379,6 +379,10 @@ class AssetBrowser:
         self.clip_only_check=ttk.Checkbutton(anim,text='Export only this clip',variable=self.clip_only_var,state='disabled')
         self.clip_only_check.grid(row=2,column=0,columnspan=2,sticky='w',pady=(2,0))
         tip('Export option: when ticked, Extract selected exports just this clip for the model shown here instead of all its clips.\nPick a clip first.',self.clip_only_check)
+        self.borrowed_var=remember_var(self.tk.BooleanVar(value=False),'model.borrowed_animsets')
+        self.borrowed_check=ttk.Checkbutton(anim,text='Borrowed animsets',variable=self.borrowed_var,command=self._reload_clips)
+        self.borrowed_check.grid(row=3,column=0,columnspan=3,sticky='w',pady=(2,0))
+        tip('Also offer animsets the game pairs with another model whose rest rig matches this one (the Blender build\'s --borrow-animset rule). The first use reads every actor, so it is slow.',self.borrowed_check)
         self._fill_clip_menu([])
         self.anim_box.grid_remove()   # shown only for a model with clips (_show_animation)
         self.frame_text=tk.StringVar(value='')
@@ -672,6 +676,14 @@ class AssetBrowser:
         if (payload['model_id'],payload['source_path'])!=identity:return
         self.pending_clip=None
         if label in self.clip_labels:self._choose_clip(self.clip_labels.index(label),label)
+
+    def _reload_clips(self):
+        """The Borrowed animsets box changed: rebuild the clip list of the model shown."""
+        payload=self.source_payload
+        if not payload or not self.source_selection:return
+        self._stop_animation(reset=True)
+        self.clip_list_work.submit(self.source_loader.load_animation,self.source_selection[0],
+                                   payload['model_id'],payload['source_path'],self.source_output_root,self.borrowed_var.get())
 
     def _apply_clip_list(self,clips):
         """Clips that finished loading after the mesh: only for the model still shown."""
@@ -1096,7 +1108,8 @@ class AssetBrowser:
                         self._set_clips(payload)
                         if payload.get('animation_pending') and self.source_selection:
                             self.clip_list_work.submit(self.source_loader.load_animation,self.source_selection[0],
-                                                       payload['model_id'],payload['source_path'],self.source_output_root)
+                                                       payload['model_id'],payload['source_path'],self.source_output_root,
+                                                       self.borrowed_var.get())
                         self.model_textures._set_texture_list(payload)
                         self.source_text=source_details(payload,getattr(self.selected_record,'used_by','') or '',self.viewport.native_translation)
                         self._request_placements(payload['source_path'])
