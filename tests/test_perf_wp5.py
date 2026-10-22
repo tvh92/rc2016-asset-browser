@@ -685,7 +685,8 @@ class MipmapTests(unittest.TestCase):
             def _upload_texture(self, texture):
                 self.seen.append((texture['path'], self._mipmap_next)); return len(self.seen)
         upload = Upload()
-        entry = dict(_c=dict(path='t/a'), _pick=dict(path='t/a'), _n=dict(path='t/n'), _puddle_atlas=dict(path='t/p'))
+        entry = {role: dict(path=path, pixels=b'x') for role, path in
+                 (('_c', 't/a'), ('_pick', 't/a'), ('_n', 't/n'), ('_puddle_atlas', 't/p'))}
         uploaded = ModelViewport._gl_entry(upload, entry, {})
         self.assertEqual(upload.seen, [('t/a', True), ('t/n', True), ('t/a', False), ('t/p', False)])
         self.assertEqual(uploaded['_c'], (1, False)); self.assertEqual(uploaded['_pick'], (3, False))

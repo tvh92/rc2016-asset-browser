@@ -19,7 +19,7 @@ from rc2016.app.theme import track
 from rc2016.common import remember_var
 from rc2016.levels import scene as level_scene
 from rc2016.levels.viewport import BOOST_RANGE, LevelViewport
-from rc2016.viewer.viewport import GL_TEXTURE_ROLES
+from rc2016.viewer.viewport import GL_TEXTURE_ROLES, MIPMAP_ROLES
 
 DEFAULT_LEVEL = "levels/novalis/novalis.level"
 HELP = ("Left drag look · right drag pan · WASD move · Q/E down/up · Shift faster (wheel sets how much) · "
@@ -91,18 +91,20 @@ def load_sky(archive, zones, probe_position=None):
             except (ValueError, KeyError, OSError) as exc:
                 sky["textures"][path] = None
                 sky["notes"].append(f"{path}: {exc}")
-        if sky.get("reflection"):
-            def environment_loader():
-                from rc2016.levels.probe_lighting import level_environment
-                maps = level_environment(archive, sky)
-                try:
-                    from rc2016.levels.lightgrid import level_lightgrid
-                    maps["lightgrid"] = level_lightgrid(archive, zones, night=sky.get("night", False))   # None without a lighting zone
-                except Exception as exc:   # keep the single-probe ambient and say why
-                    maps["lightgrid"] = None
-                    print(f"lightgrid unavailable: {type(exc).__name__}: {exc}", file=sys.stderr)
-                return maps
-            sky["environment_loader"] = environment_loader   # Level atmosphere lighting, built on demand
+        def environment_loader():
+            from rc2016.levels.probe_lighting import level_environment
+            try:
+                from rc2016.levels.lightgrid import level_lightgrid
+                grid = level_lightgrid(archive, zones, night=sky.get("night", False))   # None without a lighting zone
+            except Exception as exc:   # keep the single-probe ambient and say why
+                grid = None
+                print(f"lightgrid unavailable: {type(exc).__name__}: {exc}", file=sys.stderr)
+            if not sky.get("reflection") and grid is None:
+                raise ValueError("the level has no atmosphere zone with exactly one reflection probe and no lightgrid")
+            maps = level_environment(archive, sky, lightgrid=grid)   # a level without a probe takes its ambient from the grid
+            maps["lightgrid"] = grid
+            return maps
+        sky["environment_loader"] = environment_loader   # Level atmosphere lighting, built on demand
     return sky
 
 
@@ -166,6 +168,38 @@ def restore_native_pixels(archive, entries, posted):
                     textures[api] = reloaded[path]
 
 
+def restore_gl_pixels(archive, entries, posted):
+    """Give GL_TEXTURE_ROLES textures their pixels where the GL side has no object for them yet.
+
+    The GL side keeps one object per (path, mipmapped) pair: MIPMAP_ROLES share the path key, the
+    other roles (palettes, sequences, the puddle atlas) the (path, 'no_mipmaps') key. A cached
+    texture whose pixels drop_uploaded_pixels removed after one of the two uploads, or that a
+    concurrent worker read after the drop, would reach the other with no pixels, so a pair first
+    posted here is reloaded. ``posted`` accumulates the (path, mipmapped) pairs, in posting order."""
+    from rc2016.viewer.textures import load_texture
+    reloaded = {}
+    for entry in entries.values():
+        for role in GL_TEXTURE_ROLES:
+            texture = entry.get(role)
+            if not texture:
+                continue
+            variant = (texture["path"], role in MIPMAP_ROLES)
+            if variant in posted:
+                continue
+            posted.add(variant)
+            if "pixels" not in texture:
+                path = texture["path"]
+                if path not in reloaded:
+                    try:
+                        reloaded[path] = load_texture(archive, path, hd=True)
+                    except Exception:   # synthetic paths (the puddle atlas) have no archive source
+                        reloaded[path] = None
+                source = reloaded[path]
+                if source and "pixels" in source:
+                    # Keep the entry's own fields (the atlas 'scales'); only the pixel blocks return.
+                    entry[role] = dict(texture, **{k: source[k] for k in ("pixels", "slices") if k in source})
+
+
 # Worker threads for model geometry and materials. Archive reads keep per-thread handles; NumPy, zlib
 # and file reads release the GIL, so a few workers overlap decoding with I/O.
 LOAD_WORKERS = max(2, min(6, (os.cpu_count() or 2) - 1))
@@ -200,6 +234,7 @@ class MaterialJobs:
         self.archive, self.pool, self.out = archive, pool, out
         self.claimed, self.done, self.cache, self.uploaded, self.jobs = set(), set(), {}, set(), deque()
         self.native_posted = set()
+        self.gl_posted = set()
 
     def submit(self, geometry):
         todo = [m for m in geometry["materials"] + geometry.get("override_materials", [])
@@ -221,6 +256,7 @@ class MaterialJobs:
                 continue
             self.done.update(entries)
             try:
+                restore_gl_pixels(self.archive, entries, self.gl_posted)
                 restore_native_pixels(self.archive, entries, self.native_posted)
             except Exception as exc:
                 self.out.put(("error", "materials", f"{type(exc).__name__}: {exc}"))
@@ -961,7 +997,12 @@ class LevelPanel:
                 break
             if generation is not None and generation != self.generation:
                 continue   # a previous load or list request
-            self._handle(item)
+            try:
+                self._handle(item)
+            except Exception as exc:   # one bad event must not stop the poll loop and strand the load
+                import traceback
+                traceback.print_exc()
+                self.status_var.set(f"Load error ({item[0]}): {type(exc).__name__}: {exc}")
         if self._stats_due:   # once per tick, not per event
             self._stats_due = False
             self._show_stats(self.view.stats())

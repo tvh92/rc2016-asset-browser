@@ -308,6 +308,7 @@ class LevelViewport(ModelViewport):
         self._draw_list = None
         self._material_queue = {}  # material path -> entry waiting for its textures to upload
         self._material_pump = None # pending after() id of _pump_materials
+        self._missing_models = set()
         self._compile_queue = []   # material paths whose surface program is compiled ahead of use
         self._cull_masks = {}      # instance buffer -> rows it holds now (bool mask), absent when all
         self._cull_counts = {}     # instance buffer -> instances to draw from it
@@ -402,7 +403,10 @@ class LevelViewport(ModelViewport):
         if self._pending:             # uploads queued before the context existed go first, so actors find their models
             pending, self._pending = self._pending, []
             for queued, queued_args in pending:
-                queued(*queued_args)
+                try:
+                    queued(*queued_args)
+                except Exception as exc:   # one failed upload must not drop the calls queued behind it
+                    print(f"level viewer: queued upload failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         function(*args)
         if self._error and self._models:
             self._error = None
@@ -449,7 +453,11 @@ class LevelViewport(ModelViewport):
             entry = queue.pop(path)
             if path in self._materials:
                 continue
-            self._materials[path] = self._gl_entry(entry, self._texture_names)
+            try:
+                self._materials[path] = self._gl_entry(entry, self._texture_names)
+            except Exception as exc:   # an undrawable material must not stop the pump and strand the queue
+                self._materials[path] = {}
+                print(f"level viewer: material upload failed: {path}: {type(exc).__name__}: {exc}", file=sys.stderr)
             # Early frames can record an empty entry before its textures arrive.
             # Invalidate every mode/program variant of that material.
             for key in [k for k in self._material_ops if k[0] == path]:
@@ -658,8 +666,12 @@ class LevelViewport(ModelViewport):
     def _environment_note(self, lighting, maps):
         if lighting != "Level atmosphere":
             return super()._environment_note(lighting, maps)
-        probe = maps["probe"].rsplit("/", 2)[-2]
         sun = ", ".join(f"{float(x):.2f}" for x in maps["sun_rgb"])
+        if maps.get("probe") is None:
+            return (f"Level atmosphere: no reflection probe in this level; ambient and specular are the level-average baked lightgrid "
+                    f"(inferred), sun RGB96 ({sun}) from the atmosphere, scaled by {maps.get('diffuse_scale', 1.0):.2f} (visual calibration). "
+                    f"The exposure is the fixed captured one, so a level authored dim renders dim. Display: the captured game tone curve and grade.")
+        probe = maps["probe"].rsplit("/", 2)[-2]
         return (f"Level atmosphere: probe {probe} ambient, sun RGB96 ({sun}) from the atmosphere. Review preview: "
                 f"sun-to-sky scale is undecoded; diffuse light is scaled by {maps.get('diffuse_scale', 1.0):.2f} "
                 f"to match one in-game screenshot (visual calibration). Display: the captured game tone curve and grade."
@@ -819,10 +831,20 @@ class LevelViewport(ModelViewport):
         self._ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0); self._ext["glBindBuffer"](self.GL_ELEMENT_ARRAY_BUFFER, 0)
         self._models[path] = record
 
+    def _model_record(self, path):
+        """The uploaded model, or None (reported once) when its geometry never arrived or failed to upload."""
+        record = self._models.get(path)
+        if record is None and path not in self._missing_models:
+            self._missing_models.add(path)
+            print(f"level viewer: instances for a model that is not uploaded: {path}", file=sys.stderr)
+        return record
+
     def _store_instances(self, zone, path, groups, static_vector_eligible=False):
         """Keep one zone's instance rows, {(mirrored, material changes): rows}; the GPU buffers merge
         every visible zone (_merge_groups)."""
-        record = self._models[path]
+        record = self._model_record(path)
+        if record is None:
+            return
         self._scene_revision=getattr(self,'_scene_revision',0)+1
         eligibility = record.setdefault('static_vector_zone_eligibility', {})
         eligibility[zone] = bool(eligibility.get(zone, True) and static_vector_eligible)
@@ -845,14 +867,18 @@ class LevelViewport(ModelViewport):
         return True
 
     def _store_actors(self, zone, path, groups, actors):
-        record = self._models[path]
+        record = self._model_record(path)
+        if record is None:
+            return
         for key, rows in sorted(groups.items()):
             record['actor_zones'].append((zone, key, rows))
         record['actors'].extend(actors)
         record['groups_for'] = None
 
     def _store_spawns(self, zone, path, groups, actors):
-        record = self._models[path]
+        record = self._model_record(path)
+        if record is None:
+            return
         for key, rows in sorted(groups.items()):
             record['spawn_zones'].append((zone, key, rows))
         record['spawns'].extend(actors)

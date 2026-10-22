@@ -143,5 +143,63 @@ class LevelTextureCacheTests(unittest.TestCase):
         self.assertIsNone(cache["missing"])
 
 
+class LevelLoadRobustnessTests(unittest.TestCase):
+    """A texture or model the GL side cannot find must not abort the material pump or event loop."""
+
+    def test_pixels_dropped_after_one_gl_key_return_for_the_other(self):
+        from unittest.mock import patch
+        from rc2016.levels.panel import restore_gl_pixels
+        pixels = bytes(65537)
+        loaded = []
+
+        def load(archive, path, hd=False):
+            loaded.append(path)
+            return dict(path=path, pixels=pixels, slices=[pixels])
+        stripped = dict(path='t/shared.texture', scales=[(1.0, 1.0)])   # pixels dropped after the _c upload
+        first = {'a': dict(_c=dict(stripped, pixels=pixels))}
+        second = {'b': dict(_c=dict(stripped), _pick=dict(stripped)), 'c': dict(_pick=dict(stripped))}
+        posted = set()
+        with patch('rc2016.viewer.textures.load_texture', side_effect=load):
+            restore_gl_pixels(None, first, posted)
+            restore_gl_pixels(None, second, posted)
+        # _c was posted with pixels; the mipmapped key is uploaded, so b's _c needs none.
+        self.assertNotIn('pixels', second['b']['_c'])
+        # _pick uses the (path, 'no_mipmaps') object, first posted without pixels: reloaded once.
+        self.assertIs(second['b']['_pick']['pixels'], pixels)
+        self.assertEqual(second['b']['_pick']['scales'], [(1.0, 1.0)])
+        self.assertNotIn('pixels', second['c']['_pick'])
+        self.assertEqual(loaded, ['t/shared.texture'])
+        self.assertEqual(posted, {('t/shared.texture', True), ('t/shared.texture', False)})
+
+    def test_gl_entry_skips_a_texture_without_pixels(self):
+        from rc2016.viewer.viewport import ModelViewport
+        uploads = []
+
+        class Fake:
+            _mipmap_next = True
+            shading_warning = None
+
+            def _upload_texture(self, texture, decode_srgb=False, mipmaps=None):
+                uploads.append(texture['path'])
+                return 7
+        fake, by_path = Fake(), {}
+        entry = dict(_c=dict(path='t/a.texture'), _g=dict(path='t/b.texture', pixels=b'x'))
+        uploaded = ModelViewport._gl_entry(fake, entry, by_path)
+        self.assertNotIn('_c', uploaded)
+        self.assertEqual(uploaded['_g'], (7, False))
+        self.assertEqual(uploads, ['t/b.texture'])
+        self.assertIn('t/a.texture', fake.shading_warning)
+        self.assertNotIn('t/a.texture', by_path)   # not cached as failed: pixels may arrive with a later entry
+
+    def test_instances_for_a_missing_model_are_ignored(self):
+        from rc2016.levels.viewport import LevelViewport
+        view = LevelViewport.__new__(LevelViewport)
+        view._models, view._missing_models = {}, set()
+        LevelViewport._store_instances(view, 'z', 'm/gone.model', {})
+        LevelViewport._store_actors(view, 'z', 'm/gone.model', {}, [])
+        LevelViewport._store_spawns(view, 'z', 'm/gone.model', {}, [])
+        self.assertEqual(view._missing_models, {'m/gone.model'})
+
+
 if __name__ == "__main__":
     unittest.main()

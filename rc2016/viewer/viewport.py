@@ -887,6 +887,9 @@ class ModelViewport(_TkFrame):
                 continue
             key = texture["path"] if role in MIPMAP_ROLES else (texture["path"], "no_mipmaps")
             if key not in by_path:
+                if not texture.get("pixels"):   # the loader dropped them after another key's upload
+                    self.shading_warning = f"Texture pixels unavailable ({role}): {texture['path']}"
+                    continue
                 self._mipmap_next = role in MIPMAP_ROLES   # read by _upload_texture
                 try:
                     name = self._upload_texture(texture)
@@ -909,6 +912,9 @@ class ModelViewport(_TkFrame):
                 linear_rgb = bool(texture.get('srgb')) and api != normal_api
                 cache_key = (path, 'native_srgb' if linear_rgb else 'native_linear')
                 if cache_key not in by_path:
+                    if not texture.get('pixels'):
+                        self.shading_warning = 'Native texture pixels unavailable: ' + path
+                        break
                     name = self._upload_texture(texture, decode_srgb=linear_rgb)
                     by_path[cache_key] = (name, linear_rgb) if name else None
                 if not by_path[cache_key]:
