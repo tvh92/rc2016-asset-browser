@@ -22,6 +22,7 @@ from rc2016.formats.index import references
 from rc2016.formats.texture import dds_bytes, parse_header, ps4_deswizzle_slices
 from rc2016.shaders.lava_surface import GRAPH_HASHES as LAVA_SURFACE_HASHES, prepare_rule as lava_surface_rule
 from rc2016.shaders.liquids import LAVA_FLOW_GRAPH, LAVA_FLOW_SHA256, liquid_flow_rule
+from rc2016.viewer.grey_g_graphs import GREY_G_GRAPHS
 from rc2016.shaders.water import WATER_GRAPH, WATER_GRAPH_SHA256, GLOW_GRAPH, GLOW_GRAPH_SHA256, water_sampling_rule
 
 # DXGI format -> OpenGL internal format. sRGB variants are uploaded as their
@@ -391,8 +392,9 @@ GRAPH_RULES = (
      dict(g_mode='grey', self_lit_key=None, grass_blend=True, _graph_sha256=GRASS_BLEND_GRAPH_SHA256)),
     # 35571F99 deferred writer (pass 0): vertex-paint and cma blend of wavy sand, coral and rock layers (colour, F0/gloss, normal)
     # plus the world-planar caustic term; Research/decodes/2026-10-22_pokitaru-coral-underwater-blend/README.md.
+    # Self-lit: the writer encodes 0.2 log2(1 + coral _c.R) with no material multiplier, so K is the constant 1.
     ('materialgraph/environment/pokitaru/ground/pok_gnd_coral_underwater_blend_01/pok_gnd_coral_underwater_blend_01.',
-     dict(g_mode='grey', self_lit_key=None, coral_blend=True, _graph_sha256=CORAL_BLEND_GRAPH_SHA256)),
+     dict(g_mode='grey', self_lit_key=None, self_lit_constant=1.0, coral_blend=True, _graph_sha256=CORAL_BLEND_GRAPH_SHA256)),
     # FE32FE79/B01E7CB2 cached deferred outputs; Research/2026-10-22_from-PS4-animation-pipeline/decodes/Materials/Foliage/FOLIAGE_DECODE.md.
     ('materialgraph/global/basic_foliage/basic_foliage.',
      dict(g_mode='grey', self_lit_key=None, foliage=True, alpha_cut=True)),
@@ -473,6 +475,9 @@ GRAPH_RULES = (
      dict(self_lit_key=None, forward='ion_tubes', constants=ION_TUBES_CONSTANTS, _graph_sha256=ION_TUBES_GRAPH_SHA256,
           slots={'_pick': ION_TUBES_SLOTS[0]}, params=(
          ('colour', 0x427C868D, 3), ('gain', 0x8A063007, 1), ('power', ION_TUBES_POWER_KEY, 1)))),
+    # Family fallbacks (no trailing dot, so native translation replaces them): graphs whose lowered writers read a grey _g
+    # (F0 = G, gloss = R) and that no rule above covers; exact graph SHA-256 only (grey_g_graphs.py, shaders/g_layout.py).
+    *((path.removesuffix('.materialgraph'), dict(g_mode='grey', _graph_sha256=digest)) for path, digest in GREY_G_GRAPHS.items()),
 )
 # Leaf cut-out (alpha test). The deferred foliage writers kill a fragment when its coverage, `_c`
 # alpha (basic_foliage FE32FE79/B01E7CB2; the tree graphs' 0476D929/6F0C1A0C), is below the
@@ -801,7 +806,7 @@ def material_texture_paths(archive, material_path: str) -> dict:
         key = next((k for k in SELF_LIT_K_KEYS if k in graph_keys), None)
     else:              # no readable graph: the first key the material stores
         key = next((k for k in SELF_LIT_K_KEYS if k in rows), None)
-    result['k'] = value(key, 0.0) if key is not None else 0.0
+    result['k'] = value(key, 0.0) if key is not None else float(rule.get('self_lit_constant', 0.0))
     result['spec'] = value(SPECULAR_SCALE_KEY, 1.0)
     result['gloss'] = value(GLOSS_SCALE_KEY, 1.0)
     if rule.get('two_color_metal'):

@@ -526,7 +526,7 @@ void main() {
         p = uSrgbP ? linear(p) : p;
         albedo = max(albedo + uPick.y * c.a * albedo * (uPick.x * c.a * p - 1.0), 0.0);
     }
-    float rockWeight = 0.0; vec3 rockG = vec3(0.0);
+    float rockWeight = 0.0; vec3 rockG = vec3(0.0); float coralSelfLit = 0.0;
     float grassQ = -2.0; // A814EDCF up-facing term q; below -1 = not computed (no normal map)
     if (uMode == 2 && uRockBlend) {
         float h = texture3D(uRockTex, vec3(fract(vUV)*uRockScale0.xy, 0.125)).r;
@@ -725,10 +725,11 @@ void main() {
     if (uMode == 2 && uCoralBlend) {
         // 35571F99 MRT1/MRT2 (pass 0): m = sat((cma.r - (p.x - CB2[13])) / CB2[13]) with p the vertex red and green (squared in the vertex stage);
         // albedo = sat(caustic + lerp(lerp(wavy, coral, p.y), rock, m)); F0 = lerp(CB2[11] lerp(rock g, sand g, p.y).G, CB2[1] coral g.G, m),
-        // gloss input = lerp(CB2[12] lerp(rock g, sand g, p.y).R, CB2[2] coral g.R, m). The self-lit mask (coral c .R) needs K, which is unbound.
+        // gloss input = lerp(CB2[12] lerp(rock g, sand g, p.y).R, CB2[2] coral g.R, m). The self-lit mask is coral c .R (K = 1: the writer's MRT1 alpha is 0.2 log2(1 + c .R)).
         vec2 paintC = vGroundBlend.xy + (1.0 - vGroundBlend.z) * uCoralPaint;
         float mC = clamp((CORAL(6, vUV).r - (paintC.x - uCoralA.x)) / uCoralA.x, 0.0, 1.0);
         vec3 coralC = uHasC ? texture2D(uTexC, vUV).rgb : vec3(0.0); if (uSrgbC) coralC = linear(coralC);
+        coralSelfLit = coralC.r;
         // Caustic: three world-planar noise images at (y, z), (z, x), (x, y), blended by the native normal weights max(7 |n| - 1.4, 0).
         vec3 cwp = vTintWorldPos, cwn = abs(normalize(vTintWorldNrm));
         vec3 cw = max(7.0 * cwn - 1.4, vec3(0.0)); cw /= max(cw.x + cw.y + cw.z, 1e-6);
@@ -871,6 +872,7 @@ void main() {
         else if (uArchSequence) color += albedo * archSelfLit;
         else if (uBrightCentre) color += albedo * brightSelfLit;
         else if (uFlatSurface) color += albedo * uK;
+        else if (uCoralBlend) color += albedo * coralSelfLit * uK;
         else if (uHasC) color += albedo * (uSelfLitG ? gl.b : c.a) * uK;
         if (uBasicFlatColor) color += uFlatColour * uBasicFlatEmissionScale;
         if (uFacingGlow) { // 0CD2AAFB rel 12552-12672 (instance flag bit 5 clear: v8 = v9 = 1)

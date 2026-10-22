@@ -139,7 +139,7 @@ class CoralBlendArchiveTests(unittest.TestCase):
         for got, want in zip(cb['scroll'], ((2.6, 2.4, 2.6), (-2.4, -2.6, -2.4), (0.105, 0.095, 0.105))):
             for a, b in zip(got, want):
                 self.assertAlmostEqual(a, b, places=6)
-        self.assertEqual((paths['g_mode'], paths['k'], paths['spec'], paths['gloss']), ('grey', 0.0, 1.0, 1.0))
+        self.assertEqual((paths['g_mode'], paths['k'], paths['spec'], paths['gloss']), ('grey', 1.0, 1.0, 1.0))   # K = 1: the writer's self-lit is 0.2 log2(1 + coral _c.R)
         self.assertEqual(paths['graph_identity']['sha256'], tp.CORAL_BLEND_GRAPH_SHA256)
 
     def test_writer_matches_the_decoded_kernel(self):
@@ -152,7 +152,7 @@ class CoralBlendArchiveTests(unittest.TestCase):
         subs.update({i: ir.const(CB2[int(node['name'][4:-1])]) for i, node in list(enumerate(ir.nodes))
                      if node['op'] == 'input' and node['name'].startswith('CB2[')})
         out, normal = lowered['outputs'], self.program['ir']['exports']['0']
-        roots = ir.replace([*out['albedo'], out['F0'][0], out['gloss'], *normal[:3]], subs)
+        roots = ir.replace([*out['albedo'], out['F0'][0], out['gloss'], *normal[:3], out['emission']], subs)
         # per sample: API 5 + resource index; the three planar images per noise API follow program order (y,z), (z,x), (x,y)
         planes = {}
         for node in ir.nodes:
@@ -194,7 +194,7 @@ class CoralBlendArchiveTests(unittest.TestCase):
                 textures[(node['sample'], channel)] = value
             got = [ir.evaluate(root, inputs, textures) for root in roots]
             albedo, f0, gloss, encoded = kernel(dict(case_in, wp=case_in['wp']))
-            for a, b in zip(got, [*albedo, f0, gloss, *encoded]):
+            for a, b in zip(got, [*albedo, f0, gloss, *encoded, tex['coral_c'][0]]):
                 worst = max(worst, abs(a - b))
         self.assertLess(worst, 1e-5)
 

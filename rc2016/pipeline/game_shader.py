@@ -1109,7 +1109,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 17
+VIEWER_RULE_FRONTEND_VERSION = 18
 
 
 def _viewer_rule_images(nt):
@@ -2051,6 +2051,7 @@ def apply_viewer_graph_rule(mat, source):
             s2 = P.sat(P.m('SUBTRACT', 0.0472, P.m('POWER', P.m('ABSOLUTE', P.m('SUBTRACT', blur, noise)), 1.52)))
             caustic = P.m('MULTIPLY', P.m('MULTIPLY', fade, s1), s2)
             base_c = P.vlerp(tex0('_coral_c_wavy', 'coral wavy colour'), c.outputs['Color'], p1)
+            self_mask = P.sep(c.outputs['Color'])[0]   # MRT1 alpha = 0.2 log2(1 + coral _c.R): K is the constant 1
             albedo = P.vsat(P.v('ADD', P.vlerp(base_c, tex0('_coral_c_rock', 'coral rock colour'), cm), P.comb(caustic, caustic, caustic)))
             g_base = P.vlerp(tex0('_coral_g_rock', 'coral rock F0 gloss'), tex0('_coral_g_sand', 'coral sand F0 gloss'), p1)
             br, bg, _ = P.sep(g_base)
@@ -2062,8 +2063,7 @@ def apply_viewer_graph_rule(mat, source):
             rock_g = P.comb(gloss_mix, f0_mix, 0.0)
             limits.append('coral_blend: the vertex paint (red and green squared) comes from the explicit RC zone ground blend attribute, '
                           'inferred from zone-keyed colours, and unpainted vertices use the review fallback; the caustic scroll is frozen at '
-                          'game time 0, the planes and height use object-space (model) native axes, and normal strength and fade are taken as 1; '
-                          'the self-lit mask (coral colour red) is not applied because its constant K is unbound')
+                          'game time 0, the planes and height use object-space (model) native axes, and normal strength and fade are taken as 1')
         if leaf and leaf.get('mapped_fresnel'): albedo = leaf_albedo(albedo, final_n)
         metal_tint = None
         if metal:                     # 1012E99D forward two-colour terms with the final normal
