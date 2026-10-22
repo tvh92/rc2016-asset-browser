@@ -298,6 +298,12 @@ GRAPH_RULES = (
     # Research/2026-10-22_from-PS4-animation-pipeline/decodes/Materials/BasicColoredSpec/BASIC_COLORED_SPEC_DECODE.md. Exact graph only; 1BC3FDDF/F8FBB38F are undecoded.
     ('materialgraph/global/basic_colored_spec/basic_colored_spec.',
      dict(g_mode='colored', self_lit_key=None, linear_z=True)),   # 63EEBF51 normal z = 1 - x*x - y*y (no square root)
+    # basic_normal_coloredgloss_alpha (hero_Protosuit_Chest_Logo): the same 63EEBF51 deferred writer, plus the alpha-test
+    # pass 1BC3FDDF. That pass discards when sat(_c.a) < attr0.z, and attr0.z is the instance record's threshold
+    # min((byte20 + byte21) / 255, 1), the same as the leaf cut-out (decoded from the PS and VS bytes; the per-draw
+    # pass selection and the optional API33 mask, flag 128 in the record, are not established). Byte 20 = 172 gives 0.6745.
+    ('required/materials/basic_normal_coloredgloss_alpha.',
+     dict(g_mode='colored', self_lit_key=None, alpha_cut=True)),
     # basic_colored_spec_emmisive_in_c_alpha_swap, pass-0 writer 63278DBA (pass 1 is D1DDEB45, the same surface without the
     # normal map). CB2: rate 0xAF5BEBBC, K 0xF8C61683 (graph default 5), P 0x62835AF9, Q 0x24F4CA4C, swap weight 0xBB8D619C
     # (graph default 0). Albedo mix(_c, _c2, W), F0 = P mix(_g, _g2) rgb, gloss = sqrt(sat(Q mix(_g.a^2, _g2.a^2))),

@@ -25,7 +25,7 @@ The equations below were read from the SPIR-V of a RenderDoc capture of the game
 - Colourspace follows the native DXGI format, not the filename: sRGB for formats 29, 72, 75, 78, 91, 93 and 99, Non-Color for every other format. `rc2016/formats/materials.py` applies this; for example a `_g` stored as BC7 sRGB (format 99) is sRGB.
 - Normals are always Non-Color.
 - Roles by suffix:
-  - `_c`: base colour, normally BC7 sRGB. Its alpha is a self-lit mask, never ordinary transparency. The one exception is the foliage writers (`basic_foliage`, the tree-leaf graphs), where it is read only as cut-out coverage compared with an alpha-test threshold and nothing else (see [viewer](viewer.md#leaf-cut-out)).
+  - `_c`: base colour, normally BC7 sRGB. Its alpha is a self-lit mask, never ordinary transparency. The one exception is the foliage writers (`basic_foliage`, the tree-leaf graphs) and the protosuit chest logo (`basic_normal_coloredgloss_alpha`), where it is read only as cut-out coverage compared with an alpha-test threshold and nothing else (see [viewer](viewer.md#leaf-cut-out)).
   - `_g`: normally BC7 sRGB, coloured specular F0 in RGB and gloss in alpha. This is a property of the common graph; some graphs use `_g` differently (see Graph families).
   - `_n`: DirectX tangent normal (BC5 RG, `z = 1 - x² - y²`, normalised), strength 1.0. Green is not flipped by default (`flip_normal_green=` exists on `convert_material`); the game takes the tangent sign from a vertex flag, so test a flip on a model with obvious bevels before using it.
 - Keep UV orientation. Do not add metallic masks or strong AO.
