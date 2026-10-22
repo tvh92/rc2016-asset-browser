@@ -2,7 +2,7 @@
 import unittest
 
 from rc2016.shaders import bindings
-from rc2016.shaders.engine_inputs import analyse, reconstruct_world_position
+from rc2016.shaders.engine_inputs import analyse, reconstruct_view_offset, reconstruct_world_position
 from rc2016.shaders.ir import DAG
 
 
@@ -54,6 +54,32 @@ class ReconstructionTests(unittest.TestCase):
         ir, root = self.build(0, camera=False)
         self.assertEqual(reconstruct_world_position(ir, [root]), ([root], 0))
 
+    def test_view_offset_replaces_the_camera_relative_ray(self):
+        # The 76C79AA4 rim reads V = -normalize(ray * POS_W): world position minus camera, normalised.
+        ir = DAG()
+        parts = [self.build(c, camera=False) for c in range(3)]
+        ir = parts[0][0]
+        for c in (1, 2):
+            other, root = parts[c]
+            remap = {}
+            for i, n in enumerate(other.nodes):
+                remap[i] = ir.node(n['op'], [remap[j] for j in n['args']], **{k: v for k, v in n.items() if k not in ('op', 'args')})
+            parts[c] = (ir, remap[root])
+        v = [root for _, root in parts]
+        length = ir.op('rsqrt', ir.op('add', ir.op('add', ir.op('mul', v[0], v[0]), ir.op('mul', v[1], v[1])), ir.op('mul', v[2], v[2])))
+        roots, count = reconstruct_view_offset(ir, [ir.op('mul', ir.op('neg', length), v[c]) for c in range(3)])
+        self.assertEqual(count, 3)
+        used = sorted((ir.nodes[i]['kind'], ir.nodes[i]['channel']) for i in ir.reachable(roots) if ir.nodes[i]['op'] == 'input')
+        self.assertEqual(used, [('preview_view_offset', c) for c in range(3)])
+        offset = {'preview_view_offset.0': 3., 'preview_view_offset.1': 0., 'preview_view_offset.2': -4.}
+        self.assertAlmostEqual(ir.evaluate(roots[0], offset), -.6)
+        self.assertAlmostEqual(ir.evaluate(roots[2], offset), .8)
+
+    def test_view_offset_does_not_split_world_position(self):
+        ir, root = self.build(1)
+        roots, _ = reconstruct_world_position(ir, [root])
+        self.assertEqual(reconstruct_view_offset(ir, roots), (roots, 0))
+
     def test_experimental_receipt_reaches_glsl_only_as_experimental(self):
         from rc2016.viewer.native_glsl import emit_surface
         ir = DAG()
@@ -67,6 +93,9 @@ class ReconstructionTests(unittest.TestCase):
         body = emit_surface(receipt, experimental=True)['body']
         self.assertIn('vTintWorldPos.x', body)
         self.assertIn('vRockAlpha', body)
+        o = ir.node('input', name='preview_view_offset.1', kind='preview_view_offset', channel=1)
+        offset = dict(receipt, nodes=ir.nodes, outputs=dict(receipt['outputs'], gloss=o))
+        self.assertIn('vTintViewOffset.y', emit_surface(offset, experimental=True)['body'])
         with self.assertRaises(ValueError):
             emit_surface(receipt)
         with self.assertRaises(ValueError):

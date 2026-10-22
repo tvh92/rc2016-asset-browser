@@ -62,6 +62,18 @@ def _frontend(translation,images):
             negate = nodes.new('ShaderNodeMath');negate.operation='MULTIPLY';negate.inputs[1].default_value=-1
             links.new(native[2],negate.inputs[0]);native[2]=negate.outputs[0]
             for channel, value in enumerate(native):preview_inputs[(kind,channel)] = value
+        if any(n.get('kind') == 'preview_view_offset' for n in translation['nodes']):
+            # World position minus camera, -Incoming x View Distance, in the same native basis.
+            camera=nodes.new('ShaderNodeCameraData');camera.name='Experimental viewer camera adapter'
+            distance=nodes.new('ShaderNodeMath');distance.operation='MULTIPLY';distance.inputs[1].default_value=-1
+            links.new(camera.outputs['View Distance'],distance.inputs[0])
+            offset=nodes.new('ShaderNodeVectorMath');offset.operation='SCALE'
+            links.new(geometry.outputs['Incoming'],offset.inputs[0]);links.new(distance.outputs[0],offset.inputs['Scale'])
+            separate=nodes.new('ShaderNodeSeparateXYZ');links.new(offset.outputs['Vector'],separate.inputs[0])
+            negate=nodes.new('ShaderNodeMath');negate.operation='MULTIPLY';negate.inputs[1].default_value=-1
+            links.new(separate.outputs[1],negate.inputs[0])
+            for channel, value in enumerate((separate.outputs[0],separate.outputs[2],negate.outputs[0])):
+                preview_inputs[('preview_view_offset',channel)] = value
         # Explicit diagnostic POINT/FLOAT_COLOR attribute: (masked R^2, masked G^2, key flag, 1).
         # Missing attributes return zero, retaining the uniform review fallback.
         if any(n.get('kind') == 'preview_ground_blend' for n in translation['nodes']):

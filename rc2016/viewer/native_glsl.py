@@ -74,6 +74,8 @@ def emit_surface(translation, srgb=None, *, experimental=False, rule_preview=Fal
         elif op == 'input':
             if preview and n.get('kind') in ('preview_position','preview_normal') and n.get('channel') in (0,1,2):
                 expr = ('vTintWorldPos' if n['kind'] == 'preview_position' else 'vTintWorldNrm') + '.' + 'xyz'[n['channel']]
+            elif preview and n.get('kind') == 'preview_view_offset' and n.get('channel') in (0,1,2):
+                expr = 'vTintViewOffset.' + 'xyz'[n['channel']]   # world position minus camera, same frame
             elif preview and n.get('kind') == 'preview_static_vector' and n.get('channel') in (0,1,2):
                 expr = 'vStaticPackedVector.' + 'xyz'[n['channel']]
             elif preview and n.get('kind') == 'preview_ground_blend' and n.get('channel') in (0,1,2):

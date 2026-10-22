@@ -204,7 +204,7 @@ uniform float uBoneWidth;     // texels = 4 * joints
 attribute vec4 aJoints0; attribute vec4 aJoints1;
 attribute vec4 aWeights0; attribute vec4 aWeights1;
 varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
-varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm;
+varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm; varying vec3 vTintViewOffset;
 attribute float aRockAlpha; varying float vRockAlpha;
 attribute vec3 aGroundBlend; varying vec3 vGroundBlend;
 attribute vec3 aStaticPackedVector; varying vec3 vStaticPackedVector;
@@ -236,6 +236,8 @@ void main() {
     vTangent = gl_NormalMatrix * tn;
     vTintWorldPos = vec3(p.x, p.z, -p.y); vTintWorldNrm = vec3(n.x, n.z, -n.y);
     vec4 view = gl_ModelViewMatrix * p;
+    // Camera-to-vertex offset in the vTintWorldPos frame (affine, so it interpolates exactly).
+    vec3 o = (gl_ModelViewMatrixInverse * vec4(view.xyz, 0.0)).xyz; vTintViewOffset = vec3(o.x, o.z, -o.y);
     vPos = view.xyz; vNrm = gl_NormalMatrix * n; vUV = gl_MultiTexCoord0.xy;
     gl_Position = gl_ProjectionMatrix * view;
 }
@@ -310,7 +312,7 @@ uniform float uArchPhase; // t=0; instance interpolants frozen to zero
 uniform bool uFacingGlow; uniform vec4 uFacingGlowP; uniform vec3 uFacingGlowQ; // amplitude, exponent, a scale, a offset; bias, g scale
 uniform bool uBrightCentre; uniform bool uBrightWhite; uniform vec3 uBrightEdge; uniform vec3 uBrightColour; uniform vec4 uBrightP; // D14A48D7: exponent, weight, F0, gloss^2
 varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
-varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm; varying vec3 vTangent;
+varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm; varying vec3 vTangent; varying vec3 vTintViewOffset;
 const float PI = 3.14159265;
 vec3 linear(vec3 c) { return pow(max(c, 0.0), vec3(2.2)); }
 // @lighting
@@ -1201,7 +1203,7 @@ attribute float aRockAlpha; attribute vec3 aGroundBlend;
 attribute vec3 aStaticPackedVector;
 varying vec3 vGroundBlend;
 varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
-varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm;
+varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm; varying vec3 vTintViewOffset;
 varying float vRockAlpha; varying vec3 vStaticPackedVector;
 varying vec3 vTangent;   // the level viewer draws no tangent stream: zero keeps the derivative frame
 void main() {
@@ -1227,6 +1229,7 @@ void main() {
     }
     vTintWorldPos = p; vTintWorldNrm = n;   // native Y-up world space, as the tint writers read it
     vec4 view = gl_ModelViewMatrix * vec4(p, 1.0);
+    vTintViewOffset = (gl_ModelViewMatrixInverse * vec4(view.xyz, 0.0)).xyz;   // p minus the camera, native world
     vPos = view.xyz; vNrm = gl_NormalMatrix * n; vUV = gl_MultiTexCoord0.xy;
     gl_Position = gl_ProjectionMatrix * view;
 }

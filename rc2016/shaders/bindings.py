@@ -440,8 +440,11 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
         if masks:
             replaced=ir.replace(replaced,masks)
             lowered['limitations'].append('Experimental neutral blend mask: explicitly unset material Blend Mask R samples use uniform review value 1. The game empty-slot behavior is unverified; this substitutes a review input, never a decoded texture or runtime default. Original colour layers and blend arithmetic are retained.')
-        from rc2016.shaders.engine_inputs import reconstruct_world_position
+        from rc2016.shaders.engine_inputs import reconstruct_view_offset,reconstruct_world_position
         replaced,adapted=reconstruct_world_position(ir,replaced)
+        replaced,offsets=reconstruct_view_offset(ir,replaced)
+        if offsets:lowered['limitations'].append(f'Experimental: {offsets} components of (CB0[92..94] + CB0[100..102]*POS_Y + POS_X*(CB0[96..98] + CB0[104..106]*POS_Y)) * POS_W, the world-position expression without the CB0[28..30] camera term, are read as world position minus camera position and replaced by the viewer\'s camera-to-pixel offset. This engine meaning is inferred from the expression shape, not decoded from the game.')
+        position_terms=adapted;adapted+=offsets
         normals={}
         for i in ir.reachable(replaced):
             n=ir.nodes[i]
@@ -476,7 +479,7 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
             replaced=ir.replace(replaced,normals)
             if normal_adapted:lowered['limitations'].append('Experimental: interpolants '+', '.join(f'attribute{a}.xyz' for a in sorted(normal_attributes))+' are, in every traced vertex program and flag path, per-draw words times one vertex stream (a transformed stream, optionally normalised) and are read as the geometry normal; that the stream is the normal and the matrix object-to-world is inferred, and the packed vertex frame is not reconstructed.')
         if static_used:lowered['limitations'].append('Experimental ordinary-static vector input: source vertex producers in the exact pass prove M*(2*semantic1.xyz-1) under material-derived static flags. The raw packed model word at vertex+8 supplies recentered UNORM xyz without normalization, and the source CPU axis-length classifier selects the per-instance matrix. Fetch identity and absence of alternate/deformed streams are inferred; runtime pass choice is unverified. Skinned and alternate-codec geometry are excluded. Shader colour layers and blend arithmetic are retained.')
-        if adapted:lowered['limitations'].append(f'Experimental: {adapted} expressions of the form CB0[28..30] + (CB0[92..95] + CB0[100..103]*POS_Y + POS_X*(CB0[96..99] + CB0[104..107]*POS_Y)) * POS_W are read as world position and replaced by viewer world position. This engine meaning is inferred from the expression shape, not decoded from the game.')
+        if position_terms:lowered['limitations'].append(f'Experimental: {position_terms} expressions of the form CB0[28..30] + (CB0[92..95] + CB0[100..103]*POS_Y + POS_X*(CB0[96..99] + CB0[104..107]*POS_Y)) * POS_W are read as world position and replaced by viewer world position. This engine meaning is inferred from the expression shape, not decoded from the game.')
     if vertex_frame:
         # Vertex normal (attribute2.xyz) and tangent (attribute3.xyz) are the decoded per-vertex words; the
         # bitangent handedness sign(attribute3.w) is the integer select/u_sub/i2f chain. The archive does not
@@ -509,7 +512,7 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
         if n['op'] not in PORTABLE_OPS:errors.append(dict(node=i,reason=n.get('reason',n['op'])))
         elif n['op']=='input' and not (n.get('kind')=='attribute' and n.get('attribute')==0 and n.get('channel') in (0,1)) and n.get('kind')!='front_facing' \
                 and not (vertex_frame and n.get('kind') in VERTEX_FRAME_KINDS) \
-                and not (world_position and n.get('kind') in (('preview_position','preview_normal') if adapted else ()) + ('preview_vertex_alpha_squared','preview_ground_blend','preview_static_vector')):
+                and not (world_position and n.get('kind') in (('preview_position','preview_normal','preview_view_offset') if adapted else ()) + ('preview_vertex_alpha_squared','preview_ground_blend','preview_static_vector')):
             errors.append(dict(node=i,reason='Unbound engine/interpolant input '+n['name']))
         elif n['op']=='texture' and not bound.get(n['api'],{}).get('path'):
             errors.append(dict(node=i,reason='Sampled material texture is unset or unbound',api=n['api']))

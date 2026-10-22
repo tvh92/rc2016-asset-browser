@@ -152,6 +152,29 @@ def reconstruct_world_position(ir, roots):
     return replaced, len(set(substitutions.values()) & ir.reachable(replaced))
 
 
+def reconstruct_view_offset(ir, roots):
+    """Experimental adapter: ray * POS_W (times a constant) without the camera term becomes
+    viewer world position minus camera position.
+
+    camera + ray * POS_W is read as world position, so the same polynomial without
+    CB0[28..30] is the camera-to-pixel offset under the same inferred meaning; writers
+    normalise it into the view vector. Run after ``reconstruct_world_position`` so a full
+    world-position expression is not split. Returns the new roots and the number of
+    offset components (x, y, z) in use.
+    """
+    substitutions = {}
+    for i, _, c, scale in _matches(ir, roots, ('ray*w',)):
+        if c > 2:
+            continue
+        offset = ir.node('input', name=f'preview_view_offset.{c}', kind='preview_view_offset', channel=c)
+        substitutions[i] = offset if abs(scale - 1) < 1e-6 else ir.op('mul', ir.const(scale), offset)
+    if not substitutions:
+        return list(roots), 0
+    replaced = ir.replace(roots, substitutions)
+    return replaced, len({ir.nodes[i]['channel'] for i in ir.reachable(replaced)
+                          if ir.nodes[i].get('kind') == 'preview_view_offset'})
+
+
 def analyse(nodes, roots):
     """Matched shapes and the engine inputs left after substituting them."""
     ir = DAG(nodes)
