@@ -253,7 +253,7 @@ uniform bool uRockBlend; uniform sampler3D uRockTex; uniform vec3 uRockSrgb;
 uniform vec4 uRockScale0; uniform vec4 uRockScale1;
 uniform vec3 uRockTint; uniform vec4 uRockP; // exponent, tint amount, mask strength, sharpness
 uniform vec3 uRockBreakup; // A3DAA047: enabled, 1/max(1e-5, world tile T), layer UV scale U
-uniform bool uCraterBlend; uniform vec4 uCraterP; // E22E4D93: 1/world tile CB2[3], g UV scale CB2[1], squared paint V for vertices without paint (review control), crater UV scale CB2[4]
+uniform bool uCraterBlend; uniform vec4 uCraterP; // E22E4D93: 1/world tile CB2[3], g UV scale CB2[1], squared paint V for vertices without a key (0 in the game), crater UV scale CB2[4]
 uniform bool uMudBlend; uniform vec4 uMudP0; uniform vec4 uMudP1; uniform vec4 uMudP2; // uMudP2: grain UV scale CB2[10], sand normal UV scale CB2[9], sand normal strength CB2[2]
 // // 8A581B9D: (CB2[1], CB2[6], 1/world tile CB2[8], 1 - CB2[5]), (sand UV scale CB2[4], mud UV scale CB2[7], gloss scale CB2[0], mud F0 factor)
 uniform vec4 uPuddleSludge; // CC985D80: (CB2[2] UV scale, CB2[13] dry gloss scale, CB2[14] dry F0 scale, enabled)
@@ -808,7 +808,8 @@ void main() {
         rockG = mix(g8, g9, gw);
     }
     if (uMode == 2 && uCraterBlend) {
-        // E22E4D93: V = the keyed paint alpha squared (the unmatched value is a review control: the pit is dark in the game, so 0);
+        // E22E4D93: V = the keyed paint alpha squared (the vertex program squares all four paint channels), and vertices without a key
+        // hold 0 in the game's per-vertex paint array (found in the capture), so V = 0 there;
         // albedo = lerp(crater colour at UV0 x CB2[4], grass breakup colour at native world (x, z) / CB2[3], V);
         // F0 and the gloss input = lerp(g at UV0, g at UV0 x CB2[1], V). The self-lit term is 0 and the normal is the material's.
         float cv = vGroundBlend.z > 0.5 ? vRockAlpha : uCraterP.z;

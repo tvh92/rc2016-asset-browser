@@ -2046,8 +2046,9 @@ def apply_viewer_graph_rule(mat, source):
             if g is not None:
                 g_far = P.sep(P.tex(g, P.game_uv(gs, gs), 'crater blend second g').outputs['Color'])
                 rock_g = P.comb(P.lerp(gR, g_far[0], va), P.lerp(gG, g_far[1], va), 0.0)
-            limits.append('crater_blend: V is the squared vertex alpha (the viewer feeds the zone-keyed paint, the pit interior without keys '
-                          'takes V = 0 there; a model without a colour stream uses alpha 1, which draws grass); V as paint byte 3 is inferred; '
+            limits.append('crater_blend: V is the squared vertex alpha (the vertex program squares all four paint channels; the viewer feeds the '
+                          'zone-keyed paint, and unkeyed vertices hold 0 in the game); a model without a colour stream uses alpha 1, which draws '
+                          'grass; that attribute3.w is the byte that reaches V is inferred; '
                           'the grass breakup colour uses object-space (model) native x, z, the game world position; the second writer\'s '
                           'normal composition is not reduced and the material normal is used')
         world_uv = detail_mask = None
