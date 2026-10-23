@@ -148,7 +148,8 @@ VERTEX_COLOUR_TOLERANCE = 0.6   # key units (0.1 model units) per axis; observed
 def keyed_vertex_colours(positions, block):
     """(colours uint8 (n, 4), matched bool (n,)) for model-space ``positions`` (n, 3) from one
     zone_format.vertex_colour_block: a vertex takes the colour of the key nearest to its position
-    x 10 (Chebyshev distance at most VERTEX_COLOUR_TOLERANCE); unmatched vertices are 255."""
+    x 10 (Chebyshev distance at most VERTEX_COLOUR_TOLERANCE); unmatched vertices are 0 in every channel, as in the game's
+    per-vertex paint array (found in a Novalis capture for the crater model's four blocks)."""
     import numpy as np
     from rc2016.levels.zone_format import VERTEX_COLOUR_KEY_BITS as bits
     keys, colours = block
@@ -166,7 +167,7 @@ def keyed_vertex_colours(positions, block):
         hit = (codes[at] == code(candidate)) & (distance <= VERTEX_COLOUR_TOLERANCE) & (distance < best)
         best[hit] = distance[hit]; index[hit] = order[at[hit]]
     matched = np.isfinite(best)
-    result = np.full((len(scaled), 4), 255, np.uint8)
+    result = np.zeros((len(scaled), 4), np.uint8)
     result[matched] = np.asarray(colours, np.uint8)[index[matched]]
     return result, matched
 
@@ -198,7 +199,7 @@ def instance_vertex_paint(geometry, blocks, instances):
     """(alpha array, candidate R/G/key-flag array, note) for a model placed ``instances`` times whose
     instances carry ``blocks`` (vertex_colour_block results). This legacy uniform adapter
     supplies a stream only when every instance carries the same block; the
-    alpha is byte 3 / 255 and 1 where no key matches. The second array packs
+    alpha is byte 3 / 255 and 0 where no key matches. The second array packs
     candidate red, green and a matched-key flag for the experimental ground
     preview. Channels are squared before interpolation in the vertex stage;
     unlisted vertices use uniform review controls. Inferred, see zone_format."""

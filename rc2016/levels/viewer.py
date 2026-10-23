@@ -79,6 +79,10 @@ def main(argv=None):
                         help="approximate enemy factory populations; all encounter states combined")
     parser.add_argument("--experimental-materials", action="store_true",
                         help="enable labelled simplified material previews with unverified runtime inputs")
+    parser.add_argument("--borderless", action="store_true",
+                        help="hide the window frame and the sidebar (as the borderless full-screen mode does) before the capture")
+    parser.add_argument("--window-size", default="1500x920", metavar="WxH",
+                        help="window size in pixels, for example 1920x1080 for a capture with the game's aspect ratio")
     parser.add_argument("--no-lighting", action="store_true", help="unlit surface inspection; disable rig/HDRI, AO, shadows and authored lights")
     parser.add_argument("--lighting", choices=LevelViewport.LIGHTINGS, default=LevelViewport.LIGHTINGS[0],
                         help="lighting source; Level atmosphere is the reflection probe plus atmosphere sun (review preview)")
@@ -96,7 +100,7 @@ def main(argv=None):
     use_compile_processes()
     root = tk.Tk()
     root.title("R&C 2016 Level Viewer")
-    root.geometry("1500x920")
+    root.geometry(args.window_size)
     dark = is_dark(settings["appearance"])
     apply_theme(root, ttk, dark)
     top = ttk.Frame(root, padding=(8, 6)); top.pack(side="top", fill="x")
@@ -124,6 +128,14 @@ def main(argv=None):
         if args.capture:
             def capture():
                 view = panel.view
+                if args.borderless and not view.is_fullscreen:
+                    view.is_fullscreen = True
+                    panel.frame.set_second_visible(False)
+                    root.overrideredirect(True)
+                    root.geometry(args.window_size + "+0+0")
+                    root.update()
+                    root.after(600, capture)   # redraw at the new size first
+                    return
                 if view._environment_loading or (view.lighting in view.ENVIRONMENT_LIGHTINGS
                                                  and view._environment_lighting != view.lighting):
                     root.after(200, capture)   # the lighting maps are still being built

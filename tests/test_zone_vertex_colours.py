@@ -114,15 +114,16 @@ class KeyedColourTests(unittest.TestCase):
         positions = [[0.0, 0.0, 0.0], [1.04, -0.46, 0.3], [0.07, 0.0, 0.0], [5.0, 5.0, 5.0]]
         colours, matched = keyed_vertex_colours(positions, self.block)
         self.assertEqual(matched.tolist(), [True, True, False, False])
-        self.assertEqual(colours[:, 3].tolist(), [0, 128, 255, 255])
+        self.assertEqual(colours[:, 3].tolist(), [0, 128, 0, 0])
+        self.assertEqual(colours[2:].tolist(), [[0, 0, 0, 0]] * 2)   # unmatched vertices hold 0 in every channel
 
     def test_ground_candidate_retains_key_presence_instead_of_inventing_unlisted_colours(self):
         from array import array
         from rc2016.levels.scene import instance_vertex_paint
         geometry=dict(positions=array('f',[0,0,0,5,5,5]))
         alpha,paint,note=instance_vertex_paint(geometry,[self.block],1)
-        self.assertEqual(list(alpha),[0.,1.])
-        np.testing.assert_allclose(np.asarray(paint).reshape(-1,3),[[1/255,2/255,1],[1,1,0]])
+        self.assertEqual(list(alpha),[0.,0.])
+        np.testing.assert_allclose(np.asarray(paint).reshape(-1,3),[[1/255,2/255,1],[0,0,0]])
         self.assertIn('1 of 2 vertices',note)
 
     def test_alpha_needs_the_same_block_on_every_instance(self):
