@@ -24,10 +24,17 @@ Parameters are the 16-byte entries of 0xB1F4C248 (four s16 values at +0, +2, +4,
 then a four-value spread at +8 that the spawn adds at random) paired entry for entry with 0xD78E007C (u32 hash, u32 index,
 u32 1, float32 scale at +12 that the values multiply: 1/32767 for a plain value, 3/32767 for a value up to 3). The hash is
 not a name that can be reproduced. The evaluator is eboot function 0x170A3D0, the function that packs a particle for the
-GPU 0x170D940: it reads slots 0, 1, 3, 4 and 5 of the component, and slot 5 is quantised into the particle's colour
-bytes. Slot 5 is the component's colour: on the colour-named flare effects of the game its RGB follows the name (mean
-cosine 0.9 to 0.99), and in the warm and blue wide light cones it is the one entry in which the two effects differ.
-Slot 6 holds a small scalar (0.03 to 0.2 in the cones) that is taken to be the component's opacity, which is inferred.
+GPU 0x170D940: it evaluates slots 0, 1, 3, 4 and 5 of the component at spawn (slots 2 and 6 are left to the per-frame
+evaluator 0x170A750). Slot 1 times slot 4 is the particle's tint, stored as three s16 words (x 1024) at +0x18 of the 48-byte
+particle record. The mesh submit (0x2A51FF0) reads those words back (x 1/1024), multiplies them by the effect's colour (the
+placement's floats at +0x48, when the component's flag 0x4000 is set; 1.0, 1.0, 1.0 in every cone) and hands the vector to
+0x182E360, which stores it in the instance's extras block at +0x3C; the record filler 0x1838630 copies that to +0xB0 of the
+272-byte per-instance record, the three floats the cone pixel program reads as its colour. Slot 5 is quantised to two bytes
+(R and G) in the particle record, which the mesh submit takes as an intensity byte. Slot 5 is also the component's colour in
+the sense of the names: on the colour-named flare effects of the game its RGB follows the name (mean cosine 0.9 to 0.99),
+and in the warm and blue wide light cones it is the one entry in which the two effects differ. How its hue reaches the cone's
+colour, which the code above does not show (the tint carries no hue: Med (0.75, 0.75, 1.0), Small (0.375, 0.375, 0.5), both
+wide cones white), is not decoded.
 
 The light cones are the `gbl_amb_Light_Cone_*` effects. Each draws one cone model through a component with the model's
 id, with the additive two-sided material `gbl_amb_Light_Cone_Circular_Med` (flags 0x20D, a captured draw state,
@@ -60,7 +67,9 @@ PARAMETER_SCALES = 0xD78E007C
 COMPONENT_SIZE = 0x110
 LIGHT_CONE = re.compile(r'light_cone', re.IGNORECASE)
 COLOUR_SLOT = 5
-OPACITY_SLOT = 6
+TINT_SLOTS = (1, 4)         # the spawn tint is the product of these two slots' values
+COLOUR_FLAG = 0x4000        # component flag: the tint is multiplied by the placement's colour floats
+OPACITY_BYTE = 22           # of the material's render-state section 0xE1275683: attribute0.w = byte / 255 times the draw's opacity
 SLOT_LIST = 0x108
 
 
@@ -70,7 +79,8 @@ def _cstring(data, offset):
 
 def decode_zone_effects(data, source_path=''):
     """The visual-effect placements of one decoded zone: dicts with ``effect`` (path), ``matrix`` (16 floats), ``position``,
-    ``axis`` (the unit local +Z row), ``source_path`` and ``source_ordinal``. A zone without the sections has none; a record
+    ``axis`` (the unit local +Z row), ``tint`` (the floats at +0x48, the effect's colour multiplier), ``brightness`` (the byte
+    at +0x5F over 255, which the effect object keeps as its brightness factor), ``source_path`` and ``source_ordinal``. A zone without the sections has none; a record
     that does not have the decoded shape is left out."""
     table = sections(data)
     if not all(tag in table for tag in (EFFECT_PATHS, EFFECT_OFFSETS, DATA_HEAP)):
@@ -93,6 +103,7 @@ def decode_zone_effects(data, source_path=''):
         row = matrix[8:11]
         length = math.sqrt(sum(v * v for v in row))
         placements.append(dict(effect=paths[index], matrix=list(matrix), position=list(matrix[12:15]),
+                               tint=list(struct.unpack_from('<3f', data, start + 0x48)), brightness=data[start + 0x5F] / 255.0,
                                axis=[v / length for v in row] if length > 0.0 else [0.0, 0.0, 1.0],
                                source_path=source_path, source_ordinal=ordinal))
     return placements
@@ -139,16 +150,41 @@ def mesh_scale(effect, model_path):
 
 
 def mesh_colour(effect, model_path):
-    """(rgb, opacity) of the effect's mesh component: the RGB of the parameter in its colour slot (5) and the first value of
-    the one in its opacity slot (6, inferred to be the opacity), or None when there is not exactly one mesh component or a
-    slot lists no parameter. The spread added at spawn is zero for these colours and is not applied."""
+    """The mesh component's colour terms, or None when there is not exactly one mesh component or a slot lists no parameter:
+    ``tint`` (slot 1 times slot 4, the spawn tint the code hands to the pixel program), ``hue`` (the RGB of the colour slot,
+    5) and ``flags``. The spread added at spawn is zero for these parameters and is not applied."""
     mesh = [c for c in effect['components'] if c['asset'] == path_crc64(model_path)]
     if len(mesh) != 1:
         return None
-    colour, opacity = mesh[0]['slots'][COLOUR_SLOT], mesh[0]['slots'][OPACITY_SLOT]
-    if max(colour, opacity) >= len(effect['parameters']):
+    first, second = (mesh[0]['slots'][slot] for slot in TINT_SLOTS)
+    hue = mesh[0]['slots'][COLOUR_SLOT]
+    if max(first, second, hue) >= len(effect['parameters']):
         return None
-    return list(effect['parameters'][colour]['value'][:3]), float(effect['parameters'][opacity]['value'][0])
+    values = [effect['parameters'][i]['value'][:3] for i in (first, second, hue)]
+    return dict(tint=[a * b for a, b in zip(values[0], values[1])], hue=list(values[2]), flags=mesh[0]['flags'])
+
+
+def cone_colour(terms, placement_tint=(1.0, 1.0, 1.0)):
+    """The colour the pixel program reads for a mesh component (``mesh_colour``'s terms): the tint's magnitude, which the code
+    decodes, in the hue of the colour slot, which the code does not route to it (inferred: the in-game beams are orange where
+    the tint alone is cool white). The hue is the colour slot's RGB scaled to its largest channel 1 (white when it is zero), the
+    magnitude the largest channel of the tint, and the placement's colour multiplies when the component's flag asks for it."""
+    peak = max(terms['hue'])
+    hue = [v / peak for v in terms['hue']] if peak > 0.0 else [1.0, 1.0, 1.0]
+    magnitude = max(terms['tint'])
+    scale = placement_tint if terms['flags'] & COLOUR_FLAG else (1.0, 1.0, 1.0)
+    return [h * magnitude * s for h, s in zip(hue, scale)]
+
+
+def material_opacity(archive, material_path):
+    """attribute0.w of a draw of the material: byte 22 of its render-state section 0xE1275683 over 255 (times the draw's own
+    opacity, 1 here), as for the captured glass draws (docs/shading.md); 1.0 when the section is absent."""
+    data = asset_bytes(archive, material_path)
+    for k in range(struct.unpack_from('<H', data, 12)[0]):
+        tag, offset, size = struct.unpack_from('<III', data, 16 + 12 * k)
+        if tag == 0xE1275683 and size > OPACITY_BYTE:
+            return data[offset + OPACITY_BYTE] / 255.0
+    return 1.0
 
 
 def is_light_cone(effect_path):
@@ -159,13 +195,13 @@ def load_light_cones(archive, zone_paths):
     """The light cones to draw for the zones of a level.
 
     Returns ``cones`` (placements of the cone models, each with its ``model`` path, ``scale`` (the mesh component's),
-    ``colour`` (the mesh component's RGB), ``opacity`` (its slot-6 value) and the matrix scaled), ``geometry`` ({model path: {'positions',
+    ``colour`` (``cone_colour``), ``opacity`` (the material's, ``material_opacity``) and the matrix scaled), ``geometry`` ({model path: {'positions',
     'normals' float32 (n, 3), 'uvs' float32 (n, 2), 'indices' uint32}} in model space), ``noise`` (the pixel program's noise
     texture, rc2016.viewer.textures.load_texture, or None without cones) and ``undrawn`` ({effect file name: count} of the light-cone placements that are decoded but not drawn,
     with the reason in ``undrawn_reasons``)."""
     import numpy as np
     from rc2016.levels.scene import model_geometry
-    cones, geometry, undrawn, reasons, seen, decoded = [], {}, {}, {}, set(), {}
+    cones, geometry, opacity, undrawn, reasons, seen, decoded = [], {}, {}, {}, {}, set(), {}
 
     def skip(placement, reason):
         name = placement['effect'].rsplit('/', 1)[-1]
@@ -186,19 +222,20 @@ def load_light_cones(archive, zone_paths):
                 model = effect_model_path(archive, placement['effect'])
                 effect = decode_effect(asset_bytes(archive, placement['effect'])) if model else None
                 scale = mesh_scale(effect, model) if model else None
-                colour = mesh_colour(effect, model) if model else None
-                decoded[placement['effect']] = (model, scale, colour)
-            model, scale, colour = decoded[placement['effect']]
-            if model is None or scale is None or colour is None:
+                terms = mesh_colour(effect, model) if model else None
+                decoded[placement['effect']] = (model, scale, terms)
+            model, scale, terms = decoded[placement['effect']]
+            if model is None or scale is None or terms is None:
                 skip(placement, 'no single mesh component with a model, scale and colour')
                 continue
             placement['model'], placement['scale'] = model, scale
-            placement['colour'], placement['opacity'] = colour
+            placement['colour'] = cone_colour(terms, placement['tint'])
             cones.append(placement)
     kept = []
     for cone in cones:
         if cone['model'] not in geometry:
             loaded = model_geometry(archive, cone['model'])
+            opacity[cone['model']] = material_opacity(archive, loaded['materials'][0]['path'])
             geometry[cone['model']] = dict(positions=np.asarray(loaded['positions'], np.float32).reshape(-1, 3),
                                            normals=np.asarray(loaded['normals'], np.float32).reshape(-1, 3),
                                            uvs=np.asarray(loaded['uvs'], np.float32).reshape(-1, 2),
@@ -206,6 +243,7 @@ def load_light_cones(archive, zone_paths):
         matrix = np.asarray(cone['matrix'], np.float64).reshape(4, 4)
         matrix[:3, :3] *= cone['scale']
         cone['matrix'] = matrix.reshape(-1).tolist()
+        cone['opacity'] = opacity[cone['model']]
         kept.append(cone)
     noise = None
     if kept:
@@ -215,5 +253,5 @@ def load_light_cones(archive, zone_paths):
     return dict(cones=kept, geometry=geometry, noise=noise, undrawn=undrawn, undrawn_reasons=reasons)
 
 
-__all__ = ['decode_effect', 'decode_zone_effects', 'effect_model_path', 'is_light_cone', 'load_light_cones',
-           'mesh_colour', 'mesh_scale']
+__all__ = ['cone_colour', 'decode_effect', 'decode_zone_effects', 'effect_model_path', 'is_light_cone', 'load_light_cones',
+           'material_opacity', 'mesh_colour', 'mesh_scale']

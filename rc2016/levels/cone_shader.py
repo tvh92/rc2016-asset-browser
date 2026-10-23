@@ -12,7 +12,7 @@ the apex and 1 at the base, ``v`` runs around the cone), ``alpha`` = attribute0.
 ``fog_T`` = attribute2.3, and the engine inputs ``front`` (FRONT_FACE), ``scene_depth`` (the texture of API 0 at the
 pixel, compared with POS_W, the fragment's view depth), ``noise`` (the R channel of `textures/visualeffect/noise/
 fx_noisetile01.texture`, API 5, sampled at (0.01 u + 0.005 t, v + 0.005 t), t = CB0[99] the game time), ``amplitude``
-(CB0[115]), ``fog`` (CB0[112..114]) and ``colour`` (the three half floats read from the per-instance record):
+(CB0[115]), ``fog`` (CB0[112..114]) and ``colour`` (the three floats read from the per-instance record):
 
     S     = (1 - |1 - u|^100) min(1, |1 - u|)                    apex and base fade
     nv    = sat(+-n.eye / (|n||eye|))                            + for a front face, - for a back face
@@ -24,9 +24,9 @@ fx_noisetile01.texture`, API 5, sampled at (0.01 u + 0.005 t, v + 0.005 t), t = 
 
 The program is drawn additive and two-sided (material flags 0x20D). The pixel program is decoded; the inputs the vertex stage
 and the engine supply are not all known: the UV is the model's (decoded), the texture and the depth compare are as the
-program reads them, but ``colour`` (the mesh component's colour parameter times an intensity the update code applies),
-``alpha`` and ``threshold`` are particle values of the effect, ``amplitude`` is a frame constant (0.01 in the one captured
-frame) and ``fog_T`` comes from the vertex stage.
+program reads them, but ``colour`` (the particle's tint, slot 1 times slot 4 of the mesh component, in the instance record: see
+rc2016.levels.effects), ``alpha`` (the material's opacity byte) and ``threshold`` (0) come from the vertex stage and the
+effect, ``amplitude`` is a frame constant (0.01 in the one captured frame) and ``fog_T`` comes from the vertex stage.
 """
 from __future__ import annotations
 

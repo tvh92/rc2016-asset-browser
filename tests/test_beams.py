@@ -42,8 +42,9 @@ class BeamMeshTests(unittest.TestCase):
         self.assertEqual(colours.shape, (5, 4))
         np.testing.assert_allclose(colours[0], [4.0, 2.0, 1.0, 0.2], rtol=1e-6)
 
-    def test_the_gain_is_the_amplitude_times_the_intensity(self):
-        self.assertAlmostEqual(beams.BEAM_GAIN, beams.AMPLITUDE * beams.INTENSITY)
+    def test_the_gain_is_the_frame_constant_the_pixel_program_multiplies_by(self):
+        self.assertEqual(beams.BEAM_GAIN, beams.AMPLITUDE)
+        self.assertEqual(beams.AMPLITUDE, 0.01)
 
     def test_each_cone_adds_its_vertices_and_offsets_its_indices(self):
         one = beams.beam_mesh([cone()], GEOMETRY)

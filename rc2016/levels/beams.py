@@ -6,17 +6,16 @@ one stands and how it is oriented, and the effect names the cone model it draws 
 module turns those placements into one triangle mesh in native space.
 
 Decoded: which lights have a beam, where and how the cone is oriented, the cone model and its UV, its scale (the mesh
-component's, 1.0 in every effect), its colour (the mesh component lists a colour parameter in slot 5 and a scalar in slot 6,
-which is inferred to be its opacity) and the pixel program that draws it (rc2016.levels.cone_shader, ported in
-rc2016/viewer/shading.py ``BEAM_FRAGMENT``). Inferred or fitted: ``AMPLITUDE`` (the frame constant CB0[115], 0.01 in the one
-captured frame, assumed for every level), ``INTENSITY`` (the particle's HDR intensity, undecoded, fitted to one in-game frame)
-and the opacity.
+component's, 1.0 in every effect), its colour's magnitude (the spawn tint, slot 1 times slot 4 of the mesh component, which
+the engine code hands to the pixel program), its opacity (the material's render-state byte) and the pixel program that draws
+it (rc2016.levels.cone_shader, ported in rc2016/viewer/shading.py ``BEAM_FRAGMENT``). Inferred: the colour's hue (slot 5 of
+the component; the tint carries none), ``AMPLITUDE`` (the frame constant CB0[115], 0.01 in the one captured frame, assumed for
+every level) and the fog, which is the viewer's. Nothing is fitted.
 """
 from __future__ import annotations
 
 AMPLITUDE = 0.01            # CB0[115], the frame constant the pixel program multiplies the colour by (0.01 in the one captured frame)
-INTENSITY = 30.0            # the particle's HDR intensity, which the update code applies to the colour: a fit to one in-game frame
-BEAM_GAIN = AMPLITUDE * INTENSITY   # the factor on the colour before the pixel program
+BEAM_GAIN = AMPLITUDE       # the factor on the colour before the pixel program
 
 
 def beam_mesh(cones, geometry, gain=BEAM_GAIN):
