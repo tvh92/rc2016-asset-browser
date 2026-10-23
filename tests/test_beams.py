@@ -12,7 +12,8 @@ def cone_model():
     positions = np.array([[0, 0, 0], [4, 0, 10], [0, 4, 10], [-4, 0, 10], [0, -4, 10]], np.float32)
     normals = np.array([[0, 0, -1], [1, 0, 0.4], [0, 1, 0.4], [-1, 0, 0.4], [0, -1, 0.4]], np.float32)
     normals /= np.linalg.norm(normals, axis=1, keepdims=True)
-    return dict(positions=positions, normals=normals, indices=np.array([0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 1], np.uint32))
+    return dict(positions=positions, normals=normals, axis=np.array([0.0, 0.0, 1.0]), length=10.0,
+                indices=np.array([0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 1], np.uint32))
 
 
 def cone(position=(0.0, 0.0, 0.0), rows=((1, 0, 0), (0, 1, 0), (0, 0, 1)), colour=(4.0, 2.0, 1.0)):
@@ -45,6 +46,13 @@ class BeamMeshTests(unittest.TestCase):
         self.assertEqual(len(two[0]), 2 * len(one[0]))
         self.assertEqual(len(two[4]), 2 * len(one[4]))
         self.assertEqual(int(two[4][len(one[4]):].min()), len(one[0]))
+
+    def test_t_follows_the_model_axis_whatever_it_is(self):
+        # a flat cone on -Y (like the wide hanging cone): apex at y = 0, base 2 below
+        model = dict(positions=np.array([[0, 0, 0], [3, -2, 0], [-3, -2, 0]], np.float32), normals=np.array([[0, 1, 0]] * 3, np.float32),
+                     axis=np.array([0.0, -1.0, 0.0]), length=2.0, indices=np.array([0, 1, 2], np.uint32))
+        ts = beams.beam_mesh([cone()], {'cone.model': model})[2]
+        np.testing.assert_allclose(ts, [0, 1, 1])
 
     def test_a_scaled_placement_scales_the_cone(self):
         positions, *_ = beams.beam_mesh([cone(rows=((2, 0, 0), (0, 2, 0), (0, 0, 2)))], GEOMETRY)
