@@ -119,6 +119,11 @@ ROBOT_BULB_QWARK_TIP = dict(
     edge=[0.006048833020031452, 0.0, 0.0], centre=[0.4691011607646942, 0.002428215928375721, 0.0], exponent=0.1,
     weight=1.0, f0=0.20000000298023224, gloss_sq=0.3499999940395355, steady=1.0, k=50.0, writer='D14A48D7',
     albedo_white=True, preview_override='npc_qwark_robot_bulb drawn with the enm_qwark_light_center values')
+# The same preview for Clank's antenna (hero_bright_center_light, writer 7BEC2D2F): drawn with Qwark's enm_qwark_light_center
+# values and a white albedo, like the robot tip, so both antennas look alike. The decoded 7BEC2D2F rule (dark except a small
+# core, K 15, blink frozen) is kept behind CLANK_ANTENNA_QWARK_TIP_PREVIEW = False. Labelled presentation override.
+CLANK_ANTENNA_QWARK_TIP_PREVIEW = True
+CLANK_ANTENNA_QWARK_TIP = dict(ROBOT_BULB_QWARK_TIP, preview_override='hero_clank_antenna drawn with the enm_qwark_light_center values')
 # CB0[115] is a frame constant (0.01 in the captured Veldin frame) absent from the material archive; use the established
 # labelled preview convention.
 VICTOR_RETICLE_PRESENTATION_AMPLITUDE = 0.5
@@ -477,7 +482,7 @@ GRAPH_RULES = (
     # clank_antenna_c override of the graph slot. Exact graph + SHA only.
     ('materialgraph/character/hero/hero_bright_center_light/hero_bright_center_light.',
      dict(self_lit='bright_center', self_lit_key=0xB7305C21, bright_center='clank',
-          _graph_sha256=CLANK_ANTENNA_GRAPH_SHA256)),
+          _graph_sha256=CLANK_ANTENNA_GRAPH_SHA256)),   # drawn with CLANK_ANTENNA_QWARK_TIP while the preview flag is on
     # Forward colour pass 93695188 (one FP16 target, no texture), flags 0x200039: additive, back faces culled.
     # The antenna glow shell (enm_qwark_light_glow and the other materials on this graph); no _c/_g/_n is read.
     ('materialgraph/character/hero/hero_bright_center_light_glow/hero_bright_center_light_glow_variable.',
@@ -1363,7 +1368,11 @@ def material_texture_paths(archive, material_path: str) -> dict:
             a_scale=0.30324259, a_offset=0.06301001, g_scale=0.03041702,
             amplitude=0.5, amplitude_input='CB0 dword 115', captured_amplitude=0.01,
             presentation=True, writer='0CD2AAFB')
-    if rule.get('bright_center') == 'clank':
+    clank_preview = rule.get('bright_center') == 'clank' and CLANK_ANTENNA_QWARK_TIP_PREVIEW
+    if clank_preview:   # labelled override of the decoded 7BEC2D2F term, see CLANK_ANTENNA_QWARK_TIP
+        result['bright_center'] = dict(CLANK_ANTENNA_QWARK_TIP)
+        result.update(self_lit='bright_center', k=CLANK_ANTENNA_QWARK_TIP['k'], spec=1.0, gloss=1.0)
+    if rule.get('bright_center') == 'clank' and not clank_preview:
         # 7BEC2D2F: t = |1.001 - sat(N.V)|^CB2[3]; albedo = _c (E t + 10 C w (1 - t)); w = B + (1 - B)(0.5 sin(4.2 CB0[99]) + 0.5);
         # self-lit = K albedo.R; F0 = grey CB2[9]; gloss = sqrt(0.35). Material keys are read, else the graph defaults.
         steady = value(0x9872D04A, 0.15)
@@ -1379,7 +1388,7 @@ def material_texture_paths(archive, material_path: str) -> dict:
                        'normal and the viewer camera for the screen-ray view vector; the normal-map fade (CB0[95], two '
                        'TBUFFER reads, POS_W) and tangent frame are not reproduced' % min(1.0, max(0.0, 1.0 - 0.5 * (1.0 - steady))))
         result['spec'] = result['gloss'] = 1.0   # F0 and gloss are the writer's constants
-    elif rule.get('bright_center'):
+    elif rule.get('bright_center') and not clank_preview:
         steady = value(0x01B78BF6, 0.15)
         intensity = value(0x398AD3E2, 5.0)
         result['bright_center'] = dict(

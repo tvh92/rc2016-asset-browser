@@ -9,6 +9,7 @@ from unittest.mock import patch
 from rc2016.shaders import validation
 from rc2016.viewer import textures as tp
 from rc2016.viewer.shading import FRAGMENT, OPAQUE_UNIFORMS
+from tests.test_clank_antenna import extract as clank_extract
 from tests.test_viewer_textures import FakeArchive, dat1
 
 ROBOT = 'materialgraph/character/npc/npc_qwark_robot_bulb/npc_qwark_robot_bulb.materialgraph'
@@ -57,6 +58,27 @@ class RobotBulbPreviewTests(unittest.TestCase):
         self.assertNotIn('bright_center', got)
         self.assertEqual(got['facing_glow']['writer'], '0CD2AAFB')
         self.assertEqual(got['k'], 0.0)
+
+    def test_clank_antenna_uses_the_same_preview(self):
+        self.assertTrue(tp.CLANK_ANTENNA_QWARK_TIP_PREVIEW)
+        got = clank_extract([])
+        bc = got['bright_center']
+        self.assertTrue(bc['albedo_white'])
+        self.assertIn('hero_clank_antenna', bc['preview_override'])
+        self.assertEqual((got['k'], got['self_lit'], got['spec'], got['gloss']), (50.0, 'bright_center', 1.0, 1.0))
+        qwark = extract(BRIGHT, QWARK_LIGHT_CENTER)['bright_center']
+        for key in ('edge', 'centre'):
+            for a, b in zip(bc[key], qwark[key]):
+                self.assertAlmostEqual(a, b, places=6, msg=key)
+        self.assertAlmostEqual(bc['exponent'], qwark['exponent'], places=6)
+        self.assertEqual(bc['weight'], qwark['weight'])
+
+    def test_clank_switch_restores_the_decoded_rule(self):
+        with patch.object(tp, 'CLANK_ANTENNA_QWARK_TIP_PREVIEW', False):
+            got = clank_extract([])
+        self.assertEqual(got['bright_center']['writer'], '7BEC2D2F')
+        self.assertNotIn('albedo_white', got['bright_center'])
+        self.assertEqual(got['k'], 15.0)
 
     def test_other_graphs_are_unaffected(self):
         self.assertNotIn('bright_center_preview', tp._graph_rule([BRIGHT]))

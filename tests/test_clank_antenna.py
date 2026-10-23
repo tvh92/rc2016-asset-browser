@@ -46,6 +46,7 @@ def extract(rows, sha=None):
         return tp.material_texture_paths(archive, 'm/a.material')
 
 
+@patch.object(tp, 'CLANK_ANTENNA_QWARK_TIP_PREVIEW', False)  # these test the decoded 7BEC2D2F rule
 class ClankRuleTests(unittest.TestCase):
     def test_rule_is_bound_to_the_exact_graph_hash(self):
         self.assertEqual(tp.CLANK_ANTENNA_GRAPH_SHA256, GRAPH_SHA)
@@ -111,6 +112,7 @@ def evaluate(program, cb2, ndv, time=0.0, w=1.0, tex=(1.0, 1.0, 1.0)):
     return [ir.evaluate(o, inputs, textures) for o in outputs]
 
 
+@patch.object(tp, 'CLANK_ANTENNA_QWARK_TIP_PREVIEW', False)  # these test the decoded 7BEC2D2F rule
 class ClankArchiveTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

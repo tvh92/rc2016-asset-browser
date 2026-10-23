@@ -1747,7 +1747,7 @@ def apply_viewer_graph_rule(mat, source):
                       'ramp/scatter term (_g.A, tint 0xCFCCABE4, skin_ramp, wrap) is not reproduced')
     if facing:   # no albedo input: v76-v78 stay 1.0
         albedo = P.const3('facing glow albedo', facing['albedo'])
-    if bright_white and c is None:   # preview override: white_c stands in for the unbound _c
+    if bright_white:   # preview override: white stands in for _c (unbound on the robot tip, ignored on Clank's antenna)
         albedo = P.const3('bright centre albedo', (1.0, 1.0, 1.0))
     if flat:
         if flat.get('model') == 'basic_flat_color':

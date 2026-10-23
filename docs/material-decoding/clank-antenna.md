@@ -38,6 +38,8 @@ With the exponent 0.01 the factor `t` is 0.93 at N.V = 1 and approaches 1 elsewh
 
 `hero_bright_center_light` (exact graph SHA-256) reuses the viewer's `bright_center` term with the values above (`bright_center = 'clank'` in `GRAPH_RULES`). Blender builds the same `VR bright centre ...` constants and passes reopen validation. The term carries `writer = 7BEC2D2F`, the graph path and SHA-256, `frozen_inputs = {CB0_99: 0}` and `game_equivalence = False`; Blender records the frozen inputs as a limitation. The Qwark sibling rule is unchanged.
 
+The viewer and Blender draw the antenna with a labelled preview by default (`CLANK_ANTENNA_QWARK_TIP_PREVIEW` in `rc2016/viewer/textures.py`, the same convention as the Qwark robot tip): a white albedo and Qwark's `enm_qwark_light_center` values (edge, centre, exponent 0.1, steady 1, F0 0.2, gloss sqrt(0.35), K 50). The decoded 7BEC2D2F term above is the rule when the flag is `False`. The preview is not a decoded game value, and `game_equivalence` stays false.
+
 Native translation of the writer is not possible. Freezing `CB0[99]` through `SOURCE_PREVIEW_POLICIES` (the convention of [weapon-gadget-frozen-time](weapon-gadget-frozen-time.md)) does not make it ready, because five more engine-owned inputs remain. No policy is registered, since it would change nothing.
 
 ## Engine-bound inputs
