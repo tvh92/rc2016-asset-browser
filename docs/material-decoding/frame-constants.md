@@ -8,6 +8,7 @@ Many graph programs read a few engine words from `CB0`, which is the frame const
 | `CB0[92..106]` | Camera-ray rows: `ray = A + B y + x (C + D y)` over the pixel position, `A` = `CB0[92..94]`, `B` = `CB0[100..102]`, `C` = `CB0[96..98]`, `D` = `CB0[104..106]`; world position is `CB0[28..30] + view_depth * ray` | At the screen centre (960, 540) the ray is (-0.8216, -0.1479, -0.5504), the unit view forward `CB0[24..26]` = (-0.8219, -0.1475, -0.5502) to 4e-4, so `view_depth` is the depth along the view axis |
 | `CB0[95]` | Normal-map strength factor (`2 CB0[95] (1 - sat(a + view_depth b))`, with `a` and `b` per-instance words from a typed buffer) | 1.0 |
 | `CB0[120..121]` | Frame size in pixels | 1920, 1080 |
+| `CB0[128..130]`, `CB0[140..243]` | Direction to the sun and the sun shadow cascades (lanes, light basis, per-cascade scale, offset and clamp rectangle) | Novalis frame: see [shadow atlas](shadow-atlas.md) |
 | `CB0[139]` | Specular anti-aliasing scale (width = `CB0[139] view_depth attribute1.2 / (N.V)`) | 0.0010417 = 1/960 = `CB0[32]`, 2 / frame width |
 | `CB0[99]` | Time: UV scrolls, blink phases, wobble | Game time in seconds; it advances by the frame time, about 1/30 s per frame |
 | `CB0[107]` | Dissolve or cut threshold (Victor ion tubes, thrusters, scorch marks, lasers, shields), vignette width (prisoner numbers) | A new value in [0, 1) every frame |

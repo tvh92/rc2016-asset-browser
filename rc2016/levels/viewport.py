@@ -24,7 +24,7 @@ BOOST_RANGE = (1.0, 10.0)
 FINE_FACTOR = 0.1
 MOVE_KEYS = {"w": (1, 0, 0), "s": (-1, 0, 0), "d": (0, 1, 0), "a": (0, -1, 0), "e": (0, 0, 1), "q": (0, 0, -1)}
 FOV_DEGREES = 60.0
-SHADOW_SLOPE_BIAS = 2.0   # glPolygonOffset factor of the key-shadow depth pass: the viewer map has texels of about a unit, so a constant offset alone leaves acne on sloped ground
+SHADOW_SLOPE_BIAS = 0.0   # glPolygonOffset factor of the key-shadow depth pass: the game's atlas draws use slope 0 and constant 1 (the receiver normal offset does the rest)
 
 
 def to_presentation(point):
@@ -1091,6 +1091,26 @@ class LevelViewport(ModelViewport):
         if self.min_screen_pixels:
             visible &= screen_size_visibility(cull["centres"], cull["radii"], planes[4], self._near, height,
                                               self.min_screen_pixels)
+        self._refill_visible(visible)
+
+    def _cull_to_planes(self, planes):
+        """Fill the instance buffers with the instances inside ``planes`` (native space, a shadow cascade's
+        caster volume); without buffer updates, restore every row instead. The next frame re-culls for the camera."""
+        import numpy as np
+        if not (self.culling and self._ext and self._ext.get("glBufferSubData")):
+            self._restore_unculled_instances()
+            return
+        if self._cull is None:
+            self._prepare_culling()
+        self._cull_camera = None
+        cull = self._cull
+        if len(cull["radii"]):
+            self._refill_visible(sphere_visibility(cull["centres"], cull["radii"], np.asarray(planes, np.float64)))
+
+    def _refill_visible(self, visible):
+        """Refill the instance buffers whose rows in ``visible`` (one bool per culled instance) changed."""
+        import numpy as np
+        cull = self._cull
         previous = np.ones(len(visible), bool)
         for index, name in enumerate(cull["buffers"]):
             mask = self._cull_masks.get(name)
@@ -1242,8 +1262,10 @@ class LevelViewport(ModelViewport):
         self._cull_masks, self._cull_counts, self._cull_camera = {}, {}, None
         self._stats_base = None
 
-    def _draw_geometry(self,shadow=False):
-        if shadow:
+    def _draw_geometry(self,shadow=False,planes=None):
+        if shadow and planes is not None:
+            self._cull_to_planes(planes)
+        elif shadow:
             self._restore_unculled_instances()
         else:
             # A reused shadow map leaves the instance buffers at the preceding

@@ -167,7 +167,7 @@ vec3 display(vec3 color) {
     return pow(clamp(color, 0.0, 1.0), vec3(1.0 / 2.2));
 }
 """
-LIGHTING += "\n#ifdef RC_SCENE_EFFECTS\n" + SCENE_HELPERS + "\n#else\nfloat sceneAO(){return 1.0;}\nfloat sceneShadow(vec3 p){return 1.0;}\nfloat sceneSpecularOcclusion(vec3 N,vec3 V,float a){return 1.0;}\n#endif\n"
+LIGHTING += "\n#ifdef RC_SCENE_EFFECTS\n" + SCENE_HELPERS + "\n#else\nfloat sceneAO(){return 1.0;}\nfloat sceneShadow(vec3 p,vec3 N){return 1.0;}\nfloat sceneSpecularOcclusion(vec3 N,vec3 V,float a){return 1.0;}\n#endif\n"
 LIGHTING_UNIFORMS = (*SCENE_UNIFORMS, "uLighting", "uLightingEnabled", "uLightFrame", "uViewToWorld", "uSH", "uEnvTex", "uSunDir", "uSunColour", "uTonemap", "uExposure", "uGradeTex", "uFogOn", "uFogColour", "uFogA", "uFogB", "uFogAlpha", "uFogBeta", "uFogMisc")
 
 # Attribute locations for the two 4-wide skin influence sets. NVIDIA aliases the
@@ -417,7 +417,7 @@ vec3 deferredDiffuse(vec3 N, vec3 albedo) {
     return albedo * (max(dot(N, rigKey()), 0.0) * keyColour()
         + max(dot(N, rigFill()), 0.0) * fillColour() + ambientLight(N)) / PI * diffuseScale();
 #else
-    sceneCaptureNormal=N;float A=sceneAO();float NdK=max(dot(N,rigKey()),0.0),Sh=sceneShadow(vPos);
+    sceneCaptureNormal=N;float A=sceneAO();float NdK=max(dot(N,rigKey()),0.0),Sh=sceneShadow(vPos,N);
     vec3 D=(NdK*keyColour()*Sh
         +max(dot(N,rigFill()),0.0)*fillColour()*(0.5+0.5*A)+ambientLight(N)*A*sceneShadowedAmbient(Sh,NdK))/PI*diffuseScale();
 #ifdef RC_SCENE_EFFECTS
@@ -439,7 +439,7 @@ vec3 deferredSpecular(vec3 N, vec3 V, vec3 F0, float gloss) {
         + ggx(N,V,rigFill(),F0,F90,a)*fillColour()
         + envSpecular(N,V,F0,F90,a,ambientLight(N));
 #else
-    vec3 S=ggx(N,V,rigKey(),F0,F90,a)*keyColour()*sceneShadow(vPos)
+    vec3 S=ggx(N,V,rigKey(),F0,F90,a)*keyColour()*sceneShadow(vPos,N)
         + ggx(N,V,rigFill(),F0,F90,a)*fillColour()
         + envSpecular(N,V,F0,F90,a,ambientLight(N))*sceneSpecularOcclusion(N,V,a);
 #ifdef RC_SCENE_EFFECTS
