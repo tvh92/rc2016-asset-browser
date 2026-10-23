@@ -344,7 +344,7 @@ def load_scene_lighting(archive, zone_paths):
     cones = dict(cones=[], geometry={}, undrawn={}, undrawn_reasons={})
     try:
         from rc2016.levels.effects import load_light_cones
-        cones = load_light_cones(archive, zone_paths, [light for light in lights if light['kind'] == 'spot'])
+        cones = load_light_cones(archive, zone_paths)
     except Exception as exc:   # the lights stay usable without their beams
         notes.append(dict(status='light_cones_unavailable', message=f'{type(exc).__name__}: {exc}'))
     if cones['undrawn']:

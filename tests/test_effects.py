@@ -81,13 +81,13 @@ def component(asset=0, size=(1.0, 1.0), flags=0x0C0CC823, slots=(0, 1, 0, 0, 0, 
     struct.pack_into('<2f', record, 0x3C, *size)
     struct.pack_into('<Q', record, 0x44, asset)
     struct.pack_into('<I', record, 0xF4, flags)
-    struct.pack_into('<7B', record, 0x104, *slots)
+    struct.pack_into('<7B', record, 0x108, *slots)
     return bytes(record)
 
 
 def effect_asset(components, parameters=()):
     """A visual effect with the component records and ``parameters`` ((u16 x 4, scale) per entry)."""
-    values = b''.join(struct.pack('<4HII', *raw, 0, 0x10000) for raw, _scale in parameters)
+    values = b''.join(struct.pack('<8h', *raw, 0, 0, 0, 1) if len(raw) == 4 else struct.pack('<8h', *raw) for raw, _scale in parameters)
     scales = b''.join(struct.pack('<IIIf', 0xAB000000 + n, n, 1, scale) for n, (_raw, scale) in enumerate(parameters))
     return dat1([(effects.COMPONENTS, b''.join(components)), (effects.PARAMETER_VALUES, values), (effects.PARAMETER_SCALES, scales)])
 
@@ -125,6 +125,36 @@ class EffectTests(unittest.TestCase):
         self.assertIsNone(effects.mesh_scale(effects.decode_effect(effect_asset([component(path_crc64(MODEL), (1.0, 2.0))])), MODEL))
 
 
+class MeshColourTests(unittest.TestCase):
+    PARAMETERS = [((0, 0, 0, 0), 1 / 32767), ((0x7FFF, 0x7FFF, 0x7FFF, 0), 1 / 32767), ((0x7FFF, 0x1912, 0x02C5, 0), 1 / 32767),
+                  ((0x1000, 0, 0, 0), 1 / 32767)]
+
+    def effect(self, colour_slot=2, opacity_slot=3, count=1):
+        mesh = component(path_crc64(MODEL), slots=(0, 1, 0, 0, 0, colour_slot, opacity_slot))
+        return effects.decode_effect(effect_asset([component(slots=(0, 1, 0, 0, 0, 1, 1))] + [mesh] * count, self.PARAMETERS))
+
+    def test_the_colour_is_the_parameter_in_slot_5_and_the_opacity_the_first_value_of_slot_6(self):
+        colour, opacity = effects.mesh_colour(self.effect(), MODEL)
+        for got, want in zip(colour, [1.0, 0x1912 / 32767, 0x02C5 / 32767]):
+            self.assertAlmostEqual(got, want, places=5)
+        self.assertAlmostEqual(opacity, 0x1000 / 32767, places=5)
+
+    def test_other_components_do_not_count(self):
+        # slot 5 of the component without a model lists the white parameter 1: the mesh's own slot wins
+        self.assertNotEqual(effects.mesh_colour(self.effect(), MODEL)[0], [1.0, 1.0, 1.0])
+
+    def test_a_missing_or_duplicated_mesh_or_a_slot_past_the_table_has_no_colour(self):
+        self.assertIsNone(effects.mesh_colour(self.effect(count=2), MODEL))
+        self.assertIsNone(effects.mesh_colour(self.effect(), 'visualeffect/x/other.model'))
+        self.assertIsNone(effects.mesh_colour(self.effect(colour_slot=9), MODEL))
+
+    def test_the_spread_is_read_as_signed_values_beside_the_base(self):
+        data = effect_asset([component()], [((0x7FFF, 0, 0, 0, -0x2AAA, -0x2AAA, 0, 1), 1.5 / 32767)])
+        parameter = effects.decode_effect(data)['parameters'][0]
+        self.assertAlmostEqual(parameter['value'][0], 1.5, places=4)
+        self.assertAlmostEqual(parameter['spread'][0], -0.5, places=3)
+
+
 class ConeFrameTests(unittest.TestCase):
     def test_the_axis_points_from_the_apex_at_the_origin_to_the_base(self):
         import numpy as np
@@ -143,18 +173,6 @@ class LightConeTests(unittest.TestCase):
         self.assertTrue(effects.is_light_cone('visualeffect/x/gbl_amb_Light_Cone_Hagin_Wide_blue.visualeffect'))
         self.assertFalse(effects.is_light_cone('visualeffect/global/sun_flare/sun_flare.visualeffect'))
         self.assertFalse(effects.is_light_cone('visualeffect/light_cone_folder/sun_flare.visualeffect'))
-
-    def test_a_placement_takes_the_colour_of_the_spot_light_at_its_position(self):
-        spots = [dict(position=[10.0, 20.0, 30.2], colour=[3.0, 2.0, 1.0], source_ordinal=7),
-                 dict(position=[10.0, 20.0, 31.5], colour=[9.0, 9.0, 9.0], source_ordinal=8)]
-        placed = effects.join_spots([dict(position=[10.0, 20.0, 30.0]), dict(position=[50.0, 0.0, 0.0])], spots)
-        self.assertEqual((placed[0]['spot'], placed[0]['colour']), (7, [3.0, 2.0, 1.0]))
-        self.assertEqual((placed[1]['spot'], placed[1]['colour']), (None, None))
-
-    def test_the_nearest_spot_wins(self):
-        spots = [dict(position=[0.0, 0.0, 0.9], colour=[1.0, 1.0, 1.0], source_ordinal=1),
-                 dict(position=[0.0, 0.0, 0.1], colour=[2.0, 2.0, 2.0], source_ordinal=2)]
-        self.assertEqual(effects.join_spots([dict(position=[0.0, 0.0, 0.0])], spots)[0]['spot'], 2)
 
 
 RESEARCH = os.environ.get('RC2016_RESEARCH')
@@ -184,12 +202,20 @@ class ArchiveTests(unittest.TestCase):
             self.archive, 'visualeffect/environment/global/ambient/gbl_amb_light_cone_circular_med/gbl_amb_light_cone_circular_small.visualeffect')
         self.assertTrue(model.endswith('gbl_amb_light_cone_circular_med.model'), model)
 
-    def test_aridia_beams_sit_on_spot_lights_at_scale_1(self):
+    def test_aridia_has_a_beam_per_placement_at_scale_1_in_its_effects_colour(self):
         from rc2016.levels.scene_lighting import load_scene_lighting
         lighting = load_scene_lighting(self.archive, [self.zone])
         cones = lighting['light_cones']
-        self.assertGreaterEqual(len(cones), 26)
-        self.assertTrue(all(cone['colour'] and cone['spot'] is not None and cone['scale'] == 1.0 for cone in cones))
+        self.assertEqual(len(cones), 27)
+        self.assertTrue(all(cone['scale'] == 1.0 for cone in cones))
+        med = [cone['colour'] for cone in cones if cone['effect'].endswith('Circular_Med.visualeffect')]
+        small = [cone['colour'] for cone in cones if cone['effect'].endswith('Circular_Small.visualeffect')]
+        self.assertEqual((len(med), len(small)), (24, 3))
+        # the colour parameter times the opacity parameter of each effect's mesh component
+        for got, want in zip(med[0], [0.1475 * 0.2, 0.0756 * 0.2, 0.0216 * 0.2]):
+            self.assertAlmostEqual(got, want, delta=0.0005)
+        for got, want in zip(small[0], [0x7FFF / 32767 * 0x15FA / 32767, 0x1912 / 32767 * 0x15FA / 32767, 0x02C5 / 32767 * 0x15FA / 32767]):
+            self.assertAlmostEqual(got, want, delta=0.001)
         geometry = lighting['cone_geometry']['visualeffect/environment/global/ambient/gbl_amb_light_cone_circular_med/gbl_amb_light_cone_circular_med.model']
         self.assertEqual(float(geometry['positions'][:, 2].min()), 0.0)
         self.assertEqual(float(geometry['positions'][:, 2].max()), 10.0)
@@ -205,13 +231,25 @@ class ArchiveTests(unittest.TestCase):
             self.assertEqual(effects.mesh_scale(effect, model), 1.0, name)
             self.assertEqual(len(effect['components']), 3, name)
 
+    def test_the_warm_and_blue_wide_cones_differ_in_colour_as_their_names_say(self):
+        base = 'visualeffect/environment/global/ambient/gbl_amb_light_cone_circular_med/'
+        colours = {}
+        for name in ('gbl_amb_light_cone_hangin_wide_warm', 'gbl_amb_light_cone_hagin_wide_blue'):
+            path = f'{base}{name}.visualeffect'
+            effect = effects.decode_effect(effects.asset_bytes(self.archive, path))
+            colours[name] = effects.mesh_colour(effect, effects.effect_model_path(self.archive, path))
+        warm, blue = colours['gbl_amb_light_cone_hangin_wide_warm'][0], colours['gbl_amb_light_cone_hagin_wide_blue'][0]
+        self.assertGreater(warm[0], warm[2] * 3)
+        self.assertGreater(blue[2], blue[0] * 5)
+        self.assertAlmostEqual(colours['gbl_amb_light_cone_hangin_wide_warm'][1], 0.03, delta=0.005)
+
     def test_quartus_wide_cones_are_drawn_on_the_wide_model_axis(self):
         from rc2016.levels.scene import level_zone_paths
         from rc2016.levels.scene_lighting import load_scene_lighting
         lighting = load_scene_lighting(self.archive, level_zone_paths(self.archive, 'levels/quartu/quartu.level'))
         cones = lighting['light_cones']
         self.assertEqual(len(cones), 59)
-        self.assertTrue(all(cone['scale'] == 1.0 and cone['colour'] for cone in cones))
+        self.assertTrue(all(cone['scale'] == 1.0 and cone['colour'][2] > cone['colour'][0] for cone in cones))   # blue
         geometry = lighting['cone_geometry'][cones[0]['model']]
         self.assertEqual(geometry['axis'].tolist(), [0.0, -1.0, 0.0])
         self.assertAlmostEqual(geometry['length'], 2.0, places=1)

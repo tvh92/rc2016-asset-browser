@@ -36,9 +36,9 @@ class BeamMeshTests(unittest.TestCase):
         np.testing.assert_allclose(ts, [0, 1, 1, 1, 1])
         np.testing.assert_allclose(np.linalg.norm(normals, axis=1), 1.0, atol=1e-5)
 
-    def test_colour_is_the_light_colour_scaled_to_its_brightest_channel_gain(self):
+    def test_colour_is_the_cones_colour_times_the_gain(self):
         colours = beams.beam_mesh([cone(colour=(8.0, 4.0, 2.0))], GEOMETRY, gain=0.5)[3]
-        np.testing.assert_allclose(colours[0], [0.5, 0.25, 0.125])
+        np.testing.assert_allclose(colours[0], [4.0, 2.0, 1.0])
 
     def test_each_cone_adds_its_vertices_and_offsets_its_indices(self):
         one = beams.beam_mesh([cone()], GEOMETRY)

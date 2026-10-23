@@ -18,11 +18,16 @@ A `.visualeffect` is a particle system. Its components are the 272-byte records 
                                0 for components that draw none; 274 of the 277 effects that name a model have a
                                component with its id
     +0xF4         u32          flag word (0x0C0CC82x for the mesh and the unlisted components, 0x0E0CE82x for sprites)
-    +0x104        u8[7]        indices into the parameter table
+    +0x108        u8[7]        indices into the parameter table, one per property slot
 
-Parameters are the 16-byte entries of 0xB1F4C248 (four u16 values at +0, +2, +4, +6, 0x7FFF being 1.0 before the scale)
-paired entry for entry with 0xD78E007C (u32 hash, u32 index, u32 1, float32 scale at +12 that the u16 values multiply:
-1/32767 for a plain value, 3/32767 for a value up to 3). The hash is not a name that can be reproduced.
+Parameters are the 16-byte entries of 0xB1F4C248 (four s16 values at +0, +2, +4, +6, 0x7FFF being 1.0 before the scale,
+then a four-value spread at +8 that the spawn adds at random) paired entry for entry with 0xD78E007C (u32 hash, u32 index,
+u32 1, float32 scale at +12 that the values multiply: 1/32767 for a plain value, 3/32767 for a value up to 3). The hash is
+not a name that can be reproduced. The evaluator is eboot function 0x170A3D0, the function that packs a particle for the
+GPU 0x170D940: it reads slots 0, 1, 3, 4 and 5 of the component, and slot 5 is quantised into the particle's colour
+bytes. Slot 5 is the component's colour: on the colour-named flare effects of the game its RGB follows the name (mean
+cosine 0.9 to 0.99), and in the warm and blue wide light cones it is the one entry in which the two effects differ.
+Slot 6 holds a small scalar (0.03 to 0.2 in the cones) that is taken to be the component's opacity, which is inferred.
 
 The light cones are the `gbl_amb_Light_Cone_*` effects. Each draws one cone model through a component with the model's
 id, with the additive two-sided material `gbl_amb_Light_Cone_Circular_Med` (flags 0x20D, a captured draw state,
@@ -30,10 +35,10 @@ docs/shading.md). The placement matrix aims the cone directly: its local +Z (cir
 or -Y (wide hanging cone, 2 long) is the aim axis of the spot light that stands at the same place (all 59 of Quartu's
 wide cones lie within 0.6 units of a spot record, with the axis opposite the matrix's +Y row).
 
-Not decoded: the other components (sprites for the flare at the lamp, and records without a model), the particle
-update that colours the cone (the game's pixel shader reads the colour from a per-particle buffer), and the effect's
-timing. The viewer draws the cone model at scale 1 (the mesh component's size pair), coloured by the spot light that
-stands there (rc2016.levels.beams).
+Not decoded: the other components (sprites for the flare at the lamp, and records without a model), how the game's
+pixel shader turns the particle colour and opacity into a display value (it reads them from a per-particle buffer, fades
+with scene depth and fog), and the effect's timing. The viewer draws the cone model at scale 1 (the mesh component's
+size pair) in the mesh component's colour times its opacity (rc2016.levels.beams).
 """
 from __future__ import annotations
 
@@ -54,7 +59,9 @@ PARAMETER_VALUES = 0xB1F4C248
 PARAMETER_SCALES = 0xD78E007C
 COMPONENT_SIZE = 0x110
 LIGHT_CONE = re.compile(r'light_cone', re.IGNORECASE)
-JOIN_DISTANCE = 1.0    # a placement takes the colour of a spot light this close (observed 0.05 to 0.59)
+COLOUR_SLOT = 5
+OPACITY_SLOT = 6
+SLOT_LIST = 0x108
 
 
 def _cstring(data, offset):
@@ -104,13 +111,14 @@ def decode_effect(data):
             components.append(dict(asset=struct.unpack_from('<Q', data, start + 0x44)[0],
                                    size=struct.unpack_from('<2f', data, start + 0x3C),
                                    flags=struct.unpack_from('<I', data, start + 0xF4)[0],
-                                   slots=list(struct.unpack_from('<7B', data, start + 0x104))))
+                                   slots=list(struct.unpack_from('<7B', data, start + SLOT_LIST))))
     if PARAMETER_VALUES in table and PARAMETER_SCALES in table:
         values, scales = table[PARAMETER_VALUES], table[PARAMETER_SCALES]
         for n in range(min(values[1], scales[1]) // 16):
-            raw = struct.unpack_from('<4H', data, values[0] + n * 16)
+            raw = struct.unpack_from('<8h', data, values[0] + n * 16)
             parameter_hash, scale = struct.unpack_from('<I', data, scales[0] + n * 16)[0], struct.unpack_from('<f', data, scales[0] + n * 16 + 12)[0]
-            parameters.append(dict(hash=parameter_hash, value=[v * scale for v in raw], scale=scale))
+            parameters.append(dict(hash=parameter_hash, value=[v * scale for v in raw[:4]], spread=[v * scale for v in raw[4:]],
+                                   scale=scale))
     return dict(components=components, parameters=parameters)
 
 
@@ -130,6 +138,19 @@ def mesh_scale(effect, model_path):
     return float(mesh[0]['size'][0])
 
 
+def mesh_colour(effect, model_path):
+    """(rgb, opacity) of the effect's mesh component: the RGB of the parameter in its colour slot (5) and the first value of
+    the one in its opacity slot (6, inferred to be the opacity), or None when there is not exactly one mesh component or a
+    slot lists no parameter. The spread added at spawn is zero for these colours and is not applied."""
+    mesh = [c for c in effect['components'] if c['asset'] == path_crc64(model_path)]
+    if len(mesh) != 1:
+        return None
+    colour, opacity = mesh[0]['slots'][COLOUR_SLOT], mesh[0]['slots'][OPACITY_SLOT]
+    if max(colour, opacity) >= len(effect['parameters']):
+        return None
+    return list(effect['parameters'][colour]['value'][:3]), float(effect['parameters'][opacity]['value'][0])
+
+
 def is_light_cone(effect_path):
     return LIGHT_CONE.search(effect_path.rsplit('/', 1)[-1]) is not None
 
@@ -146,26 +167,11 @@ def cone_frame(positions):
     return direction, float(high[axis] - low[axis])
 
 
-def join_spots(placements, spots, distance=JOIN_DISTANCE):
-    """Each placement with ``colour`` and ``spot`` (the ordinal of the nearest spot light within ``distance``, else None and
-    no colour). The join is by position only: no field links an effect to a light."""
-    for placement in placements:
-        best, best_distance = None, distance
-        for spot in spots:
-            gap = math.dist(placement['position'], spot['position'])
-            if gap <= best_distance:
-                best, best_distance = spot, gap
-        placement['spot'] = best['source_ordinal'] if best else None
-        placement['colour'] = list(best['colour']) if best else None
-    return placements
-
-
-def load_light_cones(archive, zone_paths, spots):
+def load_light_cones(archive, zone_paths):
     """The light cones to draw for the zones of a level.
 
-    ``spots`` are the decoded spot lights (rc2016.levels.scene_lighting). Returns ``cones`` (placements of the cone models,
-    each with its ``model`` path, ``scale`` (the mesh component's) and the ``colour`` of the spot light it was joined to; the
-    matrix is scaled), ``geometry`` ({model path: {'positions', 'normals' float32 (n, 3), 'indices' uint32, 'axis', 'length'}}
+    Returns ``cones`` (placements of the cone models, each with its ``model`` path, ``scale`` (the mesh component's),
+    ``colour`` (the mesh component's RGB times its opacity) and the matrix scaled), ``geometry`` ({model path: {'positions', 'normals' float32 (n, 3), 'indices' uint32, 'axis', 'length'}}
     in model space) and ``undrawn`` ({effect file name: count} of the light-cone placements that are decoded but not drawn,
     with the reason in ``undrawn_reasons``)."""
     import numpy as np
@@ -189,20 +195,19 @@ def load_light_cones(archive, zone_paths, spots):
                 continue
             if placement['effect'] not in decoded:
                 model = effect_model_path(archive, placement['effect'])
-                scale = mesh_scale(decode_effect(asset_bytes(archive, placement['effect'])), model) if model else None
-                decoded[placement['effect']] = (model, scale)
-            model, scale = decoded[placement['effect']]
-            if model is None or scale is None:
-                skip(placement, 'no mesh component with a model of the effect')
+                effect = decode_effect(asset_bytes(archive, placement['effect'])) if model else None
+                scale = mesh_scale(effect, model) if model else None
+                colour = mesh_colour(effect, model) if model else None
+                decoded[placement['effect']] = (model, scale, colour)
+            model, scale, colour = decoded[placement['effect']]
+            if model is None or scale is None or colour is None:
+                skip(placement, 'no single mesh component with a model, scale and colour')
                 continue
             placement['model'], placement['scale'] = model, scale
+            placement['colour'] = [v * colour[1] for v in colour[0]]
             cones.append(placement)
-    join_spots(cones, [s for s in spots if s.get('kind') == 'spot'])
     kept = []
     for cone in cones:
-        if cone['colour'] is None:
-            skip(cone, 'no spot light within the join distance, so no colour')
-            continue
         if cone['model'] not in geometry:
             loaded = model_geometry(archive, cone['model'])
             positions = np.asarray(loaded['positions'], np.float32).reshape(-1, 3)
@@ -216,5 +221,5 @@ def load_light_cones(archive, zone_paths, spots):
     return dict(cones=kept, geometry=geometry, undrawn=undrawn, undrawn_reasons=reasons)
 
 
-__all__ = ['JOIN_DISTANCE', 'cone_frame', 'decode_effect', 'decode_zone_effects', 'effect_model_path', 'is_light_cone',
-           'join_spots', 'load_light_cones', 'mesh_scale']
+__all__ = ['cone_frame', 'decode_effect', 'decode_zone_effects', 'effect_model_path', 'is_light_cone', 'load_light_cones',
+           'mesh_colour', 'mesh_scale']
