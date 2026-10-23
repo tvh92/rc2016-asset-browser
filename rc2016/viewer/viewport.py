@@ -25,14 +25,14 @@ RIG_TO_WORLD = ((1.0, 0.0, 0.0), (0.0, 0.0, -1.0), (0.0, 1.0, 0.0))
 
 # texture_preview entry roles uploaded as 2D GL textures, deduplicated by texture path. Other textures
 # in an entry (tint palette, screen timeline, puddle and RockBlend sources) are only sampled on the CPU.
-GL_TEXTURE_ROLES = ("_water_height_a", "_water_height_b", "_c", "_g", "_n", "_pick", "_h", "_sequence", "_tint_detail", "_bng_detail", "_vehicle_p2",
+GL_TEXTURE_ROLES = ("_water_height_a", "_water_height_b", "_water_foam_a", "_water_foam_b", "_c", "_g", "_n", "_pick", "_h", "_sequence", "_tint_detail", "_bng_detail", "_vehicle_p2",
                     "_glow_parallax", "_puddle_atlas", "_parallax_height", "_cma", "_reticle")
 
 
 # GL_TEXTURE_ROLES sampled as ordinary surface textures by UV. Palettes and sequences (_pick,
 # _vehicle_p2, _sequence) are lookup tables, and the puddle atlas is sampled through fract(), so those
 # keep their top mip only.
-MIPMAP_ROLES = frozenset(("_water_height_a", "_water_height_b", "_c", "_g", "_n", "_h", "_tint_detail", "_bng_detail", "_glow_parallax",
+MIPMAP_ROLES = frozenset(("_water_height_a", "_water_height_b", "_water_foam_a", "_water_foam_b", "_c", "_g", "_n", "_h", "_tint_detail", "_bng_detail", "_glow_parallax",
                           "_parallax_height", "_cma"))
 
 
@@ -1711,6 +1711,36 @@ class ModelViewport(_TkFrame):
         except tk.TclError:
             pass
 
+    def _apply_water_surface(self, u, entry, forward, scene_depth=None):
+        """uW, the foam tiles and the scene depth of the decoded water closure (GLASS_FRAGMENT uKind 4, uE.z = 1).
+
+        ``scene_depth`` is (GL depth texture, (width, height, near, far)) when the viewer copied the frame's depth buffer,
+        else None (no thickness: no shore fade and no foam). Every other forward kind gets zeros and no textures."""
+        from rc2016.viewer.shading import SCENE_DEPTH_TEXTURE_UNIT, WATER_FOAM_TEXTURE_UNITS, water_surface_uniforms
+        gl, sh = self._gl, self._shading
+        vectors = water_surface_uniforms(forward)
+        sh.glUniform4fv(u["uW"], 6, (ctypes.c_float * 24)(*(float(x) for vector in vectors for x in vector)))
+        surface = forward.get("kind") == "water" and bool(forward.get("surface"))
+        roles = ("_water_foam_a", "_water_foam_b")
+        foam = surface and all(entry.get(role) for role in roles)
+        sh.glUniform1i(u["uHasWaterFoam"], 1 if foam else 0)
+        for unit, role, name, srgb in zip(WATER_FOAM_TEXTURE_UNITS, roles, ("uWaterFoamA", "uWaterFoamB"),
+                                          ("uWaterFoamSrgbA", "uWaterFoamSrgbB")):
+            texture = entry.get(role) if foam else None
+            sh.glUniform1i(u[name], unit)
+            sh.glUniform1i(u[srgb], 1 if texture and texture[1] else 0)
+            if surface:
+                sh.glActiveTexture(self.GL_TEXTURE0 + unit)
+                gl.glBindTexture(self.GL_TEXTURE_2D, texture[0] if texture else 0)
+        depth = surface and scene_depth is not None
+        sh.glUniform1i(u["uSceneDepth"], SCENE_DEPTH_TEXTURE_UNIT)
+        sh.glUniform1i(u["uHasSceneDepth"], 1 if depth else 0)
+        if depth:
+            sh.glActiveTexture(self.GL_TEXTURE0 + SCENE_DEPTH_TEXTURE_UNIT)
+            gl.glBindTexture(self.GL_TEXTURE_2D, scene_depth[0])
+            sh.glUniform4f(u["uSceneDepthInfo"], *(float(x) for x in scene_depth[1]))
+        sh.glActiveTexture(self.GL_TEXTURE0)
+
     def _draw_glass(self, index_array, batches, skin):
         """Forward batches: the material's blend state and culling; opaque ones first with depth write, then the blended ones with no depth write, farthest first.
 
@@ -1763,6 +1793,7 @@ class ModelViewport(_TkFrame):
                     sh.glActiveTexture(self.GL_TEXTURE0 + unit)
                     gl.glBindTexture(self.GL_TEXTURE_2D, texture[0] if texture else 0)
                     sh.glUniform1i(u[name], unit)
+            self._apply_water_surface(u, entry, forward, scene_depth=None)
             kind, *vectors = glass_uniforms(forward, self._effect_time(forward))
             sh.glUniform1i(u["uKind"], kind)
             for name, vector in zip(("uA", "uB", "uC", "uD", "uE"), vectors):

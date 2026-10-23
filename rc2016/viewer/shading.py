@@ -1042,7 +1042,8 @@ void main() {
 #   uA = pattern tiling, pattern normal strength, F0 base, gloss; uB.xyz = pick u, rim bias, rim exp.
 #   Pattern (_n slot) and palette (_pick) textures; instance fade b = 0, CB0[95] = attr0.w = 1,
 #   SSR weight 0, both lighting instance flags (32 diffuse, 64 specular) on.
-# uKind 4, water PREVIEW (pok_uniq_water family; textures.WATER_PRESENTATION), not a decode:
+# uKind 4 with uE.z = 0, water PREVIEW (the glow graph and the pok_uniq_water family fallback; textures.WATER_PRESENTATION),
+# not a decode (pok_uniq_water itself has the decoded closure, uE.z = 1, described above GLASS_FRAGMENT):
 #   uA = body colour, opacity; uB = F0, normal strength, gloss; uC/uD = tile A/B UV scale.xy, offset.zw
 #   applied to native world (x, z). Tiles: _n slot (water_tile_01n) and _pick slot (water_tile_02n).
 # uKind 5, bright_glow 93695188 (hero_bright_center_light_glow_variable; no texture, additive, back faces culled):
@@ -1092,9 +1093,22 @@ void main() {
 #   uB.z = c = CB0[107], the dissolve threshold: m = sat((t5 + t6 - c) / max(1e-5, 1 - c)) (a new value each game frame:
 #   0 = full streaks for static renders, frame_fade(t) when animating);
 #   fog blend 1, CB2[4] = 0, vertex alpha 1 (opaque, back faces culled).
+# uKind 4 with uE.z = 1, pok_uniq_water F4D47ECE decoded closure (docs/material-decoding/novalis-water.md; water_surface_uniforms):
+#   uA = shallow colour A (CB2[0..2]), opacity (per-instance, labelled 0.4); uB = body colour B (CB2[4..6]), crest colour weight CB2[39];
+#   uC = displacement CB2[36], CB2[12], crest scale CB2[14], time (CB0[99], 0); uD = strengths CB2[15], CB2[17], far factor CB2[47],
+#   strength distance CB2[13]; uE = (CB2[36], 1, 1, 0); uW[0] = depth fade CB2[8], grazing power CB2[9], near fade CB2[10], CB2[11];
+#   uW[1] = environment scale CB2[40], luminance mix CB2[43], far reflection CB2[46], reflection distance CB2[21];
+#   uW[2] = foam scale CB2[45], foam power CB2[33], thickness scale CB2[35], thickness power CB2[34];
+#   uW[3] = foam height weights CB2[19], CB2[20], foam UV scales CB2[25], CB2[26]; uW[4] = foam displacements CB2[27], CB2[28];
+#   uW[5] = foam scrolls CB2[29..32]. World X/Z are exact (attribute3 is camera minus world); the probe is the viewer environment,
+#   SSR weight 0, scene depth (thickness) only where the viewer binds uSceneDepth.
 GLASS_FRAGMENT = """
 #version 120
 uniform sampler2D uWaterHeightA; uniform sampler2D uWaterHeightB; uniform bool uHasWaterHeights;
+uniform vec4 uW[6];
+uniform sampler2D uWaterFoamA; uniform sampler2D uWaterFoamB; uniform bool uHasWaterFoam;
+uniform bool uWaterFoamSrgbA; uniform bool uWaterFoamSrgbB;
+uniform sampler2D uSceneDepth; uniform bool uHasSceneDepth; uniform vec4 uSceneDepthInfo;   // viewport w, h, near, far
 uniform sampler2D uScreenNoiseA; uniform sampler2D uScreenNoiseB;
 uniform bool uScreenSrgbN; uniform bool uScreenSrgbA; uniform bool uScreenSrgbB;
 uniform int uKind;
@@ -1132,6 +1146,17 @@ vec3 ggxGlass(vec3 N, vec3 V, vec3 L, vec3 F0, vec3 F90, float a) {
 vec3 glassSpec(vec3 N, vec3 V, vec3 L1, vec3 L2, vec3 C1, vec3 C2, vec3 F0, float a, vec3 ambient) {
     vec3 F90 = clamp(60.0 * F0, 0.0, 1.0);
     return ggxGlass(N, V, L1, F0, F90, a) * C1 + ggxGlass(N, V, L2, F0, F90, a) * C2 + envSpecular(N, V, F0, F90, a, ambient);
+}
+// Stand-in for the water's reflection probe: the HDRI / Level atmosphere radiance at its sharpest band, else the rig sky.
+vec3 waterEnvironment(vec3 R) {
+    if (!uLightingEnabled) return vec3(0.0);
+    if (uLighting == 1) return prefiltered(uViewToWorld * R, 0.0);
+    return ambientLight(R);
+}
+// One water normal sample: s = q (2 rg - 1), n = normalize(N (1 - s.s) + B s.y + T s.x) (F4D47ECE, no absolute values).
+vec3 waterNormal(vec3 N, vec3 T, vec3 B, float q, vec2 rg) {
+    vec2 s = q * (rg * 2.0 - 1.0);
+    return normalize(N * (1.0 - dot(s, s)) + B * s.y + T * s.x);
 }
 void main() {
     vec3 N = normalize(vNrm) * (gl_FrontFacing ? 1.0 : -1.0);
@@ -1267,6 +1292,54 @@ void main() {
         float x = (1.0 - uC.x * (length(vPos) - uC.y)) * uC.z * uA.w * (1.0 - t);
         alpha = sat(x);
         color = uC.w * 7.0 * (uB.rgb + (uA.rgb - uB.rgb) * x * x);
+    } else if (uKind == 4 && uE.z > 0.5) {   // F4D47ECE decoded closure (see the comment above GLASS_FRAGMENT)
+        vec2 w = vTintWorldPos.xz;
+        float t = uC.w, d = length(vPos);
+        float h5 = texture2D(uWaterHeightA, vec2(0.105 * w.x + 0.252 * t, 0.095 * w.y - 0.246 * t)).r;
+        float h6 = texture2D(uWaterHeightB, vec2(0.248 + 0.095 * w.x - 0.247 * t, 0.613 + 0.105 * w.y + 0.255 * t)).r;
+        float hh = h5 + h6 - 1.0;
+        vec2 a7 = vec2(0.133 + 0.315 * w.x + 0.2042 * t, 0.346 + 0.285 * w.y + 0.196 * t) + uC.x * hh;
+        vec2 a8 = vec2(0.285 * w.x - 0.197 * t, 0.315 * w.y - 0.2013 * t) + uC.x * hh;
+        vec2 b8 = vec2(0.0475 * w.x + 0.052 * t, 0.0525 * w.y + 0.048 * t) + uC.y * hh;
+        vec2 b7 = vec2(0.133 + 0.0525 * w.x - 0.049 * t, 0.346 + 0.0475 * w.y - 0.051 * t) + uC.y * hh;
+        float c1 = texture2D(uWaterHeightA, vec2(0.116 + 0.002625 * w.x + 0.0099 * t, 0.002375 * w.y + 0.011 * t)).r;
+        float c2 = texture2D(uWaterHeightB, vec2(0.346 + 0.002375 * w.x - 0.012 * t, 0.133 + 0.002625 * w.y - 0.008 * t)).r;
+        float crest = sat(uC.z * (1.0 - c1) * (1.0 - c2));
+        float fd = sat(d / uD.w);
+        float q1 = sat(crest * mix(uD.x, uD.x * uD.z, fd)), q2 = sat(crest * mix(uD.y, uD.y * uD.z, fd));
+        // Tangent frame: native world X (the mesh tangent is not drawn), B = N x T as the program's sign(w) cross product.
+        vec3 T = vec3(1.0, 0.0, 0.0) * uViewToWorld;
+        T = normalize(T - N * dot(N, T)); vec3 Bt = cross(N, T);
+        vec3 pa = waterNormal(N, T, Bt, q1, texture2D(uTexN, a7).rg) + waterNormal(N, T, Bt, q1, texture2D(uTexP, a8).rg);
+        vec3 pb = waterNormal(N, T, Bt, q2, texture2D(uTexN, b7).rg) + waterNormal(N, T, Bt, q2, texture2D(uTexP, b8).rg);
+        vec3 Nw = normalize(normalize(pa) + normalize(pb));
+        // Water thickness along the view ray from the scene depth; none bound: no shore fade and no foam.
+        float thick = 1.0e6;
+        if (uHasSceneDepth) {
+            float zn = texture2D(uSceneDepth, gl_FragCoord.xy / uSceneDepthInfo.xy).r * 2.0 - 1.0;
+            float n = uSceneDepthInfo.z, f = uSceneDepthInfo.w;
+            thick = 2.0 * n * f / (f + n - zn * (f - n)) + vPos.z;
+        }
+        float Zf = sat(uW[0].x * thick);
+        float Fg = sat(pow(1.001 - ndv, uW[0].y));
+        float cover = sat(sat((d - uW[0].z) / (uW[0].w - uW[0].z)) * (Zf - Fg * Zf));
+        if (cover < 0.015686275) discard;   // attribute0.z = 4/255
+        alpha = sat(uA.w * cover);
+        vec3 env = uW[1].x * waterEnvironment(reflect(-V, Nw));
+        vec3 pre = (1.0 - crest) * uB.w * mix(uA.rgb, uB.rgb, crest) + env * sat(1.0 - uW[1].y)
+                 + sat(uW[1].y) * dot(vec3(0.3, 0.59, 0.11), env);
+        color = clamp(pre, 0.0, 1.0) * (1.0 + sat(d / uW[1].w) * (uW[1].z - 1.0));
+        if (uHasWaterFoam && thick < 1.0e5) {
+            float g = uW[3].x * (texture2D(uWaterHeightA, a8).r + texture2D(uWaterHeightB, a7).r)
+                    + uW[3].y * (texture2D(uWaterHeightA, b8).r + texture2D(uWaterHeightB, b7).r);
+            vec2 fa = vec2(0.116 + 0.05 * uW[3].z * w.x + uW[4].x * hh + uW[5].x * t, 0.05 * uW[3].w * w.y + uW[4].x * hh + uW[5].y * t);
+            vec2 fb = vec2(0.346 + 0.05 * uW[3].w * w.x + uW[4].y * hh + uW[5].z * t, 0.133 + 0.05 * uW[3].z * w.y + uW[4].y * hh + uW[5].w * t);
+            float ra = texture2D(uWaterFoamA, fa).r, rb = texture2D(uWaterFoamB, fb).r;
+            if (uWaterFoamSrgbA) ra = screenLinear(ra);
+            if (uWaterFoamSrgbB) rb = screenLinear(rb);
+            float m = sat(sat(ra * rb) * sat(pow(sat(g), uW[2].y)));
+            color += sat(uW[2].x * m * (1.0 - sat(uW[2].z * pow(max(thick, 0.0), uW[2].w))));
+        }
     } else if (uKind == 4) {
         vec2 xz = vTintWorldPos.xz;
         vec2 d = vec2(0.0);
@@ -1424,6 +1497,12 @@ def glass_uniforms(forward, time=None):
         return (6, (p["fade_start"], p["fade_end"], p["power_near"], p["power_far"]),
                 (p["reflect_base"], p["reflect_weight"], p["highlight_normal"], p["env_normal"]),
                 (p["highlight_k"], 0.0, 0.0, 0.0), (0.0,) * 4)
+    if forward["kind"] == "water" and forward.get("surface"):
+        s = forward["surface"]
+        return (4, (*s["shallow_colour"], s["opacity"]), (*s["body"], s["crest_colour"]),
+                (s["displacement_a"], s["displacement_b"], s["crest_scale"], s["time"]),
+                (s["strength_a"], s["strength_b"], s["far_strength"], s["strength_distance"]),
+                (s["displacement_a"], 1.0, 1.0, 0.0))
     if forward["kind"] == "water":
         sampling = forward.get("sampling") or {}
         return (4, (*p["body"], p["opacity"]), (p["f0"], p["normal_strength"], p["gloss"], 0.0),
@@ -1451,6 +1530,24 @@ def glass_uniforms(forward, time=None):
             (p["alpha_exp"], p["env_scale"], p["alpha_bias"], p["rim_bias"]), (p["env_exp"], p["rim_exp"], 0.0, 0.0))
 
 
+# Texture units of the decoded water closure's extra samplers (the glass pass binds no other texture there).
+WATER_FOAM_TEXTURE_UNITS = (7, 8)
+SCENE_DEPTH_TEXTURE_UNIT = 9
+
+
+def water_surface_uniforms(forward):
+    """The six uW vectors of the decoded water closure (zeros for every other forward kind); see GLASS_FRAGMENT."""
+    s = (forward or {}).get("surface") if (forward or {}).get("kind") == "water" else None
+    if not s:
+        return [(0.0,) * 4] * 6
+    return [(s["depth_fade"], s["grazing_power"], s["near_fade_start"], s["near_fade_end"]),
+            (s["environment_scale"], s["environment_luminance"], s["far_reflection"], s["reflection_distance"]),
+            (s["foam_scale"], s["foam_power"], s["thickness_scale"], s["thickness_power"]),
+            (s["foam_height_a"], s["foam_height_b"], s["foam_scale_u"], s["foam_scale_v"]),
+            (s["foam_displacement_a"], s["foam_displacement_b"], 0.0, 0.0),
+            (s["foam_scroll_au"], s["foam_scroll_av"], s["foam_scroll_bu"], s["foam_scroll_bv"])]
+
+
 OPAQUE_UNIFORMS = (
     "uPuddles", "uPuddleTex", "uHasPuddleAtlas", "uPuddle0", "uPuddle1", "uPuddle2", "uPuddle3", "uPuddleNoiseScale", "uPuddleRippleScale",
     "uRockBlend", "uCraterBlend", "uCraterP", "uMudBlend", "uMudP0", "uMudP1", "uMudP2", "uPuddleSludge", "uGrassBlend", "uGrassP", "uSedKind", "uSedA", "uSedB", "uSedPaint", "uSedScale", "uSedSrgb", "uCoralBlend", "uCoralA", "uCoralB", "uCoralNoise", "uCoralScroll", "uCoralPaint", "uCoralScale", "uCoralSrgb", "uRockTex", "uRockSrgb", "uRockScale0", "uRockScale1", "uRockTint", "uRockP", "uRockBreakup",
@@ -1473,6 +1570,8 @@ OPAQUE_UNIFORMS = (
     "uSceneGeometry", *LIGHTING_UNIFORMS)
 GLASS_UNIFORMS = ("uSkin", "uBoneTex", "uBoneWidth", "uKind", "uA", "uB", "uC", "uD", "uE",
                   "uWaterHeightA", "uWaterHeightB", "uHasWaterHeights", "uTexN", "uHasN", "uTexP", "uHasP", "uSrgbP",
+                  "uW", "uWaterFoamA", "uWaterFoamB", "uHasWaterFoam", "uWaterFoamSrgbA", "uWaterFoamSrgbB",
+                  "uSceneDepth", "uHasSceneDepth", "uSceneDepthInfo",
                   "uScreenNoiseA", "uScreenNoiseB", "uScreenSrgbN", "uScreenSrgbA", "uScreenSrgbB", *LIGHTING_UNIFORMS)
 
 # Level viewer: one draw per model and material for all its instances. The zone's row-vector
@@ -1769,6 +1868,7 @@ class Shading:
         "glUniform3f": (None, [ctypes.c_int, ctypes.c_float, ctypes.c_float, ctypes.c_float]),
         "glUniform4f": (None, [ctypes.c_int, ctypes.c_float, ctypes.c_float, ctypes.c_float, ctypes.c_float]),
         "glUniform3fv": (None, [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]),
+        "glUniform4fv": (None, [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]),
         "glUniform2fv": (None, [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]),
         "glUniform1fv": (None, [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]),
         "glUniformMatrix3fv": (None, [ctypes.c_int, ctypes.c_int, ctypes.c_ubyte, ctypes.c_void_p]),

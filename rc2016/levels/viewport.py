@@ -1594,6 +1594,7 @@ class LevelViewport(ModelViewport):
         gl.glBlendFunc.argtypes = [ctypes.c_uint, ctypes.c_uint]; gl.glDepthMask.argtypes = [ctypes.c_ubyte]
         gl.glCullFace.argtypes = [ctypes.c_uint]
         gl.glCullFace(self.GL_BACK)
+        scene_depth = None
         for key, model, span, groups in items:
             entry = self._materials[key[0]]
             forward = entry["forward"]
@@ -1611,12 +1612,49 @@ class LevelViewport(ModelViewport):
                     sh.glUniform1i(u[srgb], 1 if texture and texture[1] else 0)
             if forward.get('kind') in ('screen', 'number_display'):
                 self._apply_screen_forward(u, entry)
+            # The decoded water closure: its height tiles, foam tiles and the frame's depth (water thickness).
+            surface = forward.get("kind") == "water" and bool(forward.get("surface"))
+            sh.glUniform1i(u["uHasWaterHeights"], 1 if surface and entry.get("_water_height_a") and entry.get("_water_height_b") else 0)
+            if surface:
+                for unit, role, name in ((0, "_water_height_a", "uWaterHeightA"), (1, "_water_height_b", "uWaterHeightB")):
+                    texture = entry.get(role)
+                    sh.glActiveTexture(self.GL_TEXTURE0 + unit)
+                    gl.glBindTexture(self.GL_TEXTURE_2D, texture[0] if texture else 0)
+                    sh.glUniform1i(u[name], unit)
+                sh.glActiveTexture(self.GL_TEXTURE0)
+                scene_depth = scene_depth or self._scene_depth_copy()
+            self._apply_water_surface(u, entry, forward, scene_depth if surface else None)
             kind, *vectors = glass_uniforms(forward)
             sh.glUniform1i(u["uKind"], kind)
             for name, vector in zip(("uA", "uB", "uC", "uD", "uE"), vectors):
                 sh.glUniform4f(u[name], *(float(x) for x in vector))
             self._draw_span(model, span, groups)
         gl.glDepthMask(1); gl.glDisable(self.GL_BLEND); gl.glDisable(self.GL_CULL_FACE)
+
+    def _scene_depth_copy(self):
+        """(GL texture, (width, height, near, far)): the frame's depth buffer copied once per glass pass, read by the decoded
+        water closure for the water thickness along the view ray (scene view depth minus the fragment's)."""
+        from rc2016.viewer.shading import SCENE_DEPTH_TEXTURE_UNIT
+        gl, sh = self._gl, self._shading
+        name = self.__dict__.get("_water_depth_gl")
+        if name is None:
+            texture = ctypes.c_uint(0)
+            gl.glGenTextures(1, ctypes.byref(texture))
+            gl.glBindTexture(self.GL_TEXTURE_2D, texture.value)
+            for parameter, value in ((self.GL_TEXTURE_MIN_FILTER, 0x2600), (self.GL_TEXTURE_MAG_FILTER, 0x2600),   # GL_NEAREST
+                                     (self.GL_TEXTURE_WRAP_S, 0x812F), (self.GL_TEXTURE_WRAP_T, 0x812F)):
+                gl.glTexParameteri(self.GL_TEXTURE_2D, parameter, value)
+            name = self._water_depth_gl = texture.value
+        viewport = (ctypes.c_int * 4)()
+        gl.glGetIntegerv.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+        gl.glGetIntegerv(0x0BA2, viewport)      # GL_VIEWPORT
+        sh.glActiveTexture(self.GL_TEXTURE0 + SCENE_DEPTH_TEXTURE_UNIT)
+        gl.glBindTexture(self.GL_TEXTURE_2D, name)
+        gl.glCopyTexImage2D.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_uint, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                        ctypes.c_int, ctypes.c_int]
+        gl.glCopyTexImage2D(self.GL_TEXTURE_2D, 0, 0x1902, viewport[0], viewport[1], viewport[2], viewport[3], 0)   # GL_DEPTH_COMPONENT
+        sh.glActiveTexture(self.GL_TEXTURE0)
+        return name, (float(viewport[2]), float(viewport[3]), float(self._near), float(self._far))
 
     # Sky ------------------------------------------------------------------------------------
     _near = 0.05

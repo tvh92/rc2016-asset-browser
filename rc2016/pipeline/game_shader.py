@@ -1109,7 +1109,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 20
+VIEWER_RULE_FRONTEND_VERSION = 21
 
 
 def _viewer_rule_images(nt):
@@ -1155,6 +1155,10 @@ def _viewer_rule_water(mat, rule, img):
     n8 = P.gl_coord(P.m('MULTIPLY_ADD', dx, n8_u, cross), P.m('MULTIPLY_ADD', dz, n8_v, cross))
     na = P.tex(normal_a, n7, 'water API7 primary normal sample')
     nb = P.tex(normal_b, n8, 'water API8 primary normal sample')
+    if term.get('surface'):
+        return _viewer_rule_water_surface(mat, term, P, dict(dx=dx, dz=dz, h5=h5, h6=h6, time=time, na=na, nb=nb,
+                                                             height_a=height_a, height_b=height_b,
+                                                             normal_a=normal_a, normal_b=normal_b))
     xa, ya = P.rg(na.outputs['Color']); xb, yb = P.rg(nb.outputs['Color'])
     strength = P.const('water inferred normal strength', params['normal_strength'])
     x = P.m('MULTIPLY', P.m('ADD', xa, xb), strength)
@@ -1199,6 +1203,89 @@ def _viewer_rule_water(mat, rule, img):
         'and CB0[99] is frozen at time 0.' % (term.get('writer'), term.get('graph_path'), term.get('graph_sha256')),
         'Water normal composition/strength, body colour, opacity, Fresnel closure, gloss and reflection are inferred presentation values; '
         'the shared deferred BRDF substitutes for the unrecovered forward lighting. Blender tangent-frame derivatives and runtime pass/draw selection are unresolved.'
+    ]
+
+
+def _viewer_rule_water_surface(mat, term, P, s):
+    """pok_uniq_water F4D47ECE decoded closure (docs/material-decoding/novalis-water.md; viewer GLASS_FRAGMENT uKind 4 with
+    uE.z = 1): four-sample normal, crest, crest-coloured scatter plus the scaled environment reflection, distance terms and
+    alpha. Blender has no scene depth or screen-space reflection: thickness is taken as large (no shore fade, no foam) and
+    the SSR weight is 0; the environment is the scene world."""
+    nt = mat.node_tree; L = nt.links
+    p = term['surface']
+    dx, dz, h5, h6, time = s['dx'], s['dz'], s['h5'], s['h6'], s['time']
+    cam = nt.nodes.new('ShaderNodeCameraData'); cam.name = 'VR water camera distance'
+    dist = cam.outputs['View Distance']
+    disp_b = P.const('water decoded second displacement', p['displacement_b'])
+    cross_b = P.m('MULTIPLY', disp_b, P.m('SUBTRACT', P.m('ADD', h5, h6), 1.0), label='water decoded second cross displacement')
+    lin = lambda value, scale, offset, rate: P.m('MULTIPLY_ADD', value, scale, P.m('MULTIPLY_ADD', time, rate, offset))
+    b8 = P.gl_coord(P.m('ADD', lin(dx, .0475, 0.0, .052), cross_b), P.m('ADD', lin(dz, .0525, 0.0, .048), cross_b))
+    b7 = P.gl_coord(P.m('ADD', lin(dx, .0525, .133, -.049), cross_b), P.m('ADD', lin(dz, .0475, .346, -.051), cross_b))
+    nc = P.tex(s['normal_a'], b7, 'water API7 second normal sample')
+    nd = P.tex(s['normal_b'], b8, 'water API8 second normal sample')
+    c5 = P.gl_coord(lin(dx, .002625, .116, .0099), lin(dz, .002375, 0.0, .011))
+    c6 = P.gl_coord(lin(dx, .002375, .346, -.012), lin(dz, .002625, .133, -.008))
+    k1 = P.sep(P.tex(s['height_a'], c5, 'water API5 crest sample').outputs['Color'])[0]
+    k2 = P.sep(P.tex(s['height_b'], c6, 'water API6 crest sample').outputs['Color'])[0]
+    crest = P.sat(P.m('MULTIPLY', P.const('water decoded crest scale', p['crest_scale']),
+                      P.m('MULTIPLY', P.m('SUBTRACT', 1.0, k1), P.m('SUBTRACT', 1.0, k2))))
+    crest.node.label = 'water decoded crest'
+    far = P.sat(P.m('DIVIDE', dist, P.const('water decoded strength distance', p['strength_distance'])))
+    far_k = P.const('water decoded far strength', p['far_strength'])
+    strength = lambda name, value: P.sat(P.m('MULTIPLY', crest, P.lerp(P.const(name, value), P.m('MULTIPLY', P.const(name, value), far_k), far)))
+    q1 = strength('water decoded strength A', p['strength_a'])
+    q2 = strength('water decoded strength B', p['strength_b'])
+
+    def sample(node, q):
+        x, y = P.rg(node.outputs['Color'], q)
+        return P.v('NORMALIZE', P.comb(x, y, P.m('SUBTRACT', 1.0, P.dot2(x, y))))
+    pair_a = P.v('NORMALIZE', P.v('ADD', sample(s['na'], q1), sample(s['nb'], q1)))
+    pair_b = P.v('NORMALIZE', P.v('ADD', sample(nc, q2), sample(nd, q2)))
+    tx, ty, tz = P.sep(P.v('NORMALIZE', P.v('ADD', pair_a, pair_b), label='water decoded four-sample tangent normal'))
+    normal = P.tangent_normal(tx, ty, tz, 'Water decoded four-sample normal')
+
+    colour = P.vlerp(P.const3('water decoded shallow colour', p['shallow_colour']), P.const3('water decoded body colour', p['body']), crest)
+    scatter = P.v('SCALE', colour, P.m('MULTIPLY', P.m('SUBTRACT', 1.0, crest), P.const('water decoded crest colour weight', p['crest_colour'])))
+    far_r = P.m('MULTIPLY_ADD', P.sat(P.m('DIVIDE', dist, P.const('water decoded reflection distance', p['reflection_distance']))),
+                P.m('SUBTRACT', P.const('water decoded far reflection', p['far_reflection']), 1.0), 1.0)
+    emission = nt.nodes.new('ShaderNodeEmission'); emission.name = emission.label = 'VR water decoded crest scatter'
+    L.new(P.v('SCALE', scatter, far_r), emission.inputs['Color']); emission.inputs['Strength'].default_value = 1.0
+    glossy = nt.nodes.new('ShaderNodeBsdfGlossy'); glossy.name = glossy.label = 'VR water decoded environment reflection'
+    env_k = P.m('MULTIPLY', P.const('water decoded environment scale', p['environment_scale']), far_r)
+    L.new(P.comb(env_k, env_k, env_k), glossy.inputs['Color'])
+    glossy.inputs['Roughness'].default_value = 0.0
+    L.new(normal, glossy.inputs['Normal'])
+    add = nt.nodes.new('ShaderNodeAddShader'); add.name = add.label = 'VR water decoded reflection sum'
+    L.new(emission.outputs[0], add.inputs[0]); L.new(glossy.outputs[0], add.inputs[1])
+
+    ndv = P.sat(P.v('DOT_PRODUCT', P.geo().outputs['Normal'], P.v('NORMALIZE', P.geo().outputs['Incoming'])))
+    grazing = P.sat(P.m('POWER', P.m('SUBTRACT', 1.001, ndv), P.const('water decoded grazing power', p['grazing_power'])))
+    start, end = P.const('water decoded near fade start', p['near_fade_start']), P.const('water decoded near fade end', p['near_fade_end'])
+    near = P.sat(P.m('DIVIDE', P.m('SUBTRACT', dist, start), P.m('SUBTRACT', end, start)))
+    alpha = P.sat(P.m('MULTIPLY', P.const('water presentation opacity', p['opacity']),
+                      P.sat(P.m('MULTIPLY', near, P.m('SUBTRACT', 1.0, grazing)))))
+    alpha.node.label = 'water decoded alpha'
+    clear = nt.nodes.new('ShaderNodeBsdfTransparent'); clear.name = 'VR water transparent background'
+    blend = nt.nodes.new('ShaderNodeMixShader'); blend.name = blend.label = 'VR water decoded alpha-over'
+    L.new(alpha, blend.inputs[0]); L.new(clear.outputs[0], blend.inputs[1]); L.new(add.outputs[0], blend.inputs[2])
+    shader = blend
+    if not term.get('two_sided'):
+        culled = nt.nodes.new('ShaderNodeBsdfTransparent'); culled.name = 'VR culled back face'
+        cull = nt.nodes.new('ShaderNodeMixShader'); cull.name = cull.label = 'VR cull back faces'
+        L.new(P.geo().outputs['Backfacing'], cull.inputs[0]); L.new(shader.outputs[0], cull.inputs[1]); L.new(culled.outputs[0], cull.inputs[2])
+        shader = cull
+    out = nt.nodes.new('ShaderNodeOutputMaterial'); out.is_active_output = True
+    L.new(shader.outputs[0], out.inputs['Surface'])
+    mat.use_backface_culling = not term.get('two_sided')
+    if hasattr(mat, 'surface_render_method'):
+        mat.surface_render_method = 'BLENDED'
+    return [
+        'Water writer %s: decoded surface closure of graph %s (%s): height, normal and crest sample UVs, the four-sample normal, '
+        'crest, crest-coloured scatter, environment reflection scale, distance terms and alpha. Native object-space X/Z stand for '
+        'world X/Z and CB0[99] is frozen at 0.' % (term.get('writer'), term.get('graph_path'), term.get('graph_sha256')),
+        'Blender has no scene depth or screen-space reflection: no shore fade or foam, SSR weight 0; the world shader stands for the '
+        'reflection probe and the scatter/reflection sum is not clamped. Opacity %.3f is a labelled per-instance presentation value; '
+        'the tangent frame is the UV tangent.' % p['opacity'],
     ]
 
 

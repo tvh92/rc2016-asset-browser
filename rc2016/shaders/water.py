@@ -1,7 +1,11 @@
-"""Source-bounded water sampling terms recovered from native PS4 GCN.
+"""Source-bounded water terms recovered from native PS4 GCN.
 
-This is deliberately a sampling contract only. It does not reconstruct the
-water normal, material closure, alpha, Fresnel, or runtime engine inputs.
+The sampling contract covers both water graphs. The ordinary graph
+(pok_uniq_water, colour writer F4D47ECE) also has a decoded surface closure:
+normal composition, crest, shore foam, environment reflection, alpha and fog,
+checked against a captured Novalis frame (docs/material-decoding/novalis-water.md).
+Runtime inputs the closure reads (the reflection probe, scene depth, the
+screen-space reflection and the per-instance opacity) stay labelled inputs.
 """
 
 WATER_GRAPH = (
@@ -257,6 +261,201 @@ def water_sampling_rule(graph_data, material_data):
         "normal_note": "The RG samples and first UV pair are source decoded; normal unpack/composition/strength remain unresolved.",
         "limitations": contract["unresolved"],
     }
+
+
+# ---------------------------------------------------------------------------------------------
+# Decoded surface closure of F4D47ECE (pass 0 of pok_uniq_water.materialgraph)
+
+# name: (material key, pass-0 CB2 dword, float count). Every value is read through the pass-0
+# table; the layout is checked against the graph, so a changed table fails closed.
+WATER_SURFACE_KEYS = (
+    ("shallow_colour", 0x56CB709A, 0, 3),
+    ("body", 0x1DAF77B8, 4, 3),
+    ("depth_fade", 0xD50FF59A, 8, 1),
+    ("grazing_power", 0x66DF5298, 9, 1),
+    ("near_fade_start", 0x575A5C8E, 10, 1),
+    ("near_fade_end", 0xDC287E64, 11, 1),
+    ("displacement_b", 0xE706F97C, 12, 1),
+    ("strength_distance", 0xAAED7A8B, 13, 1),
+    ("crest_scale", 0x266F5E89, 14, 1),
+    ("strength_a", 0x8EC1A779, 15, 1),
+    ("strength_b", 0x60402AB7, 17, 1),
+    ("foam_height_a", 0xA98713DA, 19, 1),
+    ("foam_height_b", 0xB9E7ED97, 20, 1),
+    ("reflection_distance", 0x4ACC9AF0, 21, 1),
+    ("foam_scale_u", 0xE61BBA8C, 25, 1),
+    ("foam_scale_v", 0x608FC822, 26, 1),
+    ("foam_displacement_a", 0x144F65DB, 27, 1),
+    ("foam_displacement_b", 0x53EF1F0B, 28, 1),
+    ("foam_scroll_au", 0xF9F2E56C, 29, 1),
+    ("foam_scroll_av", 0x60FBB4D6, 30, 1),
+    ("foam_scroll_bu", 0xC07FD9A9, 31, 1),
+    ("foam_scroll_bv", 0x59768813, 32, 1),
+    ("foam_power", 0x4E58797E, 33, 1),
+    ("thickness_power", 0xD3AFCBB7, 34, 1),
+    ("thickness_scale", 0x097B0E99, 35, 1),
+    ("displacement_a", 0x230C6389, 36, 1),
+    ("crest_colour", 0x897E48FA, 39, 1),
+    ("environment_scale", 0xE93F97D5, 40, 1),
+    ("environment_luminance", 0x9C360E85, 43, 1),
+    ("specular_weight", 0x8AC26FB9, 44, 1),
+    ("foam_scale", 0x339D4B95, 45, 1),
+    ("far_reflection", 0xA46F1D8D, 46, 1),
+    ("far_strength", 0xBBBA496D, 47, 1),
+)
+
+# Labelled presentation inputs of the decoded closure (not material data):
+# - opacity: attribute0.w, the per-draw opacity of the instance record (record dword 66). The
+#   captured Novalis river instance has 0.4 (102/255); the far sea instance and the culled
+#   mirrored river instance have 0.949 (242/255). Its source is not located in the zone data.
+# - time: CB0[99], frozen at 0 for static renders (the captured frame has 48.35).
+WATER_SURFACE_PRESENTATION = dict(opacity=0.4, time=0.0)
+
+WATER_SURFACE_DECODED = (
+    "height, normal, crest and foam sample UVs (native world X/Z: attribute3 is camera minus world position)",
+    "crest c = sat(CB2[14] (1 - H1)(1 - H2)) from the two large-scale height samples",
+    "normal strengths q = sat(c lerp(s, s CB2[47], sat(distance / CB2[13]))) and the four-sample composition",
+    "alpha = sat(opacity sat(near Z (1 - F))), Z = sat(CB2[8] thickness), F = sat((1.001 - N.V)^CB2[9])",
+    "shore foam gated by the water thickness, two foam tiles and the summed heights",
+    "reflection = sat(CB2[39] (1 - c) lerp(A, B, c) + CB2[40] probe(R)) (1 + sat(d / CB2[21]) (CB2[46] - 1))",
+    "colour = fog + T (foam + lerp(reflection, SSR, w) - fog) with T the vertex fog transmittance",
+)
+
+WATER_SURFACE_LIMITATIONS = (
+    "the reflection probe is the viewer's Level atmosphere environment (the capture's global probe matches the "
+    "atmosphere zone's reflection capture), sampled at its sharpest prefiltered band",
+    "screen-space reflection (record flag 0x2000) is not drawn: weight 0, so the environment reflection is not "
+    "darkened where the game reflects the river banks",
+    "per-instance opacity is a labelled presentation value (0.4, the captured river instance)",
+    "the light-list specular (CB2[44] times the light loop) is off for the captured record flags (0x2001); other "
+    "record flags are not covered",
+    "time CB0[99] is frozen at 0; the near-camera refraction body term (view depth below about 0.93) is not drawn",
+    "scene depth (thickness, shore fade and foam) is available in the level viewer only; elsewhere Z = 1 and no foam",
+    "the tangent frame is native world X; the game uses the mesh tangent (the instance's model X axis)",
+)
+
+
+def water_surface_parameters(graph_data, material_data):
+    """Decoded closure parameters of the ordinary water graph, by name, read through pass 0.
+
+    Raises ``ValueError`` for another graph, a changed pass-0 layout or a non-finite value."""
+    import hashlib
+    import math
+
+    from rc2016.formats.materials import extract_material_parameters
+    from rc2016.shaders.bindings import pass_contracts, _parameter_values
+
+    graph_data = bytes(graph_data)
+    if hashlib.sha256(graph_data).hexdigest() != WATER_GRAPH_SHA256:
+        raise ValueError("the decoded water surface is bound to pok_uniq_water only")
+    contract = pass_contracts(graph_data)[0]
+    table = {entry["key_hash"]: entry for entry in contract["table"]}
+    values, _receipt = _parameter_values(contract, extract_material_parameters(bytes(material_data)))
+    surface = {}
+    for name, key, dword, count in WATER_SURFACE_KEYS:
+        entry = table.get(key)
+        if entry is None or entry["dword"] != dword or entry["size_bytes"] != 4 * count:
+            raise ValueError("water surface parameter %s (0x%08X) changed in the pass-0 layout" % (name, key))
+        row = [values.get(dword + i) for i in range(count)]
+        if any(v is None or not math.isfinite(v) for v in row):
+            raise ValueError("water surface parameter %s did not resolve" % name)
+        surface[name] = [float(v) for v in row] if count == 3 else float(row[0])
+    if surface["near_fade_end"] == surface["near_fade_start"]:
+        raise ValueError("water near fade has zero width")
+    return surface
+
+
+def water_surface_rule(graph_data, material_data):
+    """``water_sampling_rule`` of the ordinary graph plus the decoded closure and its foam textures."""
+    rule = water_sampling_rule(graph_data, material_data)
+    surface = water_surface_parameters(graph_data, material_data)
+    foam = {"_water_foam_a": rule["textures_by_api"][9]["texture_path"],
+            "_water_foam_b": rule["textures_by_api"][10]["texture_path"]}
+    rule["textures"] = dict(rule["textures"], **foam)
+    rule["surface"] = dict(surface, **WATER_SURFACE_PRESENTATION, status="source_decoded_surface_partial",
+                           decoded_terms=list(WATER_SURFACE_DECODED),
+                           presentation=dict(opacity="per-instance record opacity of the captured river (0.4)",
+                                             time="CB0[99] frozen at 0"))
+    rule["limitations"] = list(WATER_SURFACE_LIMITATIONS)
+    rule["normal_note"] = "Four RG samples composed as decoded from F4D47ECE; see the surface terms."
+    return rule
+
+
+def water_secondary_uvs(world_x, world_z, height_sum_a, displacement_b, time=0.0):
+    """Crest (API5/API6 at 0.0025 per unit) and second normal-pair (API7/API8) UVs of F4D47ECE.
+
+    ``height_sum_a`` is the first height pair's h5 + h6 (the cross term is ``displacement_b (h5 + h6 - 1)``)."""
+    x, z, t = float(world_x), float(world_z), float(time)
+    c = float(displacement_b) * (float(height_sum_a) - 1.0)
+    return {
+        "crest_5": (0.116 + 0.002625 * x + 0.0099 * t, 0.002375 * z + 0.011 * t),
+        "crest_6": (0.346 + 0.002375 * x - 0.012 * t, 0.133 + 0.002625 * z - 0.008 * t),
+        "pair_b_8": (0.0475 * x + c + 0.052 * t, 0.0525 * z + c + 0.048 * t),
+        "pair_b_7": (0.133 + 0.0525 * x + c - 0.049 * t, 0.346 + 0.0475 * z + c - 0.051 * t),
+    }
+
+
+def water_foam_uvs(world_x, world_z, height_sum_a, p, time=0.0):
+    """Foam tile UVs (API9, API10) for parameters ``p`` (``water_surface_parameters``)."""
+    x, z, t = 0.05 * float(world_x), 0.05 * float(world_z), float(time)
+    hh = float(height_sum_a) - 1.0
+    return {
+        9: (0.116 + p["foam_scale_u"] * x + p["foam_displacement_a"] * hh + p["foam_scroll_au"] * t,
+            p["foam_scale_v"] * z + p["foam_displacement_a"] * hh + p["foam_scroll_av"] * t),
+        10: (0.346 + p["foam_scale_v"] * x + p["foam_displacement_b"] * hh + p["foam_scroll_bu"] * t,
+             0.133 + p["foam_scale_u"] * z + p["foam_displacement_b"] * hh + p["foam_scroll_bv"] * t),
+    }
+
+
+def _sat(x):
+    return min(1.0, max(0.0, x))
+
+
+def water_crest(height_1, height_2, p):
+    """c = sat(CB2[14] (1 - H1)(1 - H2)) from the crest samples of API5 and API6."""
+    return _sat(p["crest_scale"] * (1.0 - height_1) * (1.0 - height_2))
+
+
+def water_normal_strengths(crest, distance, p):
+    """(q1, q2): first and second normal-pair strengths at the camera distance."""
+    f = _sat(distance / p["strength_distance"])
+    lerp = lambda s: s + (s * p["far_strength"] - s) * f
+    return _sat(crest * lerp(p["strength_a"])), _sat(crest * lerp(p["strength_b"]))
+
+
+def water_surface_alpha(distance, thickness, n_dot_v, p, opacity):
+    """Coverage and alpha; ``n_dot_v`` uses the interpolated geometry normal."""
+    z = _sat(p["depth_fade"] * thickness)
+    f = _sat((1.001 - _sat(n_dot_v)) ** p["grazing_power"])
+    near = _sat((distance - p["near_fade_start"]) / (p["near_fade_end"] - p["near_fade_start"]))
+    cover = _sat(near * (z - f * z))
+    return cover, _sat(opacity * cover)
+
+
+def water_foam(foam_a, foam_b, height_sum_a, height_sum_b, thickness, p):
+    """Shore foam from the two foam samples (R), the height sums at the first and second normal UVs
+    and the water thickness along the view ray (scene view depth minus fragment view depth)."""
+    g = p["foam_height_a"] * height_sum_a + p["foam_height_b"] * height_sum_b
+    mask = _sat(_sat(foam_a * foam_b) * _sat(_sat(g) ** p["foam_power"]))
+    shallow = 1.0 - _sat(p["thickness_scale"] * max(thickness, 0.0) ** p["thickness_power"])
+    return _sat(p["foam_scale"] * mask * shallow)
+
+
+def water_reflection(crest, probe, distance, p, specular=(0.0, 0.0, 0.0)):
+    """Reflection colour: crest-coloured scatter plus the scaled probe sample, distance-weighted.
+
+    ``specular`` is the light-list term (zero on the captured record path)."""
+    a, b = p["shallow_colour"], p["body"]
+    k = p["environment_luminance"]
+    env = [p["environment_scale"] * v for v in probe]
+    lum = 0.3 * env[0] + 0.59 * env[1] + 0.11 * env[2]
+    far = 1.0 + _sat(distance / p["reflection_distance"]) * (p["far_reflection"] - 1.0)
+    out = []
+    for i in range(3):
+        colour = a[i] + (b[i] - a[i]) * crest
+        pre = (1.0 - crest) * p["crest_colour"] * colour + env[i] * _sat(1.0 - k) + _sat(k) * lum
+        out.append((p["specular_weight"] * specular[i] + _sat(pre)) * far)
+    return out
 
 
 def water_height_sample_uvs(delta_x, delta_z, time=0.0):

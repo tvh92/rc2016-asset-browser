@@ -396,6 +396,17 @@ GLASS_CONSTANTS = {
 }
 
 
+# Blender constant label suffix ('VR water decoded <label>') -> decoded water surface parameter (water_surface_parameters).
+WATER_SURFACE_CONSTANTS = (
+    ("second displacement", "displacement_b"), ("crest scale", "crest_scale"), ("strength distance", "strength_distance"),
+    ("far strength", "far_strength"), ("strength A", "strength_a"), ("strength B", "strength_b"),
+    ("shallow colour", "shallow_colour"), ("body colour", "body"), ("crest colour weight", "crest_colour"),
+    ("reflection distance", "reflection_distance"), ("far reflection", "far_reflection"),
+    ("environment scale", "environment_scale"), ("grazing power", "grazing_power"),
+    ("near fade start", "near_fade_start"), ("near fade end", "near_fade_end"),
+)
+
+
 def _viewer_expected_constants(rule):
     """'VR <name>' constant -> value, derived from the source rule alone (rc_game_shader._ViewerNodes)."""
     terms, ported = rule.get("terms") or {}, set(rule.get("ported") or ())
@@ -403,7 +414,19 @@ def _viewer_expected_constants(rule):
     if "liquid_flow" in ported:
         flow = terms["liquid_flow"]
         e.update({"liquid flow U offset": flow["uv_offset"][0], "liquid flow V offset": flow["uv_offset"][1]})
-    if "water" in ported:
+    if "water" in ported and (terms["water"].get("surface") or {}):
+        s = terms["water"]["surface"]
+        e.update({"water frozen time substitution": 0.0,
+                  "water CB2 displacement parameter": terms["water"]["sampling"]["displacement"],
+                  "water API5 U scale": .105, "water API5 V scale": .095,
+                  "water API6 U scale": .095, "water API6 V scale": .105,
+                  "water API6 U offset": .248, "water API6 V offset": .613,
+                  "water API7 U scale": .315, "water API7 V scale": .285,
+                  "water API7 U offset": .133, "water API7 V offset": .346,
+                  "water API8 U scale": .285, "water API8 V scale": .315,
+                  **{"water decoded " + label: s[key] for label, key in WATER_SURFACE_CONSTANTS},
+                  "water presentation opacity": s["opacity"]})
+    elif "water" in ported:
         water = terms["water"]; p = water["params"]
         e.update({"water frozen time substitution": 0.0,
                   "water CB2 displacement parameter": water["sampling"]["displacement"],
@@ -591,7 +614,14 @@ def _viewer_required(rule, has_n):
     req = lambda *rs: roles.extend(r for r in rs if tex.get(r))
     if "liquid_flow" in ported:
         names += ["liquid flow U offset", "liquid flow V offset"]; req("_c", "_g")
-    if "water" in ported:
+    if "water" in ported and (terms["water"].get("surface") or {}):
+        names += ["water frozen time substitution", "water CB2 displacement parameter",
+                  "water API5 U scale", "water API5 V scale", "water API6 U scale", "water API6 V scale",
+                  "water API6 U offset", "water API6 V offset", "water API7 U scale", "water API7 V scale",
+                  "water API7 U offset", "water API7 V offset", "water API8 U scale", "water API8 V scale",
+                  *("water decoded " + label for label, _key in WATER_SURFACE_CONSTANTS), "water presentation opacity"]
+        req("_water_height_a", "_water_height_b", "_n", "_pick")
+    elif "water" in ported:
         names += ["water frozen time substitution", "water CB2 displacement parameter",
                   "water API5 U scale", "water API5 V scale", "water API6 U scale", "water API6 V scale",
                   "water API6 U offset", "water API6 V offset", "water API7 U scale", "water API7 V scale",
@@ -807,6 +837,8 @@ def _validate_viewer_rule_water(source, material, rule, output, has_n):
     upstream = _viewer_upstream(output.inputs["Surface"])
     names = {node.name for node in upstream}
     labels = {node.label for node in upstream}
+    if term.get("surface"):
+        return _validate_viewer_rule_water_surface(source, material, rule, term, sampling, upstream, names, labels, has_n)
     for name in ("VR water API5 height sample", "VR water API6 height sample",
                  "VR water API7 primary normal sample", "VR water API8 primary normal sample",
                  "VR water presentation deferred BRDF", "VR water inferred alpha-over",
@@ -849,6 +881,51 @@ def _validate_viewer_rule_water(source, material, rule, output, has_n):
     return dict(status="passed_viewer_graph_rule_frontend", terms=["water"], blend="alpha_over",
                 writer=term.get("writer"), graph_path=graph_path, graph_sha256=graph_sha,
                 sampling_status=sampling.get("status"), constants=constants,
+                limitation=material.get("rc_shader_frontend_limitation"))
+
+
+def _validate_viewer_rule_water_surface(source, material, rule, term, sampling, upstream, names, labels, has_n):
+    """Reopened structural checks for the decoded pok_uniq_water closure (F4D47ECE)."""
+    from rc2016.shaders.water import (WATER_GRAPH, WATER_GRAPH_SHA256, water_height_sample_uvs,
+                                      water_primary_normal_sample_uvs, water_secondary_uvs)
+    assert (term.get("graph_path"), term.get("graph_sha256")) == (WATER_GRAPH, WATER_GRAPH_SHA256), \
+        "Decoded water surface is bound to the pok_uniq_water graph hash only"
+    for name in ("VR water API5 height sample", "VR water API6 height sample",
+                 "VR water API7 primary normal sample", "VR water API8 primary normal sample",
+                 "VR water API7 second normal sample", "VR water API8 second normal sample",
+                 "VR water API5 crest sample", "VR water API6 crest sample", "VR water camera distance",
+                 "VR water decoded crest scatter", "VR water decoded environment reflection", "VR water decoded reflection sum",
+                 "VR water decoded alpha-over", "VR water transparent background", "Water decoded four-sample normal",
+                 "water decoded crest", "water decoded alpha", "water decoded four-sample tangent normal",
+                 "water source height cross displacement", "water decoded second cross displacement"):
+        assert name in names or name in labels, "Decoded water surface node is missing from the output: " + name
+    surface = term["surface"]
+    controlled = {"VR water API5 height sample": (0.2, 0.2, 0.2), "VR water API6 height sample": (0.7, 0.7, 0.7)}
+    for position in ((2.0, 0.0, -3.0), (-1.1, 4.0, 0.37)):
+        expected = water_height_sample_uvs(position[0], position[2])
+        expected.update(water_primary_normal_sample_uvs(position[0], position[2], 0.2, 0.7, displacement=sampling["displacement"]))
+        second = water_secondary_uvs(position[0], position[2], 0.9, surface["displacement_b"])
+        expected.update({"crest_5": second["crest_5"], "crest_6": second["crest_6"],
+                         "pair_b_7": second["pair_b_7"], "pair_b_8": second["pair_b_8"]})
+        for key, name in ((5, "VR water API5 height sample"), (6, "VR water API6 height sample"),
+                          (7, "VR water API7 primary normal sample"), (8, "VR water API8 primary normal sample"),
+                          ("pair_b_7", "VR water API7 second normal sample"), ("pair_b_8", "VR water API8 second normal sample"),
+                          ("crest_5", "VR water API5 crest sample"), ("crest_6", "VR water API6 crest sample")):
+            got = _viewer_uv_value(material.node_tree.nodes[name].inputs["Vector"], (0.23, 0.61, 0.0), controlled, position)
+            u, v = expected[key]
+            assert max(abs(a - b) for a, b in zip(got, (u, 1.0 - v, 0.0))) < 1e-6, \
+                "Decoded water sample UV differs from F4D47ECE (including V orientation): " + name
+    glossy = material.node_tree.nodes["VR water decoded environment reflection"]
+    assert abs(float(glossy.inputs["Roughness"].default_value)) < 1e-7 and glossy.inputs["Normal"].is_linked, \
+        "Decoded water environment reflection is not a mirror lookup along the composed normal"
+    assert term.get("blend") == "alpha_over" and not term.get("two_sided"), "Water source render state must be one-sided alpha-over"
+    assert "VR cull back faces" in names and material.use_backface_culling, "Water one-sided material culling is missing"
+    if hasattr(material, "surface_render_method"):
+        assert material.surface_render_method == "BLENDED", "Water alpha-over material is not configured as blended"
+    constants = _viewer_check_constants_and_images(source, material, rule, upstream, has_n)
+    return dict(status="passed_viewer_graph_rule_frontend", terms=["water"], blend="alpha_over", surface=True,
+                writer=term.get("writer"), graph_path=term.get("graph_path"), graph_sha256=term.get("graph_sha256"),
+                sampling_status=sampling.get("status"), surface_status=surface.get("status"), constants=constants,
                 limitation=material.get("rc_shader_frontend_limitation"))
 
 

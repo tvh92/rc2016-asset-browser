@@ -53,7 +53,8 @@ def source_details(payload, used_by='', native_translation=True):
         notes = list(liquid.get('limitations') or ())
         if sampling:
             notes.insert(0, sampling['time_substitution'])
-            notes.append('Water normal combination, body colour, opacity, F0 and gloss use inferred presentation values.')
+            if not forward.get('surface'):
+                notes.append('Water normal combination, body colour, opacity, F0 and gloss use inferred presentation values.')
         elif forward.get('kind') == 'water':
             notes.append('Water family fallback: frozen-time mapping, normal combination and shading are inferred presentation choices.')
         for note in dict.fromkeys(notes):

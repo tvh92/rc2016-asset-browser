@@ -23,7 +23,8 @@ from rc2016.formats.texture import dds_bytes, parse_header, ps4_deswizzle_slices
 from rc2016.shaders.lava_surface import GRAPH_HASHES as LAVA_SURFACE_HASHES, prepare_rule as lava_surface_rule
 from rc2016.shaders.liquids import LAVA_FLOW_GRAPH, LAVA_FLOW_SHA256, liquid_flow_rule
 from rc2016.viewer.grey_g_graphs import GREY_G_GRAPHS
-from rc2016.shaders.water import WATER_GRAPH, WATER_GRAPH_SHA256, GLOW_GRAPH, GLOW_GRAPH_SHA256, water_sampling_rule
+from rc2016.shaders.water import (WATER_GRAPH, WATER_GRAPH_SHA256, GLOW_GRAPH, GLOW_GRAPH_SHA256, water_sampling_rule,
+                                  water_surface_rule)
 
 # DXGI format -> OpenGL internal format. sRGB variants are uploaded as their
 # UNORM twin on purpose: the fixed-function viewer lights in display space.
@@ -481,12 +482,15 @@ GRAPH_RULES = (
     # EA6006F6/BACB8758: source C/G UV transform and deferred surface at frozen time zero.
     (LAVA_FLOW_GRAPH.removesuffix('materialgraph'),
      dict(liquid_flow=True, _graph_sha256=LAVA_FLOW_SHA256, g_mode='grey', self_lit='g_blue', self_lit_key=None)),
-    # Partial source sampling from F4D47ECE/59540726; the closure and normal sum remain presentation choices.
-    *((path.removesuffix('materialgraph'), dict(forward='water', water_sampling=True, _graph_sha256=digest,
-         params=(('body', 0x1DAF77B8, 3),))) for path, digest in
-      ((WATER_GRAPH, WATER_GRAPH_SHA256), (GLOW_GRAPH, GLOW_GRAPH_SHA256))),
-    # Other graphs in this folder retain the explicitly inferred family preview. The colour
-    # writers f4d47ece/5476807b (light loops, 63 samples) are not translated. Decoded: the alpha-over
+    # pok_uniq_water: the decoded F4D47ECE closure (normal composition, crest, shore foam, environment reflection,
+    # alpha, fog; docs/material-decoding/novalis-water.md), with the runtime inputs it reads kept as labelled inputs.
+    (WATER_GRAPH.removesuffix('materialgraph'), dict(forward='water', water_sampling=True, water_surface=True,
+                                                     _graph_sha256=WATER_GRAPH_SHA256, params=(('body', 0x1DAF77B8, 3),))),
+    # Partial source sampling from 59540726 (the glow graph); its closure and normal sum remain presentation choices.
+    (GLOW_GRAPH.removesuffix('materialgraph'), dict(forward='water', water_sampling=True, _graph_sha256=GLOW_GRAPH_SHA256,
+                                                    params=(('body', 0x1DAF77B8, 3),))),
+    # Other graphs in this folder (opaque, sewer, beneath) retain the explicitly inferred family preview;
+    # their colour writers are not decoded. Decoded: the alpha-over
     # state, the textures by slot (water_tile_01n/02n), and from the normal pre-pass b9a5ef0f the
     # world-planar UV (native x, z) scale literals of the two tiles. Body colour is key 0x1DAF77B8,
     # an inferred role; opacity and gloss are presentation values (WATER_PRESENTATION).
@@ -1330,7 +1334,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
             graph_ids = [i for i in archive.resolve(rule['graph_path']) if archive.entries[i]['type'] == 'materialgraph']
             if len(graph_ids) != 1:
                 raise ValueError('Water sampling graph identity is ambiguous')
-            sampling = water_sampling_rule(asset_data(archive, graph_ids[0]), data)
+            sampling = (water_surface_rule if rule.get('water_surface') else water_sampling_rule)(
+                asset_data(archive, graph_ids[0]), data)
             for role in ('_c', '_g', '_h', '_n', '_pick'):
                 result.pop(role, None)
             result.update(sampling['textures'])
@@ -1355,6 +1360,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
             result['forward']['sampling'] = sampling
             result['forward']['writer'] = sampling['shader_id']
             result['graph_identity'] = dict(path=rule['graph_path'], sha256=rule['graph_sha256'])
+            if sampling.get('surface'):
+                result['forward']['surface'] = sampling['surface']
         if rule['forward'] == 'victor_reticle':
             # EB9C8254 is a deferred material writer (ALBEDO/F0/gloss/self-lit), not a forward coverage shader.
             if not all(math.isfinite(float(params[k])) for k in ('uv_phase', 'texture_gain', 'ring_tint', 'amplitude')):
@@ -1953,7 +1960,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             entry['alpha_cut'] = float(paths['alpha_cut'])
         if 'za_fresnel_power' in paths:
             entry['za_fresnel_power'] = paths['za_fresnel_power']
-        for role in (*ROLES, *(('_water_height_a', '_water_height_b') if paths.get('forward', {}).get('sampling') else ()), *(('_reticle',) if paths.get('forward', {}).get('kind') == 'victor_reticle' and paths.get('_reticle') else ()), *(('_parallax_height',) if paths.get('parallax') else ()), *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') or paths.get('skin_detail') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ()), *(('_cma',) if paths.get('leaf_colour') else ())):
+        for role in (*ROLES, *(('_water_height_a', '_water_height_b') if paths.get('forward', {}).get('sampling') else ()), *(('_water_foam_a', '_water_foam_b') if paths.get('forward', {}).get('surface') else ()),*(('_reticle',) if paths.get('forward', {}).get('kind') == 'victor_reticle' and paths.get('_reticle') else ()), *(('_parallax_height',) if paths.get('parallax') else ()), *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') or paths.get('skin_detail') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ()), *(('_cma',) if paths.get('leaf_colour') else ())):
             path = paths.get(role)
             if not path:
                 continue
