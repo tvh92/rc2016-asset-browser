@@ -1,4 +1,4 @@
-"""Lamp beams: which spots get one and the cone mesh (rc2016/levels/beams.py; no GL)."""
+"""Light beams: the mesh of the decoded light-cone placements (rc2016/levels/beams.py; no GL)."""
 import math
 import unittest
 
@@ -7,69 +7,60 @@ import numpy as np
 from rc2016.levels import beams
 
 
-def spot(position=(0.0, 0.0, 0.0), axis=(0.0, -1.0, 0.0), radius=10.0, cone=(20.0, 40.0), colour=(4.0, 2.0, 1.0)):
-    return dict(position=list(position), axis=list(axis), radius=radius, half_angle_degrees=list(cone), colour=list(colour))
+def cone_model():
+    """A cone of apex (0, 0, 0), axis +Z, length 10, base radius 4 as 4 base vertices and one apex vertex."""
+    positions = np.array([[0, 0, 0], [4, 0, 10], [0, 4, 10], [-4, 0, 10], [0, -4, 10]], np.float32)
+    normals = np.array([[0, 0, -1], [1, 0, 0.4], [0, 1, 0.4], [-1, 0, 0.4], [0, -1, 0.4]], np.float32)
+    normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+    return dict(positions=positions, normals=normals, indices=np.array([0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 1], np.uint32))
 
 
-class LampSelectionTests(unittest.TestCase):
-    def test_lamp_models_are_named_lights_not_strips_or_signs(self):
-        for name in ('rb_ari_arch_construction_work_light_02', 'tj_ari_prop_Construction_Set_Pole_Light',
-                     'tj_ari_prop_Construction_Set_Shop_Light_Base', 'rb_ari_arch_pit_construction_flood_light_01', 'street_lamp_01'):
-            self.assertTrue(beams.is_lamp_model(f'environment/aridia/prop/{name}/{name}.model'), name)
-        for name in ('rb_ari_light_strip_base', 'rb_ari_light_arrow_sign', 'rb_ari_arch_construction_beam_01'):
-            self.assertFalse(beams.is_lamp_model(f'environment/aridia/prop/{name}/{name}.model'), name)
-
-    def test_the_claw_lamp_is_a_lamp(self):
-        self.assertTrue(beams.is_lamp_model('environment/aridia/prop/x/tj_ari_prop_Construction_Set_Light.model'))
-
-    def test_the_folder_does_not_count(self):
-        self.assertFalse(beams.is_lamp_model('environment/lamp_post/rock_01.model'))
-
-    def test_spots_within_the_distance_of_a_lamp_instance_get_a_beam(self):
-        near, far = spot((1.0, 0.0, 0.0)), spot((10.0, 0.0, 0.0))
-        self.assertEqual(beams.lamp_spots([near, far], [[0.0, 0.0, 0.0]]), [near])
-        self.assertEqual(beams.lamp_spots([near, far], [[0.0, 0.0, 0.0]], distance=0.5), [])
-        self.assertEqual(beams.lamp_spots([near], []), [])
-
-    def test_uplights_get_no_beam(self):
-        up = spot((0.0, 0.0, 0.0), axis=(0.0, 1.0, 0.0))
-        level = spot((0.0, 0.0, 0.0), axis=(1.0, 0.0, 0.0))
-        self.assertEqual(beams.lamp_spots([up, level], [[0.0, 0.0, 0.0]]), [level])
+def cone(position=(0.0, 0.0, 0.0), rows=((1, 0, 0), (0, 1, 0), (0, 0, 1)), colour=(4.0, 2.0, 1.0)):
+    matrix = [*rows[0], 0.0, *rows[1], 0.0, *rows[2], 0.0, *position, 1.0]
+    return dict(model='cone.model', matrix=matrix, colour=list(colour))
 
 
-class MeshTests(unittest.TestCase):
-    def test_cone_starts_at_the_light_and_ends_a_range_away_with_the_mean_half_angle(self):
-        positions, normals, ts, colours, indices = beams.beam_mesh([spot((5.0, 6.0, 7.0))])
-        count = (beams.RINGS + 1) * beams.SEGMENTS
-        self.assertEqual((len(positions), len(normals), len(ts), len(colours)), (count,) * 4)
-        np.testing.assert_allclose(positions[:beams.SEGMENTS], [[5.0, 6.0, 7.0]] * beams.SEGMENTS, atol=1e-5)   # the apex ring
-        base = positions[-beams.SEGMENTS:]
-        np.testing.assert_allclose(base[:, 1], 6.0 - 10.0, atol=1e-5)                       # range along the aim (-Y)
-        np.testing.assert_allclose(np.hypot(base[:, 0] - 5.0, base[:, 2] - 7.0), 10.0 * math.tan(math.radians(15.0)), rtol=1e-5)
-        self.assertEqual((ts.min(), ts.max()), (0.0, 1.0))
-        self.assertTrue(indices.max() < count and len(indices) == 6 * beams.RINGS * beams.SEGMENTS)
+GEOMETRY = {'cone.model': cone_model()}
 
-    def test_normals_are_unit_and_perpendicular_to_the_cone_surface(self):
-        positions, normals, *_ = beams.beam_mesh([spot()])
+
+class BeamMeshTests(unittest.TestCase):
+    def test_the_placement_matrix_moves_and_turns_the_model(self):
+        # local +Z turned onto world +X (row-vector convention: rows are the local axes), apex at (5, 6, 7)
+        positions, *_ = beams.beam_mesh([cone((5.0, 6.0, 7.0), rows=((0, 1, 0), (0, 0, 1), (1, 0, 0)))], GEOMETRY)
+        np.testing.assert_allclose(positions[0], [5, 6, 7], atol=1e-5)
+        np.testing.assert_allclose(positions[1], [15, 6 + 4, 7], atol=1e-5)    # base: 10 along +X, local x on world y
+
+    def test_t_runs_from_the_apex_to_the_base_and_normals_stay_unit(self):
+        _positions, normals, ts, *_ = beams.beam_mesh([cone()], GEOMETRY)
+        np.testing.assert_allclose(ts, [0, 1, 1, 1, 1])
         np.testing.assert_allclose(np.linalg.norm(normals, axis=1), 1.0, atol=1e-5)
-        along = positions[-1] - positions[-1 - beams.SEGMENTS]       # a generator line of the cone
-        self.assertAlmostEqual(float(np.dot(normals[-1], along)), 0.0, delta=1e-4)
 
-    def test_colour_is_the_light_colour_scaled_to_its_brightest_channel(self):
-        colours = beams.beam_mesh([spot(colour=(8.0, 4.0, 2.0))], gain=0.5)[3]
-        np.testing.assert_allclose(colours[0], [0.5, 0.25, 0.125], rtol=1e-6)
+    def test_colour_is_the_light_colour_scaled_to_its_brightest_channel_gain(self):
+        colours = beams.beam_mesh([cone(colour=(8.0, 4.0, 2.0))], GEOMETRY, gain=0.5)[3]
+        np.testing.assert_allclose(colours[0], [0.5, 0.25, 0.125])
 
-    def test_meshes_concatenate_with_offset_indices_and_an_empty_list_is_empty(self):
-        one = beams.beam_mesh([spot()])
-        two = beams.beam_mesh([spot(), spot((50.0, 0.0, 0.0))])
+    def test_each_cone_adds_its_vertices_and_offsets_its_indices(self):
+        one = beams.beam_mesh([cone()], GEOMETRY)
+        two = beams.beam_mesh([cone(), cone((50.0, 0.0, 0.0))], GEOMETRY)
         self.assertEqual(len(two[0]), 2 * len(one[0]))
-        self.assertEqual(int(two[4].max()), 2 * len(one[0]) - 1)
-        self.assertEqual(len(beams.beam_mesh([])[0]), 0)
+        self.assertEqual(len(two[4]), 2 * len(one[4]))
+        self.assertEqual(int(two[4][len(one[4]):].min()), len(one[0]))
 
-    def test_aim_along_y_still_gets_a_valid_basis(self):
-        for axis in ((0.0, 1.0, 0.0), (0.0, -1.0, 0.0), (1.0, 0.0, 0.0)):
-            normals = beams.beam_mesh([spot(axis=axis)])[1]
-            self.assertTrue(np.isfinite(normals).all())
+    def test_a_scaled_placement_scales_the_cone(self):
+        positions, *_ = beams.beam_mesh([cone(rows=((2, 0, 0), (0, 2, 0), (0, 0, 2)))], GEOMETRY)
+        np.testing.assert_allclose(positions[1], [8, 0, 20], atol=1e-5)
+
+    def test_no_cones_give_empty_arrays(self):
+        positions, normals, ts, colours, indices = beams.beam_mesh([], {})
+        self.assertEqual((len(positions), len(normals), len(ts), len(colours), len(indices)), (0, 0, 0, 0, 0))
+        self.assertEqual(indices.dtype, np.uint32)
+
+    def test_arrays_are_float32_and_uint32(self):
+        positions, normals, ts, colours, indices = beams.beam_mesh([cone()], GEOMETRY)
+        for array in (positions, normals, ts, colours):
+            self.assertEqual(array.dtype, np.float32)
+        self.assertEqual(indices.dtype, np.uint32)
+        self.assertTrue(math.isfinite(float(positions.sum())))
 
 
 if __name__ == '__main__':

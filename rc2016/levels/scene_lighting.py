@@ -341,4 +341,14 @@ def load_scene_lighting(archive, zone_paths):
                           message='Projector and box lights (and spots with non-finite fields) are decoded (aim axis, extents, gobo) but not drawn: cone profile and falloff are unverified.'))
     if skipped:
         notes.append(dict(status='source_records_skipped', records=skipped))
-    return dict(lights=lights, probes=probes, notes=notes, source_zones=loaded_zones)
+    cones = dict(cones=[], geometry={}, undrawn={}, undrawn_reasons={})
+    try:
+        from rc2016.levels.effects import load_light_cones
+        cones = load_light_cones(archive, zone_paths, [light for light in lights if light['kind'] == 'spot'])
+    except Exception as exc:   # the lights stay usable without their beams
+        notes.append(dict(status='light_cones_unavailable', message=f'{type(exc).__name__}: {exc}'))
+    if cones['undrawn']:
+        notes.append(dict(status='undrawn_light_cones', counts=cones['undrawn'], reasons=cones['undrawn_reasons'],
+                          message='Light-cone effect placements that are decoded (rc2016.levels.effects) but not drawn.'))
+    return dict(lights=lights, probes=probes, notes=notes, source_zones=loaded_zones,
+                light_cones=cones['cones'], cone_geometry=cones['geometry'])

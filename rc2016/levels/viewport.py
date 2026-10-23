@@ -1311,23 +1311,17 @@ class LevelViewport(ModelViewport):
     GL_ONE, GL_NORMAL_ARRAY, GL_COLOR_ARRAY = 1, 0x8075, 0x8076
 
     def _beam_lights(self):
-        """The spot lights drawn with a beam (rc2016.levels.beams): spots on lamp model instances, under the built Level
-        atmosphere lighting with Authored lights on. Rebuilt when the loaded lights or models change."""
-        lights = self._active_authored_lights()
-        if not self.scene_authored or self.lighting != "Level atmosphere" or not any(l.get("kind") == "spot" for l in lights):
+        """The light cones drawn as beams (rc2016.levels.beams): the decoded light-cone effect placements of the loaded
+        zones, under the built Level atmosphere lighting with Authored lights on. Rebuilt when the loaded lighting changes."""
+        data = self._scene_lighting
+        cones = data.get("light_cones", []) if isinstance(data, dict) else []
+        if not self.scene_authored or self.lighting != "Level atmosphere" or not cones:
             return []
-        key = (id(lights), len(self._models), getattr(self, "_scene_revision", 0))
+        key = (id(cones), getattr(self, "_scene_revision", 0))
         cached = self.__dict__.get("_beam_cache")
         if cached is None or cached[0] != key:
-            import numpy as np
             from rc2016.levels import beams
-            positions = []
-            for model in self._models.values():
-                if beams.is_lamp_model(model["path"]):
-                    for _zone, _key, rows in model["zones"]:
-                        positions.append(np.asarray(rows, dtype=float).reshape(-1, 4, 4)[:, 3, :3])
-            spots = beams.lamp_spots([l for l in lights if l.get("kind") == "spot"], np.concatenate(positions) if positions else [])
-            cached = self._beam_cache = (key, spots, beams.beam_mesh(spots) if spots else None)
+            cached = self._beam_cache = (key, cones, beams.beam_mesh(cones, data.get("cone_geometry", {})))
         return cached
 
     def _draw_beams(self):
