@@ -8,6 +8,7 @@ import threading
 import uuid
 from rc2016.app import catalog
 from rc2016.common import remember_var
+from rc2016.app.clip_playback import ClipPlayback
 from rc2016.app.layout import SplitLayout, Splitter, regrid
 from rc2016.app.theme import color, track
 from rc2016.viewer.loader import SourcePreviewLoader
@@ -369,10 +370,10 @@ class AssetBrowser:
         self.clip_button.bind('<KeyPress-space>',self._open_clip_picker)
         self.clip_button.grid(row=0,column=1,columnspan=2,sticky='ew')
         self.clip_labels=[];self.clip_cutscene=[];self.clip_index=-1;self.clip_popup=None
-        self.play_button=ttk.Button(anim,text='Pause',width=7,command=self._toggle_play,state='disabled')
+        self.play_button=ttk.Button(anim,text='Pause',width=7,state='disabled')
         self.play_button.grid(row=1,column=0,sticky='ew',padx=(0,6),pady=(4,0))
         self.frame_pos=tk.DoubleVar(value=0)
-        self.frame_slider=ttk.Scale(anim,from_=0,to=1,variable=self.frame_pos,command=self._scrub,state='disabled')
+        self.frame_slider=ttk.Scale(anim,from_=0,to=1,variable=self.frame_pos,state='disabled')
         self.frame_slider.grid(row=1,column=1,columnspan=2,sticky='ew',pady=(4,0))
         self.clip_only_var=tk.BooleanVar(value=False)
         self.clip_only_check=ttk.Checkbutton(anim,text='Export only this clip',variable=self.clip_only_var,state='disabled')
@@ -390,7 +391,8 @@ class AssetBrowser:
         tip('Drag to scrub through the clip frame by frame.',self.frame_slider)
         tip('Pick a clip to play on the rest pose. Skinned models only.',self.clip_button)
         self.anim_work=LatestWork()
-        self.animation=None;self.anim_frame=0;self.playing=False;self.play_job=None
+        self.playback=ClipPlayback(self.viewport,self.app.root,self.play_button,self.frame_slider,self.frame_pos,self.frame_text)
+        self.play_button.configure(command=self.playback.toggle);self.frame_slider.configure(command=self.playback.scrub)
         # Load errors and shader warnings only; the model's counts and ID are in Details.
         self.model_info=self.tk.StringVar(value='Select one source model. It loads directly; no Blender is needed.')
         self.info_label=ttk.Label(side,textvariable=self.model_info,wraplength=400)
@@ -831,70 +833,19 @@ class AssetBrowser:
         if index<0:self.clip_only_var.set(False)
         self.clip_only_check.configure(state='normal' if index>=0 else 'disabled')
         if index<0:
-            self.animation=None;self.viewport.clear_pose();self._sync_effects()
-            self.play_button.configure(state='disabled');self.frame_slider.configure(state='disabled')
+            self.playback.clear()
             self.frame_text.set('Rest pose');return
         self.frame_text.set('Decoding…')
         self.anim_work.submit(self.source_loader.pose,index)
 
-    def _start_animation(self,animation):
-        self.animation=animation;self.anim_frame=0
-        count=len(animation['frames'])
-        self.frame_slider.configure(from_=0,to=max(1,count-1),state='normal')
-        self.play_button.configure(state='normal')
-        self._show_frame(0)
-        self.playing=count>1;self.play_button.configure(text='Pause' if self.playing else 'Play')
-        if self.playing:self._schedule_tick()
-        self._sync_effects()
-
-    def _sync_effects(self):
-        """Time-driven materials move only while a clip plays; the rest pose shows their static time."""
-        self.viewport.set_effects_running(bool(self.playing and self.animation),reset=not self.animation)
-
-    def _show_frame(self,frame):
-        if not self.animation:return
-        count=len(self.animation['frames'])
-        self.anim_frame=frame%count
-        self.viewport.set_pose(self.animation['frames'][self.anim_frame])
-        self.frame_pos.set(self.anim_frame)
-        self.frame_text.set(f'{self.anim_frame+1}/{count} @ {self.animation["fps"]:g} fps')
-
-    def _schedule_tick(self):
-        delay=max(10,int(round(1000/max(1.0,self.animation['fps']))))
-        self.play_job=self.app.root.after(delay,self._tick)
-
-    def _tick(self):
-        self.play_job=None
-        if not (self.playing and self.animation) or self.closed:return
-        self._show_frame(self.anim_frame+1)
-        self._schedule_tick()
-
-    def _toggle_play(self):
-        if not self.animation:return
-        self.playing=not self.playing
-        self.play_button.configure(text='Pause' if self.playing else 'Play')
-        if self.playing and self.play_job is None:self._schedule_tick()
-        self._sync_effects()
-
-    def _scrub(self,_value):
-        if not self.animation:return
-        frame=int(round(self.frame_pos.get()))
-        if frame!=self.anim_frame:
-            self.playing=False;self.play_button.configure(text='Play')
-            self._show_frame(frame);self._sync_effects()
-
     def _stop_animation(self,reset):
-        self.playing=False;self._sync_effects()
-        if self.play_job is not None:
-            self.app.root.after_cancel(self.play_job);self.play_job=None
+        self.playback.pause()
         self.anim_work.submit(lambda:None)   # drop a pending decode for the old model
         if reset:
-            self.animation=None
             self._fill_clip_menu([]);self.clip_button.configure(state='disabled');self.clip_choice.set(REST_POSE)
             self._show_animation(False)
             self.clip_index=-1;self.clip_only_var.set(False);self.clip_only_check.configure(state='disabled')
-            self.play_button.configure(state='disabled',text='Pause');self.frame_slider.configure(state='disabled')
-            self.frame_text.set('');self._sync_effects()
+            self.playback.clear()
 
     def _reset(self,message):
         self.generation+=1
@@ -1098,7 +1049,7 @@ class AssetBrowser:
                         self._request_placements(payload['source_path'])
                         self._render_details()
                         self.model_info.set('\n'.join(t for t in (self.viewport.shading_error,getattr(self.viewport,'shading_warning','')) if t))
-                    elif kind=='animation':self._start_animation(payload)
+                    elif kind=='animation':self.playback.start(payload)
                     elif kind=='clip_list':self._apply_clip_list(payload)
                     elif kind=='artifact':self._open(payload)
             except queue.Empty:pass
@@ -1127,8 +1078,7 @@ class AssetBrowser:
     def close(self):
         self._close_clip_picker()   # release the grabbed Animation list before anything below can wait
         self.closed=True
-        self.playing=False
-        if self.play_job is not None:self.app.root.after_cancel(self.play_job);self.play_job=None
+        self.playback.close()
         self.meta_work.close();self.detail_work.close();self.artifact_work.close();self.source_work.close();self.anim_work.close();self.clip_list_work.close()
         self.model_textures.close();self.archive_textures.close();self.flash_tab.close();self.level_panel.close()
         self.gallery.close()

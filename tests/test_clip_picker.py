@@ -230,7 +230,7 @@ class ClipViewerPlayback(unittest.TestCase):
     def setUp(self):
         self.viewer = ClipViewer(self.tk, self.ttk, self.ttk.Frame(self.root), "source", None, False, False)
         self.addCleanup(self.viewer.close)
-        self.viewer.viewport = self.viewport = FakeViewport()
+        self.viewer.viewport = self.viewer.playback.viewport = self.viewport = FakeViewport()
         self.viewer.loader = self.loader = FakeLoader(["Idle", "Run", "Jump"])
         self.hero = types.SimpleNamespace(model_id="hero", archive_path="a/hero.model")
 
@@ -248,8 +248,9 @@ class ClipViewerPlayback(unittest.TestCase):
         self.assertEqual(self.loader.loads, 1)
         self.assertEqual(self.viewport.meshes, ["mesh:hero"])
         self.assertEqual(self.viewport.poses, [1])
-        self.assertTrue(self.viewer.playing)
-        self.assertIn("Run", self.viewer.status.get())
+        self.assertTrue(self.viewer.playback.playing)
+        self.assertEqual(self.viewer.title.get(), "Run")
+        self.assertIn("1/3", self.viewer.status.get())
 
     def test_another_clip_of_the_same_model_reuses_the_loaded_model(self):
         self.viewer.show(self.hero, "Run")
@@ -272,16 +273,17 @@ class ClipViewerPlayback(unittest.TestCase):
     def test_pause_stops_the_frame_clock_and_scrubbing_moves_the_frame(self):
         self.viewer.show(self.hero, "Run")
         self.settle()
-        self.viewer.toggle()
-        self.assertFalse(self.viewer.playing)
-        self.assertIsNone(self.viewer.tick_job)
-        self.viewer._scrub("2")
-        self.assertEqual(self.viewer.frame, 2)
+        self.viewer.playback.toggle()
+        self.assertFalse(self.viewer.playback.playing)
+        self.assertIsNone(self.viewer.playback.job)
+        self.viewer.playback.position.set(2)
+        self.viewer.playback.scrub()
+        self.assertEqual(self.viewer.playback.frame, 2)
 
     def test_a_clip_the_model_does_not_offer_is_reported_in_place(self):
         self.viewer.show(self.hero, "Missing")
         self.settle()
-        self.assertFalse(self.viewer.frames)
+        self.assertIsNone(self.viewer.playback.animation)
         self.assertEqual(self.viewport.meshes, ["mesh:hero"])   # the model still shows
         self.assertIn("not offered", self.viewer.status.get())
 

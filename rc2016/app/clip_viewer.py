@@ -1,10 +1,11 @@
-"""Viewport beside the clip picker: plays the clip clicked in the list on its model."""
+"""Viewport beside the clip picker: plays the clicked clip on its model, with the browser's playback."""
 from __future__ import annotations
 
 import copy
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
+from rc2016.app.clip_playback import ClipPlayback
 from rc2016.viewer.loader import SourcePreviewLoader
 from rc2016.viewer.viewport import ModelViewport
 
@@ -26,9 +27,9 @@ class ClipViewer:
         self.loaded = None   # worker thread only: (model_id, source_path) whose clip library the loader holds
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="clip-viewer")
         self.pending = deque()   # futures in the order they were asked for
-        self.frames, self.fps, self.name, self.frame, self.playing = [], 30.0, "", 0, False
-        self.poll_job = self.tick_job = None
+        self.poll_job = None
         self.closed = False
+        self.title = tk.StringVar(value="")
         self.status = tk.StringVar(value="")
         self.position = tk.DoubleVar(value=0)
 
@@ -36,17 +37,21 @@ class ClipViewer:
         parent.rowconfigure(0, weight=1)
         self.viewport = ModelViewport(parent, width=360, height=340)
         self.viewport.grid(row=0, column=0, sticky="nsew")
+        ttk.Label(parent, textvariable=self.title, style="Muted.TLabel", wraplength=340).grid(row=1, column=0, sticky="w",
+                                                                                              pady=(8, 0))
         controls = ttk.Frame(parent)
-        controls.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        controls.grid(row=2, column=0, sticky="ew", pady=(4, 0))
         controls.columnconfigure(1, weight=1)
-        self.play_button = ttk.Button(controls, text="Play", width=7, command=self.toggle)
-        self.play_button.grid(row=0, column=0)
-        self.slider = ttk.Scale(controls, from_=0, to=1, variable=self.position, command=self._scrub)
-        self.slider.grid(row=0, column=1, sticky="ew", padx=(8, 0))
-        ttk.Label(parent, textvariable=self.status, style="Muted.TLabel", wraplength=340).grid(row=2, column=0, sticky="w",
+        play_button = ttk.Button(controls, text="Pause", width=7)
+        play_button.grid(row=0, column=0)
+        slider = ttk.Scale(controls, from_=0, to=1, variable=self.position)
+        slider.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        ttk.Label(parent, textvariable=self.status, style="Muted.TLabel", wraplength=340).grid(row=3, column=0, sticky="w",
                                                                                               pady=(6, 0))
-        self.play_button.state(["disabled"])
-        self.slider.state(["disabled"])
+        self.playback = ClipPlayback(self.viewport, parent, play_button, slider, self.position, self.status)
+        play_button.configure(command=self.playback.toggle)
+        slider.configure(command=self.playback.scrub)
+        self.playback.clear()
         self.viewport.clear("Click an animation's name to play it here.")
         self._poll()
 
@@ -59,10 +64,10 @@ class ClipViewer:
 
     def close(self) -> None:
         self.closed = True
-        for job in (self.poll_job, self.tick_job):
-            if job is not None:
-                self.parent.after_cancel(job)
-        self.poll_job = self.tick_job = None
+        if self.poll_job is not None:
+            self.parent.after_cancel(self.poll_job)
+            self.poll_job = None
+        self.playback.close()
         self.executor.shutdown(wait=False, cancel_futures=True)
 
     # Worker thread
@@ -118,63 +123,10 @@ class ClipViewer:
         if not self.viewport.can_animate:
             self._fail("Needs shader support")
             return
-        self.frames, self.fps, self.name = pose["frames"], pose["fps"], pose["name"]
-        count = len(self.frames)
-        self.playing = count > 1
-        self.play_button.state(["!disabled"])
-        self.slider.configure(to=max(1, count - 1))
-        self.slider.state(["!disabled"])
-        self._show_frame(0)
-        self._sync()
+        self.title.set(pose["name"])
+        self.playback.start(pose)
 
     def _fail(self, message: str) -> None:
-        self.frames, self.playing = [], False
-        self.play_button.state(["disabled"])
-        self.slider.state(["disabled"])
-        self.viewport.clear_pose()
-        self._sync()
+        self.title.set("")
+        self.playback.clear()
         self.status.set(message)
-
-    def _show_frame(self, frame: int) -> None:
-        count = len(self.frames)
-        self.frame = frame % count
-        self.viewport.set_pose(self.frames[self.frame])
-        self.position.set(self.frame)
-        self.play_button.configure(text="Pause" if self.playing else "Play")
-        self.status.set(f"{self.name}  ·  frame {self.frame + 1} of {count} at {self.fps:g} fps")
-
-    def _sync(self) -> None:
-        """Time-driven materials and the frame clock run only while the clip plays."""
-        self.viewport.set_effects_running(self.playing)
-        if self.playing and self.tick_job is None:
-            self._schedule_tick()
-        elif not self.playing and self.tick_job is not None:
-            self.parent.after_cancel(self.tick_job)
-            self.tick_job = None
-
-    def _schedule_tick(self) -> None:
-        delay = max(10, int(round(1000 / max(1.0, self.fps))))
-        self.tick_job = self.parent.after(delay, self._tick)
-
-    def _tick(self) -> None:
-        self.tick_job = None
-        if self.playing and self.frames and not self.closed:
-            self._show_frame(self.frame + 1)
-            self._schedule_tick()
-
-    def toggle(self) -> None:
-        if not self.frames:
-            return
-        self.playing = not self.playing
-        self.play_button.configure(text="Pause" if self.playing else "Play")
-        self._sync()
-
-    def _scrub(self, value) -> None:
-        if not self.frames:
-            return
-        frame = int(round(float(value)))
-        if self.playing:
-            self.playing = False
-            self._sync()
-        if frame != self.frame:
-            self._show_frame(frame)
