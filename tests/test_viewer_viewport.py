@@ -2,7 +2,7 @@
 import math
 import unittest
 
-from rc2016.viewer.viewport import (MeshPayloadError, back_to_front, batch_centres, camera_fit, mesh_bounds,
+from rc2016.viewer.viewport import (MeshPayloadError, back_to_front, batch_centres, camera_fit, forward_order, mesh_bounds,
                        perspective_matrix, split_forward, validate_mesh)
 
 
@@ -112,6 +112,22 @@ class GlassPassTests(unittest.TestCase):
         self.assertEqual(back_to_front(batches, centres, identity), [(1, 0, 1), (2, 1, 1)])
         flipped = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1, 0, 0, 0, -10, 1]  # seen from the other side
         self.assertEqual(back_to_front(batches, centres, flipped), [(2, 1, 1), (1, 0, 1)])
+
+
+    def test_opaque_forward_batches_draw_before_blended_ones(self):
+        # slot 1 is blended and nearer the camera than the opaque slot 2 (like the Hydrodisplacer's glass shell and liquid):
+        # distance order alone would draw the opaque batch last and let it paint over the glass.
+        vertices = ((0, 0, 4), (1, 0, 4), (0, 1, 4), (0, 0, 5), (1, 0, 5), (0, 1, 5))
+        triangles = ((0, 1, 2), (3, 4, 5))
+        batches = [(1, 0, 1), (2, 1, 1)]
+        centres = batch_centres(vertices, triangles, batches)
+        view = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -10, 1]    # looks down -z from z = 10: slot 2 is nearer
+        opaque = lambda slot: slot == 2
+        self.assertEqual(back_to_front(batches, centres, view), [(1, 0, 1), (2, 1, 1)])
+        self.assertEqual(forward_order(batches, centres, view, opaque), [(2, 1, 1), (1, 0, 1)])
+        flipped = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1, 0, 0, 0, -10, 1]
+        self.assertEqual(forward_order(batches, centres, flipped, opaque), [(2, 1, 1), (1, 0, 1)])
+        self.assertEqual(forward_order(batches, centres, view, lambda slot: False), back_to_front(batches, centres, view))
 
 
 if __name__ == "__main__":

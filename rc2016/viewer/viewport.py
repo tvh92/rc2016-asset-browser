@@ -230,6 +230,12 @@ def back_to_front(batches, centres, modelview):
     return sorted(batches, key=depth)
 
 
+def forward_order(batches, centres, modelview, is_opaque):
+    """Forward draw order: opaque batches first (they write depth, so drawn later they would paint over a blended
+    batch whose centre is nearer), then the blended ones farthest first. ``is_opaque`` maps a batch's material slot to a bool."""
+    return sorted(back_to_front(batches, centres, modelview), key=lambda batch: not is_opaque(batch[0]))
+
+
 def _prepare_viewport_numpy(payload, np):
     """prepare_viewport with NumPy arrays: the same checks and GL arrays as validate_mesh,
     ~20x faster on large meshes. None means "use the reference path" (which also raises
@@ -1698,7 +1704,7 @@ class ModelViewport(_TkFrame):
             pass
 
     def _draw_glass(self, index_array, batches, skin):
-        """Forward batches: the material's blend state and culling, no depth write, farthest batch first.
+        """Forward batches: the material's blend state and culling; opaque ones first with depth write, then the blended ones with no depth write, farthest first.
 
         Blend/cull come from the material flags word (texture_preview.blend_state): additive is
         (SRC_ALPHA, ONE), alpha-over (SRC_ALPHA, ONE_MINUS_SRC_ALPHA); an opaque flag draws without
@@ -1722,7 +1728,9 @@ class ModelViewport(_TkFrame):
         modelview = (ctypes.c_float * 16)()
         gl.glGetFloatv(self.GL_MODELVIEW_MATRIX, modelview)
         gl.glCullFace(self.GL_BACK)   # decoded meshes are counter-clockwise front, GL's default
-        for slot, first, count in back_to_front(batches, cached[1], list(modelview)):
+        ordered = forward_order(batches, cached[1], list(modelview),
+                                lambda slot: self._gl_textures[slot]["forward"].get("blend") == "opaque")
+        for slot, first, count in ordered:
             entry = self._gl_textures[slot]
             forward = entry["forward"]
             blended = forward.get("blend") != "opaque"
