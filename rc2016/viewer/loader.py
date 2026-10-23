@@ -184,6 +184,7 @@ class SourcePreviewLoader:
         self.current=None
         self.identity=None
         self.texture_cache={}
+        self.preview_cache={}   # Textures tab: SD previews, kept apart from the 3D view's full-size cache
         self.animation=None
         # Recently viewed models: identity -> decoded model + its animation library, so
         # switching back (or changing look/LOD) skips the decode. Bounded by count and by
@@ -214,7 +215,7 @@ class SourcePreviewLoader:
             from rc2016.viewer.native_glsl import TranslationDiskCache
             self.archive.translation_disk_cache=TranslationDiskCache(Path(__file__).resolve().parents[2]/'.cache'/'native_translation')
             self.source_root=source_root
-            self.identity=None;self.current=None;self.texture_cache={}
+            self.identity=None;self.current=None;self.texture_cache={};self.preview_cache={}
             self._recent.clear();self._recent_identity=None
         return self.archive
 
@@ -300,10 +301,10 @@ class SourcePreviewLoader:
         from rc2016.viewer.textures import FORMAT_NAMES, load_texture, to_image
         archive=self.archive
         if archive is None:raise ValueError('No source archive is loaded')
-        texture=self.texture_cache.get(texture_path)
+        texture=self.preview_cache.get(texture_path)
         if texture is None:
             with self.texture_lock:texture=load_texture(archive,texture_path)
-            self.texture_cache[texture_path]=texture
+            self.preview_cache[texture_path]=texture
         index=min(max(0,index),texture.get('array_size',1)-1)
         facts=dict(path=texture_path,format=texture['format'],format_name=FORMAT_NAMES.get(texture['format'],str(texture['format'])),
                    preview_size=(texture['width'],texture['height']),full_size=texture['full_size'],srgb=texture['srgb'],
