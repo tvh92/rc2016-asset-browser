@@ -1121,8 +1121,12 @@ def _validate_viewer_rule_material(source, material):
         assert {node.name for node in _viewer_upstream(brdf.inputs[0])} == {"VR facing glow albedo"}, \
             "Facing-glow albedo is not the white source constant"
     elif "bright_center" in ported and terms["bright_center"].get("albedo_white"):
-        assert any(node.name == "VR bright centre albedo" for node in _viewer_upstream(brdf.inputs[0])) and not any(
-            node.type == "TEX_IMAGE" for node in _viewer_upstream(brdf.inputs[0])),             "Preview bright-centre albedo is not the white constant"
+        # The normal map may reach the base colour through the N.V factor; only the _c albedo image must be absent.
+        c_path = str(rule["textures"].get("_c") or "").lower()
+        albedo_upstream = _viewer_upstream(brdf.inputs[0])
+        assert (any(node.name == "VR bright centre albedo" for node in albedo_upstream) and not any(
+            node.type == "TEX_IMAGE" and str(node.get("source_texture_path", "")).lower() == c_path for node in albedo_upstream)
+        ), "Preview bright-centre albedo is not the white constant"
     elif "flat_surface" in ported and flat.get("model") == "basic_flat_color":
         assert {node.name for node in _viewer_upstream(brdf.inputs[0])} == {"VR flat surface albedo zero"}, \
             "basic_flat_color albedo is not the zero source constant"
