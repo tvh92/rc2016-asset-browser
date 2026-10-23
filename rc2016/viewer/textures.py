@@ -215,6 +215,20 @@ THUMPER_GLOVE_GLASS_CONSTANTS = dict(
     presentation=True, game_equivalence=False, writer='5226F404',
     frozen_inputs=dict(CB0_99=0.0, CB0_95=1.0, instance_fade=0.0, attr0_w=1.0, instance_flags=0x2261,
                        geometric_aa=0.0, fog=1.0, ssr=False, program_variant='5226F404 (pass contract 0)'))
+# Hydrodisplacer liquid forward program F0F45D78 (test_liquid_orientation pass 0), decoded in
+# docs/material-decoding/hydrodisplacer-liquid.md and checked by tests/test_liquid_orientation_program.py. The flow
+# normal map is API 8 (slot 0x67D6383E); the three water_cma bindings (API 5 to 7) feed only the alpha test and the
+# waterline, which the preview does not draw. Constants of the program that are not material keys: the base colour K,
+# the specular tint, and the frozen engine inputs. game_equivalence stays False: the record, the vertex outputs, the
+# discard threshold and every light, probe, shadow and fog input are not established per draw.
+LIQUID_ORIENTATION_GRAPH_SHA256 = '7eb07c69c31448c0efee469b681f1e6084b13f33ef8481d8ad39b05ca6097fb3'
+LIQUID_ORIENTATION_FLOW_SLOT = 0x49A7866B67D6383E
+LIQUID_ORIENTATION_CONSTANTS = dict(
+    body=(0.06480327248573303, 0.23839756846427917, 0.31854677200317383),
+    spec_tint=(0.3126390874385834, 1.0, 1.0), normal_strength=1.0, normal_strength_input='CB0 dword 95',
+    presentation=True, game_equivalence=False, writer='F0F45D78',
+    frozen_inputs=dict(CB0_99=0.0, CB0_95=1.0, instance_fade=0.0, instance_flags=0x2261, geometric_aa=0.0, fog=1.0,
+                       ssr=False, alpha_test=False, waterline=False, record_origin='model origin'))
 # Decoded writers that do not read _g as coloured F0 + gloss alpha (first matching prefix wins).
 # g_mode 'grey': F0 = grey spec*_g.G, gloss = sqrt(sat(gloss*_g.R)); 'grey_skin': the basic_skin
 # front-end (F0 cap 0.5). self_lit 'g_blue' takes the mask from _g.B instead of _c.a.
@@ -364,6 +378,11 @@ GRAPH_RULES = (
          ('body', 0x79120089, 3), ('tint', 0x4B4DAB19, 3), ('rim_bias', 0x42170E5E, 1), ('tiling', 0x375AF9AC, 1),
          ('f0_base', 0x62835AF9, 1), ('gloss', 0x24F4CA4C, 1), ('normal_strength', 0xCC7457CD, 1),
          ('rim_exp', 0xECE213A3, 1)))),
+    # Hydrodisplacer liquid F0F45D78: exact graph + SHA only (docs/material-decoding/hydrodisplacer-liquid.md).
+    ('materialgraph/global/test/test_liquid_orientation/test_liquid_orientation.',
+     dict(forward='glass_liquid', writer='F0F45D78', constants=LIQUID_ORIENTATION_CONSTANTS,
+          _graph_sha256=LIQUID_ORIENTATION_GRAPH_SHA256, slots={'_n': LIQUID_ORIENTATION_FLOW_SLOT},
+          params=(('gloss', 0x24F4CA4C, 1), ('fill', 0x66583BF6, 1)))),
     # Other models/enm_blarg_saucer/evidence/GLASS_DECODE.md (FEEC00CE). The graph binds two textures,
     # by slot hash: the colour-pick palette (api5) and Patterns_cma in the _n slot (api6). The
     # material's _c/_g use slots this graph does not have, so the writer never reads them.
@@ -1246,6 +1265,11 @@ def material_texture_paths(archive, material_path: str) -> dict:
         bound = lambda slot: pair_slots.get(slot) or slots.get(slot)
         if any(not bound(a) or bound(a) != bound(b)
                for a, b in (THUMPER_GLOVE_GLASS_NOISE_SLOTS, THUMPER_GLOVE_GLASS_PATTERN_SLOTS)):
+            rule = {}
+    if rule.get('forward') == 'glass_liquid':
+        # The normal map is the decoded program input only when the flow slot is bound.
+        flow_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
+        if not (flow_slots.get(LIQUID_ORIENTATION_FLOW_SLOT) or slots.get(LIQUID_ORIENTATION_FLOW_SLOT)):
             rule = {}
     if rule.get('forward') == 'ion_tubes':
         # The program reads both slots as one image and the decoded form has no CB2[4] power term; a material that

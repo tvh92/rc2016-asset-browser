@@ -1063,6 +1063,13 @@ void main() {
 #   CB0[99] = 0. rim = sat(4 (1 - N.V)^P9) from the geometry normal, alpha = sat(sat(X + sat(P3 + rim)) attr0.w),
 #   F0 = P8 C S + rim^10, gloss = sat(gloss C.r S), tint k = sat(T / luma(T)). rgb = k specular(F0, N') + K amp (L + X):
 #   the light loop is the one of 4FC5703F; amp is CB0[115] (labelled presentation value), fog, SSR and probes are the viewer rig.
+# uKind 13, glass_liquid F0F45D78 (test_liquid_orientation, the Hydrodisplacer liquid; docs/material-decoding/hydrodisplacer-liquid.md):
+#   uA = base colour K.rgb (hard-coded in the program), normal strength q (CB0[95], taken as 1); uB = specular tint.rgb
+#   (0.3126391, 1, 1), gloss (graph default 1); uC.x = fill (CB2[1], not drawn). The flow normal map (_n slot, API 8) is read at the
+#   world XZ of the fragment relative to the model origin, (0.4 gx, 0.466667 gz) and (gx / 3, gz / 3) with gx, gz = -vTintWorldPos.xz
+#   (t = CB0[99] = 0), x, y = 2 q (S1 - S2) rg, N' = normalize((1 - x^2 - y^2) N + |y| B + |x| T) with B taken as in uKind 11.
+#   rim = sat(4 (1 - N.V)^2), F0 = 1 + rim^10 (grey), gloss alpha = 2^(-5.5 sqrt(gloss)); rgb = K Ld + tint specular (opaque). The alpha
+#   test (attribute0.2), the water_cma waterline mask and the fade are not drawn; the light list, probes, shadows, SSR and fog are the viewer rig.
 # uKind 12, ion_tubes 86DDE345 (enm_victor_von_ion_tubes_w_rust; docs/material-decoding/victor-von-ion-tubes.md): uA = tint C
 #   (CB2[0..2]) and gain g (CB2[3]); uB.x = amplitude (CB0[115], labelled presentation value); uC = base colour; uD = rim colour.
 #   rgb = 2 amp (1 + m) (base + rim F^5 + m C g), m = sat(API6.R + API5.G) from the one electricity image, F = max(N.V - 0.001, 0);
@@ -1172,6 +1179,23 @@ void main() {
         vec3 ambient = ambientLight(N);
         vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
         color = clamp(uA.rgb / luma, 0.0, 1.0) * glassSpec(N, V, L1, L2, C1, C2, F0, a, ambient) + uD.rgb * uD.w * (Ld + vec3(X));
+    } else if (uKind == 13) { // F0F45D78 Hydrodisplacer liquid (see the uKind 13 comment)
+        float rim = sat(4.0 * om * om);
+        vec2 g = -vTintWorldPos.xz;
+        vec2 f1 = uHasN ? texture2D(uTexN, vec2(0.4 * g.x, 0.46666667 * g.y)).rg : vec2(0.5);
+        vec2 f2 = uHasN ? texture2D(uTexN, g / 3.0).rg : vec2(0.5);
+        vec2 xy = 2.0 * uA.w * (f1 - f2);
+        vec3 dp1 = dFdx(vPos), dp2 = dFdy(vPos); vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
+        vec3 p2 = cross(dp2, N), p1 = cross(N, dp1);
+        vec3 T = p2 * du1.x + p1 * du2.x, B = p2 * du1.y + p1 * du2.y;
+        float scale = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-20));
+        N = normalize(T * scale * abs(xy.x) - B * scale * abs(xy.y) + N * (1.0 - dot(xy, xy)));
+        vec3 F0 = vec3(1.0 + pow(rim, 10.0));
+        float a = pow(2.0, -5.5 * sqrt(sat(uB.w)));
+        vec3 ambient = ambientLight(N);
+        vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
+        color = uA.rgb * Ld + uB.rgb * glassSpec(N, V, L1, L2, C1, C2, F0, a, ambient);
+        alpha = 1.0;
     } else if (uKind == 9) { // character_glass_02 4DF1D438
         if (uHasN) {
             vec3 dp1 = dFdx(vPos), dp2 = dFdy(vPos); vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
@@ -1348,7 +1372,7 @@ FRAGMENT = FRAGMENT.replace("// @lighting\n", LIGHTING+FOG+_SCENE_OUTPUT)
 GLASS_FRAGMENT = GLASS_FRAGMENT.replace("// @lighting\n", LIGHTING+FOG)
 GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4, "bright_glow": 5,
                "eye_cornea": 6, "number_display": 7, "glass_basic": 8, "glass_cg02": 9, "glass_jn": 10, "glass_thumper": 11,
-               "ion_tubes": 12}
+               "ion_tubes": 12, "glass_liquid": 13}
 
 
 def frame_fade(time, rate):
@@ -1398,6 +1422,9 @@ def glass_uniforms(forward, time=None):
     if forward["kind"] == "glass_thumper":
         return (GLASS_KINDS["glass_thumper"], (*p["tint"], p["rim_bias"]), (*p["body"], p["normal_strength"]),
                 (p["tiling"], p["f0_base"], p["gloss"], p["rim_exp"]), (*p["glow_colour"], p["amplitude"]), (0.0,) * 4)
+    if forward["kind"] == "glass_liquid":
+        return (GLASS_KINDS["glass_liquid"], (*p["body"], p["normal_strength"]), (*p["spec_tint"], p["gloss"]),
+                (p["fill"], 0.0, 0.0, 0.0), (0.0,) * 4, (0.0,) * 4)
     if forward["kind"] == "glass_cg02":
         return (GLASS_KINDS["glass_cg02"], (*p["body"], p["gloss"]), (*p["tint"], p["tint_scale"]),
                 (p["env_scale"], p["env_exp"], p["alpha_floor"], p["alpha_exp"]), (*p["rim_colour"], p["rim_exp"]),

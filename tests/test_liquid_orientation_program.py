@@ -11,6 +11,11 @@ import random
 import unittest
 from pathlib import Path
 
+from rc2016.formats.links import EXACT, rule_coverage
+from rc2016.shaders import validation
+from rc2016.viewer import textures as tp
+from rc2016.viewer.shading import GLASS_FRAGMENT, GLASS_KINDS, glass_uniforms
+
 GRAPH = 'materialgraph/global/test/test_liquid_orientation/test_liquid_orientation.materialgraph'
 MATERIAL = 'material/global/test/test_liquid_orientation/test_liquid_orientation.material'
 GRAPH_SHA = '7eb07c69c31448c0efee469b681f1e6084b13f33ef8481d8ad39b05ca6097fb3'
@@ -76,6 +81,58 @@ def closed_form(inp, rec, fade_slope, fade_offset, s):
             'S5.u': u0 + wobble + 0.04 * time, 'S5.v': v0 + wobble + 0.06 * time,
             'S8a.u': 0.4 * gx - 0.1 * time, 'S8a.v': 0.4666667 * gz + 0.025 * time,
             'S8b.u': gx * 0.3333333 + 0.1 * time, 'S8b.v': gz * 0.3333333 - 0.05 * time})
+
+
+FLOW = 'textures/environment/metropolis/ambient/met_amb_water_pool_flow_01_n.tga/met_amb_water_pool_flow_01_n.texture'
+RULE_PARAMS = dict(gloss=1.0, fill=1.0, body=(0.06480327248573303, 0.23839756846427917, 0.31854677200317383),
+                   spec_tint=(0.3126390874385834, 1.0, 1.0), normal_strength=1.0)
+
+
+class RuleBindingTests(unittest.TestCase):
+    def test_exact_graph_hash_binds_the_rule(self):
+        rule = tp._graph_rule([GRAPH], {GRAPH: GRAPH_SHA})
+        self.assertEqual((rule['forward'], rule['writer'], rule['graph_sha256']), ('glass_liquid', 'F0F45D78', GRAPH_SHA))
+        self.assertEqual(rule['slots'], {'_n': 0x49A7866B67D6383E})
+        self.assertEqual(tp._graph_rule([GRAPH], {GRAPH: '0' * 64}), {})
+        self.assertEqual(tp._graph_rule([GRAPH], {}), {})
+        self.assertFalse(tp.LIQUID_ORIENTATION_CONSTANTS['game_equivalence'])
+        self.assertEqual(rule_coverage([GRAPH])[0] == EXACT, rule_coverage([GRAPH])[0] == EXACT)   # reported, not required
+
+    def test_kind_and_uniform_packing(self):
+        self.assertEqual(GLASS_KINDS['glass_liquid'], 13)
+        self.assertEqual(len(GLASS_KINDS), len(set(GLASS_KINDS.values())))
+        kind, a, b, c, d, e = glass_uniforms(dict(kind='glass_liquid', params=dict(RULE_PARAMS, fill=0.7, gloss=0.9, normal_strength=1.2)))
+        self.assertEqual((kind, a, b, c, d, e), (13, (*RULE_PARAMS['body'], 1.2), (*RULE_PARAMS['spec_tint'], 0.9),
+                                                  (0.7, 0.0, 0.0, 0.0), (0.0,) * 4, (0.0,) * 4))
+
+    def test_glsl_branch_carries_the_decoded_equations(self):
+        branch = GLASS_FRAGMENT.split('uKind == 13')[1].split('uKind == 9')[0]
+        for text in ('float rim = sat(4.0 * om * om)', 'vec2 g = -vTintWorldPos.xz',
+                     'texture2D(uTexN, vec2(0.4 * g.x, 0.46666667 * g.y)).rg', 'texture2D(uTexN, g / 3.0).rg',
+                     'vec2 xy = 2.0 * uA.w * (f1 - f2)', 'abs(xy.x)', 'abs(xy.y)', 'N * (1.0 - dot(xy, xy))',
+                     'vec3 F0 = vec3(1.0 + pow(rim, 10.0))', 'pow(2.0, -5.5 * sqrt(sat(uB.w)))',
+                     'color = uA.rgb * Ld + uB.rgb * glassSpec(N, V, L1, L2, C1, C2, F0, a, ambient)', 'alpha = 1.0'):
+            self.assertIn(text, branch)
+
+    def test_blender_front_end_and_validator_agree(self):
+        self.assertEqual(validation.GLASS_CONSTANTS['glass_liquid'], ('body', 'spec tint', 'gloss', 'normal strength'))
+        for textured in (True, False):
+            rule = dict(applies=True, ported=['glass_liquid'], terms={'glass_liquid': dict(kind='glass_liquid', params=dict(
+                RULE_PARAMS, body=list(RULE_PARAMS['body']), spec_tint=list(RULE_PARAMS['spec_tint'])), blend='opaque')},
+                        textures={'_c': None, '_g': None, '_n': FLOW if textured else None})
+            names, roles = validation._viewer_required(rule, False)
+            expected = validation._viewer_expected_constants(rule)
+            self.assertEqual(set(names) <= set(expected), True)
+            self.assertEqual('VR glass normal strength' in names, textured)
+            self.assertNotIn('VR glass rim bias', names)                  # opaque: no alpha terms
+            self.assertEqual(roles, ['_n'] if textured else [])
+            self.assertEqual(expected['VR glass spec tint'], list(RULE_PARAMS['spec_tint']))
+        text = (Path(__file__).resolve().parents[1] / 'rc2016/pipeline/game_shader.py').read_text(encoding='utf-8')
+        body = text.split('def _viewer_rule_glass')[1].split('def apply_viewer_graph_rule')[0]
+        for name in ('glass body', 'glass spec tint', 'glass gloss', 'glass normal strength', 'glass liquid flow map A',
+                     'glass liquid flow map B', "glass liquid normal N'"):
+            self.assertIn(name, body)
+        self.assertIn("'glass_liquid'", text.split('GLASS_VIEWER_KINDS =')[1].split('\n')[0])
 
 
 @unittest.skipUnless(os.environ.get('RC2016_RESEARCH'), 'RC2016_RESEARCH is required')
@@ -203,6 +260,17 @@ class ArchiveProgramTests(unittest.TestCase):
             self.assertEqual((nodes[lit_t]['op'], 5935 in nodes[lit_t]['args']), ('mul', True))       # t * lit
             self.assertEqual(nodes[lit]['op'], 'mul')                                              # diffuse light x body
         self.assertEqual(nodes[5212]['op'], 'mul')                                                 # red specular x 0.3126
+
+
+    def test_viewer_rule_from_the_archive(self):
+        paths = tp.material_texture_paths(self.archive, MATERIAL)
+        forward = paths['forward']
+        p = forward['params']
+        self.assertEqual((forward['kind'], forward['writer'], forward['blend'], forward['two_sided']), ('glass_liquid', 'F0F45D78', 'opaque', True))
+        self.assertEqual(paths['_n'], FLOW)
+        self.assertEqual((p['gloss'], p['fill'], p['normal_strength']), (1.0, 1.0, 1.0))      # graph defaults
+        self.assertEqual(p['body'], RULE_PARAMS['body'])
+        self.assertFalse(p['game_equivalence'])
 
 
 if __name__ == '__main__':

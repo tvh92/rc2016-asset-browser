@@ -2,7 +2,7 @@
 
 The liquid inside the Hydrodisplacer's tank is mesh 1 of `equipment/gadget/gdgt_hydrodisplacer/gdgt_hydrodisplacer.model`, material `test_Liquid_Orientation` (graph SHA-256 `7eb07c69c31448c0efee469b681f1e6084b13f33ef8481d8ad39b05ca6097fb3`, flags `0x0000023C`: opaque, two-sided). The material stores no parameters, so every input is a graph default. The graph has two pass contracts with the same layout (`CB2[0]` gloss `0x24F4CA4C` = 1.0, `CB2[1]` fill `0x66583BF6` = 1.0; three bindings of `hydrodisplacer_water_cma` and one of `met_amb_water_pool_flow_01_n`).
 
-This page decodes the pass-0 forward colour program `F0F45D78` (code SHA-256 `43f06ca9…f6259`, 13,668 bytes) and its alpha-tested pre-pass `09BE55F4` (828 bytes) statically from the archive. It is a research decode: there is no viewer or Blender rule for the graph yet (see [liquids](../liquids.md), S28), and the viewer draws this mesh with the generic reading (grey). Archive-backed checks of everything below are in `tests/test_liquid_orientation_program.py`.
+This page decodes the pass-0 forward colour program `F0F45D78` (code SHA-256 `43f06ca9…f6259`, 13,668 bytes) and its alpha-tested pre-pass `09BE55F4` (828 bytes) statically from the archive. The viewer and Blender preview rule built from it is described under "Viewer rule" (see also [liquids](../liquids.md), S28). Archive-backed checks of everything below are in `tests/test_liquid_orientation_program.py`.
 
 ## Which program the Hydrodisplacer draws
 
@@ -52,6 +52,8 @@ Exports `0.5 N_v + 0.5` (xyz, `N_v` the normalised `attribute1.xyz`) to target 0
 - **Fill value.** `CB2[1]` is 1.0 in the graph and the material does not override it; whether game code sets it per draw (as the tank empties or fills) is not in the archive.
 - **Lighting.** The light list, sun, shadow cascades, environment probes, screen-space reflection (the API 3 and API 4 samples under flag `0x2000`), fog colour `CB0[112..114]`, `CB0[95]`, `CB0[139]` and time `CB0[99]` are frame or engine inputs. The registers 73 to 75 that scale the diffuse and specular sums are loop outputs and are not evaluated.
 
-## Viewer status
+## Viewer rule
 
-The viewer draws this material with the generic reading. A rule would take the decoded terms above (base colour `K`, F0 = 1 + rim^10, gloss 1.0 from the graph default, the flow-normal ripple, the waterline cut at the default fill) and the viewer rig for the light terms, as the Thumper glove glass does; it would be a preview, not a game-equivalent render.
+`test_liquid_orientation` has an exact-graph-hash preview rule (`glass_liquid`, `rc2016/viewer/textures.py` `GRAPH_RULES`, `GLASS_FRAGMENT` `uKind` 13, Blender `game_shader._viewer_rule_glass`, validated by `validation.GLASS_CONSTANTS`). It draws the opaque two-sided liquid as `rgb = K Ld + tint x specular(F0, N')` with the decoded base colour `K`, the red-scaled specular, gloss from the graph default, and the flow normal map read at the fragment's model-space XZ (`gx = -x`, `gz = -z`, the record origin taken as the model origin). Everything under "What stays undecoded" is a frozen or omitted input: `CB0[99]` = 0, `CB0[95]` = 1, no fade, no alpha test, no waterline mask, fog `t` = 1, and the light list, shadows, probes and screen-space lookup are the viewer rig (Cycles lighting in Blender). It is a preview, not a game-equivalent render (`game_equivalence` is False).
+
+Blender differs in two recorded ways: the Principled metallic base colour cannot exceed 1, so `F0 = 1 + rim^10` is clamped to 1 and the grey rim term is dropped; and the tangent frame is the UV tangent, not the screen-derivative frame of the viewer. The Blender front-end is checked by building the rule on a material and running `validation._validate_viewer_rule_material`; no full model build or reopen validation of the gadget has been run.

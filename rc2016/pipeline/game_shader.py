@@ -1352,12 +1352,13 @@ def _viewer_skin_spec(P, skin, gR, gG, f, tinted):
     rgb = P.comb(*(P.sat(P.m('MULTIPLY', grey, ch)) for ch in P.sep(tinted))) if qwark else None
     return grey, gloss_in, rgb
 
-GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper')
+GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_liquid')
 
 
 def _viewer_rule_glass(mat, rule, key, img):
     """Forward glass writers basic_glass 4FC5703F, character_glass_02 4DF1D438, jn_glass E7118623 and
-    wpn_thumper_glove_glass 5226F404 (gl_shading.GLASS_FRAGMENT uKind 8, 9, 10, 11). alpha comes from the rim,
+    wpn_thumper_glove_glass 5226F404 and the Hydrodisplacer liquid F0F45D78 (gl_shading.GLASS_FRAGMENT uKind 8, 9, 10,
+    11, 13). alpha comes from the rim,
     the lit part is a diffuse term plus the writers' specular lobe (F0, F90 = sat(60 F0), Schlick), the blend
     from the flags word.
     """
@@ -1474,6 +1475,31 @@ def _viewer_rule_glass(mat, rule, key, img):
                       'constant: %g in the captured Veldin frame, not decoded for this object); the tint multiplies F0 and the Principled F90 is collapsed to its '
                       'maximum channel; the program variant (5226F404, with the pattern normal, or 1D429528 without it) is not '
                       'selected per draw' % (p['amplitude'], p['captured_amplitude']))
+    elif key == 'glass_liquid':
+        # F0F45D78 (docs/material-decoding/hydrodisplacer-liquid.md): opaque; the flow normal map (_n slot) is read at the model-space
+        # XZ of the fragment, (0.4 gx, 0.466667 gz) and (gx / 3, gz / 3) with gx, gz = -x, -z; x, y = 2 q (S1 - S2) rg and
+        # N' = normalize((1 - x^2 - y^2) N + |y| B + |x| T); rgb = K D + tint specular with F0 = 1 + rim^10 clamped to 1 here.
+        flow = img('_n')
+        if flow is not None:
+            ox, _oy, oz = P.sep(P.native_position())
+            gx, gz = P.m('MULTIPLY', ox, -1.0), P.m('MULTIPLY', oz, -1.0)
+            map_a = P.tex(flow, P.gl_coord(P.m('MULTIPLY', gx, 0.4), P.m('MULTIPLY', gz, 0.46666667)), 'glass liquid flow map A')
+            map_b = P.tex(flow, P.gl_coord(P.m('DIVIDE', gx, 3.0), P.m('DIVIDE', gz, 3.0)), 'glass liquid flow map B')
+            ra, ga, _ = P.sep(map_a.outputs['Color']); rb, gb, _ = P.sep(map_b.outputs['Color'])
+            q2 = P.m('MULTIPLY', P.const('glass normal strength', p['normal_strength']), 2.0)
+            x, y = P.m('MULTIPLY', P.m('SUBTRACT', ra, rb), q2), P.m('MULTIPLY', P.m('SUBTRACT', ga, gb), q2)
+            shade = P.v('NORMALIZE', P.tangent_normal(P.m('ABSOLUTE', x), P.m('ABSOLUTE', y),
+                                                      P.m('SUBTRACT', 1.0, P.dot2(x, y)), "glass liquid normal N'"))
+        else:
+            limits.append('no flow normal map bound: geometric normal')
+        tint = P.const3('glass spec tint', p['spec_tint'])
+        lobe, f90 = spec_lobe(tint, P.const('glass gloss', p['gloss']))
+        lit = add(diffuse(P.const3('glass body', p['body'])), scaled(lobe, f90), 'VR glass lit')
+        alpha = 1.0
+        limits.append('Hydrodisplacer liquid F0F45D78 (frozen preview, game_equivalence False): the flow-map time CB0[99] = 0, the normal '
+                      'strength CB0[95] = 1 and the record origin is the model origin; F0 = 1 + rim^10 is clamped to 1 by the Principled '
+                      'metallic base colour (the grey rim term is dropped); the alpha test (attribute0.2), the water_cma waterline mask, '
+                      'the fade and the fill CB2[1] = %g are not drawn; the tangent frame is the UV tangent of Blender' % p['fill'])
     else:   # character_glass_02
         rim = P.sat(P.m('MULTIPLY', P.m('POWER', om, P.const('glass alpha exp', p['alpha_exp'])), 4.0))
         alpha = P.sat(P.m('ADD', P.const('glass alpha floor', p['alpha_floor']), rim))

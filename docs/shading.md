@@ -255,6 +255,8 @@ F     = (1.001 - N·V)^P12,   T = sat(4·sqrt(1 - N·V)),   F90 = sat(60·F0)
 
 `wpn_thumper_glove_glass` (`5226F404`, `uKind` 11, exact graph hash) shares the `4FC5703F` light-loop body and adds a pattern normal, noise term, a tint factor on the specular and a glow term; see [thumper-glove-glass](material-decoding/thumper-glove-glass.md).
 
+The Hydrodisplacer's liquid (`test_liquid_orientation`, `F0F45D78`, `uKind` 13) is an exact-graph preview rule built from the decoded material-only terms; see [Hydrodisplacer liquid](material-decoding/hydrodisplacer-liquid.md).
+
 Limitations, kept visible in the rule and in `rc_shader_frontend_limitation`: the light list, shadows, probes, SSR and fog (`t` = 1, `F` omitted) are the viewer rig or Cycles lighting; the instance fade `b` is 0, the per-draw opacity in `attr0.w` is 1 (material byte 22 is applied) and the geometric-AA gloss term is 0; the instance flag word (which gates the diffuse and specular terms) is the captured one; the normal-map strength `CB0[95]` and fade of `character_glass_02` are taken as 1 and 0; the second program of each graph (table 1: `81FA6EFC`, `7445DF75`, `3168242A`, with no rim keys) is not selected, since no draw binds it, and the `basic_glass` table-1 alpha is `sat(attr0.w)`. In `jn_glass`, the composite `X` multiplied by `w` is taken as the `basic_glass` form: its prefix is the same code, but the fog-volume and probe tail was only read structurally.
 
 ## Render state
