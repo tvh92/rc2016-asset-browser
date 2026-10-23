@@ -1296,7 +1296,12 @@ class LevelViewport(ModelViewport):
             phase = time.perf_counter()
             try:
                 self._draw_level()
-                self._draw_beams()
+                if self.beams_enabled:
+                    try:
+                        self._draw_beams()
+                    except Exception as exc:   # the level stays; the beams are switched off
+                        print(f"level viewer: beams failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+                        self.beams_enabled = False
                 level_ms = (time.perf_counter() - phase) * 1000.0
             except Exception as exc:   # report instead of failing every Tk repaint
                 self.shading_error = f"Level view failed: {exc}"
@@ -1324,31 +1329,73 @@ class LevelViewport(ModelViewport):
             cached = self._beam_cache = (key, cones, beams.beam_mesh(cones, data.get("cone_geometry", {})))
         return cached
 
+    beams_enabled = True
+
+    def _beam_textures(self):
+        """(noise texture, depth texture) of the beam program: the cone pixel program's noise tile, uploaded once per loaded
+        lighting, and a depth texture the frame's depth buffer is copied into."""
+        gl = self._gl
+        noise = self._scene_lighting.get("cone_noise") if isinstance(self._scene_lighting, dict) else None
+        cached = self.__dict__.get("_beam_noise_gl")
+        if cached is None or cached[0] is not noise:
+            if cached is not None and cached[1]:
+                gl.glDeleteTextures(1, ctypes.byref(ctypes.c_uint(cached[1])))
+            cached = self._beam_noise_gl = (noise, self._upload_texture(noise, mipmaps=False) if noise else 0)
+        depth = self.__dict__.get("_beam_depth_gl")
+        if depth is None:
+            name = ctypes.c_uint(0)
+            gl.glGenTextures(1, ctypes.byref(name))
+            gl.glBindTexture(self.GL_TEXTURE_2D, name.value)
+            for parameter, value in ((self.GL_TEXTURE_MIN_FILTER, 0x2600), (self.GL_TEXTURE_MAG_FILTER, 0x2600),   # GL_NEAREST
+                                     (self.GL_TEXTURE_WRAP_S, 0x812F), (self.GL_TEXTURE_WRAP_T, 0x812F)):
+                gl.glTexParameteri(self.GL_TEXTURE_2D, parameter, value)
+            depth = self._beam_depth_gl = name.value
+        return cached[1], depth
+
     def _draw_beams(self):
-        """Additive cones of the lamp spot lights, after the level: depth-tested against it, no depth write."""
+        """The light cones, after the level: the game's cone pixel program (BEAM_FRAGMENT), additive, depth-tested against the
+        level with no depth write, the soft fade at the scene read from a copy of the depth buffer."""
         cached = self._beam_lights()
         if not cached or cached[2] is None or self._mode not in ("Shaded", "Textured"):
             return
-        positions, normals, ts, colours, indices = cached[2]
+        positions, normals, uvs, colours, indices = cached[2]
+        noise, depth = self._beam_textures()
+        if not noise or not len(indices):
+            return
         gl, sh, ext = self._gl, self._shading, self._ext
-        program, _u = sh.beam_program()
+        viewport = (ctypes.c_int * 4)()
+        gl.glGetIntegerv.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+        gl.glGetIntegerv(0x0BA2, viewport)      # GL_VIEWPORT
+        width, height = viewport[2], viewport[3]
+        sh.glActiveTexture(self.GL_TEXTURE0 + 1)
+        gl.glBindTexture(self.GL_TEXTURE_2D, depth)
+        gl.glCopyTexImage2D.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_uint, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                        ctypes.c_int, ctypes.c_int]
+        gl.glCopyTexImage2D(self.GL_TEXTURE_2D, 0, 0x1902, viewport[0], viewport[1], width, height, 0)   # GL_DEPTH_COMPONENT
+        sh.glActiveTexture(self.GL_TEXTURE0)
+        gl.glBindTexture(self.GL_TEXTURE_2D, noise)
+        program, u = sh.beam_program()
         sh.glUseProgram(program)
         gl.glBlendFunc.argtypes = [ctypes.c_uint, ctypes.c_uint]; gl.glDepthMask.argtypes = [ctypes.c_ubyte]
         gl.glMatrixMode(self.GL_MODELVIEW)
         gl.glLoadMatrixf((ctypes.c_float * 16)(*view_matrix(self._eye, self._yaw, self._pitch)))
         gl.glMultMatrixf((ctypes.c_float * 16)(*BASIS))
+        self._apply_lighting(u)                   # tonemap, exposure and fog; reads the camera modelview
+        sh.glUniform1i(u["uBeamNoise"], 0); sh.glUniform1i(u["uBeamDepth"], 1)
+        sh.glUniform2f(u["uBeamViewport"], float(width), float(height))
+        sh.glUniform2f(u["uBeamNearFar"], float(self._near), float(self._far))
+        sh.glUniform1f(u["uBeamTime"], 0.0)
         gl.glEnable(self.GL_BLEND); gl.glBlendFunc(self.GL_ONE, self.GL_ONE)
         gl.glDepthMask(0); gl.glDisable(self.GL_CULL_FACE)
         ext["glBindVertexArray"](0)
         ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0); ext["glBindBuffer"](self.GL_ELEMENT_ARRAY_BUFFER, 0)
-        uvs = ts.reshape(-1, 1).repeat(2, axis=1)
         pointer = lambda array: ctypes.cast(array.ctypes.data, ctypes.c_void_p)
         for array in (self.GL_VERTEX_ARRAY, self.GL_NORMAL_ARRAY, self.GL_COLOR_ARRAY, self.GL_TEXTURE_COORD_ARRAY):
             gl.glEnableClientState(array)
         try:
             gl.glVertexPointer(3, self.GL_FLOAT, 0, pointer(positions))
             gl.glNormalPointer(self.GL_FLOAT, 0, pointer(normals))
-            gl.glColorPointer(3, self.GL_FLOAT, 0, pointer(colours))
+            gl.glColorPointer(4, self.GL_FLOAT, 0, pointer(colours))
             gl.glTexCoordPointer(2, self.GL_FLOAT, 0, pointer(uvs))
             gl.glDrawElements(self.GL_TRIANGLES, len(indices), self.GL_UNSIGNED_INT, pointer(indices))
         finally:
@@ -1356,6 +1403,9 @@ class LevelViewport(ModelViewport):
                 gl.glDisableClientState(array)
             gl.glDisable(self.GL_BLEND); gl.glDepthMask(1)
             sh.glUseProgram(0)
+            for unit in (1, 0):
+                sh.glActiveTexture(self.GL_TEXTURE0 + unit)
+                gl.glBindTexture(self.GL_TEXTURE_2D, 0)
 
     def _cull_frame(self, width, height):
         try:

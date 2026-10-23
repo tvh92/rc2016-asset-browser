@@ -1602,27 +1602,56 @@ void main() {
 SKY_UNIFORMS = (*LIGHTING_UNIFORMS, "uSkyMode", "uProfile", "uProfileStep", "uDome", "uNoise", "uDomeSrgb",
                 "uNoiseSrgb", "uSunRay", "uSkyOpaque", *(f"uP[{i}]" for i in range(6)))
 
-# Lamp beams (rc2016/levels/beams.py): additive cones, drawn after the level with the scene depth and no depth write. The
-# colour is already in display units (the beam is added after the tonemap), shaped by the visual choices below: brightest
-# where the surface faces the eye, fading to the cone's silhouette and along its length, with a soft apex.
+# Light-cone beams (rc2016/levels/beams.py, rc2016/levels/cone_shader.py): the game's pixel program 0xE8CDB312 of the
+# gbl_amb_Light_Cone graphs, ported node for node (tests/test_cone_shader.py evaluates the translated DAG against it). The
+# two-sided cone is drawn additive after the level, depth-tested without depth write. The inputs the game takes from its
+# vertex stage and engine: u, v the model's UV0; the normal and eye vector from the view-space geometry; T the level's
+# height fog (uFog*) at the fragment, as the surface programs apply it (inferred: the game's T is a vertex output); the
+# scene depth from a copy of the depth buffer (uBeamDepth) against the fragment's view depth (POS_W); the noise texture
+# fx_noisetile01 (uBeamNoise) at time uBeamTime (0: frozen). vC.rgb is the cone's colour times BEAM_GAIN (amplitude CB0[115]
+# times the particle colour, undecoded in magnitude) and vC.a the opacity that takes the place of attribute0.w. The game
+# adds the result to its HDR scene before exposure and tonemap; this adds display(light) - display(0) to the display-referred
+# level, which is exact only on a black background.
 BEAM_VERTEX = """
 #version 120
-varying vec3 vN; varying vec3 vV; varying vec3 vC; varying float vT;
+varying vec3 vN; varying vec3 vPos; varying vec2 vUV; varying vec4 vC;
 void main() {
     vec4 p = gl_ModelViewMatrix * gl_Vertex;
-    vN = gl_NormalMatrix * gl_Normal; vV = -p.xyz; vC = gl_Color.rgb; vT = gl_MultiTexCoord0.x;
+    vN = gl_NormalMatrix * gl_Normal; vPos = p.xyz; vC = gl_Color; vUV = gl_MultiTexCoord0.xy;
     gl_Position = gl_ProjectionMatrix * p;
 }
 """
 BEAM_FRAGMENT = """
 #version 120
-varying vec3 vN; varying vec3 vV; varying vec3 vC; varying float vT;
-void main() {
-    float facing = abs(dot(normalize(vN), normalize(vV)));
-    float shape = pow(facing, 1.6) * (1.0 - vT) * (1.0 - vT) * smoothstep(0.0, 0.08, vT);
-    gl_FragColor = vec4(vC * shape, 1.0);
+const float PI = 3.14159265;
+varying vec3 vN; varying vec3 vPos; varying vec2 vUV; varying vec4 vC;
+// @lighting
+uniform sampler2D uBeamNoise; uniform sampler2D uBeamDepth;
+uniform vec2 uBeamViewport; uniform vec2 uBeamNearFar; uniform float uBeamTime;
+float beamViewDepth(float d) {
+    float zn = d * 2.0 - 1.0;
+    return 2.0 * uBeamNearFar.x * uBeamNearFar.y / ((uBeamNearFar.y + uBeamNearFar.x) - zn * (uBeamNearFar.y - uBeamNearFar.x));
 }
-"""
+void main() {
+    float u = vUV.x, v = vUV.y;
+    vec3 N = normalize(vN), E = normalize(-vPos);
+    float nv = clamp(dot(N, E) * (gl_FrontFacing ? 1.0 : -1.0), 0.0, 1.0);
+    float facing = clamp(1.0 - (1.001 - nv) * (1.001 - nv), 0.0, 1.0);
+    float a = abs(1.0 - u);
+    float fade = clamp(1.0 - exp2(100.0 * log2(max(a, 1e-30))), 0.0, 1.0) * min(1.0, a);
+    float noise = texture2D(uBeamNoise, vec2(u * 0.01 + 0.005 * uBeamTime, v + 0.005 * uBeamTime)).r;
+    float scene = beamViewDepth(texture2D(uBeamDepth, gl_FragCoord.xy / uBeamViewport).r);
+    float soft = clamp((scene + vPos.z) * (3.0 - 2.7 * u), 0.0, 1.0);
+    float p = clamp(fade * (0.8 * noise + 0.2) * facing * soft, 0.0, 1.0);
+    float hot = 20.0 * fade * fade * fade * fade;
+    float T = uFogOn != 0 ? fogTransmittance() : 1.0;
+    vec3 rgb = T * vC.rgb * (1.0 + hot) + (1.0 - T) * (uFogOn != 0 ? uFogColour : vec3(0.0));
+    float alpha = clamp(vC.a * p, 0.0, 1.0);
+    vec3 added = max(display(rgb * alpha) - display(vec3(0.0)), 0.0);
+    gl_FragColor = vec4(added, 1.0);
+}
+""".replace("// @lighting\n", LIGHTING + FOG)
+BEAM_UNIFORMS = (*LIGHTING_UNIFORMS, "uBeamNoise", "uBeamDepth", "uBeamViewport", "uBeamNearFar", "uBeamTime")
 
 
 class ShaderError(RuntimeError):
@@ -1694,6 +1723,7 @@ class Shading:
         "glGetUniformLocation": (ctypes.c_int, [ctypes.c_uint, ctypes.c_char_p]),
         "glUniform1i": (None, [ctypes.c_int, ctypes.c_int]),
         "glUniform1f": (None, [ctypes.c_int, ctypes.c_float]),
+        "glUniform2f": (None, [ctypes.c_int, ctypes.c_float, ctypes.c_float]),
         "glUniform3f": (None, [ctypes.c_int, ctypes.c_float, ctypes.c_float, ctypes.c_float]),
         "glUniform4f": (None, [ctypes.c_int, ctypes.c_float, ctypes.c_float, ctypes.c_float, ctypes.c_float]),
         "glUniform3fv": (None, [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]),
@@ -1872,9 +1902,9 @@ class Shading:
         return self.programs["sky"]
 
     def beam_program(self):
-        """Level viewer lamp beams (BEAM_FRAGMENT)."""
+        """Level viewer light-cone beams: the port of the game's cone pixel program (BEAM_FRAGMENT)."""
         if "beam" not in self.programs:
-            self.programs["beam"] = self._link(BEAM_VERTEX, BEAM_FRAGMENT, {}, ())
+            self.programs["beam"] = self._link(BEAM_VERTEX, BEAM_FRAGMENT, {}, BEAM_UNIFORMS)
         return self.programs["beam"]
 
     def pick_program(self):

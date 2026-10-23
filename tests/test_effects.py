@@ -5,6 +5,8 @@ import struct
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 from rc2016.levels import effects
 from rc2016.levels.zone_format import path_crc64
 
@@ -155,18 +157,6 @@ class MeshColourTests(unittest.TestCase):
         self.assertAlmostEqual(parameter['spread'][0], -0.5, places=3)
 
 
-class ConeFrameTests(unittest.TestCase):
-    def test_the_axis_points_from_the_apex_at_the_origin_to_the_base(self):
-        import numpy as np
-        circular = np.array([[0, 0, 0], [3.75, 0, 10], [-3.75, 0, 10], [0, 3.75, 10]], np.float32)
-        wide = np.array([[0, 0.078, 0], [3.75, -1.92, 0], [-3.75, -1.92, 0], [0, -1.92, 3.75], [0, -1.92, -3.75], [0, -1.92, 0]], np.float32)
-        axis, length = effects.cone_frame(circular)
-        self.assertEqual((axis.tolist(), length), ([0.0, 0.0, 1.0], 10.0))
-        axis, length = effects.cone_frame(wide)
-        self.assertEqual(axis.tolist(), [0.0, -1.0, 0.0])
-        self.assertAlmostEqual(length, 1.998, places=3)
-
-
 class LightConeTests(unittest.TestCase):
     def test_light_cone_effects_are_told_by_their_file_name(self):
         self.assertTrue(effects.is_light_cone('visualeffect/x/gbl_amb_Light_Cone_Circular_Med/gbl_amb_Light_Cone_Circular_Small.visualeffect'))
@@ -208,18 +198,23 @@ class ArchiveTests(unittest.TestCase):
         cones = lighting['light_cones']
         self.assertEqual(len(cones), 27)
         self.assertTrue(all(cone['scale'] == 1.0 for cone in cones))
-        med = [cone['colour'] for cone in cones if cone['effect'].endswith('Circular_Med.visualeffect')]
-        small = [cone['colour'] for cone in cones if cone['effect'].endswith('Circular_Small.visualeffect')]
+        med = [cone for cone in cones if cone['effect'].endswith('Circular_Med.visualeffect')]
+        small = [cone for cone in cones if cone['effect'].endswith('Circular_Small.visualeffect')]
         self.assertEqual((len(med), len(small)), (24, 3))
-        # the colour parameter times the opacity parameter of each effect's mesh component
-        for got, want in zip(med[0], [0.1475 * 0.2, 0.0756 * 0.2, 0.0216 * 0.2]):
+        # the colour parameter and the opacity parameter of each effect's mesh component
+        for got, want in zip(med[0]['colour'], [0.1475, 0.0756, 0.0216]):
             self.assertAlmostEqual(got, want, delta=0.0005)
-        for got, want in zip(small[0], [0x7FFF / 32767 * 0x15FA / 32767, 0x1912 / 32767 * 0x15FA / 32767, 0x02C5 / 32767 * 0x15FA / 32767]):
+        self.assertAlmostEqual(med[0]['opacity'], 0.2, delta=0.001)
+        for got, want in zip(small[0]['colour'], [0x7FFF / 32767, 0x1912 / 32767, 0x02C5 / 32767]):
             self.assertAlmostEqual(got, want, delta=0.001)
+        self.assertAlmostEqual(small[0]['opacity'], 0x15FA / 32767, delta=0.001)
         geometry = lighting['cone_geometry']['visualeffect/environment/global/ambient/gbl_amb_light_cone_circular_med/gbl_amb_light_cone_circular_med.model']
         self.assertEqual(float(geometry['positions'][:, 2].min()), 0.0)
         self.assertEqual(float(geometry['positions'][:, 2].max()), 10.0)
-        self.assertEqual((geometry['axis'].tolist(), geometry['length']), ([0.0, 0.0, 1.0], 10.0))
+        uvs = geometry['uvs']
+        self.assertEqual((uvs.shape, float(uvs.min()), float(uvs.max())), ((len(geometry['positions']), 2), 0.0, 1.0))
+        self.assertGreater(float(np.corrcoef(uvs[:, 0], geometry['positions'][:, 2])[0, 1]), 0.999)    # u runs along the cone
+        self.assertEqual((lighting['cone_noise']['width'], lighting['cone_noise']['height']), (512, 512))
 
     def test_the_mesh_component_of_every_light_cone_effect_is_found_by_the_models_crc64(self):
         base = 'visualeffect/environment/global/ambient/gbl_amb_light_cone_circular_med/'
@@ -249,10 +244,11 @@ class ArchiveTests(unittest.TestCase):
         lighting = load_scene_lighting(self.archive, level_zone_paths(self.archive, 'levels/quartu/quartu.level'))
         cones = lighting['light_cones']
         self.assertEqual(len(cones), 59)
-        self.assertTrue(all(cone['scale'] == 1.0 and cone['colour'][2] > cone['colour'][0] for cone in cones))   # blue
+        self.assertTrue(all(cone['scale'] == 1.0 and cone['colour'][2] > cone['colour'][0] and cone['opacity'] > 0 for cone in cones))   # blue
         geometry = lighting['cone_geometry'][cones[0]['model']]
-        self.assertEqual(geometry['axis'].tolist(), [0.0, -1.0, 0.0])
-        self.assertAlmostEqual(geometry['length'], 2.0, places=1)
+        positions = geometry['positions']
+        self.assertAlmostEqual(float(positions[:, 1].max() - positions[:, 1].min()), 2.0, places=1)    # the wide cone is 2 long on -Y
+        self.assertGreater(float(np.corrcoef(geometry['uvs'][:, 0], -positions[:, 1])[0, 1]), 0.999)
 
 
 if __name__ == '__main__':

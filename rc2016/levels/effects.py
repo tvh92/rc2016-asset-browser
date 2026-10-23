@@ -35,10 +35,10 @@ docs/shading.md). The placement matrix aims the cone directly: its local +Z (cir
 or -Y (wide hanging cone, 2 long) is the aim axis of the spot light that stands at the same place (all 59 of Quartu's
 wide cones lie within 0.6 units of a spot record, with the axis opposite the matrix's +Y row).
 
-Not decoded: the other components (sprites for the flare at the lamp, and records without a model), how the game's
-pixel shader turns the particle colour and opacity into a display value (it reads them from a per-particle buffer, fades
-with scene depth and fog), and the effect's timing. The viewer draws the cone model at scale 1 (the mesh component's
-size pair) in the mesh component's colour times its opacity (rc2016.levels.beams).
+Not decoded: the other components (sprites for the flare at the lamp, and records without a model), the intensity the
+particle update applies to the colour before the pixel program reads it from a per-particle record, and the effect's timing.
+The viewer draws the cone model at scale 1 (the mesh component's size pair) in the mesh component's colour and opacity
+through the game's pixel program (rc2016.levels.beams, rc2016.levels.cone_shader).
 """
 from __future__ import annotations
 
@@ -155,24 +155,13 @@ def is_light_cone(effect_path):
     return LIGHT_CONE.search(effect_path.rsplit('/', 1)[-1]) is not None
 
 
-def cone_frame(positions):
-    """(axis, length) of a cone model's vertices: the aim axis (a unit vector pointing from the apex to the base) and the
-    extent along it. The axis is the coordinate axis along which the bounding box is least centred on the origin (the
-    apex stands at the origin, so the cone lies to one side of it), directed away from the origin."""
-    import numpy as np
-    low, high = positions.min(axis=0), positions.max(axis=0)
-    axis = int(np.argmax(np.abs(low + high)))
-    direction = np.zeros(3)
-    direction[axis] = 1.0 if high[axis] + low[axis] > 0.0 else -1.0
-    return direction, float(high[axis] - low[axis])
-
-
 def load_light_cones(archive, zone_paths):
     """The light cones to draw for the zones of a level.
 
     Returns ``cones`` (placements of the cone models, each with its ``model`` path, ``scale`` (the mesh component's),
-    ``colour`` (the mesh component's RGB times its opacity) and the matrix scaled), ``geometry`` ({model path: {'positions', 'normals' float32 (n, 3), 'indices' uint32, 'axis', 'length'}}
-    in model space) and ``undrawn`` ({effect file name: count} of the light-cone placements that are decoded but not drawn,
+    ``colour`` (the mesh component's RGB), ``opacity`` (its slot-6 value) and the matrix scaled), ``geometry`` ({model path: {'positions',
+    'normals' float32 (n, 3), 'uvs' float32 (n, 2), 'indices' uint32}} in model space), ``noise`` (the pixel program's noise
+    texture, rc2016.viewer.textures.load_texture, or None without cones) and ``undrawn`` ({effect file name: count} of the light-cone placements that are decoded but not drawn,
     with the reason in ``undrawn_reasons``)."""
     import numpy as np
     from rc2016.levels.scene import model_geometry
@@ -204,22 +193,27 @@ def load_light_cones(archive, zone_paths):
                 skip(placement, 'no single mesh component with a model, scale and colour')
                 continue
             placement['model'], placement['scale'] = model, scale
-            placement['colour'] = [v * colour[1] for v in colour[0]]
+            placement['colour'], placement['opacity'] = colour
             cones.append(placement)
     kept = []
     for cone in cones:
         if cone['model'] not in geometry:
             loaded = model_geometry(archive, cone['model'])
-            positions = np.asarray(loaded['positions'], np.float32).reshape(-1, 3)
-            axis, length = cone_frame(positions)
-            geometry[cone['model']] = dict(positions=positions, normals=np.asarray(loaded['normals'], np.float32).reshape(-1, 3),
-                                           indices=np.asarray(loaded['indices'], np.uint32), axis=axis, length=length)
+            geometry[cone['model']] = dict(positions=np.asarray(loaded['positions'], np.float32).reshape(-1, 3),
+                                           normals=np.asarray(loaded['normals'], np.float32).reshape(-1, 3),
+                                           uvs=np.asarray(loaded['uvs'], np.float32).reshape(-1, 2),
+                                           indices=np.asarray(loaded['indices'], np.uint32))
         matrix = np.asarray(cone['matrix'], np.float64).reshape(4, 4)
         matrix[:3, :3] *= cone['scale']
         cone['matrix'] = matrix.reshape(-1).tolist()
         kept.append(cone)
-    return dict(cones=kept, geometry=geometry, undrawn=undrawn, undrawn_reasons=reasons)
+    noise = None
+    if kept:
+        from rc2016.levels.cone_shader import NOISE_TEXTURE
+        from rc2016.viewer.textures import load_texture
+        noise = load_texture(archive, NOISE_TEXTURE)
+    return dict(cones=kept, geometry=geometry, noise=noise, undrawn=undrawn, undrawn_reasons=reasons)
 
 
-__all__ = ['cone_frame', 'decode_effect', 'decode_zone_effects', 'effect_model_path', 'is_light_cone', 'load_light_cones',
+__all__ = ['decode_effect', 'decode_zone_effects', 'effect_model_path', 'is_light_cone', 'load_light_cones',
            'mesh_colour', 'mesh_scale']
