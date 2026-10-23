@@ -188,6 +188,7 @@ FLAT_SURFACE_GOO = dict(colour_key=0x34392B3C, f0_key=0x17DE448C, gloss_key=GLOS
 BASIC_FLAT_COLOR_SHA256 = '6d9bcad5a9dab38dd5988195cc9e87514c08a90c6b8fa899c2d21f3e42c14f95'
 GRASS_BLEND_GRAPH_SHA256 = '3634199da89150f03c56b21d855f83d840e4dd06eeb33b748f8e16df1bd7ba65'
 MUD_BLEND_GRAPH_SHA256 = 'f7cd132b3f0b99144c1551aca88371f1f20c5a96e7c088969e435ad2a7aebc12'
+CRATER_BLEND_GRAPH_SHA256 = 'aa460dce7ed1f503d155db4ea1fee3237a91002d967d1a86d58a29d29bd14473'
 SLUDGE_PUDDLE_GRAPH_SHA256 = '57149f5756f3b27f2ad704458f30ca6ac7b49c9b52e50698c7877675e3ed1c77'
 CORAL_BLEND_GRAPH_SHA256 = 'b97b38326b95942a3000aa36f591bec1c425366da27605531bc30851a97ecb43'
 # Volume slice order of the coral blend rule (rock_texture_volume on unit 15): the roles are the Blender image roles too.
@@ -433,6 +434,11 @@ GRAPH_RULES = (
     # Research/decodes/2026-10-22_aridia-ground/README.md.
     ('materialgraph/environment/pokitaru/rock/pok_rock_blend_01/rp_ari_sand_mud_blend_colorbreak_01.',
      dict(g_mode='grey', self_lit_key=None, mud_blend=True, _graph_sha256=MUD_BLEND_GRAPH_SHA256)),
+    # E22E4D93 / 005F65CF deferred writers: Novalis crater pits. A per-vertex paint scalar V blends the crater colour at UV0 into a
+    # world-planar grass breakup colour, and the crater F0/gloss image at UV0 into itself at UV0 x CB2[1]; the normal is
+    # not reduced for the second writer. Research/captures/2026-10-23_clank-antenna/CRATER_DECODE.md (local).
+    ('materialgraph/environment/pokitaru/rock/pok_rock_blend_01/rp_nov_grass_dirt_blend_colorbreakup_01.',
+     dict(g_mode='grey', self_lit_key=None, crater_blend=True, _graph_sha256=CRATER_BLEND_GRAPH_SHA256)),
     # CC985D80 forward program (pass 0) of the Aridia sludge: the GroundPuddles material front end with a UV0 x CB2[2] colour
     # and normal, an unrotated noise coordinate and wet/dry scales on the gloss input and F0; same research folder.
     ('materialgraph/environment/kalebo/rp_ari_sludge_puddle.',
@@ -1188,6 +1194,20 @@ def material_texture_paths(archive, material_path: str) -> dict:
             mud_darken=value(0x4295546E, 0.0), gloss_scale=value(0x1740B4FC, 1.0), f0_scale=value(0x178F50EF, 1.0),
             f0_bias=value(0x6F0C6E9C, 0.0), grain_uv_scale=value(0xE57867BC, 1.0), sand_normal_uv_scale=value(0xEAFB70CB, 1.0),
             sand_normal_strength=value(0x75BDFD17, 1.0), world_axes='native x, z', writer='8A581B9D')
+    if rule.get('crater_blend'):
+        # E22E4D93 pass 0, API = 5 + resource index: 6/7 crater F0/gloss (_g, sampled at UV0 and UV0 x CB2[1]), 8 crater colour,
+        # 9 the world-planar grass breakup colour (_c); 005F65CF adds 10 the crater normal (_n). The first `_c` the material
+        # names is the breakup image, so the crater colour is taken from its own slot.
+        instance = texture_slots(data, MATERIAL_SLOT_SECTION)
+        wanted = {'_n': 0x49A7866BFD635A5D, '_g': 0x49A7866B1576D848, '_c': 0x49A7866BF9937BC9, '_crater_c': 0x49A7866BE5530642}
+        for role, slot in wanted.items():
+            path = instance.get(slot) or slots.get(slot)
+            if path: result[role] = path
+            else: result.pop(role, None)
+        result.update(spec=1.0, gloss=1.0)
+        result['graph_identity'] = dict(path=rule['graph_path'], sha256=rule['graph_sha256'])
+        result['crater_blend'] = dict(world_tile=value(0xFD70EF49, 5.0), g_uv_scale=value(0xEAFB70CB, 8.0),
+            crater_uv_scale=value(0x1E4C8909, 1.0), paint_default=0.0, world_axes='native x, z', writer='E22E4D93')
     if rule.get('coral_blend'):
         # 35571F99 pass 0, API = 5 + resource index: 5 rock normal (_n), 6 coral colour (_c), 9 coral F0/gloss (_g), 11 wavy and
         # 12 coral normals, 16 wavy and 17 rock colours, 7 and 8 the rock-file and default sand F0/gloss images, 10 the cma
@@ -2005,6 +2025,22 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
                     entry['mud_blend'] = dict(entry['mud_blend'], unresolved_layers=True, volume_error=str(exc))
             else:
                 entry['mud_blend'] = dict(entry['mud_blend'], unresolved_layers=True)
+        if paths.get('crater_blend'):
+            entry['crater_blend'] = paths['crater_blend']
+            # The crater colour is the single slice of the rock volume on unit 15; the grass breakup colour is `_c`.
+            path = paths.get('_crater_c')
+            if path: cached(archive, cache, path)
+            crater = with_pixels(archive, cache, path) if path else None
+            if crater and all(entry.get(role) for role in ('_c', '_g')):
+                try:
+                    volume = rock_texture_volume([crater])
+                    entry['_rock_volume'] = volume
+                    entry['crater_blend']['scales'] = (volume['scales'] + [(1.0, 1.0)] * 3)[:4]
+                    entry['crater_blend']['extra_srgb'] = [bool(crater.get('srgb')), False, False]
+                except ValueError as exc:
+                    entry['crater_blend'] = dict(entry['crater_blend'], unresolved_layers=True, volume_error=str(exc))
+            else:
+                entry['crater_blend'] = dict(entry['crater_blend'], unresolved_layers=True)
         if paths.get('grass_blend'):
             entry['grass_blend'] = paths['grass_blend']
             # Rock colour, tile colour and the second F0/gloss image share the rock volume on unit 15

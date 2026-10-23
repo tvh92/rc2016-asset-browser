@@ -253,6 +253,7 @@ uniform bool uRockBlend; uniform sampler3D uRockTex; uniform vec3 uRockSrgb;
 uniform vec4 uRockScale0; uniform vec4 uRockScale1;
 uniform vec3 uRockTint; uniform vec4 uRockP; // exponent, tint amount, mask strength, sharpness
 uniform vec3 uRockBreakup; // A3DAA047: enabled, 1/max(1e-5, world tile T), layer UV scale U
+uniform bool uCraterBlend; uniform vec4 uCraterP; // E22E4D93: 1/world tile CB2[3], g UV scale CB2[1], squared paint V for vertices without paint (review control), crater UV scale CB2[4]
 uniform bool uMudBlend; uniform vec4 uMudP0; uniform vec4 uMudP1; uniform vec4 uMudP2; // uMudP2: grain UV scale CB2[10], sand normal UV scale CB2[9], sand normal strength CB2[2]
 // // 8A581B9D: (CB2[1], CB2[6], 1/world tile CB2[8], 1 - CB2[5]), (sand UV scale CB2[4], mud UV scale CB2[7], gloss scale CB2[0], mud F0 factor)
 uniform vec4 uPuddleSludge; // CC985D80: (CB2[2] UV scale, CB2[13] dry gloss scale, CB2[14] dry F0 scale, enabled)
@@ -806,6 +807,20 @@ void main() {
         if (uRockSrgb.z > 0.5) g9 = linear(g9);
         rockG = mix(g8, g9, gw);
     }
+    if (uMode == 2 && uCraterBlend) {
+        // E22E4D93: V = the keyed paint alpha squared (the unmatched value is a review control: the pit is dark in the game, so 0);
+        // albedo = lerp(crater colour at UV0 x CB2[4], grass breakup colour at native world (x, z) / CB2[3], V);
+        // F0 and the gloss input = lerp(g at UV0, g at UV0 x CB2[1], V). The self-lit term is 0 and the normal is the material's.
+        float cv = vGroundBlend.z > 0.5 ? vRockAlpha : uCraterP.z;
+        vec3 craterC = texture3D(uRockTex, vec3(fract(vUV * uCraterP.w) * uRockScale0.xy, 0.5)).rgb;
+        if (uRockSrgb.x > 0.5) craterC = linear(craterC);
+        vec3 breakC = uHasC ? texture2D(uTexC, vTintWorldPos.xz * uCraterP.x).rgb : vec3(0.0);
+        if (uSrgbC) breakC = linear(breakC);
+        albedo = mix(craterC, breakC, cv);
+        vec3 gc1 = uHasG ? texture2D(uTexG, vUV).rgb : vec3(0.0); if (uSrgbG) gc1 = linear(gc1);
+        vec3 gc2 = uHasG ? texture2D(uTexG, vUV * uCraterP.y).rgb : vec3(0.0); if (uSrgbG) gc2 = linear(gc2);
+        rockG = vec3(mix(gc1.r, gc2.r, cv), mix(gc1.g, gc2.g, cv), 0.0);
+    }
     if (uMode == 2 && uMudBlend) {
         // 8A581B9D: weight w (mudWeight); albedo = lerp((1 - CB2[5]) mud colour at UV0 x CB2[7], breakup colour at native world
         // (x, z) / CB2[8], w); F0 = lerp(CB2[3] sat(0.3 + 0.3 CB2[11]) mud g.G, sand g.G at UV0 x CB2[4], w);
@@ -980,7 +995,7 @@ void main() {
             if (uFlatSurface) { F0 = vec3(uFlatSpec.x); gloss = sqrt(clamp(uFlatSpec.y, 0.0, 1.0)); }
             if (uVictorReticle) { F0 = uReticleF0; gloss = 0.0; }
             if (uTintVariant >= 3) gloss = sqrt(clamp(uGlossScale * gl.r * 2.0 * tintDetailMask, 0.0, 1.0));
-            if (uRockBlend || uGrassBlend || uMudBlend || uCoralBlend || uSedKind != 0) { F0 = vec3(uSpecScale*rockG.g); gloss = sqrt(clamp(uGlossScale*rockG.r, 0.0, 1.0)); }
+            if (uRockBlend || uGrassBlend || uMudBlend || uCraterBlend || uCoralBlend || uSedKind != 0) { F0 = vec3(uSpecScale*rockG.g); gloss = sqrt(clamp(uGlossScale*rockG.r, 0.0, 1.0)); }
             if (uTwoColorMetal) gloss = sqrt(clamp(uGlossScale * gl.r * (1.0 - metalRim), 0.0, 1.0));
             F0 *= uSpecTint;
             vec3 F90 = clamp(60.0 * F0, 0.0, 1.0);
@@ -1438,7 +1453,7 @@ def glass_uniforms(forward, time=None):
 
 OPAQUE_UNIFORMS = (
     "uPuddles", "uPuddleTex", "uHasPuddleAtlas", "uPuddle0", "uPuddle1", "uPuddle2", "uPuddle3", "uPuddleNoiseScale", "uPuddleRippleScale",
-    "uRockBlend", "uMudBlend", "uMudP0", "uMudP1", "uMudP2", "uPuddleSludge", "uGrassBlend", "uGrassP", "uSedKind", "uSedA", "uSedB", "uSedPaint", "uSedScale", "uSedSrgb", "uCoralBlend", "uCoralA", "uCoralB", "uCoralNoise", "uCoralScroll", "uCoralPaint", "uCoralScale", "uCoralSrgb", "uRockTex", "uRockSrgb", "uRockScale0", "uRockScale1", "uRockTint", "uRockP", "uRockBreakup",
+    "uRockBlend", "uCraterBlend", "uCraterP", "uMudBlend", "uMudP0", "uMudP1", "uMudP2", "uPuddleSludge", "uGrassBlend", "uGrassP", "uSedKind", "uSedA", "uSedB", "uSedPaint", "uSedScale", "uSedSrgb", "uCoralBlend", "uCoralA", "uCoralB", "uCoralNoise", "uCoralScroll", "uCoralPaint", "uCoralScale", "uCoralSrgb", "uRockTex", "uRockSrgb", "uRockScale0", "uRockScale1", "uRockTint", "uRockP", "uRockBreakup",
     "uSkin", "uBoneTex", "uBoneWidth", "uMode", "uColor", "uTexC", "uTexG", "uTexN", "uHasC", "uHasG", "uHasN",
     "uSrgbC", "uSrgbG", "uGMode", "uSpecScale", "uGlossScale", "uSelfLitG", "uK",
     "uTwoColorMetal", "uMetalDiffuseA", "uMetalDiffuseB", "uMetalSpecA", "uMetalSpecB", "uMetalP",

@@ -1946,6 +1946,23 @@ def apply_viewer_graph_rule(mat, source):
                           'models without a colour stream use alpha 1; the sand breakup colour uses object-space (model) native x, z, '
                           'the game world position; normal strength CB0[95] and the instance fade are taken as 1 and 0; the F0 '
                           'is clamped to 1 for display')
+        if on('crater_blend'):        # E22E4D93: the paint scalar V blends the crater colour into the world-planar grass breakup colour
+            cb = terms['crater_blend']
+            attr = P.N.new('ShaderNodeAttribute'); attr.attribute_name = 'Color'; attr.name = 'VR vertex colour (missing = alpha 1)'
+            va = P.m('MULTIPLY', attr.outputs['Alpha'], attr.outputs['Alpha'])
+            cs, gs = P.const('crater blend crater uv scale', cb['crater_uv_scale']), P.const('crater blend g uv scale', cb['g_uv_scale'])
+            crater_c = P.tex(img('_crater_c'), P.game_uv(cs, cs), 'crater blend crater colour').outputs['Color']
+            wx, _, wz = P.sep(P.native_position())
+            inv_t = P.m('DIVIDE', 1.0, P.m('MAXIMUM', P.const('crater blend world tile', cb['world_tile']), 1e-5))
+            grass_c = P.tex(c, P.gl_coord(P.m('MULTIPLY', wx, inv_t), P.m('MULTIPLY', wz, inv_t)), 'crater blend grass colour').outputs['Color']
+            albedo = P.vlerp(crater_c, grass_c, va)
+            if g is not None:
+                g_far = P.sep(P.tex(g, P.game_uv(gs, gs), 'crater blend second g').outputs['Color'])
+                rock_g = P.comb(P.lerp(gR, g_far[0], va), P.lerp(gG, g_far[1], va), 0.0)
+            limits.append('crater_blend: V is the squared vertex alpha (the viewer feeds the zone-keyed paint, the pit interior without keys '
+                          'takes V = 0 there; a model without a colour stream uses alpha 1, which draws grass); V as paint byte 3 is inferred; '
+                          'the grass breakup colour uses object-space (model) native x, z, the game world position; the second writer\'s '
+                          'normal composition is not reduced and the material normal is used')
         world_uv = detail_mask = None
         if tint and variant in ('world', 'world_normal'):   # 69424FA0: dominant-axis native world projection
             wn = P.native_normal(); nx, ny, nz = P.sep(wn); ax, ay, az = P.sep(P.v('ABSOLUTE', wn))

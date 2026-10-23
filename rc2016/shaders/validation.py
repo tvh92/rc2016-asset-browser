@@ -488,6 +488,10 @@ def _viewer_expected_constants(rule):
                   "mud blend gloss scale": r["gloss_scale"], "mud blend grain uv scale": r["grain_uv_scale"],
                   "mud blend sand normal uv scale": r["sand_normal_uv_scale"], "mud blend sand normal strength": r["sand_normal_strength"],
                   "mud blend mud F0 factor": r["f0_scale"] * min(1.0, max(0.0, .3 + .3 * r["f0_bias"]))})
+    if "crater_blend" in ported:
+        r = terms["crater_blend"]
+        e.update({"crater blend crater uv scale": r["crater_uv_scale"], "crater blend g uv scale": r["g_uv_scale"],
+                  "crater blend world tile": r["world_tile"]})
     if "coral_blend" in ported:
         r = terms["coral_blend"]
         e.update({"coral blend height width": r["height_width"], "coral blend water top": r["water_top"],
@@ -663,6 +667,9 @@ def _viewer_required(rule, has_n):
         if has_n:
             names += ["mud blend grain uv scale", "mud blend sand normal uv scale", "mud blend sand normal strength"]
         req("_mud_h", "_mud_c", "_mud_g2", *(("_mud_n7", "_mud_n8") if has_n else ()))
+    if "crater_blend" in ported:
+        names += ["crater blend crater uv scale", "crater blend g uv scale", "crater blend world tile"]
+        req("_crater_c")
     if "coral_blend" in ported:
         names += ["coral blend height width", "coral blend water top", "coral blend water fade", "coral blend coral F0",
                   "coral blend coral gloss", "coral blend base F0", "coral blend base gloss", "coral blend blur scale",

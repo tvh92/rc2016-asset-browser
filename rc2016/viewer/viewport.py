@@ -859,6 +859,10 @@ class ModelViewport(_TkFrame):
             if entry.get('_rock_volume'):
                 uploaded['_rock_volume'] = (self._upload_rock_volume(entry['_rock_volume']), False)
                 uploaded['mud_blend']['scales'] = entry['_rock_volume']['scales']
+        if entry.get('crater_blend'):
+            uploaded['crater_blend'] = dict(entry['crater_blend'])
+            if entry.get('_rock_volume'):
+                uploaded['_rock_volume'] = (self._upload_rock_volume(entry['_rock_volume']), False)
         if entry.get('grass_blend'):
             uploaded['grass_blend'] = dict(entry['grass_blend'])
             if entry.get('_rock_volume'):
@@ -1518,6 +1522,7 @@ class ModelViewport(_TkFrame):
         rock = entry.get('rock_blend') or {}
         grass = entry.get('grass_blend') or {}
         mud = entry.get('mud_blend') or {}
+        crater = entry.get('crater_blend') or {}
         volume = entry.get('_rock_volume')
         sh.glActiveTexture(self.GL_TEXTURE0 + 15); gl.glBindTexture(0x806F, volume[0] if volume else 0)
         sh.glUniform1i(u['uRockTex'],15); sh.glUniform1i(u['uRockBlend'],1 if rock and volume and level == 2 else 0)
@@ -1528,6 +1533,9 @@ class ModelViewport(_TkFrame):
                        float(mud.get('f0_scale',1.))*min(1.,max(0.,.3+.3*float(mud.get('f0_bias',0.)))))
         sh.glUniform4f(u['uMudP2'],float(mud.get('grain_uv_scale',1.)),float(mud.get('sand_normal_uv_scale',1.)),
                        float(mud.get('sand_normal_strength',1.)),0.)
+        sh.glUniform1i(u['uCraterBlend'],1 if crater and volume and not crater.get('unresolved_layers') and level == 2 else 0)
+        sh.glUniform4f(u['uCraterP'],1./max(1e-5,float(crater.get('world_tile',1.))),float(crater.get('g_uv_scale',1.)),
+                       float(getattr(self,'crater_paint_default',crater.get('paint_default',0.)))**2,float(crater.get('crater_uv_scale',1.)))
         sh.glUniform1i(u['uGrassBlend'],1 if grass and volume and not grass.get('unresolved_layers') and level == 2 else 0)
         sh.glUniform4f(u['uGrassP'],*(float(grass.get(k,d)) for k,d in (('threshold',.6),('uv_scale',1.),('layer_uv_scale',1.))),
                        1./max(1e-5,float(grass.get('world_tile',1.))))
@@ -1559,8 +1567,8 @@ class ModelViewport(_TkFrame):
             sh.glUniform1f(u['uSedPaint'], float(fallback[0]) ** 2)
             sh.glUniform2fv(u['uSedScale'], 5, (ctypes.c_float * 10)(*(float(x) for pair in sed.get('scales', [(1., 1.)] * 5) for x in pair)))
             sh.glUniform1fv(u['uSedSrgb'], 5, (ctypes.c_float * 5)(*(1.0 if x else 0.0 for x in sed.get('extra_srgb', (False,) * 5))))
-        sh.glUniform3f(u['uRockSrgb'],*[float(x) for x in (rock or grass or mud).get('extra_srgb',(False,)*3)][:3])
-        scales = (rock or grass or mud).get('scales',[(1.,1.)]*4)
+        sh.glUniform3f(u['uRockSrgb'],*[float(x) for x in (rock or grass or mud or crater).get('extra_srgb',(False,)*3)][:3])
+        scales = (rock or grass or mud or crater).get('scales',[(1.,1.)]*4)
         sh.glUniform4f(u['uRockScale0'],*scales[0],*scales[1]); sh.glUniform4f(u['uRockScale1'],*scales[2],*scales[3])
         sh.glUniform3f(u['uRockTint'],*(float(x) for x in rock.get('tint',(1.,)*3)))
         sh.glUniform4f(u['uRockP'],*(float(rock.get(k,d)) for k,d in (('exponent',1.),('tint_amount',0.),('mask_strength',1.),('sharpness',1.))))
