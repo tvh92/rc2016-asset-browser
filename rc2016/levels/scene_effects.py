@@ -1,6 +1,7 @@
 """Live scene buffers and viewer-allocated key shadows; native selection is unproven."""
 import ctypes as C
 import time
+from rc2016.levels.capture_calibration import frame
 AO_UNIT, SHADOW_UNIT = 16, 17
 GRID_UNITS = (19, 20, 21)   # lightgrid tile table, colour atlas, direction/plane atlas (unit 18 is the display table)
 # Scene content changes (models, instances, materials) arrive many times a second during a load; each
@@ -24,6 +25,9 @@ ATMOSPHERE_LIGHTING = 'Level atmosphere'
 
 def shadow_ambient(atmosphere):
     """The ambient factor under cast shadow for an atmosphere path: ``LEVEL_SHADOW_AMBIENT`` or ``SHADOW_AMBIENT``."""
+    captured = frame(atmosphere)
+    if captured:
+        return captured['shadow_ambient']
     return LEVEL_SHADOW_AMBIENT.get((atmosphere or '').lower(), SHADOW_AMBIENT)
 
 
@@ -224,12 +228,12 @@ class SceneEffects:
         grid=self._grid_ready(view) if ready else None
         sh.glUniform1i(u.get('uGridOn',-1),int(grid is not None))
         if grid is not None:
-            from rc2016.levels.lightgrid import AMBIENT_SCALE,SKY_TERM_SCALE
+            from rc2016.levels.lightgrid import SKY_TERM_SCALE,ambient_scale
             for name,unit,texture in zip(('uGridTable','uGridColour','uGridDirQ'),GRID_UNITS,self.grid_textures):
                 sh.glUniform1i(u.get(name,-1),unit);sh.glActiveTexture(0x84C0+unit);gl.glBindTexture(0x806F,texture)
             sh.glActiveTexture(0x84C0)
             self.uniform_matrix(u.get('uGridFromView',-1),1,0,(C.c_float*16)(*self.view_to_native.T.flat))
-            self.uniform2(u.get('uGridParams',-1),(getattr(view,'_sky',None) or {}).get('sky_scale') or SKY_TERM_SCALE,AMBIENT_SCALE)
+            self.uniform2(u.get('uGridParams',-1),(getattr(view,'_sky',None) or {}).get('sky_scale') or SKY_TERM_SCALE,ambient_scale((getattr(view,'_sky',None) or {}).get('atmosphere')))
             sh.glUniform3f(u.get('uGridInvSize',-1),*(1.0/s for s in self.grid_size))
         sh.glUniform1i(u['uSceneEnabled'],int(ready));sh.glUniform1i(u.get('uSceneGeometry',-1),int(view._scene_geometry))
         sh.glUniform1i(u['uSceneAOEnabled'],int(ready and view.scene_ao and self.ao_valid and bool(self.ao_texture)))

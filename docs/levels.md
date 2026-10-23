@@ -330,6 +330,23 @@ Novalis data: 727 tiles, 2,977,792 cells; 51 % have `w` = 255 (open) and 49 % `w
 
 **Effect** (Novalis, display luminance, grid on against off, same camera): open ground view p10, p50, p90 0.031, 0.112, 0.475 against 0.019, 0.131, 0.500; city view 0.034, 0.119, 0.543 against 0.012, 0.138, 0.574. The darkest tenth of the changed pixels is 37 to 65 % darker (shade under trees and overhangs) and the median 17 % brighter, so the lit-to-shade spread widens; shade hue moves slightly towards the sky colour. The frame costs about 7 to 20 ms more at 1600 x 900 (40 to 69 ms without, on a busy GPU), the 48 fetches per fragment running in each scene-effect material pass.
 
+#### Captured frame values (`capture_calibration.py`)
+
+A shadPS4 RenderDoc capture of one Novalis frame (camera at native 140.07, 63.60, 151.75; its sun ray equals the Novalis atmosphere's) gives the runtime values the viewer otherwise fits by eye. They replace the screenshot calibrations for the Novalis atmosphere only; every other level keeps the values described elsewhere in this document.
+
+| Value | Source in the capture | Novalis | Used for |
+| --- | --- | --- | --- |
+| Display exposure | composite pass buffer 0, dword 1 | 3.6098 (Veldin 4.5538) | `level_exposure_stops` |
+| Key light colour | lighting pass CB0 dwords 124 to 126 | 3.948, 4.508, 3.389 | the sun (times pi, the viewer's diffuse divides by pi); the atmosphere RGB96 is 5.6, 7.7 and 5.9 times smaller |
+| Ambient | lighting pass irradiance buffer (binding 12) | equals the lightgrid light at the atmosphere's own sky-term scale 1.75: ratio 0.92 to 0.97, correlation 0.85 over 6000 pixels | `lightgrid.ambient_scale` = pi (was the fitted 13.8) |
+| Probe SH fallback | the same buffer at a world-up normal (0.88, 0.74, 0.64) | scale 1.25 (was 5.0) | where the grid has no cells |
+| Shadow ambient | the game's ambient is not reduced in cast shadow | 1.0 (was 0.05) | `scene_effects.shadow_ambient` |
+| Fog | CB0 dwords 72 to 91 and 112 to 114 | density scale 0.0083484, exponent 2.08, start 0, colour 1.304, 3.302, 4.703, horizontal-ray factor 1.73 | `fog.fog_state` |
+
+The fog ramps (CB0 dwords 72 to 87) reproduce the header knots and the camera height to 1e-7, and the `-ln(1 - d)` mapping holds on all three knots, so the fog scale, exponent, start and colour are per level (Veldin: 0.0099397, 1.45, 13.2006). The game forms the last ramp with a negative width where the knots are out of order (926 then 400); both its densities are 0, so it adds no fog and the viewer's empty ramp is equivalent.
+
+Limits: one frame. The exposure is adapted to the scene, so it is that frame's value; the glow amplitude (CB0 dword 115) is 0.277, close to 1 / exposure, where the Veldin frame held 0.01. The grid fit samples the lightgrid at positions rebuilt from the depth buffer, so lights the grid does not hold (authored lights, the sun) are not in the comparison. The viewer's sky dome, specular bands and AO keep their earlier calibrations, and the sun shadow map is still the viewer's own, not the game's 8192 x 4096 map.
+
 #### Display transform (`display.py`)
 
 The **Game (captured)** tonemap (`uTonemap` 2; only the level viewer offers it, and only the Level atmosphere lighting uses it, so the Viewer rig and Shared HDRI looks are unchanged) replaces the ACES fit with the game's own final display chain, applied by `gameDisplay` in `rc2016/viewer/shading.py` to the lit colour, the fogged colour and the sky alike: scene-linear colour times an exposure, a 1D tone curve over log2 in [-8, +5], the sRGB transfer function, then a 32x32x32 colour-grade LUT sampled trilinearly. `rc2016/levels/display.py` is the CPU reference and builds the one float texture (unit `GRADE_TEXTURE_UNIT`) the shader samples: the grade in rows 0 to 31 (blue slabs side by side) and the decimated curve in row 32.

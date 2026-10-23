@@ -39,7 +39,7 @@ class ShadowAmbientTests(unittest.TestCase):
     def test_a_fitted_atmosphere_overrides_the_novalis_factor(self):
         from rc2016.levels import scene_effects
         self.assertEqual(scene_effects.shadow_ambient('atmosphere/atm_Aridia/atm_Aridia.atmosphere'), 1.0)
-        self.assertEqual(scene_effects.shadow_ambient('atmosphere/atm_novalis/atm_novalis.atmosphere'), scene_effects.SHADOW_AMBIENT)
+        self.assertEqual(scene_effects.shadow_ambient('atmosphere/atm_veldin/atm_veldin.atmosphere'), scene_effects.SHADOW_AMBIENT)
         self.assertEqual(scene_effects.shadow_ambient(None), scene_effects.SHADOW_AMBIENT)
 
 

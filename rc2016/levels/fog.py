@@ -18,6 +18,8 @@ from __future__ import annotations
 import math
 import struct
 
+from rc2016.levels.capture_calibration import frame
+
 # Atmosphere header (section 0x02F06D4E, 131552 bytes) tail: five knot heights, then five densities.
 HEADER_SIZE = 131552
 KNOT_OFFSET = 131424
@@ -53,14 +55,15 @@ def optical_density(header_density, scale=FOG_DENSITY_SCALE):
     return scale * -math.log(max(1.0 - float(header_density), MIN_TRANSPARENCY))
 
 
-def build_ramps(profile, cam_y, scale=FOG_DENSITY_SCALE, exponent=FOG_EXPONENT, start=FOG_START):
+def build_ramps(profile, cam_y, scale=FOG_DENSITY_SCALE, exponent=FOG_EXPONENT, start=FOG_START, c88_ratio=1.0):
     """Runtime ramps (the shader's CB0[72..91] contents) for a camera at native height ``cam_y``.
 
     Ramp k spans knot k to k + 1 with t = clamp(a * (h - cam_y) + b) and density (2 * alpha * t + beta) * a
     along it, so ``a`` = 1 / width, ``b`` = a * (cam_y - h_k), and alpha, beta follow from the densities at
     the two knots. A knot pair that is not ascending (Novalis lists 926 then 400) is an empty ramp.
     ``c88`` / ``c89`` are the horizontal-ray form ``c88 * dist + c89`` (zero at the start distance): c88 is
-    the density at the camera height (the continuous limit; the capture holds 1.45 times that, unexplained)."""
+    the density at the camera height (the continuous limit) times ``c88_ratio``: the Veldin capture holds 1.45 times
+    that and the Novalis capture 1.73 times, unexplained."""
     heights, rho = profile['heights'], [optical_density(d, scale) for d in profile['densities']]
     a, b, alpha, beta = [], [], [], []
     for k in range(KNOTS - 1):
@@ -76,6 +79,7 @@ def build_ramps(profile, cam_y, scale=FOG_DENSITY_SCALE, exponent=FOG_EXPONENT, 
     for k in range(KNOTS - 1):
         if a[k] and 0.0 < b[k] < 1.0:
             c88 += (2.0 * alpha[k] * b[k] + beta[k]) * a[k]
+    c88 *= c88_ratio
     return dict(a=a, b=b, alpha=alpha, beta=beta, c88=c88, c89=-c88 * start, exponent=float(exponent),
                 start=float(start))
 
@@ -131,14 +135,21 @@ def apply_fog(colour, transmittance, fog_colour):
 
 def fog_state(sky, lighting, cam_y, enabled=True):
     """Fog values for a frame, or None for no fog: only for the Level atmosphere lighting with an authored
-    profile (``sky['fog']``), a captured clear-sky profile for the colour, and ``enabled``.
+    profile (``sky['fog']``), a captured clear-sky profile for the colour (or a captured frame of the atmosphere,
+    ``capture_calibration``, which gives the colour and the density scale, exponent and start itself), and ``enabled``.
     Returns {'colour': RGB, 'ramps': build_ramps(...)}."""
     sky = sky or {}
-    colour = fog_colour(sky.get('clear_sky'))
+    captured = frame(sky.get('atmosphere'))
+    captured = captured['fog'] if captured else None
+    colour = tuple(captured['colour']) if captured else fog_colour(sky.get('clear_sky'))
     profile = sky.get('fog')
     if not enabled or lighting != 'Level atmosphere' or colour is None or not profile:
         return None
-    return dict(colour=colour, ramps=build_ramps(profile, float(cam_y)))
+    if captured:
+        ramps = build_ramps(profile, float(cam_y), captured['scale'], captured['exponent'], captured['start'], captured['c88_ratio'])
+    else:
+        ramps = build_ramps(profile, float(cam_y))
+    return dict(colour=colour, ramps=ramps)
 
 
 def uniform_values(state):

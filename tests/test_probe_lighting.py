@@ -171,7 +171,8 @@ class LevelExposureTests(unittest.TestCase):
         from rc2016.levels.display import EXPOSURE_MULTIPLIER
         stops = pl.level_exposure_stops('atmosphere/atm_Aridia/atm_Aridia.atmosphere')
         self.assertAlmostEqual(EXPOSURE_MULTIPLIER * 2.0 ** stops, 8.2, places=6)
-        self.assertEqual(pl.level_exposure_stops('atmosphere/atm_novalis/atm_novalis.atmosphere'), pl.REVIEW_EXPOSURE_STOPS)
+        self.assertAlmostEqual(EXPOSURE_MULTIPLIER * 2.0 ** pl.level_exposure_stops('atmosphere/atm_Novalis/atm_Novalis.atmosphere'), 3.60977, places=4)
+        self.assertEqual(pl.level_exposure_stops('atmosphere/atm_veldin/atm_veldin.atmosphere'), pl.REVIEW_EXPOSURE_STOPS)
         self.assertEqual(pl.level_exposure_stops(None), pl.REVIEW_EXPOSURE_STOPS)
 
     def test_grid_maps_use_the_levels_exposure_unless_given_one(self):

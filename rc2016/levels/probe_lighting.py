@@ -39,6 +39,7 @@ from pathlib import Path
 
 from rc2016.formats.archive import decompress
 from rc2016.formats.bc6h import decode_bc6h
+from rc2016.levels.capture_calibration import frame
 
 ROOT = Path(__file__).resolve().parents[2]
 CACHE_DIR = ROOT / '.cache' / 'environment'
@@ -213,7 +214,8 @@ def level_exposure_stops(atmosphere):
     """Exposure in stops over the captured one for an atmosphere path: ``LEVEL_EXPOSURE_MULTIPLIER`` or
     ``REVIEW_EXPOSURE_STOPS``."""
     from rc2016.levels.display import EXPOSURE_MULTIPLIER
-    multiplier = LEVEL_EXPOSURE_MULTIPLIER.get((atmosphere or '').lower())
+    captured = frame(atmosphere)
+    multiplier = captured['exposure'] if captured else LEVEL_EXPOSURE_MULTIPLIER.get((atmosphere or '').lower())
     return REVIEW_EXPOSURE_STOPS if multiplier is None else math.log2(multiplier / EXPOSURE_MULTIPLIER)
 
 
@@ -350,9 +352,16 @@ def level_environment(archive, sky, exposure_stops=None, diffuse_scale=None, lig
             temporary.replace(cache)
         except OSError:
             pass
+    captured = frame(sky['atmosphere']) if diffuse_scale is None else None
+    if captured:
+        # the captured frame's key light (game units, no 1/pi) and SH scale replace the screenshot calibration
+        scale = captured['sh_scale']
+        maps['sun'] = (np.array(captured['key_colour'], np.float32) * math.pi).astype(np.float32)
+    else:
+        maps['sun'] = (maps['sun'] * scale).astype(np.float32)
     maps['sh'] = (maps['sh'] * scale).astype(np.float32)
-    maps['sun'] = (maps['sun'] * scale).astype(np.float32)
-    maps.update(strength=1.0, exposure=stops, atmosphere=sky['atmosphere'], sun_rgb=list(rgb), diffuse_scale=scale, **info)
+    maps.update(strength=1.0, exposure=stops, atmosphere=sky['atmosphere'], sun_rgb=list(rgb), diffuse_scale=scale,
+                captured_frame=bool(captured), **info)
     return maps
 
 

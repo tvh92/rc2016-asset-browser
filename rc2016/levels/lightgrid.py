@@ -58,6 +58,14 @@ AMBIENT_SCALE = 13.8
 LUMA = (0.2126, 0.7152, 0.0722)
 
 
+def ambient_scale(atmosphere):
+    """Grid units to the viewer's ambient units for an atmosphere path: pi where a captured frame shows the grid is in
+    game units (``capture_calibration``), else the fitted ``AMBIENT_SCALE``."""
+    from rc2016.levels.capture_calibration import frame
+    captured = frame(atmosphere)
+    return captured['grid_ambient_scale'] if captured else AMBIENT_SCALE
+
+
 def float_from_bits(bits, mantissa_bits):
     """Unsigned small float of ``mantissa_bits`` (6 for the 11-bit channels, 5 for the 10-bit one) and 5
     exponent bits; the infinity and NaN exponent decodes as 0, which the viewer treats as no light."""
@@ -347,5 +355,5 @@ def level_lightgrid(archive, zone_paths, workers=None, night=False):
     return pack_tiles(cells, coordinates)
 
 
-__all__ = ['AMBIENT_SCALE', 'LightGrid', 'SKY_TERM_SCALE', 'cell_index', 'cell_light', 'corner_validity', 'decode_cells',
+__all__ = ['AMBIENT_SCALE', 'ambient_scale', 'LightGrid', 'SKY_TERM_SCALE', 'cell_index', 'cell_light', 'corner_validity', 'decode_cells',
            'decode_r11g11b10', 'level_lightgrid', 'pack_tiles', 'table_slot', 'tile_of']

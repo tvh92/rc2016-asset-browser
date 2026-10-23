@@ -672,6 +672,11 @@ class LevelViewport(ModelViewport):
                     f"(inferred), sun RGB96 ({sun}) from the atmosphere, scaled by {maps.get('diffuse_scale', 1.0):.2f} (visual calibration). "
                     f"Display exposure x{2.0 ** float(maps.get('exposure', 0.0)):.2f} over the captured one (a fit to one in-game frame where it differs from 1). Display: the captured game tone curve and grade.")
         probe = maps["probe"].rsplit("/", 2)[-2]
+        if maps.get("captured_frame"):
+            key = ", ".join(f"{float(x) / math.pi:.2f}" for x in maps["sun"])
+            return (f"Level atmosphere: probe {probe} ambient, key light ({key}), display exposure and fog from the shadPS4 capture of one "
+                    f"frame of this level (game units; the exposure is adapted, so it is that frame's value). Display: the captured game tone curve and grade."
+                    + (" Ambient: baked lightgrid in game units (matches the captured irradiance buffer)." if maps.get("lightgrid") is not None else ""))
         return (f"Level atmosphere: probe {probe} ambient, sun RGB96 ({sun}) from the atmosphere. Review preview: "
                 f"sun-to-sky scale is undecoded; diffuse light is scaled by {maps.get('diffuse_scale', 1.0):.2f} "
                 f"to match one in-game screenshot (visual calibration). Display: the captured game tone curve and grade."
