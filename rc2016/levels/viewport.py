@@ -670,7 +670,7 @@ class LevelViewport(ModelViewport):
         if maps.get("probe") is None:
             return (f"Level atmosphere: no reflection probe in this level; ambient and specular are the level-average baked lightgrid "
                     f"(inferred), sun RGB96 ({sun}) from the atmosphere, scaled by {maps.get('diffuse_scale', 1.0):.2f} (visual calibration). "
-                    f"The exposure is the fixed captured one, so a level authored dim renders dim. Display: the captured game tone curve and grade.")
+                    f"Display exposure x{2.0 ** float(maps.get('exposure', 0.0)):.2f} over the captured one (a fit to one in-game frame where it differs from 1). Display: the captured game tone curve and grade.")
         probe = maps["probe"].rsplit("/", 2)[-2]
         return (f"Level atmosphere: probe {probe} ambient, sun RGB96 ({sun}) from the atmosphere. Review preview: "
                 f"sun-to-sky scale is undecoded; diffuse light is scaled by {maps.get('diffuse_scale', 1.0):.2f} "

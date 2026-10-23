@@ -35,6 +35,14 @@ def settle(view):
         view.pending.pop(0)()
 
 
+class ShadowAmbientTests(unittest.TestCase):
+    def test_a_fitted_atmosphere_overrides_the_novalis_factor(self):
+        from rc2016.levels import scene_effects
+        self.assertEqual(scene_effects.shadow_ambient('atmosphere/atm_Aridia/atm_Aridia.atmosphere'), 1.0)
+        self.assertEqual(scene_effects.shadow_ambient('atmosphere/atm_novalis/atm_novalis.atmosphere'), scene_effects.SHADOW_AMBIENT)
+        self.assertEqual(scene_effects.shadow_ambient(None), scene_effects.SHADOW_AMBIENT)
+
+
 class FogValuesTests(unittest.TestCase):
     """_fog_values always yields the full uniform tuple; a missing profile, sky or lighting means no fog."""
     PROFILE = dict(heights=(-100.0, -52.0, 386.0, 926.0, 400.0), densities=(1.0, 0.1, 0.002, 0.0, 0.0))

@@ -18,9 +18,11 @@ Veldin frame (the runtime tile buffer equals the archive tiles in bytes 0 to 19)
   weight is ``max(2^-18, trilinear_k v)``; the weights are renormalised to sum to 1. (The shader spells the
   ``-0.5`` as ``-4 (ox + oy + oz)``, the signed component sum.)
 
-Inferred, not decoded: ``S`` is a per-level runtime constant (2.33 in the Veldin capture) that the Novalis
-data does not reveal, so ``SKY_TERM_SCALE`` is a viewer calibration (docs/levels.md). So is ``AMBIENT_SCALE``,
-the factor from grid units to the viewer's ambient units. The grid holds baked indirect light only: the
+``S`` is the atmosphere's authored sky-term scale: the header float at offset 128 reads 2.33 in Veldin's atmosphere,
+the value the Veldin capture holds, and 1.75, 1.0 and so on elsewhere (``rc2016.levels.sky.sky_term_scale``);
+``SKY_TERM_SCALE`` is only the fallback when a header cannot be read.
+
+Inferred, not decoded: ``AMBIENT_SCALE``, the factor from grid units to the viewer's ambient units (docs/levels.md). The grid holds baked indirect light only: the
 authored lights of ``lighting.zone`` are drawn separately, and whether the game's baking already contains
 some of them is unknown, so the preview may count them twice in places.
 """
@@ -43,15 +45,16 @@ VALIDITY_FLOOR = 2.0 ** -18     # smallest corner weight, as in the shader
 COVER_GAIN = 4.0                # viewer choice: coverage is the valid trilinear weight times this, clamped to 1
 CELL_SECTION = 0x9989BB49       # DAT1 section that holds the 4096 cells
 PROBE_SELECTOR_SECTION = 0x96D77BBD
-# Visual calibration, not decoded data (docs/levels.md, Level atmosphere lighting). SKY_TERM_SCALE is the sky-term
-# scale S: a per-level runtime constant that the Veldin capture holds at 2.33 and Novalis does not reveal, so the
-# captured value is assumed. AMBIENT_SCALE converts grid units to the viewer's ambient units (diffuse is albedo *
-# ambient / pi). It was fitted, with S fixed, so that the mean display luminance of the pixels the grid changes
-# matches the reflection-probe ambient in two Novalis views (open ground and city: 1.03 and 0.97 at 11). The grid
-# is directional and occluded, so this is 2 times what an up-facing normal needs to match the probe at open-sky
-# cells (5.4), and 3.5 times pi, the factor of a grid that stores E / pi.
+# SKY_TERM_SCALE is the sky-term scale S used when an atmosphere's own (``sky.sky_term_scale``, header offset 128) is
+# unreadable; 2.33 is the Veldin capture's. Visual calibration, not decoded data (docs/levels.md, Level atmosphere
+# lighting): AMBIENT_SCALE converts grid units to the viewer's ambient units (diffuse is albedo * ambient / pi). It was
+# fitted, with S assumed 2.33, so that the mean display luminance of the pixels the grid changes matches the
+# reflection-probe ambient in two Novalis views (open ground and city: 1.03 and 0.97 at 11). Novalis' own S is 1.75,
+# which lowers the level-average grid light by 1.255, so the scale keeps that calibration at 11 x 1.255 = 13.8. The
+# grid is directional and occluded, so this is about 2.5 times what an up-facing normal needs to match the probe at
+# open-sky cells and 4.4 times pi, the factor of a grid that stores E / pi.
 SKY_TERM_SCALE = 2.33
-AMBIENT_SCALE = 11.0
+AMBIENT_SCALE = 13.8
 LUMA = (0.2126, 0.7152, 0.0722)
 
 

@@ -113,6 +113,26 @@ def fog_profile(atmosphere_data):
     return read_profile(header) if header is not None else None
 
 
+SKY_SCALE_OFFSET = 128       # float32 in the 131552-byte header: the lightgrid sky-term scale S
+
+
+def sky_term_scale(atmosphere_data):
+    """The lightgrid sky-term scale S of an atmosphere (header float at offset 128), or None if unreadable.
+
+    Decoded by value: Veldin's reads 2.33 and Veldin night's 2.5, and 2.33 is the value the shadPS4 capture of one
+    Veldin frame holds for the lightgrid's sky term (``rc2016.levels.lightgrid``). The other atmospheres hold 1.0
+    (most), 1.75 (Novalis) and values up to 10, so S is authored per atmosphere. Only the one capture confirms the
+    field, so its role elsewhere is an inference from that match."""
+    try:
+        header = _header_section(atmosphere_data)
+    except (ValueError, KeyError, struct.error):   # not a decodable atmosphere container
+        return None
+    if header is None or len(header) < SKY_SCALE_OFFSET + 4:
+        return None
+    value = struct.unpack_from('<f', header, SKY_SCALE_OFFSET)[0]
+    return float(value) if math.isfinite(value) and 0.0 <= value <= 64.0 else None
+
+
 def colour_grade(atmosphere_data):
     """The atmosphere's 32x32x32 colour-grade LUT as raw R8G8B8A8 bytes (``rc2016.levels.display.grade_from_header``), or None."""
     from rc2016.levels.display import GRADE_BYTES, GRADE_OFFSET
@@ -291,7 +311,7 @@ def lighting_reflection(archive, zone_paths, night=False, position=None):
 
 def level_sky(archive, zone_paths, profile=True, probe_position=None):
     """The sky of a level, from its zone list: {'atmosphere', 'night', 'sun_ray', 'domes', 'unsupported',
-    'sun_rgb', 'clear_sky', 'fog' (authored height-fog profile or None), 'grade' (colour-grade LUT bytes or None),
+    'sun_rgb', 'sky_scale' (``sky_term_scale`` or None), 'clear_sky', 'fog' (authored height-fog profile or None), 'grade' (colour-grade LUT bytes or None),
     'reflection', 'reflection_source', 'notes'}, or None when no atmosphere zone names an atmosphere.
 
     Atmosphere zones are found by name (``is_atmosphere_zone``); several atmospheres resolve to the day one
@@ -318,7 +338,7 @@ def level_sky(archive, zone_paths, profile=True, probe_position=None):
     atmosphere, night = choose_atmosphere(found)
     reflections = captures[atmosphere] | unnamed
     data = asset_bytes(archive, atmosphere)
-    result = dict(atmosphere=atmosphere, night=night, sun_ray=sun_ray(data), sun_rgb=sun_colour(data), domes=[], unsupported=[],
+    result = dict(atmosphere=atmosphere, night=night, sun_ray=sun_ray(data), sun_rgb=sun_colour(data), sky_scale=sky_term_scale(data), domes=[], unsupported=[],
                   notes=[], clear_sky=None, reflection=None, reflection_source=None, fog=fog_profile(data), grade=colour_grade(data))
     for model in [r['path'] for r in references(data) if r['path'].endswith('.model')]:
         geometry = model_geometry(archive, model)

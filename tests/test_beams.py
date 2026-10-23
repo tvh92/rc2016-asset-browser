@@ -19,6 +19,9 @@ class LampSelectionTests(unittest.TestCase):
         for name in ('rb_ari_light_strip_base', 'rb_ari_light_arrow_sign', 'rb_ari_arch_construction_beam_01'):
             self.assertFalse(beams.is_lamp_model(f'environment/aridia/prop/{name}/{name}.model'), name)
 
+    def test_the_claw_lamp_is_a_lamp(self):
+        self.assertTrue(beams.is_lamp_model('environment/aridia/prop/x/tj_ari_prop_Construction_Set_Light.model'))
+
     def test_the_folder_does_not_count(self):
         self.assertFalse(beams.is_lamp_model('environment/lamp_post/rock_01.model'))
 
@@ -28,16 +31,21 @@ class LampSelectionTests(unittest.TestCase):
         self.assertEqual(beams.lamp_spots([near, far], [[0.0, 0.0, 0.0]], distance=0.5), [])
         self.assertEqual(beams.lamp_spots([near], []), [])
 
+    def test_uplights_get_no_beam(self):
+        up = spot((0.0, 0.0, 0.0), axis=(0.0, 1.0, 0.0))
+        level = spot((0.0, 0.0, 0.0), axis=(1.0, 0.0, 0.0))
+        self.assertEqual(beams.lamp_spots([up, level], [[0.0, 0.0, 0.0]]), [level])
+
 
 class MeshTests(unittest.TestCase):
-    def test_cone_starts_at_the_light_and_ends_a_range_away_with_the_outer_half_angle(self):
+    def test_cone_starts_at_the_light_and_ends_a_range_away_with_the_mean_half_angle(self):
         positions, normals, ts, colours, indices = beams.beam_mesh([spot((5.0, 6.0, 7.0))])
         count = (beams.RINGS + 1) * beams.SEGMENTS
         self.assertEqual((len(positions), len(normals), len(ts), len(colours)), (count,) * 4)
         np.testing.assert_allclose(positions[:beams.SEGMENTS], [[5.0, 6.0, 7.0]] * beams.SEGMENTS, atol=1e-5)   # the apex ring
         base = positions[-beams.SEGMENTS:]
         np.testing.assert_allclose(base[:, 1], 6.0 - 10.0, atol=1e-5)                       # range along the aim (-Y)
-        np.testing.assert_allclose(np.hypot(base[:, 0] - 5.0, base[:, 2] - 7.0), 10.0 * math.tan(math.radians(20.0)), rtol=1e-5)
+        np.testing.assert_allclose(np.hypot(base[:, 0] - 5.0, base[:, 2] - 7.0), 10.0 * math.tan(math.radians(15.0)), rtol=1e-5)
         self.assertEqual((ts.min(), ts.max()), (0.0, 1.0))
         self.assertTrue(indices.max() < count and len(indices) == 6 * beams.RINGS * beams.SEGMENTS)
 

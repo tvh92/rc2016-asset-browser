@@ -55,6 +55,12 @@ REVIEW_EXPOSURE_STOPS = 0.0   # see the module docstring
 # 1/pi factor gives; the remaining 1.6 is unexplained, plausibly a runtime sun and sky multiplier: the Veldin
 # capture's key light is 5 to 7 times its atmosphere's RGB96). Under the previous ACES fit the fit was pi.
 DIFFUSE_LIGHT_SCALE = 5.0
+# Display exposure by atmosphere (lower case path), where the Veldin capture's 4.5538 (``display.EXPOSURE_MULTIPLIER``)
+# does not fit. Aridia's 8.2 is a fit to one in-game frame: the decoded flat sky dome (``sky.flat_constants``), whose
+# equation is exact, reproduces that frame's nebula (display 0.59, 0.39, 0.64 against the game's 0.59, 0.40, 0.62) only
+# at this exposure; Aridia's authored light (sun RGB96 0.034, 0.021, 0.056) is about 20 times below Novalis', so a
+# per-level exposure is plausible. The game's value is a runtime one and is not in the atmosphere data.
+LEVEL_EXPOSURE_MULTIPLIER = {'atmosphere/atm_aridia/atm_aridia.atmosphere': 8.2}
 GLARE_THRESHOLD = 2.0         # luminance above which probe radiance is left to the atmosphere sun
 
 
@@ -203,13 +209,23 @@ def environment_from_faces(faces, ray_native, sun_rgb, exposure_stops):
                 sun=np.array(sun_rgb, np.float32), strength=1.0, exposure=float(exposure_stops))
 
 
-def grid_mean_irradiance(grid):
+def level_exposure_stops(atmosphere):
+    """Exposure in stops over the captured one for an atmosphere path: ``LEVEL_EXPOSURE_MULTIPLIER`` or
+    ``REVIEW_EXPOSURE_STOPS``."""
+    from rc2016.levels.display import EXPOSURE_MULTIPLIER
+    multiplier = LEVEL_EXPOSURE_MULTIPLIER.get((atmosphere or '').lower())
+    return REVIEW_EXPOSURE_STOPS if multiplier is None else math.log2(multiplier / EXPOSURE_MULTIPLIER)
+
+
+def grid_mean_irradiance(grid, sky_scale=None):
     """Level-average lightgrid irradiance as a linear function of the normal: (k0 (3,), k (3, 3), cells), with
     ``E_c(n) = k0[c] + k[c] . n`` in native Y-up space and grid units, averaged over the valid cells (validity
     byte at least 128). The per-cell light ``lerp(B, A, 0.5 + 0.5 d.n) + S (0.5 + 0.5 n.y) C``
-    (``rc2016.levels.lightgrid.cell_light``) is linear in ``n``, so its mean is exact in this form."""
+    (``rc2016.levels.lightgrid.cell_light``) is linear in ``n``, so its mean is exact in this form. ``sky_scale`` is the
+    level's S (``sky.sky_term_scale``; default ``SKY_TERM_SCALE``)."""
     import numpy as np
     from rc2016.levels.lightgrid import SKY_TERM_SCALE, decode_cells
+    sky_scale = SKY_TERM_SCALE if sky_scale is None else float(sky_scale)
     total_k0, total_k, count = np.zeros(3), np.zeros((3, 3)), 0
     for tile in grid.cells:
         fields = decode_cells(tile)
@@ -217,9 +233,9 @@ def grid_mean_irradiance(grid):
         if not valid.any():
             continue
         a, b, c, d = (fields[name][valid].astype(np.float64) for name in ('A', 'B', 'C', 'd'))
-        total_k0 += (b + 0.5 * (a - b)).sum(axis=0) + 0.5 * SKY_TERM_SCALE * c.sum(axis=0)
+        total_k0 += (b + 0.5 * (a - b)).sum(axis=0) + 0.5 * sky_scale * c.sum(axis=0)
         total_k += 0.5 * np.einsum('nc,ni->ci', a - b, d)
-        total_k[:, 1] += 0.5 * SKY_TERM_SCALE * c.sum(axis=0)
+        total_k[:, 1] += 0.5 * sky_scale * c.sum(axis=0)
         count += int(valid.sum())
     if not count:
         raise ValueError('the lightgrid has no valid cells')
@@ -260,11 +276,12 @@ def grid_environment(grid, sky, exposure_stops=None, diffuse_scale=None):
     import numpy as np
     if grid is None or not sky:
         raise ValueError('the level has no reflection probe and no lightgrid')
-    stops = REVIEW_EXPOSURE_STOPS if exposure_stops is None else float(exposure_stops)
+    stops = level_exposure_stops(sky.get('atmosphere')) if exposure_stops is None else float(exposure_stops)
     scale = DIFFUSE_LIGHT_SCALE if diffuse_scale is None else float(diffuse_scale)
     ray, rgb = tuple(sky['sun_ray']), tuple(sky['sun_rgb'])
     digest = hashlib.sha256(np.ascontiguousarray(grid.cells).tobytes())
-    key = hashlib.sha256(json.dumps([digest.hexdigest(), ENVIRONMENT_VERSION, scale]).encode()).hexdigest()[:16]
+    sky_scale = sky.get('sky_scale')
+    key = hashlib.sha256(json.dumps([digest.hexdigest(), ENVIRONMENT_VERSION, scale, sky_scale]).encode()).hexdigest()[:16]
     cache = CACHE_DIR / f'grid_{key}.npz'
     maps = None
     if cache.is_file():
@@ -275,7 +292,7 @@ def grid_environment(grid, sky, exposure_stops=None, diffuse_scale=None):
         except (OSError, ValueError, KeyError):
             maps = None
     if maps is None:
-        k0, k, cells = grid_mean_irradiance(grid)
+        k0, k, cells = grid_mean_irradiance(grid, sky_scale)
         sh, bands = grid_environment_maps(k0, k, scale)
         maps = dict(sh=sh, bands=bands, k0=k0, k=k)
         try:
@@ -306,7 +323,7 @@ def level_environment(archive, sky, exposure_stops=None, diffuse_scale=None, lig
         return grid_environment(lightgrid, sky, exposure_stops, diffuse_scale)
     if not sky or not sky.get('reflection'):
         raise ValueError('the level has no atmosphere with exactly one reflection probe')
-    stops = REVIEW_EXPOSURE_STOPS if exposure_stops is None else float(exposure_stops)
+    stops = level_exposure_stops(sky.get('atmosphere')) if exposure_stops is None else float(exposure_stops)
     scale = DIFFUSE_LIGHT_SCALE if diffuse_scale is None else float(diffuse_scale)
     ray, rgb = tuple(sky['sun_ray']), tuple(sky['sun_rgb'])
     faces, info = probe_faces(archive, sky['reflection'])
@@ -340,5 +357,5 @@ def level_environment(archive, sky, exposure_stops=None, diffuse_scale=None, lig
 
 
 __all__ = ['environment_from_faces', 'face_direction', 'fill_unsupported', 'grid_environment', 'grid_environment_maps',
-           'grid_mean_irradiance', 'latlong', 'level_environment', 'probe_faces', 'sample_cube', 'seam_ratio',
+           'grid_mean_irradiance', 'latlong', 'level_environment', 'level_exposure_stops', 'probe_faces', 'sample_cube', 'seam_ratio',
            'sun_direction_blender']

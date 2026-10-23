@@ -166,6 +166,32 @@ def vertical_grid(valid=255):
     return pack_tiles(cells, [[8, 8, 8]])
 
 
+class LevelExposureTests(unittest.TestCase):
+    def test_a_fitted_level_gets_its_multiplier_in_stops_and_others_the_captured_exposure(self):
+        from rc2016.levels.display import EXPOSURE_MULTIPLIER
+        stops = pl.level_exposure_stops('atmosphere/atm_Aridia/atm_Aridia.atmosphere')
+        self.assertAlmostEqual(EXPOSURE_MULTIPLIER * 2.0 ** stops, 8.2, places=6)
+        self.assertEqual(pl.level_exposure_stops('atmosphere/atm_novalis/atm_novalis.atmosphere'), pl.REVIEW_EXPOSURE_STOPS)
+        self.assertEqual(pl.level_exposure_stops(None), pl.REVIEW_EXPOSURE_STOPS)
+
+    def test_grid_maps_use_the_levels_exposure_unless_given_one(self):
+        sky = dict(atmosphere='atmosphere/atm_Aridia/atm_Aridia.atmosphere', reflection=None, sun_ray=(0.0, -1.0, 0.0), sun_rgb=(0.03, 0.02, 0.05))
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(pl, 'CACHE_DIR', Path(folder)):
+            self.assertAlmostEqual(pl.level_environment(None, sky, lightgrid=vertical_grid())['exposure'],
+                                   pl.level_exposure_stops(sky['atmosphere']))
+            self.assertEqual(pl.level_environment(None, sky, exposure_stops=0.5, lightgrid=vertical_grid())['exposure'], 0.5)
+
+    def test_the_sky_term_scale_changes_the_grid_mean_and_the_cache_key(self):
+        grid = vertical_grid()   # B = C = 0 here, so use a grid whose C is set
+        cells = grid.cells.copy()
+        words = cells.view('<u4').reshape(len(cells), 4096, 6)
+        words[..., 3] = ONE    # C = 1
+        from rc2016.levels.lightgrid import pack_tiles
+        graded = pack_tiles(cells, [[8, 8, 8]])
+        low, high = pl.grid_mean_irradiance(graded, 1.0)[0], pl.grid_mean_irradiance(graded, 2.0)[0]
+        np.testing.assert_allclose(high - low, 0.5, atol=0.02)   # 0.5 S C in the mean
+
+
 class GridEnvironmentTests(unittest.TestCase):
     """A level with no reflection capture takes its ambient and specular from the level-average lightgrid."""
     sky = dict(atmosphere='atmosphere/atm_x/atm_x.atmosphere', reflection=None, sun_ray=(0.0, -1.0, 0.0), sun_rgb=(0.03, 0.02, 0.05))

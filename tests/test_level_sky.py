@@ -41,6 +41,23 @@ class DomeConstantTests(unittest.TestCase):
                 sky.dome_constants(b'', b'')
 
 
+class SkyTermScaleTests(unittest.TestCase):
+    def header(self, value, size=200):
+        data = bytearray(size)
+        struct.pack_into('<f', data, sky.SKY_SCALE_OFFSET, value)
+        return bytes(data)
+
+    def test_reads_the_float_at_offset_128(self):
+        for value in (1.0, 1.75, 2.33):
+            with mock.patch.object(sky, '_header_section', return_value=self.header(value)):
+                self.assertAlmostEqual(sky.sky_term_scale(b''), value, places=5)
+
+    def test_unreadable_or_implausible_values_are_none(self):
+        for header in (None, bytes(100), self.header(float('nan')), self.header(-1.0), self.header(1e9)):
+            with mock.patch.object(sky, '_header_section', return_value=header):
+                self.assertIsNone(sky.sky_term_scale(b''))
+
+
 class FlatDomeConstantTests(unittest.TestCase):
     def test_flat_constants_read_fifteen_dwords_with_instance_values_over_defaults(self):
         rows = [dict(dword=0, key_hash=1), dict(dword=3, key_hash=2), *(dict(dword=d, key_hash=10 + d) for d in range(4, 15))]

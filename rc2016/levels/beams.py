@@ -2,11 +2,14 @@
 
 The game draws a soft cone around some spot lights (the lighting zone lists ``gbl_amb_Light_Cone_Circular_*`` visual
 effects, particle systems whose placement is not decoded). This module is an inferred stand-in: the spot lights that
-sit on a lamp model get one additive cone along their aim axis, as long as their range and as wide as their outer cone.
+sit on a lamp model and aim level or downward get one additive cone along their aim axis, as long as their range (at most ``MAX_LENGTH``) and as
+wide as the mean of their inner and outer cone angles.
 
-Inferred, not decoded: that a spot within ``LAMP_DISTANCE`` of an instance of a lamp model carries a beam, which models
-are lamps (``LAMP_MODEL``), the cone extent (the light's range and outer angle, itself inferred in
-``rc2016.levels.scene_lighting``) and the look (``BEAM_GAIN`` and the shaping in ``BEAM_FRAGMENT``,
+Inferred, not decoded: that a spot within ``LAMP_DISTANCE`` of an instance of a lamp model carries a beam (the claw lamp's
+spot lies 3.1 units from its instance origin), that upward-aimed spots (``MAX_AIM_Y``) do not, which models are lamps
+(``LAMP_MODEL``), the cone extent (the light's range, and the mean of its inner and outer angles, 17 degrees half
+angle for the 22 and 46 degree claw lamp, which is about the width of that lamp's beam in one in-game frame; the
+angles are themselves inferred in ``rc2016.levels.scene_lighting``) and the look (``BEAM_GAIN`` and the shaping in ``BEAM_FRAGMENT``,
 rc2016/viewer/shading.py, are visual choices). Whether the lamps' beams are a visual effect or part of the light is unknown.
 """
 from __future__ import annotations
@@ -14,11 +17,13 @@ from __future__ import annotations
 import math
 import re
 
-LAMP_MODEL = re.compile(r'(work|pole|shop|flood|street)_?light(?!_?(strip|arrow|sign))|lamp', re.IGNORECASE)
-LAMP_DISTANCE = 1.5          # a spot this close to a lamp instance (native units) belongs to it
+LAMP_MODEL = re.compile(r'(work|pole|shop|flood|street|set)_?light(?!_?(strip|arrow|sign))|lamp', re.IGNORECASE)
+MAX_AIM_Y = 0.1             # spots aimed higher than this (aim axis y, native Y-up) are uplights, not lamps
+LAMP_DISTANCE = 3.5          # a spot this close to a lamp instance (native units) belongs to it
 SEGMENTS = 24                # sides of a cone
 RINGS = 6                    # rings along a cone, the apex ring excluded
-BEAM_GAIN = 0.30             # display-space strength of the brightest beam texel (a visual choice)
+MAX_LENGTH = 14.0            # beams are cut to this length so long ranges do not glow against the open sky
+BEAM_GAIN = 0.20             # display-space strength of the brightest beam texel (a visual choice)
 
 
 def is_lamp_model(path):
@@ -34,7 +39,7 @@ def lamp_spots(spots, lamp_positions, distance=LAMP_DISTANCE):
     if not len(positions):
         return []
     return [spot for spot in spots
-            if float(np.min(np.linalg.norm(positions - np.asarray(spot['position'], np.float64), axis=1))) <= distance]
+            if spot['axis'][1] <= MAX_AIM_Y and float(np.min(np.linalg.norm(positions - np.asarray(spot['position'], np.float64), axis=1))) <= distance]
 
 
 def _basis(axis):
@@ -51,14 +56,14 @@ def beam_mesh(spots, gain=BEAM_GAIN):
     """Triangle mesh of the cones of ``spots`` in native space: (positions (n, 3), normals (n, 3), t (n,), colours (n, 3),
     indices (m,)) as float32 and uint32 arrays. ``t`` is 0 at the apex and 1 at the base ring; a vertex colour is the
     light colour scaled to its brightest channel 1. The cone is as long as the light's range with the half angle of the
-    outer cone angle; it is open at the base."""
+    mean cone angle; it is open at the base."""
     import numpy as np
     positions, normals, ts, colours, indices = [], [], [], [], []
     for spot in spots:
         axis = np.asarray(spot['axis'], np.float64)
         axis /= np.linalg.norm(axis)
-        half = math.radians(min(max(spot['cone_degrees'][1], 1.0), 170.0) / 2.0)
-        length = float(spot['radius'])
+        half = math.radians(min(max(sum(spot['cone_degrees']) / 2.0, 1.0), 170.0) / 2.0)
+        length = min(float(spot['radius']), MAX_LENGTH)
         u, v = _basis(axis)
         colour = np.asarray(spot['colour'], np.float64)
         colour = colour / max(float(colour.max()), 1e-6) * gain

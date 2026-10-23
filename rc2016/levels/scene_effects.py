@@ -15,7 +15,16 @@ SHADOW_REFRESH_SECONDS = 2.0
 # Sunlit pixels are untouched. Part of the game's depth is probably occlusion of the sky by the caster itself
 # (trees, buildings), which this models only as a constant.
 SHADOW_AMBIENT = 0.05
+# Per atmosphere (lower case path), where the Novalis factor does not hold: Aridia's sun RGB96 is only about 15 % of its
+# ambient, and in one in-game frame its ground is lit evenly (display 0.25, 0.24, 0.19 on grass in the open), so the
+# factor is 1 there (visual fit to that one frame).
+LEVEL_SHADOW_AMBIENT = {'atmosphere/atm_aridia/atm_aridia.atmosphere': 1.0}
 ATMOSPHERE_LIGHTING = 'Level atmosphere'
+
+
+def shadow_ambient(atmosphere):
+    """The ambient factor under cast shadow for an atmosphere path: ``LEVEL_SHADOW_AMBIENT`` or ``SHADOW_AMBIENT``."""
+    return LEVEL_SHADOW_AMBIENT.get((atmosphere or '').lower(), SHADOW_AMBIENT)
 
 
 def shadowed_ambient_factor(shadow, ndl, ambient=SHADOW_AMBIENT):
@@ -220,13 +229,13 @@ class SceneEffects:
                 sh.glUniform1i(u.get(name,-1),unit);sh.glActiveTexture(0x84C0+unit);gl.glBindTexture(0x806F,texture)
             sh.glActiveTexture(0x84C0)
             self.uniform_matrix(u.get('uGridFromView',-1),1,0,(C.c_float*16)(*self.view_to_native.T.flat))
-            self.uniform2(u.get('uGridParams',-1),SKY_TERM_SCALE,AMBIENT_SCALE)
+            self.uniform2(u.get('uGridParams',-1),(getattr(view,'_sky',None) or {}).get('sky_scale') or SKY_TERM_SCALE,AMBIENT_SCALE)
             sh.glUniform3f(u.get('uGridInvSize',-1),*(1.0/s for s in self.grid_size))
         sh.glUniform1i(u['uSceneEnabled'],int(ready));sh.glUniform1i(u.get('uSceneGeometry',-1),int(view._scene_geometry))
         sh.glUniform1i(u['uSceneAOEnabled'],int(ready and view.scene_ao and self.ao_valid and bool(self.ao_texture)))
         sh.glUniform1i(u['uSceneShadowEnabled'],int(ready and view.scene_shadows and self.view_shadow_matrix is not None))
         sh.glUniform1i(u['uSceneAO'],AO_UNIT);sh.glUniform1i(u['uSceneShadow'],SHADOW_UNIT)
-        sh.glUniform1f(u.get('uSceneShadowAmbient',-1),SHADOW_AMBIENT if view.lighting==ATMOSPHERE_LIGHTING else 1.0)
+        sh.glUniform1f(u.get('uSceneShadowAmbient',-1),shadow_ambient((getattr(view,'_sky',None) or {}).get('atmosphere')) if view.lighting==ATMOSPHERE_LIGHTING else 1.0)
         self.uniform2(u['uSceneSize'],*self.size);self.uniform2(u['uSceneShadowSize'],self.shadow_size,self.shadow_size)
         for unit,texture in ((AO_UNIT,self.ao_texture),(SHADOW_UNIT,self.shadow_depth)):
             sh.glActiveTexture(0x84C0+unit);gl.glBindTexture(0x0DE1,texture)
