@@ -8,7 +8,7 @@ from rc2016.levels import beams
 
 
 def spot(position=(0.0, 0.0, 0.0), axis=(0.0, -1.0, 0.0), radius=10.0, cone=(20.0, 40.0), colour=(4.0, 2.0, 1.0)):
-    return dict(position=list(position), axis=list(axis), radius=radius, cone_degrees=list(cone), colour=list(colour))
+    return dict(position=list(position), axis=list(axis), radius=radius, half_angle_degrees=list(cone), colour=list(colour))
 
 
 class LampSelectionTests(unittest.TestCase):

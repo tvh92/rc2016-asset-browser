@@ -3,13 +3,13 @@
 The game draws a soft cone around some spot lights (the lighting zone lists ``gbl_amb_Light_Cone_Circular_*`` visual
 effects, particle systems whose placement is not decoded). This module is an inferred stand-in: the spot lights that
 sit on a lamp model and aim level or downward get one additive cone along their aim axis, as long as their range (at most ``MAX_LENGTH``) and as
-wide as the mean of their inner and outer cone angles.
+wide as ``BEAM_ANGLE_SCALE`` times the mean of their inner and outer half angles.
 
 Inferred, not decoded: that a spot within ``LAMP_DISTANCE`` of an instance of a lamp model carries a beam (the claw lamp's
 spot lies 3.1 units from its instance origin), that upward-aimed spots (``MAX_AIM_Y``) do not, which models are lamps
-(``LAMP_MODEL``), the cone extent (the light's range, and the mean of its inner and outer angles, 17 degrees half
-angle for the 22 and 46 degree claw lamp, which is about the width of that lamp's beam in one in-game frame; the
-angles are themselves inferred in ``rc2016.levels.scene_lighting``) and the look (``BEAM_GAIN`` and the shaping in ``BEAM_FRAGMENT``,
+(``LAMP_MODEL``), the cone extent (the light's range, and ``BEAM_ANGLE_SCALE`` times the mean of its inner and outer
+half angles: 17 degrees for the 22 and 46 degree claw lamp, which is about the width of that lamp's beam in one in-game
+frame; the half angles themselves are decoded in ``rc2016.levels.scene_lighting``, the scale is a fit) and the look (``BEAM_GAIN`` and the shaping in ``BEAM_FRAGMENT``,
 rc2016/viewer/shading.py, are visual choices). Whether the lamps' beams are a visual effect or part of the light is unknown.
 """
 from __future__ import annotations
@@ -23,6 +23,7 @@ LAMP_DISTANCE = 3.5          # a spot this close to a lamp instance (native unit
 SEGMENTS = 24                # sides of a cone
 RINGS = 6                    # rings along a cone, the apex ring excluded
 MAX_LENGTH = 14.0            # beams are cut to this length so long ranges do not glow against the open sky
+BEAM_ANGLE_SCALE = 0.5       # beam half angle over the light's mean half angle (a fit to one in-game frame, not decoded)
 BEAM_GAIN = 0.20             # display-space strength of the brightest beam texel (a visual choice)
 
 
@@ -62,7 +63,7 @@ def beam_mesh(spots, gain=BEAM_GAIN):
     for spot in spots:
         axis = np.asarray(spot['axis'], np.float64)
         axis /= np.linalg.norm(axis)
-        half = math.radians(min(max(sum(spot['cone_degrees']) / 2.0, 1.0), 170.0) / 2.0)
+        half = math.radians(min(max(sum(spot['half_angle_degrees']) / 2.0 * BEAM_ANGLE_SCALE, 1.0), 85.0))
         length = min(float(spot['radius']), MAX_LENGTH)
         u, v = _basis(axis)
         colour = np.asarray(spot['colour'], np.float64)

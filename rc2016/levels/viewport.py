@@ -1198,8 +1198,8 @@ class LevelViewport(ModelViewport):
             positions.extend([*(matrix@np.r_[light['position'],1.])[:3],float(inverse)])
             colours.extend((np.array(light['colour'],dtype=np.float32)*np.float32(inverse*inverse)).tolist())
             if light.get('kind')=='spot':
-                # Inferred cone (scene_lighting.SPOT_CONE_OFFSET): full inner/outer angles, smooth between their half angles.
-                inner,outer=(np.cos(np.radians(a/2.)) for a in light['cone_degrees'])
+                # Decoded cone terms (scene_lighting.SPOT_CONE_OFFSET): cosines of the inner/outer half angles; the curve between them is inferred.
+                inner,outer=(np.cos(np.radians(a)) for a in light['half_angle_degrees'])
                 directions.extend([*(matrix[:3,:3]@np.array(light['axis'],dtype=float)),1.]);spots.extend([float(outer),float(1./max(inner-outer,1e-3))])
             else:
                 directions.extend([0.,0.,0.,0.]);spots.extend([0.,0.])

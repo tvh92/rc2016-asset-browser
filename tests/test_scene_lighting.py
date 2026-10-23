@@ -4,7 +4,7 @@ import struct
 import unittest
 from unittest.mock import patch
 
-from rc2016.levels.scene_lighting import _decode_zone_lights, _decode_zone_spots, load_scene_lighting, parse_light_record
+from rc2016.levels.scene_lighting import _decode_zone_lights, _decode_zone_spots, load_scene_lighting, parse_light_record, spot_half_angles
 
 
 def dat1(sections):
@@ -94,44 +94,52 @@ class AuthoredLightTests(unittest.TestCase):
         self.assertEqual([item['reason'] for item in skipped], ['unsupported_normalization'])
 
     def test_load_reports_undrawn_shape_counts(self):
-        archive = FakeArchive(light_zone([light_record(), light_record(shape=1), light_record(shape=1),
+        archive = FakeArchive(light_zone([light_record(), light_record(shape=1, normalization=1), light_record(shape=1, normalization=1),
                                           light_record(shape=4)]))
         result = load_scene_lighting(archive, ['levels/example/point.zone'])
         self.assertEqual(len(result['lights']), 1)
         note = next(note for note in result['notes'] if note['status'] == 'undrawn_light_shapes')
         self.assertEqual(note['counts'], {'spot': 2, 'box': 1})
 
-    def spot_record(self, inner=26.0, outer=46.0, **kwargs):
+    def spot_record(self, inner=26.0, outer=46.0, exponent=2.5, **kwargs):
         record = bytearray(light_record(shape=1, **kwargs))
         struct.pack_into('<16f', record, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -1, 0, 0, 10, 20, 30, 1)   # aims down
         struct.pack_into('<2f', record, 0x80, inner, outer)
+        struct.pack_into('<f', record, 0x88, exponent)
         return bytes(record)
 
-    def test_spots_decode_aim_range_and_the_inferred_cone(self):
+    def test_spots_decode_aim_range_and_the_half_angle_cone(self):
         spots = _decode_zone_spots(light_zone([self.spot_record(), light_record()]), 'levels/example/point.zone')
         self.assertEqual(len(spots), 1)   # the point record is not a spot
         spot = spots[0]
         self.assertEqual((spot['kind'], spot['validated'], spot['position'], spot['radius']), ('spot', False, [10.0, 20.0, 30.0], 12.0))
         self.assertEqual(spot['axis'], [0.0, -1.0, 0.0])
-        self.assertEqual(spot['cone_degrees'], [26.0, 46.0])
+        self.assertEqual(spot['half_angle_degrees'], [26.0, 46.0])
+        self.assertEqual(spot['exponent'], 2.5)
         self.assertEqual(spot['colour'], [2.0, 3.0, 4.0])
 
     def test_unusable_spots_are_left_out(self):
-        spots = _decode_zone_spots(light_zone([self.spot_record(outer=0.0), self.spot_record(normalization=2),
-                                               self.spot_record(outer=float('nan')), self.spot_record(outer=200.0)]),
+        spots = _decode_zone_spots(light_zone([self.spot_record(normalization=2), self.spot_record(outer=float('nan')),
+                                               self.spot_record(exponent=float('inf'))]),
                                    'levels/example/point.zone')
         self.assertEqual(spots, [])
 
-    def test_inner_angle_is_clamped_to_the_outer_angle(self):
-        spots = _decode_zone_spots(light_zone([self.spot_record(inner=80.0, outer=40.0)]), 'levels/example/point.zone')
-        self.assertEqual(spots[0]['cone_degrees'], [40.0, 40.0])
+    def test_the_angles_follow_the_engines_clamps(self):
+        # eboot function 0x1852aa0: inner 0..88 degrees, outer at least inner + 1, capped at 89; exponent 0.1..10
+        self.assertEqual(spot_half_angles(26.0, 46.0), (26.0, 46.0))
+        self.assertEqual(spot_half_angles(80.0, 40.0), (80.0, 81.0))
+        self.assertEqual(spot_half_angles(-5.0, 0.0), (0.0, 1.0))
+        self.assertEqual(spot_half_angles(95.0, 200.0), (88.0, 89.0))
+        spots = _decode_zone_spots(light_zone([self.spot_record(inner=95.0, outer=200.0, exponent=50.0),
+                                               self.spot_record(exponent=0.0)]), 'levels/example/point.zone')
+        self.assertEqual([(s['half_angle_degrees'], s['exponent']) for s in spots], [([88.0, 89.0], 10.0), ([26.0, 46.0], 0.1)])
 
     def test_load_draws_valid_spots_and_reports_only_the_rest_as_undrawn(self):
-        archive = FakeArchive(light_zone([light_record(), self.spot_record(), light_record(shape=1), light_record(shape=4)]))
+        archive = FakeArchive(light_zone([light_record(), self.spot_record(), light_record(shape=1, normalization=1), light_record(shape=4)]))
         result = load_scene_lighting(archive, ['levels/example/point.zone'])
         self.assertEqual([light['kind'] for light in result['lights']], ['point', 'spot'])
         note = next(note for note in result['notes'] if note['status'] == 'undrawn_light_shapes')
-        self.assertEqual(note['counts'], {'spot': 1, 'box': 1})   # the spot without a cone is still undrawn
+        self.assertEqual(note['counts'], {'spot': 1, 'box': 1})   # the spot with an unsupported normalization is still undrawn
 
     def test_parse_light_record_decodes_shape_axis_scale_and_gobo(self):
         record = bytearray(light_record(source_type=11, shape=2, normalization=0, radius=9.0,

@@ -162,16 +162,32 @@ def _decode_zone_lights(data, source_path):
 
 
 SPOT_SHAPE = 1
-# Inferred, not decoded: the pair at +0x80 and +0x84 (second always larger, e.g. 46 and 70 for Aridia's orange hanging
-# lamps) is the full inner and outer cone angle in degrees of a spot, the lit cone fading smoothly between their half
-# angles. The pair is the only decoded field that behaves like a cone, but no capture covers a spot.
+# Decoded from the game's spot constructor (eboot function 0x1852aa0, Research/2026-10-23_spot-light-constructor): the
+# pair at +0x80 and +0x84 is the inner and outer HALF angle in degrees. The engine clamps the inner angle to 0..88,
+# lifts the outer to at least inner + 1 and caps it at 89 (stored in radians), then derives the cone terms
+# 1/(cos inner - cos outer) and -cos outer/(cos inner - cos outer) of the cone factor saturate(dot(axis, to pixel)*f0 + f4)
+# (function 0x1854040). The float at +0x88, clamped to 0.1..10 (2.5 in 99.5 % of the spots), is stored beside them as the
+# cone exponent. The pixel shader that consumes these terms is not in the archive, so how the exponent enters the lit
+# cone (and the exact curve) is not decoded.
 SPOT_CONE_OFFSET = 0x80
+SPOT_EXPONENT_OFFSET = 0x88
+SPOT_MAX_INNER_DEGREES = 88.0
+SPOT_MAX_OUTER_DEGREES = 89.0
+SPOT_MIN_GAP_DEGREES = 1.0
+SPOT_EXPONENT_RANGE = (0.1, 10.0)
+
+
+def spot_half_angles(inner, outer):
+    """The game's inner and outer half angles in degrees from the raw pair at +0x80 and +0x84 (eboot function 0x1852aa0)."""
+    inner = min(max(inner, 0.0), SPOT_MAX_INNER_DEGREES)
+    outer = max(inner + SPOT_MIN_GAP_DEGREES, outer)
+    return inner, min(outer, SPOT_MAX_OUTER_DEGREES)
 
 
 def _decode_zone_spots(data, source_path):
     """The spot records (shape byte 1, normalization 0) of one zone as lights of kind 'spot': a point light's fields
-    plus ``axis`` (the unit aim direction, matrix row 2, native Y-up) and ``cone_degrees`` (the inner and outer full
-    angles at +0x80 and +0x84, inferred). Records that are not usable spots are not returned; the point decoder has
+    plus ``axis`` (the unit aim direction, matrix row 2, native Y-up), ``half_angle_degrees`` (the inner and outer half
+    angles at +0x80 and +0x84 after the engine's clamps, decoded) and ``exponent`` (+0x88, clamped). Records that are not usable spots are not returned; the point decoder has
     already reported them as undrawn shapes."""
     table = sections(data)
     if LIGHT_INDEX not in table or DATA_HEAP not in table:
@@ -187,18 +203,21 @@ def _decode_zone_spots(data, source_path):
         if size < MIN_LIGHT_RECORD_SIZE or relative + size > heap_size:
             continue
         light = parse_light_record(data[start:start + size])
-        inner, outer = struct.unpack_from('<2f', data, start + SPOT_CONE_OFFSET)
+        raw_inner, raw_outer = struct.unpack_from('<2f', data, start + SPOT_CONE_OFFSET)
+        raw_exponent = struct.unpack_from('<f', data, start + SPOT_EXPONENT_OFFSET)[0]
         if light['shape'] != SPOT_SHAPE or light['normalization'] != SUPPORTED_NORMALIZATION:
             continue
-        values = (*light['position'], *light['colour'], *light['axis'], inner, outer)
-        if not all(math.isfinite(v) for v in values) or any(v < 0 for v in light['colour']) or not 0.0 < outer <= 180.0:
+        values = (*light['position'], *light['colour'], *light['axis'], raw_inner, raw_outer, raw_exponent)
+        if not all(math.isfinite(v) for v in values) or any(v < 0 for v in light['colour']):
             continue
+        inner, outer = spot_half_angles(raw_inner, raw_outer)
+        exponent = min(max(raw_exponent, SPOT_EXPONENT_RANGE[0]), SPOT_EXPONENT_RANGE[1])
         radius, rule = _light_radius(light['colour'], light['normalization'], light['radius'])
         if radius is None or not light['axis'][0] ** 2 + light['axis'][1] ** 2 + light['axis'][2] ** 2 > 0.5:
             continue
         spots.append(dict(kind='spot', position=light['position'], axis=light['axis'], radius=radius, colour=light['colour'],
                           inverse_radius=struct.unpack('<f', struct.pack('<f', 1.0 / radius))[0],
-                          cone_degrees=[min(max(inner, 0.0), outer), outer], transform=light['transform'],
+                          half_angle_degrees=[inner, outer], exponent=exponent, transform=light['transform'],
                           source_path=source_path, source_ordinal=ordinal, source_id=f"0x{light['source_id']:016x}",
                           source_type=light['flags'], raw_byte_0x50=SPOT_SHAPE, normalization=light['normalization'],
                           raw_flags=struct.unpack_from('<I', data, start + 0x50)[0], validated=False,
@@ -303,7 +322,7 @@ def load_scene_lighting(archive, zone_paths):
 
     probes = dict(status='unsupported_zone', grid_count=0, grids=[], tableless_grid_count=0,
                   limitations=['No native global probe assignment is inferred.'])
-    notes = [dict(status='bounded_preview_data', message='Point shapes (byte +0x50 equal to 0) and spots (1, with an inferred cone) with normalization byte 0 are emitted. Flag byte 1 points have the Veldin-joined category-0 path (validated); other flag bytes and all spots are an inferred extension that the level viewer applies only under the Level atmosphere lighting. Projectors, boxes and other normalization modes are reported, not drawn. The raw byte and dword are retained without assigning flag names.'),
+    notes = [dict(status='bounded_preview_data', message='Point shapes (byte +0x50 equal to 0) and spots (1, with decoded half angles and an inferred cone curve) with normalization byte 0 are emitted. Flag byte 1 points have the Veldin-joined category-0 path (validated); other flag bytes and all spots are an inferred extension that the level viewer applies only under the Level atmosphere lighting. Projectors, boxes and other normalization modes are reported, not drawn. The raw byte and dword are retained without assigning flag names.'),
              dict(status='runtime_binding_unobserved', message='Per-level runtime light dispatch, shader view-space conversion, global-light selection, and native probe-slot allocation are unobserved.')]
     sun = _authored_sun_note(archive, [p.replace('\\', '/').lstrip('?') for p in zone_paths])
     if sun is not None:
@@ -319,7 +338,7 @@ def load_scene_lighting(archive, zone_paths):
         undrawn = {shape: count for shape, count in undrawn.items() if count > 0}
     if undrawn:
         notes.append(dict(status='undrawn_light_shapes', counts=undrawn,
-                          message='Projector and box lights (and spots with unusable fields) are decoded (aim axis, extents, gobo) but not drawn: cone profile and falloff are unverified.'))
+                          message='Projector and box lights (and spots with non-finite fields) are decoded (aim axis, extents, gobo) but not drawn: cone profile and falloff are unverified.'))
     if skipped:
         notes.append(dict(status='source_records_skipped', records=skipped))
     return dict(lights=lights, probes=probes, notes=notes, source_zones=loaded_zones)

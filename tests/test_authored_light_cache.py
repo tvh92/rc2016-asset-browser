@@ -103,7 +103,7 @@ class SpotConeUniformTests(unittest.TestCase):
         view = object.__new__(LevelViewport)
         matrix = [1., 0., 0., 0., 0., 0., -1., 0., 0., 1., 0., 0., 0., 0., 0., 1.]   # native Y-up to Z-up view
         spot = dict(kind='spot', position=[0., 0., -5.], axis=[0., -1., 0.], inverse_radius=0.1, colour=[1., 1., 1.],
-                    cone_degrees=[40., 80.])
+                    half_angle_degrees=[20., 40.])
         point = dict(position=[0., 0., -50.], inverse_radius=0.1, colour=[1., 1., 1.])
         lights = [spot, point]
         count, _positions, _colours = view._authored_light_uniforms(bytes((ctypes.c_float * 16)(*matrix)), lights)
