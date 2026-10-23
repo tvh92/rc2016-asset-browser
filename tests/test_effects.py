@@ -78,11 +78,12 @@ class DecodeTests(unittest.TestCase):
         self.assertEqual(effects.decode_zone_effects(zone)[0]['axis'], [0.0, 0.0, 1.0])
 
 
-def component(asset=0, size=(1.0, 1.0), flags=0x0C0CC823, slots=(0, 1, 0, 0, 0, 1, 2)):
+def component(asset=0, size=(1.0, 1.0), flags=0x0C0CC823, slots=(0, 1, 0, 0, 0, 1, 2), kind=0):
     record = bytearray(effects.COMPONENT_SIZE)
     struct.pack_into('<2f', record, 0x3C, *size)
     struct.pack_into('<Q', record, 0x44, asset)
     struct.pack_into('<I', record, 0xF4, flags)
+    record[0x103] = kind
     struct.pack_into('<7B', record, 0x108, *slots)
     return bytes(record)
 
@@ -104,6 +105,10 @@ class EffectTests(unittest.TestCase):
         self.assertEqual([c['asset'] for c in decoded['components']], [0, path_crc64(MODEL)])
         self.assertEqual(decoded['components'][1]['slots'], [0, 1, 0, 0, 1, 7, 8])
         self.assertEqual((decoded['components'][1]['size'], decoded['components'][1]['flags']), ((1.0, 1.0), 0x0C0CC823))
+
+    def test_the_component_kind_is_the_byte_at_0x103(self):
+        data = effect_asset([component(kind=2), component(path_crc64(MODEL), kind=0x0C)])
+        self.assertEqual([c['kind'] for c in effects.decode_effect(data)['components']], [2, 0x0C])
 
     def test_parameters_are_the_u16_values_times_the_scale(self):
         data = effect_asset([component()], [((0x7FFF, 0x7FFF, 0x7FFF, 0), 1 / 32767), ((0x7FFF, 0x1912, 0x02C5, 0), 3 / 32767)])
@@ -263,6 +268,14 @@ class ArchiveTests(unittest.TestCase):
             effect = effects.decode_effect(effects.asset_bytes(self.archive, path))
             self.assertEqual(effects.mesh_scale(effect, model), 1.0, name)
             self.assertEqual(len(effect['components']), 3, name)
+
+    def test_each_light_cone_effect_has_a_mesh_a_sprite_and_a_model_kind_component_without_a_model_and_no_light(self):
+        base = 'visualeffect/environment/global/ambient/gbl_amb_light_cone_circular_med/'
+        for name in ('gbl_amb_light_cone_circular_med', 'gbl_amb_light_cone_circular_small', 'gbl_amb_light_cone_hangin_wide_warm',
+                     'gbl_amb_light_cone_hagin_wide_blue'):
+            effect = effects.decode_effect(effects.asset_bytes(self.archive, f'{base}{name}.visualeffect'))
+            kinds = sorted((c['kind'], c['asset'] != 0) for c in effect['components'])
+            self.assertEqual(kinds, [(0, False), (0x0C, False), (0x0C, True)], name)    # sprite; the inert third; the mesh
 
     def test_the_warm_and_blue_wide_cones_differ_in_colour_as_their_names_say(self):
         base = 'visualeffect/environment/global/ambient/gbl_amb_light_cone_circular_med/'

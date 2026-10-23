@@ -18,6 +18,12 @@ A `.visualeffect` is a particle system. Its components are the 272-byte records 
                                0 for components that draw none; 274 of the 277 effects that name a model have a
                                component with its id
     +0xF4         u32          flag word (0x0C0CC82x for the mesh and the unlisted components, 0x0E0CE82x for sprites)
+    +0x103        u8           kind: 2 spawns a light (eboot 0x16FD340 builds a light record from the component and calls the
+                               light system, 0x1852870; 337 components in the game), 0xA to 0xD draw a model (0xC with the
+                               model asset at +0x44, 0xA and 0xD also with a material at +0x4C), 0 and 1 are sprites with a
+                               material at +0x4C. A model kind without a model asset (72 components, the light cones' third
+                               component among them) creates nothing: the model handler 0x2A50890 returns when the asset id's
+                               top bit is clear
     +0x108        u8[7]        indices into the parameter table, one per property slot
 
 Parameters are the 16-byte entries of 0xB1F4C248 (four s16 values at +0, +2, +4, +6, 0x7FFF being 1.0 before the scale,
@@ -111,7 +117,7 @@ def decode_zone_effects(data, source_path=''):
 
 def decode_effect(data):
     """A decoded `.visualeffect`: ``components`` (dicts with ``asset`` (the u64 model id, 0 for none), ``size`` (the pair at
-    +0x3C), ``flags`` (+0xF4) and ``slots`` (the seven parameter indices)) and ``parameters`` (dicts with ``hash``, ``value``
+    +0x3C), ``flags`` (+0xF4), ``kind`` (+0x103) and ``slots`` (the seven parameter indices)) and ``parameters`` (dicts with ``hash``, ``value``
     (four floats: the u16 values times the scale) and ``scale``). An effect without the sections has neither."""
     table = sections(data)
     components, parameters = [], []
@@ -121,7 +127,7 @@ def decode_effect(data):
             start = offset + n * COMPONENT_SIZE
             components.append(dict(asset=struct.unpack_from('<Q', data, start + 0x44)[0],
                                    size=struct.unpack_from('<2f', data, start + 0x3C),
-                                   flags=struct.unpack_from('<I', data, start + 0xF4)[0],
+                                   flags=struct.unpack_from('<I', data, start + 0xF4)[0], kind=data[start + 0x103],
                                    slots=list(struct.unpack_from('<7B', data, start + SLOT_LIST))))
     if PARAMETER_VALUES in table and PARAMETER_SCALES in table:
         values, scales = table[PARAMETER_VALUES], table[PARAMETER_SCALES]
