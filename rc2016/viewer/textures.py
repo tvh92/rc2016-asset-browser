@@ -189,6 +189,14 @@ FLAT_SURFACE_GOO = dict(colour_key=0x34392B3C, f0_key=0x17DE448C, gloss_key=GLOS
 BASIC_FLAT_COLOR_SHA256 = '6d9bcad5a9dab38dd5988195cc9e87514c08a90c6b8fa899c2d21f3e42c14f95'
 GRASS_BLEND_GRAPH_SHA256 = '3634199da89150f03c56b21d855f83d840e4dd06eeb33b748f8e16df1bd7ba65'
 MUD_BLEND_GRAPH_SHA256 = 'f7cd132b3f0b99144c1551aca88371f1f20c5a96e7c088969e435ad2a7aebc12'
+# Materials whose draws cast no sun shadow (entry['no_shadow_cast']; the level viewer leaves them out of the cascade tiles). Observed in
+# the captured Novalis frame: none of the 712 sun-atlas caster draws binds the short-grass patch's vertex streams, while its 55 G-buffer
+# draws (both basic_foliage writers) do. The engine's selection is not decoded: these materials' flags word (0x234) equals that of
+# casting foliage, and one other basic_foliage material does cast, so this is a per-material list from the capture, not a flag rule.
+NO_SHADOW_CAST_MATERIALS = frozenset((
+    'material/environment/pokitaru/plant/pok_plant_grass_short_01/rp_nov_plant_grass_short_01.material',
+    'material/environment/pokitaru/plant/pok_plant_grass_short_01/rp_pok_plant_grass_short_01.material',
+))
 CRATER_BLEND_GRAPH_SHA256 = 'aa460dce7ed1f503d155db4ea1fee3237a91002d967d1a86d58a29d29bd14473'
 SLUDGE_PUDDLE_GRAPH_SHA256 = '57149f5756f3b27f2ad704458f30ca6ac7b49c9b52e50698c7877675e3ed1c77'
 CORAL_BLEND_GRAPH_SHA256 = 'b97b38326b95942a3000aa36f591bec1c425366da27605531bc30851a97ecb43'
@@ -2174,5 +2182,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
                     entry['experimental_textures'] = preview_textures
             except (ValueError, KeyError, IndexError, OSError, StopIteration) as exc:
                 entry['experimental_error'] = str(exc)
+        if str(material.get('path') or '').replace('\\', '/').lower() in NO_SHADOW_CAST_MATERIALS:
+            entry['no_shadow_cast'] = True
         result[material['index']] = entry
     return result

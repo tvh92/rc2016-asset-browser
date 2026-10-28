@@ -834,7 +834,7 @@ class ModelViewport(_TkFrame):
         """One material's texture_preview entry with its textures uploaded: {role: (GL id, sRGB)} + parameters.
 
         ``by_path`` maps texture path -> (GL id, sRGB) or None and is shared across materials."""
-        uploaded = {key: entry[key] for key in ("k", "g_mode", "self_lit", "spec", "gloss", "pick", "tint", "spec_tint", "forward", "arch_sequence", "vehicle", "facing_glow", "bright_center", "flat_surface", "liquid_flow") if key in entry}
+        uploaded = {key: entry[key] for key in ("k", "g_mode", "self_lit", "spec", "gloss", "pick", "tint", "spec_tint", "forward", "arch_sequence", "vehicle", "facing_glow", "bright_center", "flat_surface", "liquid_flow", "no_shadow_cast") if key in entry}
         if "two_color_metal" in entry:
             uploaded["two_color_metal"] = entry["two_color_metal"]
         if "puddles" in entry:

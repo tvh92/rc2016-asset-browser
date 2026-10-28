@@ -523,7 +523,9 @@ vec3 puddleShade(vec3 G, vec3 V, vec3 c, vec2 g) {
 void main() {
     if (uMode == 3) { gl_FragColor = vec4(uColor, 1.0); return; }
     vec3 N = normalize(vNrm);
-    if (!gl_FrontFacing) N = -N;
+    // The basic_foliage writers (FE32FE79, B01E7CB2) never read the face: a back face writes the same vertex normal as the
+    // front (grass cards carry straight-up normals, so both sides light like the ground beneath).
+    if (!gl_FrontFacing && !uFoliage) N = -N;
     vec3 V = normalize(-vPos);
     float zaWeight = 1.0;
     if (uZaFresnel) { // E08357DC: CB2 dw2; use geometry normal before the tangent map

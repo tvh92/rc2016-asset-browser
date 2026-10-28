@@ -1547,6 +1547,8 @@ class LevelViewport(ModelViewport):
             for item in self._draw_list:
                 key, model, span, groups = item
                 entry = self._materials.get(key[0]) or {}
+                if shadow and entry.get("no_shadow_cast"):
+                    continue   # not a sun caster in the captured frame (textures.NO_SHADOW_CAST_MATERIALS); still in the AO depth
                 if key[1] == 2 and entry.get("forward"):
                     glass.append(item)
                     continue
