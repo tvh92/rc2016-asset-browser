@@ -124,6 +124,13 @@ def display_name(record):
     return actors[0] if actors else Path(record.archive_path).stem
 
 
+def is_chunk_or_bangle(record):
+    """Whether a model is inside an archive folder reserved for a chunk or bangle."""
+    path = getattr(record, 'archive_path', '') or getattr(record, 'relative_model', '')
+    folders = str(path).replace('\\', '/').casefold().split('/')[:-1]
+    return any(folder in {'chunk', 'bangle_set'} for folder in folders)
+
+
 def choose_records(selected, filtered, shown_ids, cap=FILTER_CAP):
     """Models the gallery shows: (records, kind, total).
 
@@ -192,6 +199,8 @@ class Gallery:
         tk, ttk = self.tk, self.ttk
         self.font = tkfont.nametofont('TkDefaultFont', root=self.app.root)
         self.records, self.kind, self.total = [], 'filter', 0
+        self.base_records = []             # the current list before the Grid-only chunk/bangle filter
+        self.base_kind, self.base_total = 'filter', 0
         self.ids = set()
         self.index = ThumbnailIndex(Path('.'))
         self.cache_root = None
@@ -212,6 +221,7 @@ class Gallery:
         self.proc = None
         self.proc_pending = []         # ids still queued in the running renderer, in order
         self.mode = 'view'             # 'view' (visible first) or 'all' (Render all thumbnails)
+        self.hide_chunks_bangles = False
         self.blocked = ''              # why automatic rendering stopped (renderer crashed)
         self.last_start = 0.0
         self.stale = True
@@ -233,8 +243,10 @@ class Gallery:
         ttk.Label(bar, textvariable=self.info_var, wraplength=520).grid(row=0, column=0, sticky='ew')
         self.render_all_button = ttk.Button(bar, text='Render all thumbnails', command=self.render_all)
         self.render_all_button.grid(row=0, column=1, padx=(6, 2))
+        self.hide_chunks_button = ttk.Button(bar, text='Hide chunks/bangles', command=self.toggle_chunks_bangles)
+        self.hide_chunks_button.grid(row=0, column=2, padx=(2, 2))
         self.cancel_button = ttk.Button(bar, text='Cancel', command=self.cancel_render, state='disabled')
-        self.cancel_button.grid(row=0, column=2)
+        self.cancel_button.grid(row=0, column=3)
         self.canvas = tk.Canvas(self.frame, highlightthickness=0, takefocus=True)
         track(self.canvas, background='bg')
         listen(self._schedule_redraw)
@@ -283,6 +295,18 @@ class Gallery:
             return
         self.refresh_job = self.app.root.after_idle(self.refresh)
 
+    def _visible_records(self, records):
+        visible = [record for record in records if not self.hide_chunks_bangles or not is_chunk_or_bangle(record)]
+        return visible[:FILTER_CAP] if self.base_kind == 'filter' else visible
+
+    def toggle_chunks_bangles(self):
+        self.hide_chunks_bangles = not self.hide_chunks_bangles
+        self.hide_chunks_button.configure(
+            text='Show chunks/bangles' if self.hide_chunks_bangles else 'Hide chunks/bangles')
+        if self.proc is not None and self.mode != 'all':
+            self.stop_renderer()
+        self.invalidate()
+
     def refresh(self):
         self.refresh_job = None
         if self.closed or not self.stale or not self.visible():
@@ -313,11 +337,24 @@ class Gallery:
         if self.picked_here is not None and self.picked_here == (picked, app.filtered_records):
             records, kind, total = None, 'keep', 0      # the grid made this selection: keep its list
         else:
-            records, kind, total = choose_records(selected, app.filtered_records, self.ids)
+            base_ids = {getattr(r, 'model_id', None) for r in self.base_records}
+            records, kind, total = choose_records(selected, app.filtered_records, base_ids)
         if len(selected) == 1:
             self.current_id = getattr(selected[0], 'model_id', None)
+        previous_ids = self.ids
         if kind != 'keep':
-            self.records, self.kind, self.total, self.ids = records, kind, total, {r.model_id for r in records}
+            if kind == 'filter':
+                self.base_records = [r for r in app.filtered_records if getattr(r, 'model_id', None)]
+                self.base_total = len(self.base_records)
+            else:
+                self.base_records, self.base_total = records, total
+            self.base_kind = kind
+        self.records = self._visible_records(self.base_records)
+        self.kind = self.base_kind
+        hidden_total = sum(1 for r in self.base_records if self.hide_chunks_bangles and is_chunk_or_bangle(r))
+        self.total = self.base_total - hidden_total
+        self.ids = {r.model_id for r in self.records}
+        if self.ids != previous_ids:
             self.canvas.yview_moveto(0)
         if kind != 'keep' or not self.index.models:
             self._load_index(cache_dir(root))
@@ -364,7 +401,10 @@ class Gallery:
 
     def _describe(self):
         if not self.records:
-            self.info_var.set('No models to show. Scan the archive, then select a folder or search.')
+            if self.hide_chunks_bangles:
+                self.info_var.set('No models to show with chunks/bangles hidden. Click Show chunks/bangles or change the search.')
+            else:
+                self.info_var.set('No models to show. Scan the archive, then select a folder or search.')
             return
         note = ''
         if self.kind == 'filter':
