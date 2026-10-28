@@ -9,8 +9,8 @@ import numpy as np
 def weight_batches(weights, joint_names):
     """Group per-vertex skin influences into ``vertex_group.add(indices, weight, 'REPLACE')`` calls.
 
-    Same result as adding each nonzero influence one vertex at a time with REPLACE: a joint
-    listed twice for one vertex keeps its last nonzero weight. Returns ``(batches, errors)``;
+    A joint listed more than once for one vertex sums its weights, as the GPU skin does with one
+    influence slot per row. Returns ``(batches, errors)``;
     batches is a list of ``(joint name, weight, [vertex indices])`` and errors holds
     ``(vertex index, 'missing' | weight sum)`` rows like the per-vertex loop.
     """
@@ -23,7 +23,8 @@ def weight_batches(weights, joint_names):
         for joint,value in rows:
             if joint>=len(joint_names) or not joint_names[joint]:
                 raise ValueError('Skin weight references a joint outside the selected actor skeleton')
-            if value:final[(vertex_index,joint_names[joint])]=value
+            if value:
+                key=(vertex_index,joint_names[joint]);final[key]=final.get(key,0.0)+value
     groups={}
     for (vertex_index,name),value in final.items():
         groups.setdefault((name,value),[]).append(vertex_index)

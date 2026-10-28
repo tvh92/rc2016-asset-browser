@@ -216,7 +216,10 @@ def validate_reopened_native_descriptor(descriptor,objects,joint_names=None):
                 if want_rows is None:
                     assert not actual_rows,('Unexpected reopened skin weights',index,vertex_index)
                     continue
-                want_rows={names[int(joint)]:float(weight) for joint,weight in want_rows if weight>0}
+                want_totals={}
+                for joint,weight in want_rows:
+                    if weight>0:want_totals[names[int(joint)]]=want_totals.get(names[int(joint)],0.0)+float(weight)
+                want_rows=want_totals
                 assert set(actual_rows)==set(want_rows),('Native skin influence identities changed',index,vertex_index)
                 for name,want in want_rows.items():
                     assert math.isfinite(actual_rows[name]) and abs(actual_rows[name]-want)<=1e-5,(

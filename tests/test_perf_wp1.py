@@ -195,7 +195,7 @@ def old_validate_reopened_texture_bindings(expected, images):
 
 
 def old_vertex_group_adds(weights, joint_names):
-    """Former geometry loop: one REPLACE add per vertex and nonzero influence."""
+    """Reference loop: one add per vertex and nonzero influence, summing a joint listed twice."""
     groups={};errors=[]
     for vertex_index,rows in enumerate(weights):
         if rows is None:
@@ -204,7 +204,9 @@ def old_vertex_group_adds(weights, joint_names):
         if abs(total-1)>.005:errors.append((vertex_index,total))
         for joint,value in rows:
             if joint>=len(joint_names) or not joint_names[joint]:raise ValueError('outside')
-            if value:groups.setdefault(joint_names[joint],{})[vertex_index]=value
+            if value:
+                vertex_groups=groups.setdefault(joint_names[joint],{})
+                vertex_groups[vertex_index]=vertex_groups.get(vertex_index,0.0)+value
     return groups,errors
 
 
@@ -292,6 +294,12 @@ class WeightBatchTests(unittest.TestCase):
     def test_unknown_joint_raises(self):
         for joint in (2,3,9):
             with self.assertRaises(ValueError):bc.weight_batches([[(joint,1.0)]],['a','b','',None])
+
+    def test_repeated_joint_sums_to_source_weight(self):
+        # Source row from hero_clank subset 010: joint 38 listed twice, 0.75 + 0.25 = 1.0.
+        batches,errors=bc.weight_batches([[(38,.75),(38,.25)]],['j%d'%i for i in range(40)])
+        self.assertEqual(errors,[])
+        self.assertEqual(apply_batches(batches),{'j38':{0:1.0}})
 
 
 class BufferHelperTests(unittest.TestCase):
