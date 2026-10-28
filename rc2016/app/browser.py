@@ -373,12 +373,16 @@ class AssetBrowser:
         self.clip_choice=tk.StringVar(value=REST_POSE)
         # A themed button that opens a searchable clip list (_open_clip_picker), not a Tk menu. It takes the column's
         # width, whatever the divider leaves, and shortens a longer clip name with an ellipsis (_show_clip_choice).
-        self.clip_button=ttk.Menubutton(anim,text=REST_POSE,state='disabled',width=1)
+        # It sits in a frame that sets the request (a fixed ``width`` would shrink the label area to that many characters).
+        clip_holder=tk.Frame(anim,width=1)
+        self.clip_button=ttk.Menubutton(clip_holder,text=REST_POSE,state='disabled')
+        clip_holder.configure(height=self.clip_button.winfo_reqheight())
+        self.clip_button.place(x=0,y=0,relwidth=1,relheight=1)
         self.clip_button.bind('<ButtonPress-1>',self._open_clip_picker)
         self.clip_button.bind('<KeyPress-space>',self._open_clip_picker)
         self.clip_button.bind('<Configure>',lambda _e:self._show_clip_choice(),add='+')
         self.clip_choice.trace_add('write',lambda *_a:self._show_clip_choice())
-        self.clip_button.grid(row=0,column=1,columnspan=2,sticky='ew')
+        clip_holder.grid(row=0,column=1,columnspan=2,sticky='ew')
         self.clip_labels=[];self.clip_notes=[];self.clip_cutscene=[];self.clip_index=-1;self.clip_popup=None
         self.play_button=ttk.Button(anim,text='Pause',width=7,state='disabled')
         self.play_button.grid(row=1,column=0,sticky='ew',padx=(0,6),pady=(4,0))
@@ -811,7 +815,11 @@ class AssetBrowser:
         # a flipped list keeps its bottom edge on the button.
         top.update_idletasks()
         row_height=int(ttk.Style(top).lookup('Treeview','rowheight') or 20)
-        width=max(button.winfo_width(),380)
+        from tkinter import font as tkfont
+        tree_font=tkfont.nametofont(ttk.Style(top).lookup('Treeview','font') or 'TkDefaultFont',root=top)
+        longest=max([tree_font.measure(REST_POSE),*(tree_font.measure(label) for label in self.clip_labels)])
+        # The longest name plus three folder indents, the scrollbar and the frame padding, within the screen.
+        width=min(max(button.winfo_width(),380,longest+110),top.winfo_screenwidth()-40)
         x=max(0,min(button.winfo_rootx(),top.winfo_screenwidth()-width))
         below=button.winfo_rooty()+button.winfo_height()
         max_height=top.winfo_screenheight()//2
