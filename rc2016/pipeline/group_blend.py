@@ -109,8 +109,10 @@ def _load_member(member, label):
             obj.hide_set(True)
             obj.hide_render = True
         kept.append(obj)
-    swap = member.get("materials")
-    if swap:
+    swaps = member.get("materials") or []
+    if isinstance(swaps, dict):  # one source file; a list takes several (body parts and helmet from different files)
+        swaps = [swaps]
+    for swap in swaps:
         replacements = _load_materials(swap["blend"], swap["names"])
         missing = sorted(set(swap["names"]) - set(replacements))
         if missing:
