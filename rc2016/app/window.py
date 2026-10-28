@@ -605,7 +605,8 @@ class AssetBrowserApp:
                              source_textures=self.export_dds_var.get(), animations="all" if self.export_animations_var.get() else "none",
                              skeleton=self.export_skeleton_var.get(),
                              lod=self.export_lod_var.get(), blender=self.blender_var.get().strip(),
-                             skip_existing=True)
+                             skip_existing=True, cinematic=self.export_animations_var.get(),
+                             borrowed=self.export_animations_var.get() and self.browser.borrowed_var.get())
 
     def _path_row(self, parent, row: int, label: str, variable, command, tooltip: str) -> None:
         ttk = self.ttk
@@ -1119,7 +1120,9 @@ class AssetBrowserApp:
             clip_choices = picked
         elif blend_mode and self.export_animations_var.get() and self.export_skeleton_var.get():
             # The Blender scene reads the same clips as a glTF export, so its picker lists them the same way.
-            reader_options = replace(self.export_options(), formats=("glb",), animations="all", skeleton=True)
+            # The Blender build reads its own clips, so the cutscene shots and borrowed animsets are not offered here.
+            reader_options = replace(self.export_options(), formats=("glb",), animations="all", skeleton=True,
+                                     cinematic=False, borrowed=False)
             picked = self._choose_clips(models, output, reader_options)
             if picked is None:
                 self._append_log("Export cancelled", "muted")

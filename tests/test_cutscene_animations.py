@@ -167,6 +167,11 @@ class OptionsTests(unittest.TestCase):
         self.assertNotIn('cinematic', ExportOptions().key())
         self.assertEqual(ExportOptions(cinematic_only=True, file_suffix='_cutscenes').key()['file_suffix'], '_cutscenes')
 
+    def test_borrowed_animsets_stay_out_of_the_key_unless_asked_for(self):
+        from rc2016.export.models import ExportOptions
+        self.assertNotIn('borrowed', ExportOptions().key())
+        self.assertTrue(ExportOptions(borrowed=True).key()['borrowed'])
+
 
 class BrowserLoaderTests(unittest.TestCase):
     """The browser's clip library offers cutscene shots; the export load does not unless asked to."""

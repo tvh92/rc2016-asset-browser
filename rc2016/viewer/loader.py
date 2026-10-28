@@ -333,7 +333,8 @@ class SourcePreviewLoader:
 
     PURPOSES = ('view', 'export')
 
-    def load(self, source_root, model_id, source_path, lod='Highest', look=0, output_root=None, defer_animation=False, purpose='view'):
+    def load(self, source_root, model_id, source_path, lod='Highest', look=0, output_root=None, defer_animation=False, purpose='view',
+             borrowed=False):
         """Payload for the viewport. With ``defer_animation`` a skinned model returns at once
         with ``animation_pending=True`` and no clips; call ``load_animation`` (another worker)
         to build its clip library.
@@ -344,7 +345,7 @@ class SourcePreviewLoader:
         payload carries no geometry. Read ``current``/``animation`` afterwards as before.
         """
         if purpose not in self.PURPOSES:raise ValueError('Unknown load purpose: '+str(purpose))
-        return self._load(source_root, model_id, source_path, lod, look, output_root, defer_animation, purpose)
+        return self._load(source_root, model_id, source_path, lod, look, output_root, defer_animation, purpose, borrowed)
 
     def load_animation(self, source_root, model_id, source_path, output_root=None, borrowed=False):
         """Build (or reuse) the selected model's clip library: {model_id, source_path, clips, animsets, animation_note}.
@@ -432,7 +433,8 @@ class SourcePreviewLoader:
         return dict(decoded=decoded,data=data,purpose=purpose,animation=None,animation_built=None,build_lock=threading.Lock(),
                     vertices=sum(len(m['positions']) for m in decoded['meshes']))
 
-    def _load(self, source_root, model_id, source_path, lod, look, output_root, defer_animation=False, purpose='view'):
+    def _load(self, source_root, model_id, source_path, lod, look, output_root, defer_animation=False, purpose='view',
+              borrowed=False):
         # self.lock covers loader state only; the decode, texture reads and viewport arrays run
         # outside it so clip, pose and texture-list calls are not queued behind a model decode.
         with self.lock:
@@ -457,7 +459,7 @@ class SourcePreviewLoader:
                 self._remember(identity,cached)
         pending=bool(defer_animation and cached['decoded']['joint_count'] and cached['animation_built'] is None)
         if not pending:
-            self._build_animation(cached,output_root)
+            self._build_animation(cached,output_root,borrowed,model_id)
         with self.lock:
             self.current,self.animation=cached['decoded'],cached['animation']
             self.identity=self._recent_identity=identity

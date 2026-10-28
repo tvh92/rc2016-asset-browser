@@ -60,6 +60,7 @@ class ExportOptions:
     skip_existing: bool = False      # keep a folder whose export.json matches source and options
     cinematic: bool = False          # also offer the real-time cutscene shots that cover the whole model
     cinematic_only: bool = False     # only those shots (no animset clips, no reference index needed)
+    borrowed: bool = False           # also offer the animsets the game pairs with another model of the same rig
     file_suffix: str = ''            # appended to the model stem in file names, e.g. '_cutscenes'
     skeleton: bool = True            # False: static meshes, no joints or skin weights, so no animations either
 
@@ -67,7 +68,7 @@ class ExportOptions:
         d = asdict(self)
         d.pop('blender'); d.pop('skip_existing')
         d['formats'] = sorted(d['formats']); d['clips'] = list(d['clips'])
-        for name in ('cinematic', 'cinematic_only', 'file_suffix'):   # absent from keys of exports that predate them
+        for name in ('cinematic', 'cinematic_only', 'borrowed', 'file_suffix'):   # absent from keys of exports that predate them
             if not d[name]:
                 d.pop(name)
         if d['skeleton']:   # the default is left out, so keys of exports that predate the option still match
@@ -677,9 +678,12 @@ class ModelExporter:
         if options.animations == 'none' or not (options.skeleton and gltf_based):
             return []
         index_root = self.animation_index()
+        borrowed = options.borrowed and index_root is not None
         self.loader.load(self.source_root, model_id, source_path, options.lod, options.look,
-                         index_root, False, purpose='export')
+                         index_root, False, purpose='export', borrowed=borrowed)
         library = self.loader.animation
+        if library is not None and library.rows and options.cinematic:
+            library = library.with_cinematic(self.loader.archive)   # the same cutscene shots export() adds
         return library.labels() if library is not None and library.rows else []
 
     def export(self, model_id, source_path, options: ExportOptions, cinematic_sources=None):
@@ -709,8 +713,9 @@ class ModelExporter:
         load_animation = options.animations != 'none' and options.skeleton and gltf_based   # OBJ is the static rest pose only
         cutscenes = (options.cinematic or options.cinematic_only) and load_animation
         animset_root = index_root if load_animation and not options.cinematic_only else None
+        borrowed = options.borrowed and animset_root is not None
         self.loader.load(self.source_root, model_id, source_path, options.lod, options.look,
-                         animset_root, False, purpose='export')
+                         animset_root, False, purpose='export', borrowed=borrowed)
         decoded, library = self.loader.current, self.loader.animation if load_animation else None
         archive = self.loader.archive
         self._check()

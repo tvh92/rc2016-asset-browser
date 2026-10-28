@@ -140,7 +140,7 @@ class ClipPickerDialog:
         buttons.grid(row=1, column=1, sticky="e", pady=(8, 0))
         ttk.Button(buttons, text="Tick shown", command=lambda: self._tick_shown(True)).pack(side="left")
         ttk.Button(buttons, text="Untick shown", command=lambda: self._tick_shown(False)).pack(side="left", padx=(6, 0))
-        ttk.Button(buttons, text="Cancel", command=top.destroy).pack(side="left", padx=(18, 0))
+        ttk.Button(buttons, text="Cancel", command=self._close).pack(side="left", padx=(18, 0))
         ttk.Button(buttons, text="OK", command=self._ok).pack(side="left", padx=(6, 0))
         ttk.Label(footer, text="Ctrl+F search   ·   Space tick   ·   Esc clears the search, else cancels   ·   Ctrl+Enter OK",
                   style="Muted.TLabel").grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
@@ -157,7 +157,7 @@ class ClipPickerDialog:
         top.bind("<Control-f>", lambda _event: self.search_entry.focus_set())
         top.bind("<Control-Return>", self._ok)
         top.bind("<Escape>", self._escape)
-        top.protocol("WM_DELETE_WINDOW", top.destroy)
+        top.protocol("WM_DELETE_WINDOW", self._close)
 
     # Building the rows
 
@@ -314,15 +314,23 @@ class ClipPickerDialog:
             self.tree.selection_set(first)
         return "break"
 
+    def _close(self) -> None:
+        """Stop the preview while its Tk widgets still exist, then close the picker."""
+        if self.viewer is not None:
+            self.viewer.close()
+            self.viewer = None
+        if self.top.winfo_exists():
+            self.top.destroy()
+
     def _ok(self, _event=None) -> None:
         self.confirmed = True
-        self.top.destroy()
+        self._close()
 
     def _escape(self, _event=None) -> None:
         if self.search.get():
             self.search.set("")
         else:
-            self.top.destroy()
+            self._close()
 
     def show(self) -> dict[str, tuple[str, ...]] | None:
         """Run the dialog until it closes. Returns the clips to export per model (see ClipSelection.result),
@@ -343,6 +351,4 @@ class ClipPickerDialog:
         top.grab_set()
         self.search_entry.focus_set()
         self.parent.wait_window(top)
-        if self.viewer is not None:
-            self.viewer.close()
         return self.selection.result() if self.confirmed else None
