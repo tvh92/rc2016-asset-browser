@@ -412,7 +412,29 @@ class LevelViewport(ModelViewport):
             self._error = None
             self._show_error(None)
         self._draw_list = None
-        self._schedule_draw()
+        self._schedule_content_draw()
+
+    # While a level loads, models and materials arrive hundreds of times, and one draw of the growing scene
+    # takes tens of milliseconds of interpreter time that the loader threads need (Novalis: 31 draws, 2 s).
+    LOAD_DRAW_INTERVAL = 0.35
+
+    def _schedule_content_draw(self):
+        """A redraw for newly loaded content: at once when no load is running, else at most every
+        LOAD_DRAW_INTERVAL seconds. Camera input and display changes still redraw at once (_schedule_draw)."""
+        if self.__dict__.get("_loading_done", True):
+            self._schedule_draw()
+            return
+        if self.__dict__.get("_content_draw_job"):
+            return
+        wait = self.LOAD_DRAW_INTERVAL - (time.perf_counter() - self.__dict__.get("_last_draw_at", float("-inf")))
+        if wait <= 0:
+            self._schedule_draw()
+            return
+
+        def due():
+            self._content_draw_job = None
+            self._schedule_content_draw()   # a draw since then (camera input) postpones it again
+        self._content_draw_job = self.after(max(1, int(wait * 1000)), due)
 
     def add_materials(self, entries):
         """{material path: texture_preview entry}; uploads textures once per texture path."""
@@ -470,7 +492,7 @@ class LevelViewport(ModelViewport):
             self._gl.glBindTexture(self.GL_TEXTURE_2D, 0)
             self._draw_list = None
             self._stats_base = None
-            self._schedule_draw()
+            self._schedule_content_draw()
         while compile_queue and time.perf_counter() < deadline:
             self._precompile(compile_queue.pop(0))
         linked = False
@@ -487,7 +509,7 @@ class LevelViewport(ModelViewport):
             self.__dict__.pop("_program_memo", None)
             if self._draw_list is not None:
                 self._sort_draw_list()
-            self._schedule_draw()
+            self._schedule_content_draw()
         if queue or compile_queue or self._pending_links():
             self._material_pump = self.after(15, self._pump_materials)
         elif self.__dict__.get("_loading_done") and not self.__dict__.get("_mipmap_pump"):
@@ -547,7 +569,9 @@ class LevelViewport(ModelViewport):
         """The loader is done: build the deferred mip chains once queued materials are uploaded."""
         self._loading_done = True
         if not (self.__dict__.get("_material_queue") or self.__dict__.get("_compile_queue") or self._pending_links()):
-            self.build_deferred_mipmaps()
+            self.build_deferred_mipmaps()   # redraws once the chains are built
+        else:
+            self._schedule_draw()   # the last content, without waiting for a spaced redraw
 
     def build_deferred_mipmaps(self, budget=None):
         """Generate queued mip chains for up to ``budget`` seconds (MIPMAP_BUDGET_SECONDS) per Tk
@@ -1283,7 +1307,7 @@ class LevelViewport(ModelViewport):
     def _draw(self):
         if not self._make_current():
             return
-        started = time.perf_counter()
+        started = self._last_draw_at = time.perf_counter()
         gl = self._gl
         width, height = max(1, self.winfo_width()), max(1, self.winfo_height())
         gl.glViewport(0, 0, width, height)

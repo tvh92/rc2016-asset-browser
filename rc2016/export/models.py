@@ -671,12 +671,13 @@ class ModelExporter:
             return None
         return self.index_root
 
-    def clip_labels(self, model_id, source_path, options: ExportOptions):
+    def clip_labels(self, model_id, source_path, options: ExportOptions, notes=False):
         """Animation clip labels that ``export`` offers for this model with these options (the same load, without
-        writing anything). Empty when the export writes no animations."""
+        writing anything). Empty when the export writes no animations. With ``notes``, (labels, clip notes):
+        ``AnimationLibrary.clip_notes``, which marks copies, additive layers and clips that do not play."""
         gltf_based = any(f in options.formats for f in ('glb', 'gltf', 'fbx', 'usd'))
         if options.animations == 'none' or not (options.skeleton and gltf_based):
-            return []
+            return ([], []) if notes else []
         index_root = self.animation_index()
         borrowed = options.borrowed and index_root is not None
         self.loader.load(self.source_root, model_id, source_path, options.lod, options.look,
@@ -684,7 +685,9 @@ class ModelExporter:
         library = self.loader.animation
         if library is not None and library.rows and options.cinematic:
             library = library.with_cinematic(self.loader.archive)   # the same cutscene shots export() adds
-        return library.labels() if library is not None and library.rows else []
+        if library is None or not library.rows:
+            return ([], []) if notes else []
+        return (library.labels(), library.clip_notes()) if notes else library.labels()
 
     def export(self, model_id, source_path, options: ExportOptions, cinematic_sources=None):
         """Export one model; returns a summary dict. Raises on failure, Cancelled on cancel.

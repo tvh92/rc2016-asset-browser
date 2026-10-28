@@ -453,10 +453,10 @@ _SKIN_KEYS = {"Specular cap": 0x03168D4E, "Gloss Fresnel multiplier": 0xAB221207
 # basic_skin.materialgraph: cached deferred writer 0x9aad640b computes the same front-end
 # as 0x567fe897 with table 1 = cap 1, gloss Fresnel 2, spec Fresnel 3, exponent 4, albedo 5,
 # gloss scale 6, spec scale 7, and writes no self-lit term (MRT1.a = 0).  Its forward shader
-# 0xf0cd85ff blends a detail normal (see apply_native_skin_normal).
+# 0xf0cd85ff and skin_emissive's forward shader 0xbed06840 blend a detail normal (see apply_native_skin_normal).
 SKIN_FAMILIES = {
     "skin_emissive": dict(group=SKIN_GROUP_NAME, shader=SKIN_SHADER_ID, table1=SKIN_CB_PARAMS,
-                          detail_normal=False),
+                          detail_normal=True),
     "basic_skin": dict(group="RC PS4 basic_skin G-buffer", shader="0x9aad640b",
                        table1={1: "Specular cap", 2: "Gloss Fresnel multiplier",
                                3: "Specular Fresnel multiplier", 4: "Fresnel exponent",
@@ -756,7 +756,7 @@ def apply_deferred_family(mat, pre, family):
 
 
 GLASS_GROUP_NAME = "RC PS4 character_glass forward"
-GLASS_GROUP_VERSION = 5
+GLASS_GROUP_VERSION = 6
 
 
 def _glass_value(pre, key):
@@ -794,10 +794,11 @@ def _captured_ambient_radiance():
 def build_character_glass_group(force=False):
     """Native 34D5B21C front-end: Fresnel-curve alpha, tinted reflection, faint lit body colour.
 
-    out = Transparent(1 - alpha*A) + alpha * (Diffuse(B*(1 + k*F*T*E)) + F90 * Schlick-GGX(F0 = tint, rough))
+    out = Transparent(1 - w*A) + w * (Diffuse(B*(1 + k*F*T*E)) + F90 * Schlick-GGX(F0 = tint, rough)),  w = max(alpha, O)
     alpha = (1.001-N.V)^P8 * (P10 + sat(P11 + sat(4*(1-N.V)^P13)))   (instance fade 0, attr0.w 1)
     F = (1.001-N.V)^P12,  T = sat(4*sqrt(1-N.V)).  A = "Attenuate background": 0 = additive
-    (SRC_ALPHA, ONE), 1 = alpha-over (SRC_ALPHA, ONE_MINUS_SRC_ALPHA); set from the material's flags
+    (SRC_ALPHA, ONE), 1 = alpha-over (SRC_ALPHA, ONE_MINUS_SRC_ALPHA); O = "Opaque": 1 for the opaque
+    blend, where the colour is written unweighted over nothing. A and O are set from the material's flags
     word (rc2016.pipeline.render_state), never from the graph. "Two sided" is the flags bit 2 (1 = back
     faces shown, 0 = culled). With back faces culled, they are hidden; without the cull, back faces have
     N.V < 0, so alpha -> 1 and they block the view under alpha-over.
@@ -817,7 +818,8 @@ def build_character_glass_group(force=False):
                                 ("Alpha exponent P8", "NodeSocketFloat", 2.0), ("Env scale P9", "NodeSocketFloat", 0.3),
                                 ("Alpha bias P10", "NodeSocketFloat", 0.15), ("Rim bias P11", "NodeSocketFloat", 0.25),
                                 ("Env exponent P12", "NodeSocketFloat", 2.0), ("Rim exponent P13", "NodeSocketFloat", 3.245),
-                                ("Attenuate background", "NodeSocketFloat", 1.0), ("Two sided", "NodeSocketFloat", 0.0)):
+                                ("Attenuate background", "NodeSocketFloat", 1.0), ("Two sided", "NodeSocketFloat", 0.0),
+                                ("Opaque", "NodeSocketFloat", 0.0)):
         _sock(g, name, kind, "INPUT", default)
     _sock(g, "Shader", "NodeSocketShader", "OUTPUT")
     _sock(g, "Alpha", "NodeSocketFloat", "OUTPUT")
@@ -869,12 +871,15 @@ def build_character_glass_group(force=False):
     weighted_r = N.new("ShaderNodeMixShader"); weighted_r.name = weighted_r.label = "Reflection weight = F90"
     L.new(f90.outputs[0], weighted_r.inputs[0]); L.new(nothing.outputs[0], weighted_r.inputs[1]); L.new(gloss.outputs[0], weighted_r.inputs[2])
     lit = N.new("ShaderNodeAddShader"); L.new(diff.outputs[0], lit.inputs[0]); L.new(weighted_r.outputs[0], lit.inputs[1])
+    # The opaque blend writes the colour as it is: weight 1 and nothing of the background (A = 1).
+    weight = _math(N, "MAXIMUM", label="w = max(alpha, opaque)"); weight.name = "Blend weight"
+    L.new(alpha.outputs[0], weight.inputs[0]); L.new(p["Opaque"], weight.inputs[1])
     weighted = N.new("ShaderNodeMixShader"); weighted.name = weighted.label = "SRC_ALPHA weight"
-    L.new(alpha.outputs[0], weighted.inputs[0]); L.new(lit.outputs[0], weighted.inputs[2])
-    att = _math(N, "MULTIPLY", label="alpha * A"); L.new(alpha.outputs[0], att.inputs[0])
+    L.new(weight.outputs[0], weighted.inputs[0]); L.new(lit.outputs[0], weighted.inputs[2])
+    att = _math(N, "MULTIPLY", label="w * A"); L.new(weight.outputs[0], att.inputs[0])
     L.new(p["Attenuate background"], att.inputs[1])
-    keep = _math(N, "SUBTRACT", 1.0, None, "1 - alpha*A"); L.new(att.outputs[0], keep.inputs[1])
-    clear = N.new("ShaderNodeBsdfTransparent"); clear.name = clear.label = "Background (1 - alpha*A)"
+    keep = _math(N, "SUBTRACT", 1.0, None, "1 - w*A"); L.new(att.outputs[0], keep.inputs[1])
+    clear = N.new("ShaderNodeBsdfTransparent"); clear.name = clear.label = "Background (1 - w*A)"
     L.new(keep.outputs[0], clear.inputs["Color"])
     out = N.new("ShaderNodeAddShader"); out.name = out.label = "Blend over background"
     L.new(clear.outputs[0], out.inputs[0]); L.new(weighted.outputs[0], out.inputs[1])
@@ -885,13 +890,14 @@ def build_character_glass_group(force=False):
     L.new(one_sided.outputs[0], cull_factor.inputs[1])
     L.new(cull_factor.outputs[0], cull.inputs[0]); L.new(out.outputs[0], cull.inputs[1])
     L.new(culled.outputs[0], cull.inputs[2])
-    L.new(cull.outputs[0], go.inputs["Shader"]); L.new(alpha.outputs[0], go.inputs["Alpha"])
+    L.new(cull.outputs[0], go.inputs["Shader"]); L.new(weight.outputs[0], go.inputs["Alpha"])
     for i, n in enumerate(N):
         n.location = (-1000 + 160 * (i % 10), -180 * (i // 10))
     return g
 
 
-GLASS_BLEND_BY_FLAGS = {1: ("additive_alpha", 0.0), 2: ("alpha_over", 1.0)}   # flags & 3 -> (blend, A)
+# flags & 3 -> (blend, A); mode 3 has no captured example
+GLASS_BLEND_BY_FLAGS = {0: ("opaque", 1.0), 1: ("additive_alpha", 0.0), 2: ("alpha_over", 1.0)}
 
 
 def character_glass_blend(material_path):
@@ -939,11 +945,12 @@ def apply_character_glass(mat, pre, material_path):
                        ("Env exponent P12", "env_exponent"), ("Rim exponent P13", "rim_exponent")):
         grp.inputs[sock].default_value = float(v[name])
     grp.inputs["Attenuate background"].default_value = attenuate
+    grp.inputs["Opaque"].default_value = 1.0 if blend == "opaque" else 0.0
     two_sided = bool(flags & 4)
     grp.inputs["Two sided"].default_value = 1.0 if two_sided else 0.0
     mat.use_backface_culling = not two_sided           # flags bit 2: back faces shown when set
     if hasattr(mat, "surface_render_method"):
-        mat.surface_render_method = "BLENDED"
+        mat.surface_render_method = "DITHERED" if blend == "opaque" else "BLENDED"
     params = dict(v, reflection_tint_normalised=refl, gloss_effective=gloss, blender_roughness=rough, env_probe_radiance_E=E)
     mat["rc_glass_family"] = "character_glass"
     mat["rc_glass_blend"] = blend

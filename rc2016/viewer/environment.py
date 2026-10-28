@@ -20,7 +20,9 @@ this predicts the Blender review render; it is not the render and not game light
 Directions are Blender world space (Z up). Blender's environment lookup maps a direction d to
 u = 0.5 - atan2(d.y, d.x) / (2 pi), v = atan2(d.z, hypot(d.x, d.y)) / pi + 0.5 (v = 0 is the image's
 bottom row; +X is the image centre). Checked against Cycles renders of the shared HDRI: six
-directions each returned exactly the texel this mapping selects.
+directions each returned exactly the texel this mapping selects. The pipeline turns the lookup by
+``hdri_rotation_z_degrees`` (a Mapping node: image direction = Rz(angle) . world direction), so the maps
+are built from the image turned the same way (``rotate_z``).
 """
 from __future__ import annotations
 
@@ -38,7 +40,7 @@ CACHE_DIR = ROOT / '.cache' / 'environment'
 ROUGHNESS_LEVELS = (0.15, 0.3, 0.45, 0.6, 0.8, 1.0)
 BAND_SIZE = (128, 64)
 SUN_THRESHOLD = 20.0   # luminance above which radiance moves into the directional sun
-ENVIRONMENT_VERSION = 2   # bump when the maps' computation changes; it names the cache files
+ENVIRONMENT_VERSION = 3   # bump when the maps' computation changes; it names the cache files
 
 # Tonemaps the viewers offer (the GLSL lives in rc2016/viewer/shading.py).
 TONEMAPS = ('ACES fit', 'Khronos PBR Neutral')
@@ -168,6 +170,22 @@ def _downsample(image, width, height):
     return image.reshape(height, h // height, width, w // width, 3).mean(axis=(1, 3))
 
 
+def rotate_z(image, degrees):
+    """The equirectangular ``image`` as Blender's world shows it under a Mapping rotation of ``degrees`` about Z.
+
+    The Mapping node looks up image direction Rz(angle) . d for world direction d, so world azimuth phi shows image
+    azimuth phi + angle: with u = 0.5 - phi / (2 pi), the image moves angle / 360 of its width towards higher u,
+    wrapping around (linear between columns for a fraction of a texel)."""
+    import numpy as np
+    shift = (degrees / 360.0) * image.shape[1]
+    whole = math.floor(shift)
+    fraction = shift - whole
+    turned = np.roll(image, whole, axis=1)
+    if fraction:
+        turned = turned * (1.0 - fraction) + np.roll(image, whole + 1, axis=1) * fraction
+    return turned.astype(np.float32)
+
+
 def sh_irradiance(image):
     """9 x RGB coefficients c such that irradiance E(n) = sum c_i Y_i(n), including the cosine lobe
     (Ramamoorthi and Hanrahan's A_l: pi, 2pi/3, pi/4)."""
@@ -243,13 +261,14 @@ def prefiltered_bands(image):
 
 def environment_maps(settings=None):
     """{'sh': (9, 3), 'bands': (levels * h, w, 3), 'sun_direction', 'sun': RGB irradiance, 'strength',
-    'exposure', 'hdri', 'sha256'} for the shared lighting (world strength not applied), cached under
-    .cache/environment by the HDRI's hash."""
+    'exposure', 'hdri', 'sha256'} for the shared lighting (world strength not applied, the HDRI turned by
+    ``hdri_rotation_z_degrees``), cached under .cache/environment by the HDRI's hash and the turn."""
     import numpy as np
     settings = settings or shared_lighting()
     hdri = Path(settings['hdri_path'])
     digest = hashlib.sha256(hdri.read_bytes()).hexdigest()
-    cache = CACHE_DIR / f'{digest[:16]}_v{ENVIRONMENT_VERSION}.npz'
+    turn = float(settings.get('hdri_rotation_z_degrees', 0.0))
+    cache = CACHE_DIR / f'{digest[:16]}_z{turn:g}_v{ENVIRONMENT_VERSION}.npz'
     maps = None
     if cache.is_file():
         try:
@@ -258,7 +277,7 @@ def environment_maps(settings=None):
         except (OSError, ValueError, KeyError):
             maps = None
     if maps is None:
-        image, direction, sun = extract_sun(read_exr(hdri))
+        image, direction, sun = extract_sun(rotate_z(read_exr(hdri), turn))
         maps = dict(sh=sh_irradiance(image), bands=prefiltered_bands(image), sun_direction=direction, sun=sun)
         try:
             CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -273,4 +292,4 @@ def environment_maps(settings=None):
 
 
 __all__ = ['LIGHTINGS', 'ROUGHNESS_LEVELS', 'TONEMAPS', 'direction_uv', 'environment_maps', 'equirect_directions', 'extract_sun',
-           'prefiltered_bands', 'read_exr', 'sh_irradiance', 'shared_lighting']
+           'prefiltered_bands', 'read_exr', 'rotate_z', 'sh_irradiance', 'shared_lighting']

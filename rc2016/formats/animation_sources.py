@@ -11,10 +11,15 @@ Both sources are opt-in and bound to exact source data:
   that references both): same parent joints and flags, and rest S/Q/T equal within float noise,
   so the absolute source samples pose both meshes the same way.
 """
+import hashlib
 import json
+from pathlib import Path
 import re
+import threading
 import zlib
 
+from rc2016.common import unzip_json, zip_json
+from rc2016.formats import container as container_module
 from rc2016.formats.animation_transforms import model_skeleton
 from rc2016.formats.container import MAGIC, PRINTABLE, read_container
 
@@ -93,6 +98,66 @@ def shot_label(clip_name, asset_path):
     return (match.group('cutscene'), int(match.group('shot'))) if match else (stem, None)
 
 
+CINEMATIC_DIRECTORY_VERSION = 1
+_directories = {}   # archive layout identity -> cinematic_directory result, shared by every Archive of that layout
+_directory_lock = threading.Lock()
+
+
+try:   # the code that reads the directory; a changed reader never reuses an old one
+    _DIRECTORY_CODE = [hashlib.sha256(Path(module).read_bytes()).hexdigest() for module in (__file__, container_module.__file__)]
+except OSError:   # no sources to hash (a packaged build): keep the directory per Archive only
+    _DIRECTORY_CODE = None
+
+
+def _directory_stamp(archive):
+    """Key of the cutscene directory: the archive layout and the code that reads it; None for a stand-in archive."""
+    layout = getattr(archive, 'layout_identity', None)
+    if not layout or _DIRECTORY_CODE is None:
+        return None
+    return hashlib.sha256(repr((CINEMATIC_DIRECTORY_VERSION, layout, _DIRECTORY_CODE)).encode()).hexdigest()
+
+
+def cinematic_directory(archive):
+    """[(asset_id, path, clip_directory rows or None, error or None)] for every available cutscene asset, in archive order.
+
+    Reading the 162 cutscenes takes seconds, and every model's cutscene search needs all of them, so the result is
+    kept per archive layout for the whole process (the browser, the clip picker and the exporter each open their own
+    Archive) and, when the archive names a folder in ``cinematic_disk_cache``, on disk across sessions.
+    """
+    stamp = _directory_stamp(archive)
+    with _directory_lock:
+        found = _directories.get(stamp) if stamp else getattr(archive, '_cinematic_directory', None)
+        if found is not None:
+            return found
+        folder = getattr(archive, 'cinematic_disk_cache', None)
+        path = Path(folder) / f'{stamp[:24]}.json.gz' if folder and stamp else None
+        try:
+            found = [tuple(row) for row in unzip_json(path)] if path and path.is_file() else None
+        except (OSError, ValueError, TypeError):
+            found = None
+        if found is None:
+            found = []
+            entries = sorted((e for e in archive.entries.values() if e['type'] == CINEMATIC_SOURCE
+                              and any(o.get('available') for o in e['occurrences'])), key=lambda e: e['order'])
+            for entry in entries:
+                try:
+                    found.append((entry['id'], entry['path'], clip_directory(archive.asset_data(entry['id'])), None))
+                except Exception as exc:
+                    found.append((entry['id'], entry['path'], None, str(exc)))
+            if path:
+                try:
+                    for old in path.parent.glob('*.json.gz'):
+                        old.unlink()
+                    zip_json(path, found)
+                except OSError:
+                    pass   # only loses the reuse next session
+        if stamp:
+            _directories[stamp] = found
+        else:
+            archive._cinematic_directory = found
+        return found
+
+
 def cinematic_sources(archive, rows, include_unnamed=False):
     """Cutscene assets holding named clips that cover every joint of ``rows``, in archive order.
 
@@ -104,16 +169,13 @@ def cinematic_sources(archive, rows, include_unnamed=False):
     if not joints:
         return [], []
     found, errors = [], []
-    entries = sorted((e for e in archive.entries.values() if e['type'] == CINEMATIC_SOURCE
-                      and any(o.get('available') for o in e['occurrences'])), key=lambda e: e['order'])
-    for entry in entries:
-        try:
-            clips = [c for c in clip_directory(archive.asset_data(entry['id']), joints) if c['name'] or include_unnamed]
-        except Exception as exc:
-            errors.append(dict(asset_id=entry['id'], path=entry['path'], reason=str(exc)))
+    for asset_id, path, directory, error in cinematic_directory(archive):
+        if error is not None:
+            errors.append(dict(asset_id=asset_id, path=path, reason=error))
             continue
+        clips = [dict(c) for c in directory if (c['name'] or include_unnamed) and joints <= set(c['joint_hashes'])]
         if clips:
-            found.append(dict(asset_id=entry['id'], path=entry['path'], clips=clips))
+            found.append(dict(asset_id=asset_id, path=path, clips=clips))
     return found, errors
 
 

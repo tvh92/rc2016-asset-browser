@@ -5,13 +5,10 @@ asset type (archive=True) lists every texture in the archive, with the Maps menu
 its own list, filter, preview and export state, so the two never share anything."""
 from __future__ import annotations
 
-import base64
-import io
 import queue
 import threading
 from pathlib import Path
 
-from PIL import Image
 
 from rc2016.app.layout import Splitter
 from rc2016.app.texture_grid import TextureGrid

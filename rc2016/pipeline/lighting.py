@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import struct
 
+from rc2016.formats.archive import asset_data
 from rc2016.formats.container import read_container
 from rc2016.common import asset_path, dump, file_hash, read, write
 from rc2016.formats.texture import dds_bytes, parse_header, ps4_deswizzle_top, top_mip_size
@@ -77,7 +78,8 @@ def _lightgrid_probe_assignment(archive, entry):
     listed probe, but keep that as a hypothesis until a runtime sampler
     confirms it.  The other packed coefficient fields remain unresolved.
     """
-    data=read(archive.decode(entry['id'])); root=read_container(data,0,{})
+    # Read in memory: the level viewer calls this for every Novalis grid, and decode() would write each one to disk.
+    data=asset_data(archive,entry['id']); root=read_container(data,0,{},light=True)
     sections={s['label_hash']:data[s['offset']:s['offset']+s['size']] for s in root['sections']}
     refs_blob=sections.get('0x96D77BBD'); records_blob=sections.get('0x9989BB49')
     if refs_blob is None or records_blob is None or len(refs_blob)%4 or len(records_blob)%24:
@@ -93,18 +95,15 @@ def _lightgrid_probe_assignment(archive, entry):
         if not normalized.startswith(ENVPROBE_PREFIX):
             raise ValueError('Lightgrid probe table contains a non-Novalis environment path: '+text)
         paths.append(normalized)
-    pair_counts=defaultdict(int); single_counts=defaultdict(int); blend_values=[]; reverse_pairs=0; invalid=0; valid=0
-    for offset in range(0,len(records_blob),24):
-        r,g,b,a=records_blob[offset+20:offset+24]
-        if a==255 and r<len(paths) and b<len(paths):
-            pair_counts[(int(r),int(b))]+=1
-            if r==b: single_counts[int(r)]+=1
-            else:
-                blend_values.append(int(g))
-                if r>b: reverse_pairs+=1
-            valid+=1
-        else:
-            invalid+=1
+    # Bytes 20..23 of every record at once (the per-record loop took ~5 ms per grid, 727 grids per Novalis load).
+    import numpy as np
+    r,g,b,a=np.frombuffer(records_blob,np.uint8).reshape(-1,24)[:,20:24].astype(np.int64).T
+    ok=(a==255)&(r<len(paths))&(b<len(paths))
+    r,g,b=r[ok],g[ok],b[ok];valid=int(ok.sum());invalid=int(ok.size)-valid
+    pairs,counts=np.unique(np.stack((r,b),axis=1),axis=0,return_counts=True) if valid else ((),())
+    pair_counts={(int(x),int(y)):int(n) for (x,y),n in zip(pairs,counts)}
+    single_counts={int(x):int(n) for (x,y),n in zip(pairs,counts) if x==y}
+    unequal=r!=b;blend_values=g[unequal].tolist();reverse_pairs=int((r[unequal]>b[unequal]).sum())
     record_count=len(records_blob)//24
     dominant=max(pair_counts.items(),key=lambda item:(item[1],-item[0][0],-item[0][1]),default=((None,None),0))
     dominant_probe=paths[dominant[0][0]] if dominant[0][0] is not None and dominant[0][0]==dominant[0][1] else None

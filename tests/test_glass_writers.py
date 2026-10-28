@@ -292,7 +292,7 @@ class GlassValidationTests(unittest.TestCase):
         body = text.split('def build_character_glass_group')[1].split('GLASS_BLEND_BY_FLAGS')[0]
         for term in ('F90 = saturate(60*F0)', 'ShaderNodeBsdfPrincipled', 'Reflection weight = F90', 'Glass tinted reflection R'):
             self.assertIn(term, body)
-        self.assertIn('GLASS_GROUP_VERSION = 5', text)
+        self.assertIn('GLASS_GROUP_VERSION = 6', text)
 
 
 if __name__ == '__main__':

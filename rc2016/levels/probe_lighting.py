@@ -158,16 +158,76 @@ def fill_unsupported(face, unsupported, fallback):
     return face
 
 
+PROBE_FACES_VERSION = 1   # bump when probe_faces' output changes; with the decoders' hashes it keys the disk cache
+
+
+def _probe_code_hash():
+    """Hash of the code that decodes a probe cube (this module, the BC6H decoder, the texture reader)."""
+    global _PROBE_CODE
+    if _PROBE_CODE is None:
+        from rc2016.formats import bc6h, texture
+        digest = hashlib.sha256(str(PROBE_FACES_VERSION).encode())
+        for module in (__file__, bc6h.__file__, texture.__file__):
+            digest.update(Path(module).read_bytes())
+        _PROBE_CODE = digest.hexdigest()
+    return _PROBE_CODE
+
+
+_PROBE_CODE = None
+_probe_memo = {}   # (decoded texture sha256, code hash) -> (faces, info): the sky and the lighting decode the same cube
+PROBE_MEMO_SIZE = 2   # a cube is 19 MB; one level reads one or two
+
+
+def _remember_probe(key, value):
+    _probe_memo.pop(key, None)
+    _probe_memo[key] = value
+    while len(_probe_memo) > PROBE_MEMO_SIZE:
+        _probe_memo.pop(next(iter(_probe_memo)))
+
+
 def probe_faces(archive, texture_path):
     """(faces, info): six float32 (512, 512, 3) linear faces of a BC6H reflection cube and a dict with
-    the source hash, size, share of blocks held at Pillow's clamped value, and the brightest texel."""
+    the source hash, size, share of blocks held at Pillow's clamped value, and the brightest texel.
+
+    Decoding the cube takes about two seconds, so the result is kept for the process and, when the archive
+    names a folder in ``probe_disk_cache``, on disk, keyed by the texture bytes and the decoders' code."""
     import numpy as np
-    from PIL import Image
-    from rc2016.formats.texture import dds_bytes, parse_header, ps4_deswizzle_top, top_mip_size
     ids = [i for i in archive.resolve(texture_path) if archive.entries[i]['type'] == 'texture']
     if len(ids) != 1:
         raise ValueError(f'{texture_path}: expected one texture, found {len(ids)}')
     decoded = decompress(archive.bytes(ids[0])[0])[0]
+    key = (hashlib.sha256(decoded).hexdigest(), _probe_code_hash())
+    if key in _probe_memo:
+        faces, info = _probe_memo[key]
+        return [face.copy() for face in faces], dict(info, probe=texture_path)
+    folder = getattr(archive, 'probe_disk_cache', None)
+    path = Path(folder) / f'{hashlib.sha256(repr(key).encode()).hexdigest()[:24]}.npz' if folder else None
+    if path is not None and path.is_file():
+        try:
+            with np.load(path) as stored:
+                found = [stored[f'face{index}'] for index in range(6)], json.loads(stored['info'].tobytes().decode())
+            _remember_probe(key, found)
+            return [face.copy() for face in found[0]], dict(found[1], probe=texture_path)
+        except (OSError, ValueError, KeyError):
+            pass   # rebuilt and rewritten below
+    faces, info = _decode_probe_faces(decoded, texture_path)
+    _remember_probe(key, ([face.copy() for face in faces], info))
+    if path is not None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix('.tmp.npz')
+            np.savez(temporary, info=np.frombuffer(json.dumps(info).encode(), np.uint8),
+                     **{f'face{index}': face for index, face in enumerate(faces)})
+            temporary.replace(path)
+        except OSError:
+            pass   # only loses the reuse next session
+    return faces, info
+
+
+def _decode_probe_faces(decoded, texture_path):
+    import numpy as np
+    from PIL import Image
+    from rc2016.formats.texture import dds_bytes, parse_header, ps4_deswizzle_top, top_mip_size
     info = parse_header(decoded)
     width, height, fmt = info['sd_width'], info['sd_height'], info['format']
     if fmt != FORMAT_BC6H or width != height:

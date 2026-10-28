@@ -173,6 +173,25 @@ class PipelineGuiBackendTests(unittest.TestCase):
             self.assertFalse((root / "blender" / "hero_candidate.blend").exists())
             self.assertFalse((root / "variant_assemblies" / "fusion" / "Assembly.candidate.blend").exists())
 
+    def test_blend_only_cleanup_keeps_viewer_index_caches_exports_and_groups(self):
+        from rc2016.pipeline.run import keep_only_blends
+        kept = ['.cache/thumbnails/x.png', 'cache/actor_index/abc.json', 'groups/Group.blend',
+                'hero/export.json', 'hero/hero.glb', 'reports/gui_model_index.json', 'reports/gui_scan_stamp.json']
+        files = {relative: b'data' for relative in kept + ['reports/logs/pipeline.jsonl', 'reports/manifest.json']}
+        for keep_logs, removed_count in ((False, 2), (True, 1)):
+            with self.subTest(keep_logs=keep_logs), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder) / "out"
+                for relative, data in files.items():
+                    path = root / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(data)
+                self.assertEqual(removed_count, keep_only_blends(root, keep_logs=keep_logs))
+                remaining = sorted(path.relative_to(root).as_posix() for path in root.rglob('*') if path.is_file())
+                expected = kept + (['reports/logs/pipeline.jsonl'] if keep_logs else [])
+                self.assertEqual(sorted(expected), remaining)
+                for relative in ('hero/export.json', 'hero/hero.glb', 'groups/Group.blend'):
+                    self.assertEqual(b'data', (root / relative).read_bytes())
+
     def test_transform_backend_command_remains_compatible(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

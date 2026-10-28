@@ -282,9 +282,7 @@ class BatchRunner:
         self.event = event or (lambda *_args, **_kwargs: None)
         self.cancel_requested = threading.Event()
         self.process: subprocess.Popen[str] | None = None
-        self.staging: Path | None = None
         self._cancel_boundary = threading.Lock()
-        self._launching = False
 
     def cancel(self) -> None:
         with self._cancel_boundary:
@@ -321,7 +319,6 @@ class BatchRunner:
                 if self.cancel_requested.is_set():
                     summary["cancelled"] = True
                     break
-                self._launching = True
             self._emit("model_started", index=index, total=len(self.candidates), candidate=candidate)
             if candidate.animset is None:
                 summary["failed"] += 1
@@ -335,7 +332,6 @@ class BatchRunner:
                     self._emit("model_done", candidate=candidate, status="verified", message=reason)
                     continue
             staging = self._staging_path(candidate, index)
-            self.staging = staging
             if staging.exists():
                 raise FileExistsError(f"Staging directory already exists: {staging}")
             command = build_command(self.python_executable, candidate, staging, self.prefixes)
@@ -365,10 +361,7 @@ class BatchRunner:
                 summary["failed"] += 1
                 self._emit("model_done", candidate=candidate, status="failed", message=str(error))
             finally:
-                with self._cancel_boundary:
-                    self._launching = False
                 self.process = None
-                self.staging = None
         self._emit("batch_done", summary=summary)
         return summary
 
@@ -376,7 +369,6 @@ class BatchRunner:
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         with self._cancel_boundary:
             if self.cancel_requested.is_set():
-                self._launching = False
                 return
             process = subprocess.Popen(
                 command,
@@ -391,7 +383,6 @@ class BatchRunner:
                 creationflags=creation_flags,
             )
             self.process = process
-            self._launching = False
         assert process.stdout is not None
         lines: queue.Queue[str | None] = queue.Queue()
 
@@ -442,14 +433,12 @@ class PipelineBatchRunner:
     def __init__(self, selectors: Sequence[str], extracted_root: Path, output_root: Path,
                  python_executable: Path, blender_executable: Path,
                  skip_verified: bool = True, event: Callable[..., None] | None = None,
-                 blend_only: bool = False, clip_only: tuple[str, str] | None = None, group_blend: str = "",
+                 blend_only: bool = False, group_blend: str = "",
                  skeleton: bool = True, animations: bool = True,
                  clip_choices: dict[str, tuple[str, ...]] | None = None):
         self.selectors = tuple(dict.fromkeys(s.strip() for s in selectors if s.strip()))
         # (archive path -> viewer clip labels to keep): a model absent from it keeps every clip; [] keeps none.
         self.clip_choices = dict(clip_choices or {})
-        # (archive path, clip name): that model is built in its own run with only this clip.
-        self.clip_only = clip_only if clip_only and clip_only[0] in self.selectors else None
         self.extracted_root = extracted_root.expanduser().resolve()
         self.output_root = output_root.expanduser().resolve()
         self.python_executable = python_executable.expanduser().resolve()
@@ -482,19 +471,14 @@ class PipelineBatchRunner:
                 except OSError:
                     pass
 
-    def command(self, selectors: Sequence[str] | None = None, clips: Sequence[str] = (),
-                clip_map: Path | None = None) -> list[str]:
+    def command(self, clip_map: Path | None = None) -> list[str]:
         command = [str(self.python_executable), "-u", str(PIPELINE_CLI),
                    "--extracted-root", str(self.extracted_root),
                    "--output-root", str(self.output_root),
                    "--blender", str(self.blender_executable)]
-        for selector in self.selectors if selectors is None else selectors:
+        for selector in self.selectors:
             command.extend(("--model", selector))
-        for clip in clips:
-            command.extend(("--clip", clip))
-        if clips:   # the viewer can offer a cutscene shot, which only the cutscene scan lists
-            command.append("--cinematic-clips")
-        elif clip_map:   # each picked model keeps its own clips, in this same run
+        if clip_map:   # each picked model keeps its own clips, in this same run
             command.extend(("--clip-map", str(clip_map)))
         # Blend-only output keeps no receipts, so every run rebuilds.
         if self.skip_verified and not self.blend_only:
@@ -521,35 +505,22 @@ class PipelineBatchRunner:
         _require_source_interpreter(self.python_executable)
         self.output_root.mkdir(parents=True, exist_ok=True)
         self.event("batch_started", total=len(self.selectors), selectors=self.selectors)
-        # --clip applies to a whole CLI run, so a clip-only model gets a run of its own.
-        runs = [(self.selectors, ())]
-        if self.clip_only:
-            path, label = self.clip_only
-            name = label.rpartition(": ")[2]   # viewer labels carry "animset: " with several animsets
-            rest = tuple(s for s in self.selectors if s != path)
-            runs = ([(rest, ())] if rest else []) + [((path,), ("name:" + name,))]
         self._started = 0
-        return_code = 0
         clip_map = self._write_clip_map()
         try:
-            for selectors, clips in runs:
-                if self.cancel_requested.is_set():
-                    break
-                return_code = self._run_cli(self.command(selectors, clips, clip_map)) or return_code
+            return_code = self._run_cli(self.command(clip_map))
         finally:
             if clip_map:
                 clip_map.unlink(missing_ok=True)
-        cancelled = self.cancel_requested.is_set()
-        self.event("batch_done", returncode=return_code, cancelled=cancelled)
-        if return_code and not cancelled:
-            raise RuntimeError(f"Full pipeline exited with code {return_code}")
+        # A failed run is reported once, by batch_done; its model_done events and the log name what failed.
+        self.event("batch_done", returncode=return_code, cancelled=self.cancel_requested.is_set())
         return return_code
 
     def _write_clip_map(self) -> Path | None:
-        """A --clip-map file for the models whose clips the picker changed; the viewer's single clip has its own run."""
-        choices = {path: [f"name:{label.rpartition(': ')[2]}" for label in labels]
-                   for path, labels in self.clip_choices.items()
-                   if path in self.selectors and not (self.clip_only and path == self.clip_only[0])}
+        """A --clip-map file for the models whose clips the picker changed. Each clip is passed as its viewer label,
+        which names its animset when the model has several, so a clip that two animsets share by name stays apart."""
+        choices = {path: [f"label:{label}" for label in labels]
+                   for path, labels in self.clip_choices.items() if path in self.selectors}
         if not choices:
             return None
         handle, name = tempfile.mkstemp(prefix="rc2016-clip-map-", suffix=".json")
@@ -623,15 +594,13 @@ class ExportBatchRunner:
     Blender format is chosen); same events as the other runners."""
 
     def __init__(self, records: Sequence[PipelineModelCandidate], extracted_root: Path, output_root: Path,
-                 options, clip_only: tuple[str, str] | None = None, event: Callable[..., None] | None = None,
-                 clip_choices: dict | None = None):
+                 options, event: Callable[..., None] | None = None, clip_choices: dict | None = None):
         self.records = list(records)
         # model_id -> the clips ticked for it; a model not listed exports the clips of ``options`` as they are.
         self.clip_choices = dict(clip_choices or {})
         self.extracted_root = extracted_root.expanduser().resolve()
         self.output_root = output_root.expanduser().resolve()
         self.options = options
-        self.clip_only = clip_only   # (model_id, clip label): that model gets only this clip
         self.event = event or (lambda *_args, **_kwargs: None)
         self.cancel_requested = threading.Event()
         self.exporter = None
@@ -653,10 +622,7 @@ class ExportBatchRunner:
                 break
             self.event("model_started", index=index, total=len(self.records), model=record.archive_path)
             options = self.options
-            if self.clip_only and self.clip_only[0] == record.model_id:
-                # The viewer may have offered a real-time cutscene shot, which only exists in the cutscene scan.
-                options = replace_options(options, animations="clips", clips=(self.clip_only[1],), cinematic=True)
-            elif record.model_id in self.clip_choices:
+            if record.model_id in self.clip_choices:
                 chosen = self.clip_choices[record.model_id]
                 options = replace_options(options, animations="clips", clips=tuple(chosen)) if chosen \
                     else replace_options(options, animations="none")

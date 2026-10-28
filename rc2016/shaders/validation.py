@@ -137,7 +137,7 @@ def _validate_skin_material(source, material, preflight):
         if detail_rg is None:
             assert secondary == 0.0, "Native single-normal frontend applied with nonzero secondary-normal blend"
         else:
-            assert family == "basic_skin" and secondary != 0.0, "Detail-normal blend applied outside its decoded family"
+            assert family in ("basic_skin", "skin_emissive") and secondary != 0.0, "Detail-normal blend applied outside its decoded family"
             d = _check_binding_image(source, _from_node(detail_rg.inputs[0]), "secondary_normal")
             assert d.image.colorspace_settings.name == "Non-Color", "Secondary normal image must remain Non-Color"
             uv = nodes.get("Secondary normal UV0 scale")
@@ -315,6 +315,7 @@ def _validate_character_glass(source, material, preflight):
     from rc2016.pipeline.game_shader import character_glass_blend
     flags, (blend, attenuate) = character_glass_blend(material["source_material_path"])
     assert abs(float(group.inputs["Attenuate background"].default_value) - attenuate) < 1e-6 and \
+        float(group.inputs["Opaque"].default_value) == (1.0 if blend == "opaque" else 0.0) and \
         material.get("rc_glass_blend") == blend, "Glass blend differs from the material flags word"
     two_sided = bool(flags & 4)
     assert float(group.inputs["Two sided"].default_value) == (1.0 if two_sided else 0.0), \

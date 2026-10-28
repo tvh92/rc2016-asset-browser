@@ -15,6 +15,7 @@ single inverse-bind-compatible rule, else ``segment_scale_compensation_bit0``.
 from __future__ import annotations
 
 import copy
+import hashlib
 from pathlib import Path
 import tempfile
 
@@ -33,6 +34,9 @@ from rc2016.formats.skeleton import bundled_profile, inheritance_rule, inspect_m
 # Native (x, y, z) -> preview (x, -z, y), the same basis as the geometry.
 BASIS = np.array([[1.0, 0, 0, 0], [0, 0, -1.0, 0], [0, 1.0, 0, 0], [0, 0, 0, 1.0]])
 PLAYABLE = ('absolute skeletal', 'partial absolute skeletal', 'relative/additive-style layer')
+# AnimationLibrary.clip_notes: why a clip list may hide a clip. The others play on their own.
+HIDDEN_NOTES = {'duplicate': 'a copy of another clip', 'layer': 'an additive layer (aim, head look, lean, twitch)',
+                'unplayable': 'does not drive this skeleton'}
 
 
 def _blob(archive, path, kind):
@@ -134,6 +138,7 @@ class AnimationLibrary:
                 inspected['profile'].get('rest_inheritance')) else self.inheritance
             self.names = {int(r['hash'], 16): r['name'] for r in self.rows}
             self.clips, self.animset_data = [], {}
+            self._kinds = {}   # (animset, offset) -> first-frame classification; shared with copies
             if not self.rows or len(self.inverse) != len(self.rows):
                 return
             for number, animset in enumerate(animsets):
@@ -148,7 +153,8 @@ class AnimationLibrary:
                     continue
                 self.animset_data[animset] = data
                 for container in containers:
-                    self.clips.append(dict(animset=animset, offset=container['offset'], name=container['name']))
+                    self.clips.append(dict(animset=animset, offset=container['offset'], size=container['declared_size'],
+                                           name=container['name']))
 
     def with_cinematic(self, archive, replace=False, sources=None):
         """Copy of this library that also offers the real-time cutscene shots covering the whole model.
@@ -169,8 +175,8 @@ class AnimationLibrary:
             if not clips:
                 continue
             other.animset_data[source['path']] = archive.asset_data(source['asset_id'])
-            other.clips.extend(dict(animset=source['path'], offset=c['offset'], name=c['name'], source=CINEMATIC_SOURCE)
-                               for c in clips)
+            other.clips.extend(dict(animset=source['path'], offset=c['offset'], size=c['declared_size'], name=c['name'],
+                                    source=CINEMATIC_SOURCE) for c in clips)
         return other
 
     def labels(self):
@@ -182,6 +188,31 @@ class AnimationLibrary:
             prefix = several and not (c.get('source') == 'cinematic2' and plain.count(c['name']) == 1)
             labels.append((f"{Path(c['animset']).stem}: " if prefix else '') + c['name'])
         return labels
+
+    def clip_notes(self):
+        """Per clip, in ``clips`` order: None for a clip that plays on its own, else a HIDDEN_NOTES key: 'duplicate'
+        (the same bytes as an earlier clip, as when an animset repeats another one's clip), 'layer' (a relative or
+        additive-style layer, which the preview shows on the rest pose) or 'unplayable'. The layer test is the
+        pipeline's ``classify`` on the clip's first frame, so only that frame is decoded."""
+        seen, notes = set(), []
+        for clip in self.clips:
+            data = self.animset_data[clip['animset']]
+            digest = hashlib.sha1(data[clip['offset']:clip['offset'] + clip['size']]).digest() if clip.get('size') else None
+            if digest in seen:
+                notes.append('duplicate')
+                continue
+            if digest:
+                seen.add(digest)
+            key = (clip['animset'], clip['offset'])
+            if key not in self._kinds:
+                try:
+                    start = decode_clip(data, clip['offset'], self.names, first_frames=1)
+                    self._kinds[key] = classify(self.rows, sample_transforms(start))[0]
+                except Exception:   # the full decode in pose() fails the same way
+                    self._kinds[key] = 'unsupported'
+            kind = self._kinds[key]
+            notes.append('layer' if kind == 'relative/additive-style layer' else None if kind in PLAYABLE else 'unplayable')
+        return notes
 
     def pose(self, index):
         """Per-frame skin matrices (joints x 4 x 4, preview basis) for clip ``index``."""

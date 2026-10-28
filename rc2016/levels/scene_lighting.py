@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 import struct
 
-from rc2016.common import read
+from rc2016.formats.archive import asset_data
 from rc2016.levels.scene import asset_bytes
 from rc2016.levels.sky import atmosphere_zone_assets
 from rc2016.levels.zone_format import sections
@@ -237,7 +237,7 @@ def _novalis_grid_probes(archive, lighting_zone_path):
         try:
             assignment = _lightgrid_probe_assignment(archive, entry)
         except ValueError:
-            decoded = read(archive.decode(row['asset_id']))
+            decoded = asset_data(archive, row['asset_id'])
             grid_sections = sections(decoded)
             if (0x96D77BBD in grid_sections or 0x9989BB49 not in grid_sections
                     or grid_sections[0x9989BB49][1] != 4096 * 24):

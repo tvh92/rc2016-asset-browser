@@ -31,6 +31,7 @@ def open_archive(source_root):
     cache = Path(__file__).resolve().parents[2] / '.cache'
     archive.texture_disk_cache = TextureDiskCache(cache / 'texture_preview')
     archive.translation_disk_cache = TranslationDiskCache(cache / 'native_translation')
+    archive.probe_disk_cache = cache / 'probe_faces'   # decoded reflection cubes (probe_lighting.probe_faces)
     return archive
 
 

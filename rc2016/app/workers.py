@@ -12,7 +12,6 @@ import queue
 import struct
 import subprocess
 import threading
-import time
 
 
 class LatestWork:

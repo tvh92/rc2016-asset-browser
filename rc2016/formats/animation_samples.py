@@ -33,7 +33,9 @@ def require(condition, message):
 SUPPORTED_CLIP_VERSIONS = (15, 21)
 
 
-def decode_clip(data: bytes, start: int, names: dict[int, str]) -> dict:
+def decode_clip(data: bytes, start: int, names: dict[int, str], first_frames: int | None = None) -> dict:
+    """One clip's samples and joints. ``first_frames`` decodes only that many leading frames (and reports that
+    count as ``original_frame_count``), with the same checks on them, for callers that need the start of a clip."""
     clip = read_container(data, start, names)
     metadata = clip['metadata']
     require(metadata is not None, 'lookup target is not an animation clip')
@@ -79,6 +81,10 @@ def decode_clip(data: bytes, start: int, names: dict[int, str]) -> dict:
             'frame timing mismatch')
     payload = sections['anim_clip_sample_data']
     require(len(payload) == frames * stride, 'sample payload size mismatch')
+    if first_frames is not None:
+        frames = min(frames, first_frames)
+        payload = payload[:frames * stride]
+        metadata = dict(metadata, original_frame_count=frames)
     values = [[] for _ in entries]
     rebuilt = bytearray()
     for frame in range(frames):

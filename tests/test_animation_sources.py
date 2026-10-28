@@ -12,6 +12,7 @@ from rc2016.formats.animation_samples import decode_clip
 from rc2016.formats.animation_transforms import model_skeleton, sample_transforms
 from rc2016.formats.clips import extract_set
 from rc2016.formats.container import game_crc32
+from rc2016.viewer.animation import AnimationLibrary
 
 BUILT, JOINTS, BASE = 0x9DF23F77, 0xA3B26640, 0x2BB5BC8F
 LOOKUP, DATA = 0xB79CF1D7, 0x9FD19C20
@@ -30,10 +31,11 @@ def container(sections):
     return b'1TAD' + struct.pack('<IIHH', 0, total, len(sections), 0) + b''.join(entries) + bytes(payload)
 
 
-def clip(name, joint_names, translations, version=21):
-    """A one-frame, zero-delta clip: identity rotations, unit scales, the given translations."""
-    built = struct.pack('<IIIff', version, game_crc32(name), 0x80001, 30.0, 0.0) + bytes(12)
-    built += struct.pack('<IHHII', len(joint_names) | (1 << 16), 0, 0, 0, 1)
+def clip(name, joint_names, translations, version=21, frames=1, duration=0.0):
+    """A zero-delta clip of ``frames`` frames (no sample stream, so every frame repeats the base): identity
+    rotations, unit scales, the given translations. The default is one frame."""
+    built = struct.pack('<IIIff', version, game_crc32(name), 0x80001, 30.0, duration) + bytes(12)
+    built += struct.pack('<IHHII', len(joint_names) | (frames << 16), 0, 0, 0, 1)
     hashes = b''.join(struct.pack('<I', game_crc32(n)) for n in joint_names) + b'\xff' * 4
     base = b''.join(struct.pack('<7h', 0, 0, 0, 16384, *t) + bytes(2) for t in translations)
     return container([(BUILT, built), (JOINTS, hashes), (BASE, base)])
@@ -213,6 +215,73 @@ class BorrowTests(unittest.TestCase):
         rows = model_skeleton(archive.asset_data('ma'))
         with self.assertRaisesRegex(ValueError, 'already pairs'):
             S.borrowed_animset(archive, self.graph, 'character/a/a.animset', rows, 'ma')
+
+
+class CinematicDirectoryMemo(unittest.TestCase):
+    def test_a_second_call_on_the_same_archive_does_not_reread_the_cutscenes(self):
+        blob = animset([('shot1_npc_test', clip('shot1_npc_test', ['root', 'spine'], [(0, 0, 0), (0, 1, 0)]))],
+                       strings=['shot1_npc_test'])
+
+        class CountingArchive(FakeArchive):
+            def __init__(self, assets):
+                super().__init__(assets)
+                self.reads = []
+
+            def asset_data(self, key):
+                self.reads.append(key)
+                return super().asset_data(key)
+
+        archive = CountingArchive([('c1', 'cinematic2', 'cinematic/a/a.cinematic2', blob),
+                                   ('c2', 'cinematic2', 'cinematic/b/b.cinematic2', blob),
+                                   ('m', 'model', 'character/m.model', b'')])
+        rows = rig([('root', -1, (0, 0, 0)), ('spine', 0, (0, 1, 0))])
+        first = S.cinematic_sources(archive, rows)
+        self.assertEqual(sorted(archive.reads), ['c1', 'c2'])
+        second = S.cinematic_sources(archive, rows)
+        self.assertEqual(sorted(archive.reads), ['c1', 'c2'])
+        self.assertEqual(first, second)
+        self.assertEqual(len(first[0]), 2)
+
+
+class FirstFramesDecode(unittest.TestCase):
+    def test_first_frames_decodes_only_the_leading_frame_and_reports_that_count(self):
+        data = clip('x', ['root', 'spine'], [(0, 0, 0), (1, 2, 3)], frames=3, duration=0.1)
+        full = decode_clip(data, 0, {})
+        head = decode_clip(data, 0, {}, first_frames=1)
+        self.assertEqual(full['metadata']['original_frame_count'], 3)
+        self.assertEqual(head['metadata']['original_frame_count'], 1)
+        self.assertEqual(len(head['sample_times_seconds']), 1)
+        full_frames = sample_transforms(full)
+        self.assertEqual(len(full_frames), 3)
+        self.assertEqual(sample_transforms(head), full_frames[:1])
+
+
+class ClipNotes(unittest.TestCase):
+    joints = [('root', -1, (0, 0, 0)), ('spine', 0, (0, 1, 0))]
+
+    def library(self, clips, animsets):
+        """An AnimationLibrary without its archive: only the state clip_notes reads."""
+        library = AnimationLibrary.__new__(AnimationLibrary)
+        library.rows = rig(self.joints)
+        library.names = {int(row['hash'], 16): row['name'] for row in library.rows}
+        library.animset_data = animsets
+        library.clips = clips
+        library._kinds = {}
+        return library
+
+    @staticmethod
+    def clips_of(path, blob):
+        return [dict(animset=path, offset=r['offset'], size=r['declared_size'], name=r['name'] or '')
+                for r in S.clip_directory(blob)]
+
+    def test_a_repeated_clip_is_a_duplicate_and_layers_and_playable_clips_are_told_apart(self):
+        idle = clip('Idle', ['root', 'spine'], [(0, 0, 0), (0, 1, 0)])       # equal to the rest translations
+        aim = clip('Aim', ['root', 'spine'], [(0, 0, 0), (0, 0, 0)])        # zero translations: an additive layer
+        first = animset([('Idle', idle), ('Aim', aim)])
+        second = animset([('Idle', idle)])                                  # repeats the first animset's Idle
+        library = self.library(self.clips_of('a.animset', first) + self.clips_of('b.animset', second),
+                               {'a.animset': first, 'b.animset': second})
+        self.assertEqual(library.clip_notes(), [None, 'layer', 'duplicate'])
 
 
 if __name__ == '__main__':

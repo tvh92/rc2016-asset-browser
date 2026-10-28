@@ -76,21 +76,34 @@ WORKING_BLEND_DIRS = ('blender','variant_assemblies','work','cache','compressed_
 # The reference index the viewer reads to find each model's animsets (viewer/animation.model_animsets).
 # Without it every model in the folder loses its animation list, so blend-only output keeps these two files.
 VIEWER_INDEX_FILES = ('reports/asset_index.json','reports/asset_references.sqlite')
+# Also kept by a blend-only cleanup: the browser's model list and the actor reference index (rebuilding it decodes
+# every actor of the archive on the next run).
+KEPT_FILES = VIEWER_INDEX_FILES+('reports/gui_model_index.json','reports/gui_scan_stamp.json')
+KEPT_FOLDERS = ('cache/actor_index',)
+LOG_FOLDER = 'reports/logs'
 
 
-def keep_only_blends(output_root):
-    """Blend-only output: delete every file below OutputRoot except delivered .blend files (each model's
-    <Model>.blend and final/*.blend), including deliveries from earlier runs in the same folder, and
-    except the viewer's reference index (VIEWER_INDEX_FILES)."""
+def keep_only_blends(output_root, keep_logs=False):
+    """Blend-only output: delete the pipeline's files below OutputRoot except delivered .blend files (each model's
+    <Model>.blend, final/*.blend and groups/*.blend), including deliveries from earlier runs in the same folder, and
+    except KEPT_FILES and KEPT_FOLDERS. ``keep_logs`` also keeps LOG_FOLDER: the pipeline log and the Blender logs
+    of a run that had errors. Folders the pipeline does not write are left alone: hidden ones (the browser's
+    thumbnails in .cache) and portable exports (a folder holding export.json)."""
     def long_path(path):
         path=str(Path(path).resolve())
         return '\\\\?\\'+path if os.name=='nt' and not path.startswith('\\\\?\\') else path
     root=long_path(output_root);removed=0
-    for folder,_dirs,files in os.walk(root):
-        top=os.path.relpath(folder,root).split(os.sep)[0]
+    kept_folders=KEPT_FOLDERS+((LOG_FOLDER,) if keep_logs else ())
+    for folder,dirs,files in os.walk(root):
+        relative_folder=os.path.relpath(folder,root).replace(os.sep,'/')
+        if relative_folder=='.':
+            dirs[:]=[name for name in dirs if not name.startswith('.')]
+        elif 'export.json' in files or any(relative_folder==k or relative_folder.startswith(k+'/') for k in kept_folders):
+            dirs[:]=[];continue
+        top=relative_folder.split('/')[0]
         for name in files:
-            relative=os.path.relpath(os.path.join(folder,name),root).replace(os.sep,'/')
-            if relative in VIEWER_INDEX_FILES:
+            relative=name if relative_folder=='.' else relative_folder+'/'+name
+            if relative in KEPT_FILES:
                 continue
             working=top in WORKING_BLEND_DIRS or 'candidate' in name.lower() or 'checkpoint' in name.lower()
             if working or not name.lower().endswith('.blend'):
@@ -604,7 +617,7 @@ def process_model(key,index,args,code_hash,previous,log):
         except Exception as exc:
             animset_errors.append(dict(animset=archive.entries[animset]['path'],reason=str(exc),status='unsupported_or_malformed',raw_source_retained=True))
     try:
-        selected_source_rows, catalog = resolve_clip_selection(entries, args.clip)
+        selected_source_rows, catalog = resolve_clip_selection(entries, args.clip, picked=getattr(args,'clip_picked',False))
     except ClipSelectionError as exc:
         _all_supported, catalog = resolve_clip_selection(entries)
         for row in catalog:
@@ -1564,7 +1577,7 @@ def main():
     parser.add_argument('--novalis-atmosphere-sun',action='store_true',help='Add the source-valued Novalis RGB96 Sun candidate; runtime field names remain pending')
     parser.add_argument('--no-skeleton',action='store_true',help='Export static meshes only: no joints, skin weights, rig or animation. Mirrors the viewer export option Skeleton off.')
     parser.add_argument('--no-animations',action='store_true',help='Keep the joints and skin weights but write no animation clips. Mirrors the viewer export option Include animations off.')
-    parser.add_argument('--clip-map',type=Path,default=None,help='JSON file {"<archive path>": ["name:<clip>", ...]}: each listed model gets only those clips, in this one run (the Blender picker). An empty list writes that model without animations. Models not listed get every clip. Cannot be combined with --clip, --no-animations or --no-skeleton.')
+    parser.add_argument('--clip-map',type=Path,default=None,help='JSON file {"<archive path>": ["label:<viewer clip label>", ...]} (any --clip selector works): each listed model gets only those clips, in this one run (the Blender picker). Selectors that match only clips the pipeline cannot build are left out, and one that matches identical copies of a clip takes the first. An empty list writes that model without animations. Models not listed get every clip. Cannot be combined with --clip, --no-animations or --no-skeleton.')
     args=parser.parse_args()
     if bool(args.list_models_json) == bool(args.model or args.all_models):
         parser.error('Choose exactly one of --model/--all-models or --list-models-json')
@@ -1677,7 +1690,7 @@ def main():
             """The run's arguments for one model: its own clip list when --clip-map names it."""
             choice=clip_map.get(model_path_key(archive.entries[key]['path']))
             if choice is None:return args
-            chosen=copy.copy(args);chosen.clip=choice;chosen.no_animations=not choice
+            chosen=copy.copy(args);chosen.clip=choice;chosen.no_animations=not choice;chosen.clip_picked=True
             return chosen
         run_selected_models(
             selection, manifest,
@@ -1744,20 +1757,24 @@ def main():
         if not manifest['errors'] and not args.keep_intermediates:
             prune_intermediates(args.output_root,log)
         if args.blend_only:
-            if manifest['errors']:log('blend_only_skipped',reason='the run had errors, so all output was kept for diagnosis')
-            else:keep_blends_only=True
+            keep_blends_only=True
+            if manifest['errors']:log('blend_only_logs_kept',folder=str(args.output_root/LOG_FOLDER),
+                reason='the run had errors: the pipeline log and the Blender logs are kept')
         log('finished',models=len(selection),failed=len(manifest['errors']))
         return 1 if manifest['errors'] else 0
     except Exception as exc:
         manifest['errors'].append(dict(error=str(exc),traceback=traceback.format_exc()));dump(manifest_path,manifest)
-        log('pipeline_failed',message=str(exc));return 1
+        log('pipeline_failed',message=str(exc));keep_blends_only=args.blend_only;return 1
     finally:
         log.file.close();lock_stream.close()
         try:lock.unlink()
         except OSError:pass
         if keep_blends_only:
             # Runs after the log and lock are closed, so their files can be removed too.
-            print('blend-only output: removed %d files other than the delivered .blend files'%keep_only_blends(args.output_root),flush=True)
+            errors=bool(manifest['errors'])
+            removed=keep_only_blends(args.output_root,keep_logs=errors)
+            print('blend-only output: removed %d files other than the delivered .blend files%s'%(
+                removed,' (the logs of the failed run are kept in %s)'%(args.output_root/LOG_FOLDER) if errors else ''),flush=True)
         remove_empty_dirs(args.output_root)
 
 

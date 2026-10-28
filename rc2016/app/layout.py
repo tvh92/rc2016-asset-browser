@@ -100,6 +100,61 @@ class Splitter(ttk.Frame):
         self._place()
 
 
+class ScrollFrame(ttk.Frame):
+    """A frame whose content (``inner``) scrolls when a divider leaves less room than the content needs. Each
+    scrollbar appears only while its direction overflows, so nothing is cut off; with room to spare the content is
+    stretched to fill the frame, as a plain frame would be. The wheel scrolls it while the pointer is over it."""
+
+    def __init__(self, parent, **options):
+        super().__init__(parent, **options)
+        self.canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0, width=1, height=1)
+        track(self.canvas, background="bg")
+        self.inner = ttk.Frame(self.canvas)
+        self._window = self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
+        self.vbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.hbar = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
+        self.canvas.configure(yscrollcommand=self.vbar.set, xscrollcommand=self.hbar.set)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.rowconfigure(0, weight=1)
+        self.columnconfigure(0, weight=1)
+        self.inner.bind("<Configure>", lambda _event: self._fit(), add="+")
+        self.canvas.bind("<Configure>", lambda _event: self._fit(), add="+")
+        # Added beside the app's other wheel handlers (3D view zoom, gallery, textures); each acts only under its pointer.
+        self.bind_all("<MouseWheel>", self._wheel, add="+")
+
+    def _fit(self) -> None:
+        need_width, need_height = self.inner.winfo_reqwidth(), self.inner.winfo_reqheight()
+        width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if width <= 1 or height <= 1:
+            return
+        self.canvas.itemconfigure(self._window, width=max(need_width, width), height=max(need_height, height))
+        self.canvas.configure(scrollregion=(0, 0, max(need_width, width), max(need_height, height)))
+        for bar, overflow, place in ((self.vbar, need_height > height, dict(row=0, column=1, sticky="ns")),
+                                     (self.hbar, need_width > width, dict(row=1, column=0, sticky="ew"))):
+            shown = bar.winfo_manager() == "grid"
+            if overflow and not shown:
+                bar.grid(**place)
+            elif not overflow and shown:
+                bar.grid_remove()
+        if need_height <= height:
+            self.canvas.yview_moveto(0)
+        if need_width <= width:
+            self.canvas.xview_moveto(0)
+
+    def _wheel(self, event) -> None:
+        """Scroll when the pointer is over this frame's content and it overflows vertically."""
+        try:
+            under = self.winfo_containing(event.x_root, event.y_root)
+            if self.vbar.winfo_manager() != "grid":
+                return
+        except (tk.TclError, KeyError):   # destroyed, or over a widget tkinter does not wrap (a combobox list)
+            return
+        while under is not None and under is not self:
+            under = under.master
+        if under is self:
+            self.canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+
+
 class SplitLayout:
     def __init__(self, mode: str = VERTICAL):
         self.mode = mode if mode in MODES else VERTICAL

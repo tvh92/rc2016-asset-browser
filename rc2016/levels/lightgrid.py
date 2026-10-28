@@ -235,9 +235,9 @@ def pack_tiles(cells, coordinates):
 def _tile_cells(archive, asset_id):
     """The (4096, 24) uint8 cell block of one lightgrid asset."""
     import numpy as np
-    from rc2016.common import read
+    from rc2016.formats.archive import asset_data
     from rc2016.levels.zone_format import sections
-    data = read(archive.decode(asset_id))
+    data = asset_data(archive, asset_id)   # in memory; decode() would also write the asset to disk
     found = sections(data)
     if CELL_SECTION not in found or found[CELL_SECTION][1] != CELLS_PER_TILE * CELL_BYTES:
         raise ValueError('lightgrid asset has no 4096-cell block')

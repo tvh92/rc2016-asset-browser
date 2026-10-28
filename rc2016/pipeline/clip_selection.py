@@ -2,7 +2,7 @@
 from copy import deepcopy
 
 SUPPORTED_STATUS = 'included'
-SELECTOR_PREFIXES = {'action', 'name', 'hash'}
+SELECTOR_PREFIXES = {'action', 'name', 'hash', 'label'}
 
 
 class ClipSelectionError(ValueError):
@@ -25,6 +25,11 @@ def _name_hash(row):
 
 
 def _matches(row, selector):
+    if selector.startswith('label:'):
+        # The viewer's clip label: 'animset stem: name' when the model has several animsets, else 'name'.
+        stem, sep, name = selector[6:].rpartition(': ')
+        animset = str(row.get('animset_path') or '').rsplit('/', 1)[-1].rsplit('.', 1)[0]
+        return str(row.get('name', '')) == name and (not sep or animset == stem)
     if selector.startswith('action:'):
         return selector[7:] in _action_names(row)
     if selector.startswith('name:'):
@@ -35,7 +40,7 @@ def _matches(row, selector):
     return selector in _action_names(row) or str(row.get('name', '')) == selector
 
 
-def resolve_clip_selection(entries, selectors=None):
+def resolve_clip_selection(entries, selectors=None, picked=False):
     """Return (selected rows, complete catalog) in original source order.
 
     Each catalog row preserves all decoder/source fields. `selection_status` is
@@ -43,10 +48,16 @@ def resolve_clip_selection(entries, selectors=None):
     relabeled as a user omission. With no selectors, all supported rows remain
     selected. Exact duplicate selectors are harmless; selector resolution must
     identify exactly one source row and may only select a supported row.
+
+    ``picked``: the selectors are the clips ticked in the browser's picker, which lists every clip the viewer
+    reads. A selector there that matches no row or only a row that is not supported is left out (as a run
+    without selectors leaves those rows out), and one that matches several rows with the same clip bytes (an
+    animset that repeats another's clip) selects the first. Each such selector is listed in ``skipped_selectors``.
     """
     source = list(entries)
     requested = list(selectors or ())
     selected_indices = set()
+    skipped = []
     if requested:
         for raw in requested:
             selector = str(raw)
@@ -56,6 +67,14 @@ def resolve_clip_selection(entries, selectors=None):
             if sep and prefix in SELECTOR_PREFIXES and not value:
                 raise ClipSelectionError('Empty value for '+prefix+' selector')
             matches = [i for i, row in enumerate(source) if _matches(row, selector)]
+            if picked:
+                supported = [i for i in matches if source[i].get('status') == SUPPORTED_STATUS]
+                if len({source[i].get('raw_sha256') for i in supported}) == 1:
+                    matches = supported[:1]
+                elif not supported:
+                    skipped.append(dict(selector=selector, reason='matches no supported source clip' if matches
+                                        else 'matches no source clip'))
+                    continue
             if not matches:
                 raise ClipSelectionError('No source clip matches exact selector: '+selector)
             if len(matches) != 1:
@@ -78,8 +97,10 @@ def resolve_clip_selection(entries, selectors=None):
             'source_name_hash': row.get('name_hash'),
             'source_raw_sha256': row.get('raw_sha256'),
             'selectors': [str(s) for s in requested if _matches(row, str(s))],
-            'selection_mode': 'explicit' if requested else 'default_all_supported',
+            'selection_mode': ('picked' if picked else 'explicit') if requested else 'default_all_supported',
         }
+        if skipped:
+            audit['selection_provenance']['skipped_selectors'] = skipped
         catalog.append(audit)
         if i in selected_indices:
             selected.append(deepcopy(audit))

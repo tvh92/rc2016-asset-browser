@@ -7,8 +7,9 @@ from pathlib import Path
 import queue
 import re
 import threading
+import traceback
 
-from rc2016.app.clip_picker import ClipPickerDialog, needs_picker
+from rc2016.app.clip_picker import CLIP_PICKER_THRESHOLD, ClipPickerDialog, needs_picker
 from rc2016.app.batch import (
     BatchRunner, ExportBatchRunner, ModelCandidate, PipelineBatchRunner, PipelineIndexScanner,
     PipelineModelCandidate, discover_models, ensure_disjoint, folder_layout, parse_prefixes, status_for)
@@ -56,6 +57,9 @@ HELP = {
     "group": ("Blender Scene only. After the selected models are built, they are also placed side by side "
               "in one .blend under groups/, with one camera and one Render Region framing them all. Each model keeps "
               "its own .blend as well."),
+    "picker": ("Before an export with animations, the clips of the selected models are read. When a model has more clips "
+               "than this number, a list opens to choose which ones to export; 0 opens it for any model with clips.\n\n"
+               "Unticked, the list never opens and every clip is exported."),
     "skeleton": ("Keeps the joints and skin weights, so the model can be posed and animated. Off exports the meshes only, "
                  "as static geometry, and no animations are written.\n\nUseful for props or for a model that is only "
                  "needed for its shape."),
@@ -218,6 +222,11 @@ class AssetBrowserApp:
         self.blend_scene_var = remember_var(tk.BooleanVar(value=False), "export.blend_scene")
         self.group_blend_var = remember_var(tk.BooleanVar(value=False), "export.group_blend")
         self.group_name_var = remember_var(tk.StringVar(value="Selected models"), "export.group_name")
+        # Animation picker: opens when a model has more clips than the threshold; switched off, every clip is exported.
+        self.picker_var = remember_var(tk.BooleanVar(value=True), "export.picker")
+        self.picker_threshold_var = remember_var(tk.StringVar(value=str(CLIP_PICKER_THRESHOLD)), "export.picker_threshold")
+        self.batch_clips: dict[str, tuple[str, ...]] = {}     # the picker's ticks for the running export
+        self.retained_clips: dict[str, tuple[str, ...]] = {}  # those of an export that did not finish, for the next picker
         self.export_summary_var = tk.StringVar()
         self.exported_names: set[str] = set()
         self.selection_var = tk.StringVar(value="0 models selected")
@@ -471,8 +480,16 @@ class AssetBrowserApp:
         self._tip(HELP["skeleton"], self.skeleton_check)
         self.animation_check = ttk.Checkbutton(include, text="Include animations", variable=self.export_animations_var)
         self.animation_check.grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 2))
-        ttk.Label(include, text="To export one clip, pick it under the 3D view and tick 'Export only this clip'.",
-                  style="Muted.TLabel").grid(row=4, column=0, columnspan=3, sticky="w")
+        picker = ttk.Frame(include)
+        picker.grid(row=4, column=0, columnspan=3, sticky="w", padx=(22, 0))
+        self.picker_check = ttk.Checkbutton(picker, text="Animation picker: ask which clips to export when a model has more than",
+                                            variable=self.picker_var)
+        self.picker_check.pack(side="left")
+        self.picker_spin = ttk.Spinbox(picker, from_=0, to=9999, width=5, textvariable=self.picker_threshold_var)
+        self.picker_spin.pack(side="left", padx=4)
+        self.picker_unit = ttk.Label(picker, text="clips (0: always)")
+        self.picker_unit.pack(side="left")
+        self._tip(HELP["picker"], self.picker_check, self.picker_spin, self.picker_unit)
         self.lod_label = ttk.Label(include, text="Detail level (LOD)")
         self.lod_label.grid(row=5, column=0, sticky="w", pady=(6, 2))
         self.lod_box = ttk.Combobox(include, textvariable=self.export_lod_var, values=("Highest", "Lowest", "All"),
@@ -521,7 +538,7 @@ class AssetBrowserApp:
 
         for variable in (*self.export_format_vars.values(), self.export_textures_var, self.export_dds_var,
                          self.export_animations_var, self.export_skeleton_var, self.export_lod_var, self.blend_scene_var,
-                         self.backend_var, self.group_blend_var):
+                         self.backend_var, self.group_blend_var, self.picker_var):
             variable.trace_add("write", lambda *_args: self._options_changed())
         self._options_changed()
 
@@ -576,6 +593,10 @@ class AssetBrowserApp:
         # Without a skeleton there is nothing to animate, so the animation choice is switched off.
         self.skeleton_check.configure(state="normal" if pipeline else "disabled")
         self.animation_check.configure(state="normal" if pipeline and self.export_skeleton_var.get() else "disabled")
+        animated = pipeline and self.export_skeleton_var.get() and self.export_animations_var.get()
+        self.picker_check.configure(state="normal" if animated else "disabled")
+        self.picker_spin.configure(state="normal" if animated and self.picker_var.get() else "disabled")
+        self.picker_unit.configure(style="TLabel" if animated and self.picker_var.get() else "Disabled.TLabel")
         # Textures, the original .dds files and the LOD level are only written by the portable export.
         self.texture_check.configure(state="disabled" if blend else "normal")
         self.dds_check.configure(state="disabled" if blend else "normal")
@@ -689,6 +710,7 @@ class AssetBrowserApp:
         self.state_var.set("All")
         self._apply_backend_states()
         self.records = []
+        self.selected_map = {}   # the other backend's records cannot be exported by this one
         widget_state = "disabled" if self.backend_var.get() == "Full archive pipeline" else "normal"
         self.prefix_entry.configure(state=widget_state)
         self.prefix_label.configure(style="Disabled.TLabel" if widget_state == "disabled" else "TLabel")
@@ -1098,31 +1120,32 @@ class AssetBrowserApp:
                                           "location under Options…, or untick those formats.")
                 self.show_options()
                 return
-        clip_only = self.browser.export_clip() if pipeline_mode else None
-        if clip_only and not any(getattr(r, "model_id", None) == clip_only[0] for r in selected):
-            clip_only = None
-        if clip_only and blend_mode and not (self.export_skeleton_var.get() and self.export_animations_var.get()):
-            self._append_log("The single clip from the 3D view is left out: the Blender scene has no animations", "muted")
-            clip_only = None
-        if clip_only:
-            self._append_log(f"Only clip '{clip_only[1]}' for the model shown in the 3D view", "muted")
+        if blend_mode:   # checked before the clips are read, so a fix under Options… does not cost the picker's ticks
+            blender = Path(self.blender_var.get().strip())
+            if not blender.is_file():
+                self.messagebox.showerror("Blender executable", f"File not found:\n{blender}")
+                return
+            group_name = self.group_name_var.get().strip() if self.group_blend_var.get() else ""
+            if self.group_blend_var.get() and not group_name:
+                self.messagebox.showerror("Group file name", "Type a name for the one-.blend file under Options….")
+                self.show_options()
+                return
         if not pipeline_mode and any(not isinstance(record, ModelCandidate) or record.animset is None for record in selected):
             self.messagebox.showerror("Selection", "One or more selected models have no exact same-directory animset. Deselect them or choose paired models.")
             return
         # Include animations: each model's clips are read first, and the user picks which to export.
         clip_choices: dict[str, tuple[str, ...]] = {}
+        self.batch_clips = {}
         models = [r for r in selected if isinstance(r, PipelineModelCandidate)]
+        reader_options = None
         if export_mode and options.animations == "all":
-            picked = self._choose_clips(models, output, options)
-            if picked is None:
-                self._append_log("Export cancelled", "muted")
-                return
-            clip_choices = picked
+            reader_options = options
         elif blend_mode and self.export_animations_var.get() and self.export_skeleton_var.get():
             # The Blender scene reads the same clips as a glTF export, so its picker lists them the same way.
             # The Blender build reads its own clips, so the cutscene shots and borrowed animsets are not offered here.
             reader_options = replace(self.export_options(), formats=("glb",), animations="all", skeleton=True,
                                      cinematic=False, borrowed=False)
+        if reader_options is not None:
             picked = self._choose_clips(models, output, reader_options)
             if picked is None:
                 self._append_log("Export cancelled", "muted")
@@ -1136,33 +1159,12 @@ class AssetBrowserApp:
         self.progress_var.set(f"0/{len(selected)} models processed")
         if export_mode:
             self.runner = ExportBatchRunner(
-                [record for record in selected if isinstance(record, PipelineModelCandidate)],
-                Path(self.source_var.get()), output, options, clip_only,
+                models, Path(self.source_var.get()), output, options,
                 event=lambda kind, **values: self.events.put((kind, values)), clip_choices=clip_choices)
         elif pipeline_mode:
-            blender = Path(self.blender_var.get().strip())
-            if not blender.is_file():
-                self.messagebox.showerror("Blender executable", f"File not found:\n{blender}")
-                self._set_busy()
-                self.runner = None
-                return
-            selectors = [record.archive_path for record in selected if isinstance(record, PipelineModelCandidate)]
-            research_clip = None
-            if clip_only:
-                path = next(r.archive_path for r in selected if getattr(r, "model_id", None) == clip_only[0])
-                research_clip = (path, clip_only[1])
-            group_name = ""
-            if self.group_blend_var.get():
-                group_name = self.group_name_var.get().strip()
-                if not group_name:
-                    self.messagebox.showerror("Group file name", "Type a name for the one-.blend file under Options….")
-                    self.show_options()
-                    self._set_busy()
-                    self.runner = None
-                    return
             self.runner = PipelineBatchRunner(
-                selectors, Path(self.source_var.get()), output, interpreter, blender,
-                event=lambda kind, **values: self.events.put((kind, values)), clip_only=research_clip,
+                [record.archive_path for record in models], Path(self.source_var.get()), output, interpreter, blender,
+                event=lambda kind, **values: self.events.put((kind, values)),
                 group_blend=group_name, blend_only=True, skeleton=self.export_skeleton_var.get(),
                 animations=self.export_animations_var.get(),
                 clip_choices={r.archive_path: clip_choices[r.model_id] for r in models if r.model_id in clip_choices})
@@ -1175,27 +1177,46 @@ class AssetBrowserApp:
         self.worker = threading.Thread(target=self._batch_worker, args=(self.runner,), daemon=True)
         self.worker.start()
 
+    def _picker_threshold(self) -> int | None:
+        """Clip count above which the animation picker opens; None when it is switched off under Options…"""
+        if not self.picker_var.get():
+            return None
+        try:
+            return max(0, int(self.picker_threshold_var.get().strip()))
+        except ValueError:
+            return CLIP_PICKER_THRESHOLD
+
     def _choose_clips(self, records, output: Path, options) -> dict[str, tuple[str, ...]] | None:
         """Read each model's animation clips, then let the user untick the ones to leave out. Returns the clips
         for each model whose choice is not every clip (a model left fully ticked, or with no clips, is absent),
-        or None when cancelled. When no model has clips, the user is told why and asked whether to export without them."""
+        or None when cancelled. When no model has clips, the user is told why and asked whether to export without them.
+        The picker opens only above the threshold of Options…; switched off, the clips are not read at all. It shows
+        the ticks of an export that did not finish (``retained_clips``) for the models it lists again."""
         from rc2016.export.models import ModelExporter
         tk, ttk = self.tk, self.ttk
-        cancel = threading.Event()
-        found = []   # (record, clip labels) in the order the models were read
-        errors = []  # (record, error) of the models that could not be read
         reader = ModelExporter(Path(self.source_var.get()), output)
+        no_index = ("This output folder has no usable archive index, which links models to their animation sets. "
+                    "Press Scan archive with this output folder first, then export again.")
+        threshold = self._picker_threshold()
+        if threshold is None:   # every clip is exported, so nothing is read first
+            if records and reader.animation_index() is None and not self.messagebox.askokcancel(
+                    "No animations found", f"{no_index}\n\nExport without animations?", icon="warning", parent=self.root):
+                return None
+            return {}
+        cancel = threading.Event()
+        found = []   # (record, clip labels, clip notes) in the order the models were read
+        errors = []  # (record, error) of the models that could not be read
 
         def read() -> None:
             for record in records:
                 if cancel.is_set():
                     return
                 try:
-                    labels = reader.clip_labels(record.model_id, record.archive_path, options)
+                    labels, notes = reader.clip_labels(record.model_id, record.archive_path, options, notes=True)
                 except Exception as error:   # a model that cannot be read has no clips to choose from
-                    labels = []
+                    labels, notes = [], []
                     errors.append((record, error))
-                found.append((record, labels))
+                found.append((record, labels, notes))
 
         worker = threading.Thread(target=read, daemon=True)
         progress = tk.Toplevel(self.root)
@@ -1224,12 +1245,13 @@ class AssetBrowserApp:
         self.root.wait_window(progress)
         if cancel.is_set():
             return None
-        listed = [(record, labels) for record, labels in found if labels]
+        for record, error in errors:   # the export still runs for them, with every clip it can read
+            self._append_log(f"{record.display_name}: its animations could not be read for the picker: {error}", "error")
+        listed = [entry for entry in found if entry[1]]
         if not listed:
             # Say why nothing is offered instead of exporting without animations unannounced.
             if records and reader.animation_index() is None:
-                reason = ("This output folder has no usable archive index, which links models to their animation sets. "
-                          "Press Scan archive with this output folder first, then export again.")
+                reason = no_index
             elif errors:
                 reason = f"{errors[0][0].display_name} could not be read: {errors[0][1]}"
             else:
@@ -1239,11 +1261,26 @@ class AssetBrowserApp:
                 return None
             return {}
 
-        if not needs_picker(listed):
+        if not needs_picker(listed, threshold):
             return {}   # every model has few enough clips to export them all without asking
-        return ClipPickerDialog(tk, ttk, self.root, listed, source_root=self.source_var.get(),
-                                index_root=reader.animation_index(), borrowed=options.borrowed,
-                                cinematic=options.cinematic).show()
+        previous, self.retained_clips = self.retained_clips, {}   # kept only until the next picker opens
+        dialog = ClipPickerDialog(tk, ttk, self.root, listed, source_root=self.source_var.get(),
+                                  index_root=reader.animation_index(), borrowed=options.borrowed,
+                                  cinematic=options.cinematic, previous=previous)
+        picked = dialog.show()
+        if picked is not None:
+            self.batch_clips = dialog.selection.ticked_labels()
+        return picked
+
+    def _batch_finished(self, succeeded: bool) -> None:
+        """An export that finished without a failure deselects every model. Otherwise the selection stays, and the
+        picker's ticks for its models are kept for the next picker, which shows them again."""
+        if succeeded:
+            self.retained_clips = {}
+            self.clear_selection()
+        elif self.batch_clips:
+            self.retained_clips = dict(self.batch_clips)
+        self.batch_clips = {}
 
     def _batch_worker(self, runner: BatchRunner) -> None:
         try:
@@ -1382,7 +1419,11 @@ class AssetBrowserApp:
         try:
             while True:
                 kind, values = self.events.get_nowait()
-                self._handle_event(kind, values)
+                try:
+                    self._handle_event(kind, values)
+                except Exception as error:   # one failed event must not stop the pump the later events need
+                    traceback.print_exc()
+                    self._append_log(f"Internal error while handling '{kind}': {type(error).__name__}: {error}", "error")
         except queue.Empty:
             pass
         self.root.after(100, self._drain_events)
@@ -1397,6 +1438,9 @@ class AssetBrowserApp:
                 self.progress_var.set(f"{phase}… {fraction:.0%}")
         elif kind == "scan_done":
             self.records = values["records"]  # type: ignore[assignment]
+            # A selection kept from before the scan holds only models the new list still has, as its new records.
+            current = {self._record_key(record): record for record in self.records}
+            self.selected_map = {key: current[key] for key in self.selected_map if key in current}
             self._scan_exported()
             self._set_busy()
             self._remember_settings()
@@ -1471,14 +1515,19 @@ class AssetBrowserApp:
                 message = f"exit code {values.get('returncode')}"
                 cancelled = bool(values.get("cancelled"))
             self._append_log(f"Batch finished: {message}", "error" if failed else "success")
+            if failed and isinstance(self.runner, PipelineBatchRunner):
+                self._append_log(f"The pipeline log and the Blender logs of the failed models are kept in "
+                                 f"{self.runner.output_root / 'reports' / 'logs'}", "error")
             self._queue_finish("failed")
+            self._batch_finished(not failed and not cancelled)
             self.runner = None
             self._set_busy()
-            self.progress_var.set("Batch cancelled" if cancelled else "Batch complete")
+            self.progress_var.set("Batch cancelled" if cancelled else "Batch finished with errors" if failed else "Batch complete")
             self.browser.reload()
         elif kind == "batch_error":
             self._append_log(str(values["message"]), "error")
             self._queue_finish("failed")
+            self._batch_finished(False)
             self.runner = None
             self._set_busy()
             self.progress_var.set("Batch failed before completion")

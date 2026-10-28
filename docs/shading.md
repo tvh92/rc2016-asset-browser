@@ -120,7 +120,7 @@ Skin (`apply_skin_emissive`, group `SKIN_GROUP_NAME`, `SKIN_GROUP_VERSION` 3):
 - Fresnel-boosted gloss and specular, and a Fresnel albedo tint of `(0.745404, 0.644480, 0.603827)`.
 - Albedo `_c × lerp(P5, tint, F)` is clamped to [0, 1] (node "Skin albedo UNORM clamp") because MRT1 is UNORM; some graphs use P5 above 1. The lighting pass multiplies self-lit by the same stored albedo. `rc2016/shaders/validation.py` asserts the clamp.
 - The native pixel shader also samples a skin ramp and adds a diffuse term tinted `(0.637597, 0.116971, 0.122139)`. That term and the complete forward light and shadow response are not reproduced, so recognition stays partial and materials carry `game_equivalence = False`.
-- `apply_native_skin_normal` connects the decoded normal `normalize(2R-1, 2G-1, 1-x²-y²)` to both the BRDF and the skin group's material normal input. The secondary-normal blend (keys `0x59011FBD`, `0xB7ABB64A`) is applied only when it resolves; otherwise `rc_shader_frontend_limitation` is set.
+- `apply_native_skin_normal` connects the decoded normal `normalize(2R-1, 2G-1, 1-x²-y²)` to both the BRDF and the skin group's material normal input. The secondary-normal blend (keys `0x59011FBD`, `0xB7ABB64A`) is applied when it resolves: the BED06840 forward shader samples the second normal at UV0 × the scale (dword 10 of table 0) and blends it as `w = blend × _g.B` (blend is dword 4 of table 0), with the same combine as F0CD85FF. Otherwise `rc_shader_frontend_limitation` is set.
 - Stage assignments from native GCN: `7D3F5FA6` and `D7749B42` are vertex shaders; `BED06840` and `AE7244FE` are forward pixel shaders.
 - The `skin` viewer rule (viewer `uSkinKind`, Blender `apply_viewer_graph_rule` term `skin`) reads the same writer equations for graphs without a registered family. `basic_skin_02` (writer `0E6CC87B`) differs from `9AAD640B` in its table layout, two extra multipliers and a tinted F0 (see [viewer](viewer.md)). Both writers were checked numerically against the translator's decoded expression graphs. In the family route the status name `partial_skin_frontend` also labels `basic_colored_spec_emmisive_in_c_alpha` materials (gadget hoverboard, Combuster); their writer is fully decoded, so it only means the family is registered as `supported_partial`.
 - Remaining skin limitation: the forward shaders (`F0CD85FF`) add a per-light skin term from `_g.A²`, the tint `0xCFCCABE4`, a `skin_ramp` lookup (V coordinate key `0x3055F730`), per-channel wrap factors from key `0x991DAC4F` and shadowing. It needs per-light shading and is not reproduced in the viewer or in Cycles. The per-light equation, its table-0 dwords and the engine inputs it needs (light list and records, shadow and probe textures, CB0) are in [Ratchet forward passes](material-decoding/ratchet-forward-passes.md). `F0CD85FF` is in `basic_skin` only; Ratchet's body and head do not use it.
@@ -230,15 +230,15 @@ The proof uses viewer lighting, no SSR or fog attenuation, and fixed normal fade
 
 ### Character glass
 
-`character_glass` (character visors, and glass graphs that share the shader) is decoded from its native forward pixel shader `34D5B21C`, which has no cached SPIR-V. `apply_character_glass` builds group "RC PS4 character_glass forward" (`GLASS_GROUP_VERSION` 5):
+`character_glass` (character visors, and glass graphs that share the shader) is decoded from its native forward pixel shader `34D5B21C`, which has no cached SPIR-V. `apply_character_glass` builds group "RC PS4 character_glass forward" (`GLASS_GROUP_VERSION` 6):
 
 ```
-out   = Transparent(1 - alpha·A) + alpha · (Diffuse(B·(1 + k·F·T·E)) + F90 · Schlick-GGX(F0 = tint, rough))
+out   = Transparent(1 - w·A) + w · (Diffuse(B·(1 + k·F·T·E)) + F90 · Schlick-GGX(F0 = tint, rough)),   w = max(alpha, O)
 alpha = (1.001 - N·V)^P8 · (P10 + sat(P11 + sat(4·(1 - N·V)^P13)))
 F     = (1.001 - N·V)^P12,   T = sat(4·sqrt(1 - N·V)),   F90 = sat(60·F0)
 ```
 
-- A = 0 for additive blend (SRC_ALPHA, ONE) and 1 for alpha-over (SRC_ALPHA, ONE_MINUS_SRC_ALPHA); it is taken from the material flags word (`character_glass_blend`), and the call fails if the flags are not a one-sided additive or alpha-over word.
+- A = 0 for additive blend (SRC_ALPHA, ONE) and 1 for alpha-over (SRC_ALPHA, ONE_MINUS_SRC_ALPHA). For the opaque blend (the V3 Elite visor `enm_elite_blarg_glass`, flags `0x00200330`) O = 1 and A = 1: the colour is written unweighted and the material renders dithered, as the viewer draws an opaque forward batch. A and O come from the material flags word (`character_glass_blend`); the call fails for blend mode 3, which has no captured example. No opaque `character_glass` draw is captured.
 - E is the captured Veldin ambient radiance `c0` from `assets/game_view/rc_game_view.json`, or black if the file is unavailable.
 - The lobe has the game's Fresnel `F = F0 + (sat(60·F0) - F0)(1 - V·H)^5` with F0 = the decoded reflection tint. The constants 60 and 0.353553 (the visibility term below) are in the engine light loop that `34D5B21C` shares with the captured `4DF1D438` and `4FC5703F`; the `34D5B21C` accumulation itself is not traced, and the Blender front-end collapses the per-channel F90 to its maximum.
 - The additive blend was confirmed on a captured `character_glass_02` draw. Hash-bound profiles for other glass recipes take precedence where they exist.
@@ -278,7 +278,7 @@ Blend and cull come from the `.material` flags word, not from names or guesses (
 
 | Setting | Value |
 |---|---|
-| HDRI | `golden_gate_hills_1k.exr`, world strength 2 |
+| HDRI | `golden_gate_hills_1k.exr`, world strength 1.5 |
 | Separate lights | none |
 | View transform | Khronos PBR Neutral, look None |
 | Exposure | −1.0 |

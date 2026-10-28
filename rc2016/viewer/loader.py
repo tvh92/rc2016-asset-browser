@@ -214,6 +214,7 @@ class SourcePreviewLoader:
             self.archive.texture_disk_cache=TextureDiskCache(Path(__file__).resolve().parents[2]/'.cache'/'texture_preview')
             from rc2016.viewer.native_glsl import TranslationDiskCache
             self.archive.translation_disk_cache=TranslationDiskCache(Path(__file__).resolve().parents[2]/'.cache'/'native_translation')
+            self.archive.cinematic_disk_cache=Path(__file__).resolve().parents[2]/'.cache'/'cinematic_directory'
             self.source_root=source_root
             self.identity=None;self.current=None;self.texture_cache={};self.preview_cache={}
             self._recent.clear();self._recent_identity=None
@@ -348,7 +349,8 @@ class SourcePreviewLoader:
         return self._load(source_root, model_id, source_path, lod, look, output_root, defer_animation, purpose, borrowed)
 
     def load_animation(self, source_root, model_id, source_path, output_root=None, borrowed=False):
-        """Build (or reuse) the selected model's clip library: {model_id, source_path, clips, animsets, animation_note}.
+        """Build (or reuse) the selected model's clip library: {model_id, source_path, clips, clip_notes, animsets,
+        animation_note}; ``clip_notes`` is ``AnimationLibrary.clip_notes`` (copies, additive layers, unplayable clips).
 
         ``borrowed`` also offers the animsets the game pairs with another model of the same rest rig (opt-in)."""
         with self.lock:
@@ -359,11 +361,13 @@ class SourcePreviewLoader:
                 raise ValueError('The model is no longer loaded; select it again')
         # Built outside self.lock, so selecting another model is not blocked behind it.
         self._build_animation(cached,output_root,borrowed,model_id)
+        library=cached['animation']
+        notes=library.clip_notes() if library else []   # decodes each clip's first frame once, off the Tk thread
         with self.lock:
-            if self.identity==identity:self.current,self.animation=cached['decoded'],cached['animation']
+            if self.identity==identity:self.current,self.animation=cached['decoded'],library
             decoded=cached['decoded']
             return dict(model_id=model_id,source_path=source_path,animsets=decoded['animsets'],
-                        clips=cached['animation'].labels() if cached['animation'] else [],animation_note=decoded['animation_note'])
+                        clips=library.labels() if library else [],clip_notes=notes,animation_note=decoded['animation_note'])
 
     def _build_animation(self, cached, output_root, borrowed=False, model_id=None):
         with cached['build_lock']:
@@ -469,6 +473,7 @@ class SourcePreviewLoader:
             kind='skinned' if current['joint_count'] else 'static',joint_count=current['joint_count'],
             looks=current['looks'],lod=lod,look=look,mesh_record_count=current['mesh_record_count'],
             animsets=current['animsets'],clips=animation.labels() if animation else [],
+            clip_notes=animation.clip_notes() if animation and purpose=='view' else [],
             animation_note='Loading animations…' if pending else current['animation_note'],animation_pending=pending)
         if purpose=='export':
             info.update(purpose='export',materials=[dict(index=m.get('index',i),name=m.get('name'),path=m.get('path'))

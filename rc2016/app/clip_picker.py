@@ -1,33 +1,54 @@
-"""Animation picker for a batch export: shown only when a model has more clips than CLIP_PICKER_THRESHOLD."""
+"""Animation picker for a batch export: shown when a model has more clips than the threshold set under Options."""
 from __future__ import annotations
 
 from rc2016.app.browser import group_clips
 from rc2016.app.clip_viewer import ClipViewer
 from rc2016.app.theme import CHECK_GAP, CHECK_SIZE, _draw_check_box, apply_titlebar, current_palette
 
-# Models with this many clips or fewer export every clip without asking: reading them is quick.
+# Default threshold: models with this many clips or fewer export every clip without asking. Options… changes it.
 CLIP_PICKER_THRESHOLD = 10
+NOTE_TEXT = {"duplicate": "copy of another clip", "layer": "additive layer", "unplayable": "does not play on this model"}
 
 
-def needs_picker(listed) -> bool:
-    """True when a listed (record, clip labels) pair has more clips than the threshold."""
-    return any(len(labels) > CLIP_PICKER_THRESHOLD for _record, labels in listed)
+def needs_picker(listed, threshold: int | None = CLIP_PICKER_THRESHOLD) -> bool:
+    """True when a listed model has more clips than ``threshold`` (0: any clip); None never asks."""
+    return threshold is not None and any(len(entry[1]) > threshold for entry in listed)
 
 
 class ClipSelection:
-    """Which clips of each model are ticked; every clip starts ticked. Holds no Tk state, so the rules are testable."""
+    """Which clips of each model are ticked. Holds no Tk state, so the rules are testable.
 
-    def __init__(self, listed):
-        self.models = [(record, list(labels)) for record, labels in listed]
-        self.ticked = [set(range(len(labels))) for _record, labels in self.models]
+    ``listed`` holds (record, clip labels) or (record, clip labels, clip notes) per model. The notes are
+    AnimationLibrary.clip_notes: a clip with a note (a copy of another clip, an additive layer, or one that does not
+    play on the model) starts unticked, every other clip ticked. ``previous`` ({model_id: ticked labels}, from an
+    export that did not finish) gives the models it names their earlier ticks instead."""
 
-    def visible(self, model: int, query: str = "", mode: str = "all") -> list[int]:
+    def __init__(self, listed, previous=None):
+        self.models = [(entry[0], list(entry[1])) for entry in listed]
+        self.notes = [list(entry[2]) if len(entry) > 2 else [None] * len(entry[1]) for entry in listed]
+        self.restored = 0   # models that start with the ticks of ``previous``
+        self.ticked = []
+        for (record, labels), notes in zip(self.models, self.notes):
+            before = (previous or {}).get(record.model_id)
+            if before is None:
+                self.ticked.append({index for index, note in enumerate(notes) if note is None})
+            else:
+                before = set(before)
+                self.ticked.append({index for index, label in enumerate(labels) if label in before})
+                self.restored += 1
+
+    def noted(self) -> int:
+        """Clips with a note, across every model."""
+        return sum(1 for notes in self.notes for note in notes if note)
+
+    def visible(self, model: int, query: str = "", mode: str = "all", noted: bool = True) -> list[int]:
         """Clip indices of one model that match every word of ``query`` and the ``mode`` filter
-        ("all", "ticked" or "unticked"), in label order."""
+        ("all", "ticked" or "unticked"), in label order; without ``noted``, clips with a note are left out."""
         terms = query.casefold().split()
+        notes = self.notes[model]
         shown = []
         for index, label in enumerate(self.models[model][1]):
-            if terms and not all(term in label.casefold() for term in terms):
+            if (terms and not all(term in label.casefold() for term in terms)) or (notes[index] and not noted):
                 continue
             on = index in self.ticked[model]
             if (mode == "ticked" and not on) or (mode == "unticked" and on):
@@ -45,6 +66,11 @@ class ClipSelection:
         """(ticked clips, all clips) across every model."""
         ticked = sum(len(on) for on in self.ticked)
         return ticked, sum(len(labels) for _record, labels in self.models)
+
+    def ticked_labels(self) -> dict[str, tuple[str, ...]]:
+        """The ticked clips of every model, as ``previous`` of a later picker takes them."""
+        return {record.model_id: tuple(label for index, label in enumerate(labels) if index in ticked)
+                for (record, labels), ticked in zip(self.models, self.ticked)}
 
     def result(self) -> dict[str, tuple[str, ...]]:
         """The clips to export for each model that is not fully ticked; a model absent from the result exports all clips."""
@@ -71,14 +97,16 @@ class ClipPickerDialog:
 
     MODES = (("all", "All"), ("ticked", "Ticked"), ("unticked", "Unticked"))
 
-    def __init__(self, tk, ttk, parent, listed, source_root=None, index_root=None, borrowed=False, cinematic=False):
+    def __init__(self, tk, ttk, parent, listed, source_root=None, index_root=None, borrowed=False, cinematic=False,
+                 previous=None):
         self.tk, self.ttk, self.parent = tk, ttk, parent
-        self.selection = ClipSelection(listed)
+        self.selection = ClipSelection(listed, previous)
         self.targets = {}   # tree item -> (model, clip indices, text, is_clip) for every row shown
         self.opened = {f"m{model}" for model in range(len(listed))}   # models start open, folders closed
         self.confirmed = False
         self.search = tk.StringVar()
         self.mode = tk.StringVar(value="all")
+        self.show_noted = tk.BooleanVar(value=False)
         self.status = tk.StringVar()
         self.boxes = self._tick_boxes()
 
@@ -98,6 +126,12 @@ class ClipPickerDialog:
         left.rowconfigure(2, weight=1)
         hint = ("Every animation starts ticked. Click a tick box or press Space to tick it; a folder or model ticks "
                 "everything inside it.")
+        if self.selection.noted():
+            hint = ("Every animation starts ticked, except copies of another clip, additive layers (aim, head look, lean) "
+                    "and clips that do not play on the model: those start unticked and hidden. Click a tick box or press "
+                    "Space to tick it; a folder or model ticks everything inside it.")
+        if self.selection.restored:
+            hint += " The ticks of the export that did not finish are restored."
         if source_root:
             hint += " Click an animation's name or press Enter to play it in the viewport."
         ttk.Label(left, text=hint, style="Muted.TLabel", wraplength=560, padding=(12, 12, 12, 6)).grid(row=0, column=0,
@@ -117,6 +151,9 @@ class ClipPickerDialog:
         filters.grid(row=0, column=1, padx=(8, 0))
         for value, label in self.MODES:
             ttk.Radiobutton(filters, text=label, value=value, variable=self.mode).pack(side="left", padx=(0, 4))
+        if self.selection.noted():
+            ttk.Checkbutton(filters, text=f"Show copies and layers ({self.selection.noted()})",
+                            variable=self.show_noted).pack(side="left", padx=(8, 0))
 
         body = ttk.Frame(left, padding=(12, 0))
         body.grid(row=2, column=0, sticky="nsew")
@@ -147,6 +184,7 @@ class ClipPickerDialog:
 
         self.search.trace_add("write", self.rebuild)
         self.mode.trace_add("write", self.rebuild)
+        self.show_noted.trace_add("write", self.rebuild)
         self.tree.bind("<ButtonRelease-1>", self._on_click)
         self.tree.bind("<<TreeviewOpen>>", lambda _event: self._remember_open(True))
         self.tree.bind("<<TreeviewClose>>", lambda _event: self._remember_open(False))
@@ -169,7 +207,7 @@ class ClipPickerDialog:
         tree.delete(*tree.get_children())
         self.targets = {}
         for model, (record, labels) in enumerate(self.selection.models):
-            shown = self.selection.visible(model, query, mode)
+            shown = self.selection.visible(model, query, mode, self.show_noted.get())
             if not shown:
                 continue
             iid = f"m{model}"
@@ -187,7 +225,8 @@ class ClipPickerDialog:
             if isinstance(node, int):
                 index = shown[node]
                 iid = f"c{model}.{index}"
-                self.targets[iid] = (model, [index], text, True)
+                note = self.selection.notes[model][index]
+                self.targets[iid] = (model, [index], f"{text}   ({NOTE_TEXT[note]})" if note else text, True)
                 self.tree.insert(parent, "end", iid=iid)
                 continue
             iid = f"{parent}/{text}"
@@ -228,6 +267,8 @@ class ClipPickerDialog:
         ticked, total = self.selection.totals()
         models = len(self.selection.models)
         line = f"{ticked} of {total} animations ticked across {models} model{'s' if models != 1 else ''}"
+        if self.selection.noted() and not self.show_noted.get():
+            line += f"   ·   {self.selection.noted()} copies and layers hidden"
         if self.search.get().strip() or self.mode.get() != "all":
             line += f"   ·   {shown_clips} shown"
         self.status.set(line)

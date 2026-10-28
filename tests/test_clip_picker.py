@@ -22,6 +22,11 @@ def listed_model(model_id, count, prefix="Idle"):
     return Record(model_id, model_id.title()), labels
 
 
+def noted_model(model_id, labels, notes):
+    """A listed model whose clips carry notes (None, 'duplicate', 'layer' or 'unplayable'), as AnimationLibrary gives."""
+    return Record(model_id, model_id.title()), list(labels), list(notes)
+
+
 class PickerTrigger(unittest.TestCase):
     def test_threshold_is_ten_and_only_more_than_ten_opens_the_picker(self):
         self.assertEqual(CLIP_PICKER_THRESHOLD, 10)
@@ -35,6 +40,18 @@ class PickerTrigger(unittest.TestCase):
     def test_no_models_or_only_small_ones_do_not_open_it(self):
         self.assertFalse(needs_picker([]))
         self.assertFalse(needs_picker([listed_model("a", 2), listed_model("b", 9)]))
+
+    def test_threshold_zero_opens_for_any_model_with_a_clip(self):
+        self.assertTrue(needs_picker([listed_model("a", 1)], threshold=0))
+        self.assertFalse(needs_picker([listed_model("a", 0)], threshold=0))
+        self.assertFalse(needs_picker([], threshold=0))
+
+    def test_no_threshold_never_opens(self):
+        self.assertFalse(needs_picker([listed_model("a", 50)], threshold=None))
+
+    def test_a_custom_threshold_opens_only_above_it(self):
+        self.assertFalse(needs_picker([listed_model("a", 3)], threshold=3))
+        self.assertTrue(needs_picker([listed_model("a", 4)], threshold=3))
 
 
 class SelectionRules(unittest.TestCase):
@@ -67,6 +84,47 @@ class SelectionRules(unittest.TestCase):
     def test_search_and_filter_combine(self):
         self.selection.set_ticked(0, [1], False)
         self.assertEqual(self.selection.visible(0, "run", "unticked"), [1])
+
+
+class NotedClips(unittest.TestCase):
+    def setUp(self):
+        self.selection = ClipSelection([
+            noted_model("hero", ["Run00", "Run01", "Run02"], [None, "duplicate", None]),
+            noted_model("npc", ["Wave00", "Wave01"], [None, "layer"]),
+        ])
+
+    def test_noted_clips_start_unticked_and_the_result_lists_their_model(self):
+        self.assertEqual(self.selection.noted(), 2)
+        self.assertEqual(self.selection.totals(), (3, 5))
+        self.assertEqual(self.selection.result(), {"hero": ("Run00", "Run02"), "npc": ("Wave00",)})
+
+    def test_hidden_noted_clips_leave_the_visible_list(self):
+        self.assertEqual(self.selection.visible(0), [0, 1, 2])
+        self.assertEqual(self.selection.visible(0, noted=False), [0, 2])
+        self.assertEqual(self.selection.visible(1, "wave", noted=False), [0])
+
+    def test_previous_ticks_restore_the_named_models_and_ignore_notes(self):
+        selection = ClipSelection([
+            noted_model("hero", ["Run00", "Run01", "Run02"], [None, "duplicate", None]),
+            noted_model("npc", ["Wave00", "Wave01"], [None, "layer"]),
+        ], previous={"hero": ("Run01",), "gone": ("Run00",)})
+        self.assertEqual(selection.restored, 1)
+        self.assertEqual(selection.result(), {"hero": ("Run01",), "npc": ("Wave00",)})
+
+    def test_an_earlier_model_with_no_ticks_stays_unticked(self):
+        selection = ClipSelection([noted_model("hero", ["Run00", "Run01"], [None, None])], previous={"hero": ()})
+        self.assertEqual(selection.restored, 1)
+        self.assertEqual(selection.result(), {"hero": ()})
+
+    def test_ticked_labels_lists_every_model_and_round_trips_through_previous(self):
+        self.selection.set_ticked(0, [0], False)
+        self.selection.set_ticked(1, [1], True)
+        ticked = self.selection.ticked_labels()
+        self.assertEqual(ticked, {"hero": ("Run02",), "npc": ("Wave00", "Wave01")})
+        restored = ClipSelection([noted_model("hero", ["Run00", "Run01", "Run02"], [None, "duplicate", None]),
+                                  noted_model("npc", ["Wave00", "Wave01"], [None, "layer"])], previous=ticked)
+        self.assertEqual(restored.restored, 2)
+        self.assertEqual(restored.ticked_labels(), ticked)
 
 
 class DialogRows(unittest.TestCase):
@@ -115,21 +173,38 @@ class DialogRows(unittest.TestCase):
         self.assertEqual(dialog.search.get(), "")
         self.assertTrue(dialog.top.winfo_exists())
 
+    def test_a_noted_clip_is_hidden_until_show_noted_is_set(self):
+        labels = [f"Run{index:02d}" for index in range(12)]
+        notes = [None] * 11 + ["duplicate"]
+        dialog = ClipPickerDialog(self.tk, self.ttk, self.root, [noted_model("hero", labels, notes)])
+        self.addCleanup(lambda: dialog.top.winfo_exists() and dialog.top.destroy())
+        dialog.rebuild()
+
+        def rows_for_last_clip():
+            return [entry for entry in dialog.targets.values() if entry[3] and entry[1] == [11]]
+
+        self.assertFalse(dialog.show_noted.get())
+        self.assertEqual(rows_for_last_clip(), [])
+        dialog.show_noted.set(True)
+        rows = rows_for_last_clip()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][2], "Run11   (copy of another clip)")
+
 
 class BlendClipMap(unittest.TestCase):
     """The Blender scene path: picked clips reach the pipeline as one --clip-map file, in the same run."""
 
-    def runner(self, selectors, choices, clip_only=None):
+    def runner(self, selectors, choices):
         return PipelineBatchRunner(selectors, Path("game"), Path("out"), Path("python.exe"), Path("blender.exe"),
-                                   clip_choices=choices, clip_only=clip_only)
+                                   clip_choices=choices)
 
-    def test_picked_models_get_a_clip_map_and_unpicked_models_keep_every_clip(self):
+    def test_picked_models_get_a_clip_map_of_labels_and_unpicked_models_keep_every_clip(self):
         runner = self.runner(["a/hero.model", "b/npc.model"], {"a/hero.model": ("Run00", "Wave: Idle")})
         clip_map = runner._write_clip_map()
         try:
             self.assertEqual(json.loads(clip_map.read_text(encoding="utf-8")),
-                             {"a/hero.model": ["name:Run00", "name:Idle"]})
-            command = runner.command(runner.selectors, (), clip_map)
+                             {"a/hero.model": ["label:Run00", "label:Wave: Idle"]})
+            command = runner.command(clip_map)
             self.assertEqual(command[command.index("--clip-map") + 1], str(clip_map))
             self.assertNotIn("--clip", command)
         finally:
@@ -143,20 +218,19 @@ class BlendClipMap(unittest.TestCase):
         finally:
             clip_map.unlink()
 
-    def test_no_choices_writes_no_file_and_the_viewer_single_clip_keeps_its_own_run(self):
+    def test_no_choices_writes_no_file(self):
         self.assertIsNone(self.runner(["a/hero.model"], {})._write_clip_map())
-        runner = self.runner(["a/hero.model"], {"a/hero.model": ("Run00",)}, clip_only=("a/hero.model", "Run01"))
-        self.assertIsNone(runner._write_clip_map())
+        self.assertIsNone(self.runner(["b/npc.model"], {"a/hero.model": ("Run00",)})._write_clip_map())
 
-    def test_clip_map_is_not_added_to_a_run_that_selects_clips(self):
-        runner = self.runner(["a/hero.model"], {})
-        command = runner.command(["a/hero.model"], ("name:Run01",), Path("map.json"))
+    def test_a_run_without_a_clip_map_has_no_clip_flags(self):
+        command = self.runner(["a/hero.model"], {}).command()
         self.assertNotIn("--clip-map", command)
-        self.assertIn("--clip", command)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        self.assertNotIn("--clip", command)
+        self.assertNotIn("--cinematic-clips", command)
+        self.assertIn("--model", command)
+        with_map = self.runner(["a/hero.model"], {}).command(Path("map.json"))
+        self.assertEqual(with_map[with_map.index("--clip-map") + 1], "map.json")
+        self.assertNotIn("--clip", with_map)
 
 
 class FakeViewport:
@@ -324,3 +398,7 @@ class DialogViewer(unittest.TestCase):
         dialog.rebuild()
         dialog._show_clip("c0.3")
         self.assertEqual(shown, [("hero", "Run03")])
+
+
+if __name__ == "__main__":
+    unittest.main()

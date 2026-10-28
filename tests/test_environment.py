@@ -9,10 +9,19 @@ from rc2016.viewer import environment
 
 
 class SharedLightingFileTests(unittest.TestCase):
-    def test_settings_point_at_existing_hdri_with_world_strength_two(self):
+    def test_settings_point_at_existing_hdri_with_world_strength_one_and_a_half(self):
         settings = environment.shared_lighting()
         self.assertTrue(Path(settings['hdri_path']).is_file())
-        self.assertEqual(settings['world_strength'], 2.0)
+        self.assertEqual(settings['world_strength'], 1.5)
+
+    def test_rotate_z_turns_the_image_as_the_pipeline_mapping_node(self):
+        import numpy as np
+        image = np.zeros((4, 8, 3), np.float32)
+        image[1, 2] = 1.0   # azimuth phi = (0.5 - u) * 360 with u = 2.5 / 8: 67.5 degrees
+        turned = environment.rotate_z(image, 45.0)   # the world shows image azimuth phi + 45 at phi
+        self.assertEqual(float(turned[1, 3, 0]), 1.0)   # u = 3.5 / 8: phi 22.5, which shows image azimuth 67.5
+        self.assertAlmostEqual(float(environment.rotate_z(image, 22.5)[1, 2, 0]), 0.5)
+        self.assertAlmostEqual(float(turned.sum()), 3.0)
 
     def test_hdri_is_finite_nonnegative_sky_over_ground(self):
         image = environment.read_exr(environment.shared_lighting()['hdri_path'])
