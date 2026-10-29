@@ -31,19 +31,23 @@ Read the doc for the subsystem before changing it: [viewer](docs/viewer.md), [le
 
 ## Shading and textures
 
-- DDS images use `Alpha Mode: Channel Packed`; alpha is linear data. Colourspace follows the native DXGI format: sRGB for formats 29/72/75/78/91/93/99, everything else Non-Color; normals are always Non-Color.
-- `_c` is base colour (its alpha is a self-lit mask, never transparency), `_g` is specular F0 (grey or coloured, per graph writer) with gloss, `_n` is a DirectX tangent normal at strength 1.0 without a green flip.
-- Opaque surfaces use the game's deferred BRDF (`rc2016/pipeline/game_shader.py`, the viewer's `rc2016/viewer/shading.py`): diffuse `_c` plus GGX/Schlick specular with F0 = `_g`, F90 = sat(60·F0), roughness 2^(-2.75·gloss), added together; self-lit = `_c.rgb × _c.a × K` with K from material key `0x66EFA55B`. Metallic stays 0. Do not reintroduce `_c × (1 − _g)`, an 18% Principled mix, `1 − gloss` roughness floors or colour tuning.
+Equations, slot meanings and graph families are in [shading](docs/shading.md); these are the traps.
+
+- Texture colourspace follows the native DXGI format, not the filename; normals are always Non-Color; alpha is linear data.
+- `_c` alpha is a self-lit mask, never transparency. `_n` is a DirectX tangent normal at strength 1.0 without a green flip.
+- Opaque surfaces use the game's deferred BRDF (`rc2016/pipeline/game_shader.py`, the viewer's `rc2016/viewer/shading.py`) with metallic 0. Do not reintroduce `_c × (1 − _g)`, an 18% Principled mix, `1 − gloss` roughness floors or colour tuning.
 - Blend and cull come from the `.material` flags word (`rc2016/pipeline/render_state.py`). Glass, energy and VFX forward materials only have the specific decoded rules in the docs.
 - New viewer material rules must be mirrored in the Blender front-end (`materials.viewer_graph_rule`, `game_shader.apply_viewer_graph_rule`) and checked by `rc2016/shaders/validation.py`.
 
 ## Pipeline
 
-- Keep native Y-up mesh, skeleton and animation values for numerical checks; apply the verified `(x, y, z) -> (x, -z, y)` presentation basis to displayed objects only.
-- Build a candidate `.blend`, reopen it in a separate Blender process, validate, then promote atomically. One failed model must not discard the other results.
-- Lighting defaults come from `assets/lighting/shared_lighting.json` (review lighting, not game lighting). The captured Veldin game look is opt-in. Missing Cycles or HDRI must fail loudly; never edit global Blender preferences.
+Details and CLI options are in [pipeline](docs/pipeline.md); these are the traps.
+
+- Keep native Y-up values for numerical checks; apply the presentation basis to displayed objects only.
+- Build a candidate `.blend`, reopen and validate it in a separate Blender process, then promote atomically. One failed model must not discard the other results.
+- Lighting defaults are review lighting, not game lighting; the captured Veldin look is opt-in. Missing Cycles or HDRI must fail loudly; never edit global Blender preferences.
 - Weapon V1/V5 variants switch with ordinary eye hiding and `hide_render`; never with viewport disable, view-layer exclusion or `hide_viewport`.
-- `run.py` hashes the package code into an implementation fingerprint; any code change invalidates cached builds, which is intended.
+- Any code change invalidates cached builds (`run.py` fingerprints the package); that is intended.
 
 ## Testing
 
