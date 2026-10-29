@@ -84,7 +84,7 @@ class LibraryTests(unittest.TestCase):
         kind, fps, tracks = clip_tracks(self.library, 1)
         self.assertEqual((kind, fps, len(tracks)), ('absolute skeletal', 30.0, 1))
         self.assertEqual(np.round(tracks.translation[0, 0], 6).tolist(), [1.0, 0.0, 0.0])
-        with self.assertRaisesRegex(ValueError, 'only PS4 clip versions 15 and 21'):
+        with self.assertRaisesRegex(ValueError, 'only PS4 clip versions 15, 21 and 143'):
             clip_tracks(self.library, 2)
 
 

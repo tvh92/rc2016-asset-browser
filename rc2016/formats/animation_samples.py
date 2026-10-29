@@ -30,7 +30,11 @@ def require(condition, message):
 # predator_pickup_cine.cinematic2 (21) have byte-identical base state, joint hashes, sample elements and
 # sample data and decode to identical frames; their built headers differ only in this word, the name hash
 # and +0x08 bit 0x80000. Every structural check below still applies to both.
-SUPPORTED_CLIP_VERSIONS = (15, 21)
+# Version 143 (the Mrs. Zurkon boss animset's Engaged_* and React_Hit clips) has the same header fields and
+# passes every structural check below (stream widths, frame stride, destinations, payload size) with the
+# version-15 layout; its Engaged_Idle loops exactly (first and last frame identical) and frame 0 of every
+# clip matches the rest pose for the joints it does not move. No version-15 twin exists to compare bytes.
+SUPPORTED_CLIP_VERSIONS = (15, 21, 143)
 
 
 def decode_clip(data: bytes, start: int, names: dict[int, str], first_frames: int | None = None) -> dict:
@@ -39,7 +43,7 @@ def decode_clip(data: bytes, start: int, names: dict[int, str], first_frames: in
     clip = read_container(data, start, names)
     metadata = clip['metadata']
     require(metadata is not None, 'lookup target is not an animation clip')
-    require(metadata['format_version'] in SUPPORTED_CLIP_VERSIONS, 'only PS4 clip versions 15 and 21 are validated')
+    require(metadata['format_version'] in SUPPORTED_CLIP_VERSIONS, 'only PS4 clip versions 15, 21 and 143 are validated')
     sections = {s['type_name']: data[s['offset']:s['offset'] + s['size']]
                 for s in clip['sections'] if s['type_name']}
     for key in ('anim_clip_base_state', 'anim_clip_joint_hashes'):

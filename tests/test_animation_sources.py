@@ -127,8 +127,12 @@ class ClipVersionTests(unittest.TestCase):
             frames = sample_transforms(decode_clip(data, 0, {}))
             self.assertEqual(frames[0][1]['translation'], [1.0, 2.0, 3.0])
 
+    def test_version_143_uses_the_version_15_layout(self):
+        data = clip('x', ['root', 'spine'], [(0, 0, 0), (1, 2, 3)], version=143)
+        self.assertEqual(sample_transforms(decode_clip(data, 0, {}))[0][1]['translation'], [1.0, 2.0, 3.0])
+
     def test_other_versions_stay_unsupported(self):
-        with self.assertRaisesRegex(ValueError, 'only PS4 clip versions 15 and 21'):
+        with self.assertRaisesRegex(ValueError, 'only PS4 clip versions 15, 21 and 143'):
             decode_clip(clip('x', ['root'], [(0, 0, 0)], version=22), 0, {})
 
 
@@ -161,6 +165,32 @@ class FilteredExtractionTests(unittest.TestCase):
         offset = S.clip_directory(blob)[0]['offset']
         entry = self.extract(blob, {offset: 'wrong_name'})[0]
         self.assertEqual((entry['status'], entry['reason']), ('malformed', 'Clip name/hash mismatch'))
+
+
+class AnimsetClipNaming(unittest.TestCase):
+    """A clip whose own name does not hash to its name hash takes the animset string that does."""
+    joints = [('root', -1, (0, 0, 0)), ('spine', 0, (0, 1, 0))]
+
+    def blob(self):
+        return animset([('Engaged_Idle', clip('Engaged_Idle', ['root', 'spine'], [(0, 0, 0), (0, 1, 0)], version=143))],
+                       strings=['igAnimWrinkleBG', 'Engaged_Idle'])
+
+    def test_extract_set_names_the_clip_from_the_animset_strings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'test.animset'
+            path.write_bytes(self.blob())
+            profile = dict(inheritance='full', inheritance_candidates=['full'], classification_overrides={})
+            entries = extract_set(path, rig(self.joints), Path(temp) / 'cache', profile, lambda *a, **k: None)[0]
+        self.assertEqual([(e['name'], e['status']) for e in entries], [('Engaged_Idle', 'included')])
+
+    def test_library_names_the_clip_from_the_animset_strings(self):
+        from unittest import mock
+        rows = rig(self.joints)
+        inspected = dict(skeleton=rows, inverse_bind_matrices=[[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]] * 2,
+                         profile=dict(inheritance='full', inheritance_candidates=['full']))
+        with mock.patch('rc2016.viewer.animation.inspect_model', return_value=inspected),                 mock.patch('rc2016.viewer.animation._blob', return_value=self.blob()):
+            library = AnimationLibrary(None, b'', ['a.animset'])
+        self.assertEqual([c['name'] for c in library.clips], ['Engaged_Idle'])
 
 
 class RigComparisonTests(unittest.TestCase):

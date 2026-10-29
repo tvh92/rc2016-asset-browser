@@ -7,7 +7,7 @@ from rc2016.formats.animation_samples import decode_clip
 from rc2016.formats.animation_transforms import sample_transforms
 from rc2016.common import dump, read, sha, write, zip_json
 from rc2016.formats.skeleton import AFTER_ROTATION, worlds
-from rc2016.formats.animation_sources import crc32
+from rc2016.formats.animation_sources import crc32, crc_string_names
 import numpy as np
 
 
@@ -180,9 +180,14 @@ def extract_set(path, rows, cache, profile, log, experimental_ambiguous_inherita
     data = read(path); containers, errors = ordered_containers(path)
     names = {int(r['hash'],16):r['name'] for r in rows}
     entries = []
+    file_names = None   # {name hash: string} of the animset, read when a clip's own name does not hash to its name hash
     for order,c in enumerate(containers):
         if clip_names is not None and c['offset'] not in clip_names: continue
-        name = c['name'] if clip_names is None else clip_names[c['offset']]
+        given = clip_names[c['offset']] if clip_names is not None else None
+        if given is None and not c['metadata'].get('name_hash_matches_name'):
+            if file_names is None: file_names = crc_string_names(data)
+            given = file_names.get(int(c['metadata']['name_hash'],16))
+        name = c['name'] if given is None else given
         raw = data[c['offset']:c['offset']+c['declared_size']]
         digest = sha(raw); stem=f'{order:05d}_{digest[:12]}'
         raw_path=cache/(stem+'.animclip'); sample_path=cache/(stem+'.json.gz')
@@ -191,7 +196,7 @@ def extract_set(path, rows, cache, profile, log, experimental_ambiguous_inherita
             raw_sha256=digest,raw_clip=str(raw_path),animset_sha256=sha(data),metadata=c['metadata'])
         try:
             clip=decode_clip(data,c['offset'],names)
-            if clip_names is None:
+            if given is None:
                 if not clip['metadata'].get('name_hash_matches_name'): raise ValueError('Clip name/hash mismatch')
             else:
                 if crc32(name) != int(c['metadata']['name_hash'],16): raise ValueError('Clip name/hash mismatch')

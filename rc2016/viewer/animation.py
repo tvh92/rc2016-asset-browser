@@ -25,7 +25,7 @@ from rc2016.formats.animation_samples import decode_clip
 from rc2016.formats.animation_transforms import sample_transforms
 from rc2016.formats.archive import decompress
 from rc2016.formats.clips import classify, ordered_containers
-from rc2016.formats.animation_sources import borrowed_animset
+from rc2016.formats.animation_sources import borrowed_animset, crc_string_names
 from rc2016.formats.animation_transforms import model_skeleton
 from rc2016.formats.index import AssetIndex, open_asset_index, references
 from rc2016.common import sha
@@ -152,9 +152,18 @@ class AnimationLibrary:
                 except ValueError:
                     continue
                 self.animset_data[animset] = data
+                file_names = None   # {name hash: string} of this animset, read for the first clip whose own name does not match
                 for container in containers:
+                    name = container['name']
+                    metadata = container['metadata']
+                    if not metadata.get('name_hash_matches_name'):
+                        # The name the container reader found is another string (Mrs. Zurkon's version-143 clips read
+                        # 'igAnimWrinkleBG'): use the string whose game CRC32 is the clip's name hash, as the cutscene clips do.
+                        if file_names is None:
+                            file_names = crc_string_names(data)
+                        name = file_names.get(int(metadata['name_hash'], 16)) or name
                     self.clips.append(dict(animset=animset, offset=container['offset'], size=container['declared_size'],
-                                           name=container['name']))
+                                           name=name))
 
     def with_cinematic(self, archive, replace=False, sources=None):
         """Copy of this library that also offers the real-time cutscene shots covering the whole model.
