@@ -400,7 +400,11 @@ class SourcePreviewLoader:
             decoded['animsets']=list(library.animset_data)
             if not library.clips:
                 if not output_root:decoded['animation_note']="Set an output root: animation sets are found through the scan's reference index there."
-                else:decoded['animation_note']='No animation set or cutscene clip found for this model.'
+                else:
+                    from rc2016.formats.index import open_asset_index
+                    try:open_asset_index(output_root).close()
+                    except Exception:decoded['animation_note']='No asset index in the output root: run a scan there so animation sets can be found.'
+                    else:decoded['animation_note']='No animation set or cutscene clip found for this model.'
         except Exception as error:  # the model still displays without clips
             cached['animation']=None;decoded['animation_note']=f'Animations unavailable: {error}'
 
