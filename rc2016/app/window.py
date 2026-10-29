@@ -63,6 +63,10 @@ HELP = {
     "skeleton": ("Keeps the joints and skin weights, so the model can be posed and animated. Off exports the meshes only, "
                  "as static geometry, and no animations are written.\n\nUseful for props or for a model that is only "
                  "needed for its shape."),
+    "attachments": ("Some characters keep detachable armour plates and panels as separate models (the folder next to the "
+                    "model named bangle_set). On, they are exported together with the body, skinned to its skeleton, so "
+                    "they move with it in one file, each as its own object that can be hidden. Off exports the body only.\n\n"
+                    "Needs the skeleton option."),
     "scan": "Re-read the game folder and list every model it contains.",
     "extract": (
         "Exports the selected models in the formats chosen under Options… (GLB by default), "
@@ -218,6 +222,7 @@ class AssetBrowserApp:
         self.export_dds_var = remember_var(tk.BooleanVar(value=False), "export.dds")
         self.export_animations_var = remember_var(tk.BooleanVar(value=False), "export.animations")
         self.export_skeleton_var = remember_var(tk.BooleanVar(value=True), "export.skeleton")
+        self.export_attachments_var = remember_var(tk.BooleanVar(value=True), "export.attachments")
         self.export_lod_var = remember_var(tk.StringVar(value="Highest"), "export.lod", ("Highest", "Lowest", "All"))
         self.blend_scene_var = remember_var(tk.BooleanVar(value=False), "export.blend_scene")
         self.group_blend_var = remember_var(tk.BooleanVar(value=False), "export.group_blend")
@@ -495,6 +500,10 @@ class AssetBrowserApp:
         self.lod_box = ttk.Combobox(include, textvariable=self.export_lod_var, values=("Highest", "Lowest", "All"),
                                     state="readonly", width=10)
         self.lod_box.grid(row=5, column=1, columnspan=2, sticky="w", padx=8, pady=(6, 2))
+        self.attachments_check = ttk.Checkbutton(include, text="Attached parts (armour plates and panels, skinned to the body)",
+                                                 variable=self.export_attachments_var)
+        self.attachments_check.grid(row=6, column=0, columnspan=3, sticky="w", pady=(6, 2))
+        self._tip(HELP["attachments"], self.attachments_check)
 
         programs = ttk.LabelFrame(window, text="Programs", padding=8)
         programs.grid(row=2, column=0, sticky="ew", padx=12, pady=6)
@@ -537,8 +546,8 @@ class AssetBrowserApp:
         self._tip(HELP["reset"], reset)
 
         for variable in (*self.export_format_vars.values(), self.export_textures_var, self.export_dds_var,
-                         self.export_animations_var, self.export_skeleton_var, self.export_lod_var, self.blend_scene_var,
-                         self.backend_var, self.group_blend_var, self.picker_var):
+                         self.export_animations_var, self.export_skeleton_var, self.export_attachments_var,
+                         self.export_lod_var, self.blend_scene_var, self.backend_var, self.group_blend_var, self.picker_var):
             variable.trace_add("write", lambda *_args: self._options_changed())
         self._options_changed()
 
@@ -592,6 +601,7 @@ class AssetBrowserApp:
         self.group_name_label.configure(style="Disabled.TLabel" if blend else "TLabel")
         # Without a skeleton there is nothing to animate, so the animation choice is switched off.
         self.skeleton_check.configure(state="normal" if pipeline else "disabled")
+        self.attachments_check.configure(state="normal" if pipeline and not blend and self.export_skeleton_var.get() else "disabled")
         self.animation_check.configure(state="normal" if pipeline and self.export_skeleton_var.get() else "disabled")
         animated = pipeline and self.export_skeleton_var.get() and self.export_animations_var.get()
         self.picker_check.configure(state="normal" if animated else "disabled")
@@ -624,7 +634,7 @@ class AssetBrowserApp:
         from rc2016.export.models import ExportOptions
         return ExportOptions(formats=self._export_formats(), textures=self.export_textures_var.get(),
                              source_textures=self.export_dds_var.get(), animations="all" if self.export_animations_var.get() else "none",
-                             skeleton=self.export_skeleton_var.get(),
+                             skeleton=self.export_skeleton_var.get(), attachments=self.export_attachments_var.get(),
                              lod=self.export_lod_var.get(), blender=self.blender_var.get().strip(),
                              skip_existing=True, cinematic=self.export_animations_var.get(),
                              borrowed=self.export_animations_var.get() and self.browser.borrowed_var.get())

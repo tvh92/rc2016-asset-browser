@@ -63,6 +63,7 @@ class ExportOptions:
     borrowed: bool = False           # also offer the animsets the game pairs with another model of the same rig
     file_suffix: str = ''            # appended to the model stem in file names, e.g. '_cutscenes'
     skeleton: bool = True            # False: static meshes, no joints or skin weights, so no animations either
+    attachments: bool = True         # also the model's bangle_set/*_attach parts, skinned to its rig (one armature)
 
     def key(self):
         d = asdict(self)
@@ -73,7 +74,7 @@ class ExportOptions:
                 d.pop(name)
         if d['skeleton']:   # the default is left out, so keys of exports that predate the option still match
             d.pop('skeleton')
-        return d
+        return d   # 'attachments' stays in the key: exports that predate it left the parts as separate models
 
 
 class Cancelled(Exception):
@@ -738,6 +739,7 @@ class ModelExporter:
         meshes = selected_meshes(decoded, options.lod, options.look)
         if not meshes:
             raise ValueError('The selected look/LOD has no geometry')
+        need_gltf = any(f in options.formats for f in ('glb', 'gltf', 'fbx', 'usd'))
         parts = []
         for mesh in meshes:
             material = (mesh.get('material') or {}).get('index')
@@ -745,10 +747,15 @@ class ModelExporter:
         unweighted = sum((p['arrays']['skin'] or {}).get('unweighted', 0) for p in parts)
         if unweighted:
             notes.append(f'{unweighted} vertices without skin weights follow the root joint.')
+        by_index = {m.get('index', i): m for i, m in enumerate(decoded['materials'])}
+        attached = []
+        if options.attachments and joint_count and need_gltf:
+            attached, attachment_notes = self._attachment_parts(archive, source_path, library, parts, by_index, options)
+            notes += attachment_notes
+            parts += [part for entry in attached for part in entry['parts']]
 
         # Materials: only slots the selected meshes use.
         used = sorted({p['material'] for p in parts if p['material'] is not None})
-        by_index = {m.get('index', i): m for i, m in enumerate(decoded['materials'])}
         maps = {}
         for slot in used:
             self._check()
@@ -828,7 +835,8 @@ class ModelExporter:
         info = dict(schema='rcps4-portable-export-v1', model_id=model_id, source_path=source_path,
                     source_packed_sha256=decoded['packed_sha256'], options=options.key(), files=sorted(set(written)),
                     look=options.look, lod=options.lod, meshes=[m['index'] for m in meshes],
-                    joints=joint_count, clips=[dict(name=c['name'], kind=c['kind'], fps=c['fps'], frames=len(c['tracks']),
+                    joints=joint_count, attached_parts=[dict(path=e['path'], meshes=[m['index'] for m in e['meshes']]) for e in attached],
+                    clips=[dict(name=c['name'], kind=c['kind'], fps=c['fps'], frames=len(c['tracks']),
                                                     **({} if c['source'] == 'animset' else dict(source=c['source']))) for c in clips_out],
                     skipped_clips=skipped,
                     materials={str(slot): dict(name=m['name'], textures=m['sources'], notes=m['notes']) for slot, m in maps.items()},
@@ -840,6 +848,70 @@ class ModelExporter:
         return dict(status='exported', folder=str(folder), message=message, notes=notes,
                     clips=[{k: v for k, v in c.items() if k != 'tracks'} | dict(frames=len(c['tracks'])) for c in clips_out],
                     skipped_clips=skipped)
+
+    # -- attached parts
+    ATTACH_FOLDER = 'bangle_set'   # <model folder>/bangle_set/<part>/<part>.model, named *_attach
+    ATTACH_MARGIN = 0.05           # a part's bounds may exceed the body's by this share of the body's diagonal
+
+    def _attachment_parts(self, archive, source_path, library, body_parts, body_materials, options):
+        """The model's attach parts as extra skinned parts of its own rig, and notes for the parts left out.
+
+        A part (``<model folder>/bangle_set/<name>_attach/<name>_attach.model``) carries a small skeleton of the
+        body's own joints with the root moved to the origin, so on its own it cannot follow the body's pose. Its
+        vertices are in the body's bind space (checked below against the body's bounds), so skinning them to the
+        body's joints with the body's inverse binds puts them where the part sits on the body and moves them with
+        it. Returns ([{path, meshes, parts}], notes); every part that does not meet the checks is skipped with a note.
+        """
+        from rc2016.formats.animation_transforms import model_skeleton
+        folder = source_path.rsplit('/', 1)[0] + f'/{self.ATTACH_FOLDER}/'
+        paths = sorted({e['path'] for e in archive.entries.values()
+                        if e['type'] == 'model' and e['path'].startswith(folder) and 'attach' in Path(e['path']).stem.split('_')})
+        if not paths:
+            return [], []
+        body_joint = {row['hash']: index for index, row in enumerate(library.rows)}
+        lows = np.min([p['arrays']['positions'].min(axis=0) for p in body_parts], axis=0)
+        highs = np.max([p['arrays']['positions'].max(axis=0) for p in body_parts], axis=0)
+        margin = float(np.linalg.norm(highs - lows)) * self.ATTACH_MARGIN
+        slot_of_material = {m.get('path'): slot for slot, m in body_materials.items() if m.get('path')}
+        found, notes = [], []
+        for number, path in enumerate(paths, start=1):
+            self._check()
+            name = safe_name(Path(path).stem)
+            ids = archive.resolve(path)
+            if len(ids) != 1:
+                notes.append(f'Attach part {name} skipped: {len(ids)} archive entries for its path.')
+                continue
+            try:
+                joints = [row['hash'] for row in model_skeleton(archive.decode(ids[0]))]
+                if not joints or any(h not in body_joint for h in joints):
+                    notes.append(f'Attach part {name} skipped: its skeleton has joints that are not in the body rig.')
+                    continue
+                cached = self.loader._decode(archive, ids[0], path, 'export', self.texture_cache)['decoded']
+                meshes = selected_meshes(cached, options.lod, options.look)
+                remap = np.array([body_joint[h] for h in joints], np.uint16)
+                part_materials = {m.get('index', i): m for i, m in enumerate(cached['materials'])}
+                made = []
+                for mesh in meshes:
+                    arrays = mesh_arrays(mesh, len(joints))
+                    if arrays['skin'] is None:
+                        raise ValueError('it has no skin weights')
+                    if (arrays['positions'].min(axis=0) < lows - margin).any() or (arrays['positions'].max(axis=0) > highs + margin).any():
+                        raise ValueError("its vertices lie outside the body's bind space")
+                    arrays['skin']['joints'] = remap[arrays['skin']['joints']]
+                    slot = (mesh.get('material') or {}).get('index')
+                    material = part_materials.get(slot)
+                    if material is not None:   # a material the body already uses keeps the body's slot, others get a slot of their own
+                        slot = slot_of_material.get(material.get('path'), number * 1000 + slot)
+                        body_materials.setdefault(slot, material)
+                    made.append(dict(name=f"{name}_mesh{mesh['index']:02d}", material=slot, arrays=arrays, group=name))
+            except Exception as error:   # one bad part must not stop the model's export
+                notes.append(f'Attach part {name} skipped: {error}.')
+                continue
+            if made:
+                found.append(dict(path=path, meshes=meshes, parts=made))
+        if found:
+            notes.append(f"{len(found)} attach part(s) skinned to the body rig: {', '.join(Path(e['path']).stem for e in found)}.")
+        return found, notes
 
     # -- glTF assembly
     def _build_gltf(self, stem, parts, maps, library, clips):
@@ -915,8 +987,13 @@ class ModelExporter:
             doc['skins'] = [dict(name=f'{stem}_skin', joints=joint_nodes, skeleton=armature,
                                  inverseBindMatrices=g.accessor(ibm, 'MAT4'))]
         if skinned_parts:
-            doc['meshes'].append(dict(name=f'{stem}_skinned', primitives=[primitive(p, True) for p in skinned_parts]))
-            root_children.append(g.node(name=stem, mesh=len(doc['meshes']) - 1, skin=0))
+            groups = {}
+            for p in skinned_parts:   # the body first, then one node per attached part, so each can be hidden on its own
+                groups.setdefault(p.get('group'), []).append(p)
+            for group, members in groups.items():
+                doc['meshes'].append(dict(name=f'{group}_skinned' if group else f'{stem}_skinned',
+                                          primitives=[primitive(p, True) for p in members]))
+                root_children.append(g.node(name=group or stem, mesh=len(doc['meshes']) - 1, skin=0))
         if rigid_parts:
             doc['meshes'].append(dict(name=f'{stem}_static' if skinned_parts else stem,
                                       primitives=[primitive(p, False) for p in rigid_parts]))
