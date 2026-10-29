@@ -13,7 +13,8 @@ from unittest.mock import patch
 
 from rc2016.shaders import validation
 from rc2016.viewer import textures as tp
-from rc2016.viewer.shading import GLASS_FRAGMENT, GLASS_KINDS, glass_uniforms
+from rc2016.viewer.shading import (GLASS_FRAGMENT, GLASS_KINDS, GLASS_UNIFORMS, INSTANCE_ATTRIBUTES, INSTANCED_VERTEX, UV1_ATTRIBUTE,
+                                    VERTEX, WINDOW_GLASS_TEXTURES, glass_uniforms, window_glass_uniform)
 
 GRAPH = 'materialgraph/global/basic_glass/jn_glass_parallax_mask.materialgraph'
 GRAPH_SHA = 'bc5bb839d7b389638d55b0bb8784798aade5215aa31e5fd692bdf970ffd89c2c'
@@ -28,7 +29,8 @@ GLASS_G_01 = 'textures/environment/rilgar/architecture/parallax_interior_office_
 DWORDS = dict(colour=0, gloss=3, mask_tint=4, sky_weight=7, tint=8, parallax_depth=11, glass_weight=12, rim_exp=13,
               f0_weight=14, interior_weight=15, interior_light=16)
 PARAMS = dict(tint=(0.1, 0.2, 0.7), gloss=0.95, parallax_depth=0.672, rim_exp=0.006, f0_weight=0.784, interior_weight=1.0,
-              interior_light=0.472, interior_srgb=True)
+              interior_light=0.472, interior_srgb=True, colour=(0.0027, 0.5457, 0.8879), glass_weight=0.406,
+              mask_tint=(0.6038, 0.3916, 0.1683), sky_weight=0.639, cb0_95=1.0, record_fade=(-2.3333333, 0.0071561))
 
 
 class RuleBindingTests(unittest.TestCase):
@@ -55,7 +57,10 @@ class RuleBindingTests(unittest.TestCase):
         self.assertEqual(len(GLASS_KINDS), len(set(GLASS_KINDS.values())))
         kind, a, b, c, d, e = glass_uniforms(dict(kind='window_glass', params=PARAMS))
         self.assertEqual((kind, a, b, c, d, e), (14, (0.1, 0.2, 0.7, 0.95), (0.672, 0.006, 0.784, 1.0),
-                                                  (0.472, 1.0, 0.0, 0.0), (0.0,) * 4, (0.0,) * 4))
+                                                  (0.472, 1.0, 0.0, 0.0), (0.0027, 0.5457, 0.8879, 0.406),
+                                                  (0.6038, 0.3916, 0.1683, 0.639)))
+        self.assertEqual(window_glass_uniform(dict(kind='window_glass', params=PARAMS)), (1.0, -2.3333333, 0.0071561, 0.0))
+        self.assertEqual(window_glass_uniform(dict(kind='glass_basic', params={})), (0.0,) * 4)
         self.assertEqual(glass_uniforms(dict(kind='window_glass', params=dict(PARAMS, interior_srgb=False)))[3][1], 0.0)
 
     def test_glsl_branch_carries_the_decoded_equations(self):
@@ -64,10 +69,19 @@ class RuleBindingTests(unittest.TestCase):
         for text in ('float rim = sat(4.0 * pow(om, uB.y))', 'vec2 D = uB.x * face * vec2(dot(V, T), -dot(V, B)) / nv',
                      'int count = int(64.0 - 48.0 * sat(nv))', 'texture2DGradARB(uTexN, p, du1, du2).a',
                      '(dPrev * lower - dHit * upper) / (dPrev - dHit)', 'uv11 = vUV - (1.0 - hs) * D',
-                     'vec2(-sign(wn.x) * W.z, -W.y)', 'vec2(W.x, sign(wn.y) * W.z)', 'vec2(sign(wn.z) * W.x, -W.y)',
-                     'texture2D(uTexP, 0.075 * wuv)', 'pow(2.0, -5.5 * sqrt(sat(0.5 + uA.w * g7.r)))',
+                     'aw.y >= aw.x && aw.y >= aw.z ? 1 : (aw.x >= aw.z ? 0 : 2)',
+                     'vec2(-s * W.z, -W.y)', 'vec2(W.x, s * W.z)', 'vec2(s * W.x, -W.y)',
+                     'texture2D(uTexP, wuv)', 'texture2D(uTexWindowC, wuv)', 'texture2D(uTexWindowMask, vUV1).r',
+                     'pow(2.0, -5.5 * sqrt(sat(0.5 + uA.w * g7.r - 2.0 * mask)))',
+                     'float c = 1.0 - dot(e, e), sg = face * s',
+                     '(sqrt(r2 + 0.25 * nn * nn) - 0.5 * nn) / max(r2, 1.0 / 256.0) * vec2(tt, bb)',
+                     '2.0 * uWindowP.x * (1.0 - sat(-vPos.z * uWindowP.z + uWindowP.y))',
+                     's2 * (texture2D(uTexWindowN2, vUV1).rg - 0.5)',
+                     'Tw * (0.5 * z2 * u1.x + z1 * m2.x) + Bw * (0.5 * z2 * u1.y + z1 * m2.y) + wn * (z1 * z2)',
+                     'Ns = normalize(vNativeToView * Nn)',
                      'float F = uB.z * g7.g + pow(rim, 10.0)', 'F90 = vec3(sat(60.0 * F))',
-                     'windowEnvironment(reflect(-V, N), a) * F', 'vec3 Q = uB.w * interior',
+                     'windowEnvironment(reflect(-V, Ns), a)', '+ E * F)',
+                     'vec3 Q = uE.rgb * mask + uB.w * interior + uD.w * uD.rgb * pow(0.5 + mask, 5.0) * c9 * (1.0 + uE.w * E)',
                      'color = (uC.x * interior.b + Ld) * Q + spec', 'alpha = 1.0'):
             self.assertIn(text, branch)
 
@@ -82,12 +96,46 @@ class RuleBindingTests(unittest.TestCase):
         self.assertTrue(set(names) <= set(expected))
         self.assertEqual(roles, ['_n', '_pick'])
         self.assertEqual(expected['VR glass f0 weight'], 0.784)
+        self.assertEqual((expected['VR glass glass weight'], expected['VR glass colour']), (0.406, (0.0027, 0.5457, 0.8879)))
         text = (Path(__file__).resolve().parents[1] / 'rc2016/pipeline/game_shader.py').read_text(encoding='utf-8')
         body = text.split('def _viewer_rule_glass')[1].split('def apply_viewer_graph_rule')[0]
         for name in ('glass tint', 'glass gloss', 'glass rim exp', 'glass f0 weight', 'glass interior weight',
-                     'glass interior light', 'glass interior map', 'glass world map', 'VR glass interior'):
+                     'glass interior light', 'glass interior map', 'glass world map', 'VR glass interior',
+                     'glass colour', 'glass glass weight', 'glass painted map'):
             self.assertIn(name, body)
         self.assertIn("'window_glass'", text.split('GLASS_VIEWER_KINDS =')[1].split('\n')[0])
+
+
+class WindowTextureTests(unittest.TestCase):
+    def test_extra_roles_units_and_uniforms(self):
+        from rc2016.formats.materials import VIEWER_TERM_ROLES
+        from rc2016.viewer.viewport import GL_TEXTURE_ROLES, MIPMAP_ROLES
+        roles = [role for role, _ in tp.WINDOW_GLASS_ROLES]
+        self.assertEqual(tp.WINDOW_GLASS_ROLES, (('_window_mask', 'mask'), ('_window_n1', 'window_normal'),
+                                                 ('_window_n2', 'detail_normal'), ('_window_c', 'glass_c')))
+        self.assertEqual([row[1] for row in WINDOW_GLASS_TEXTURES], roles)
+        self.assertEqual([row[0] for row in WINDOW_GLASS_TEXTURES], [10, 11, 12, 13])
+        self.assertEqual([row[4] for row in WINDOW_GLASS_TEXTURES], ['uSrgbWindowMask', None, None, 'uSrgbWindowC'])
+        for role in roles:
+            self.assertIn(role, GL_TEXTURE_ROLES); self.assertIn(role, MIPMAP_ROLES)
+        self.assertEqual(VIEWER_TERM_ROLES['window_glass'], ('_n', '_pick', *roles))
+        for row in WINDOW_GLASS_TEXTURES:
+            for name in row[2:]:
+                if name:
+                    self.assertIn(name, GLASS_UNIFORMS); self.assertIn(name, GLASS_FRAGMENT)
+        for name in ('uHasUV1', 'uWindowP'):
+            self.assertIn(name, GLASS_UNIFORMS)
+        self.assertEqual((UV1_ATTRIBUTE, INSTANCE_ATTRIBUTES['aUV1']), (3, 3))
+        for source in (VERTEX, INSTANCED_VERTEX):
+            self.assertIn('vUV1 = aUV1', source)
+            self.assertNotIn('gl_Color', source)   # slot 3 is the colour alias
+
+    def test_secondary_uv_reads_the_second_half_pair(self):
+        import numpy as np
+        from rc2016.formats.native_model import secondary_uv
+        words = np.array([[0x3C00, 0x0000], [0x3800, 0x3C00]], dtype=np.uint16)   # (1, 0), (0.5, 1)
+        self.assertEqual(secondary_uv(dict(uv0_secondary_packed=words)).tolist(), [[1.0, 0.0], [0.5, 1.0]])
+        self.assertIsNone(secondary_uv(dict(uv0_secondary_packed=None)))
 
 
 @unittest.skipUnless(os.environ.get('RC2016_RESEARCH'), 'RC2016_RESEARCH is required')
@@ -131,6 +179,10 @@ class ArchiveRuleTests(unittest.TestCase):
             self.assertTrue(p['interior_srgb'])
             self.assertEqual(sorted(f['slots']), sorted(name for name, _ in tp.WINDOW_GLASS_SLOTS))
             self.assertEqual((paths['_n'], paths['_pick']), (f['slots']['interior'], glass_g))
+            self.assertEqual({role: paths[role] for role, _ in tp.WINDOW_GLASS_ROLES},
+                             {role: f['slots'][name] for role, name in tp.WINDOW_GLASS_ROLES})
+            self.assertFalse(tp.texture_is_srgb(self.archive, paths['_window_mask']))
+            self.assertTrue(tp.texture_is_srgb(self.archive, paths['_window_c']))
         p = tp.material_texture_paths(self.archive, WINDOW_01)['forward']['params']
         for name, want in (('tint', (0.0024, 0.1301, 0.8879)), ('colour', (0.0027, 0.5457, 0.8879)), ('mask_tint', (0.6038, 0.3916, 0.1683))):
             self.assertEqual([round(x, 4) for x in p[name]], list(want))

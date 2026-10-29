@@ -845,7 +845,9 @@ class LevelViewport(ModelViewport):
         record["abo"] = self._buffer(self.GL_ARRAY_BUFFER, alpha) if alpha is not None and len(alpha) * 3 == len(geometry["positions"]) else None
         ground = geometry.get("vertex_ground_blend")
         record["gbo"] = self._buffer(self.GL_ARRAY_BUFFER, ground) if ground is not None and len(ground) == len(geometry["positions"]) else None
-        record["buffers"] = [record[k] for k in ("vbo", "nbo", "tbo", "ibo", "abo", "gbo", "svbo") if record[k]]
+        uv1 = geometry.get("uv1s")   # the second UV pair, read only by the window glass rule (GLASS_FRAGMENT uKind 14)
+        record["uv1bo"] = self._buffer(self.GL_ARRAY_BUFFER, uv1) if uv1 is not None and len(uv1) * 3 == len(geometry["positions"]) * 2 else None
+        record["buffers"] = [record[k] for k in ("vbo", "nbo", "tbo", "ibo", "abo", "gbo", "svbo", "uv1bo") if record[k]]
         paints=geometry.get('vertex_paints',{})
         if paints:
             record['paint_buffers']={}
@@ -1006,6 +1008,14 @@ class LevelViewport(ModelViewport):
                 ext["glVertexAttribDivisor"](static_vector, 0)
             else:
                 sh.glDisableVertexAttribArray(static_vector)
+            uv1 = INSTANCE_ATTRIBUTES["aUV1"]
+            if model.get("uv1bo"):
+                ext["glBindBuffer"](self.GL_ARRAY_BUFFER, model["uv1bo"])
+                sh.glEnableVertexAttribArray(uv1)
+                sh.glVertexAttribPointer(uv1, 2, self.GL_FLOAT, 0, 8, None)
+                ext["glVertexAttribDivisor"](uv1, 0)
+            else:
+                sh.glDisableVertexAttribArray(uv1)
             ext["glBindBuffer"](self.GL_ARRAY_BUFFER, group[0])
             for row in range(4):
                 location = INSTANCE_ATTRIBUTES[f"aInst{row}"]
@@ -1672,6 +1682,7 @@ class LevelViewport(ModelViewport):
                 sh.glActiveTexture(self.GL_TEXTURE0)
                 scene_depth = scene_depth or self._scene_depth_copy()
             self._apply_water_surface(u, entry, forward, scene_depth if surface else None)
+            self._apply_window_glass(u, entry, forward, bool(model.get("uv1bo")))
             kind, *vectors = glass_uniforms(forward)
             sh.glUniform1i(u["uKind"], kind)
             for name, vector in zip(("uA", "uB", "uC", "uD", "uE"), vectors):

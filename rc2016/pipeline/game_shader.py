@@ -1596,35 +1596,42 @@ def _viewer_rule_glass(mat, rule, key, img):
                       'the fade and the fill CB2[1] = %g are not drawn; the tangent frame is the UV tangent of Blender' % p['fill'])
     elif key == 'window_glass':
         # 8DF14766 (docs/material-decoding/novalis-window-glass.md), labelled preview: opaque, rgb = (CB2[16] T11.b + L) Q
-        # + k (lights + environment) F with Q = CB2[15] T11 (interior, _n slot), F = CB2[14] T7.g + rim^10 and gloss
-        # sat(0.5 + CB2[3] T7.r) from the glass _g (_pick slot) at the world UV 0.075 (dominant axis of the native normal).
+        # + k (lights + environment) F with Q = CB2[15] T11 (interior, _n slot) + CB2[12] C 0.5^5 T9 (painted glass _c,
+        # mask 0, sky term 0), F = CB2[14] T7.g + rim^10 and gloss sat(0.5 + CB2[3] T7.r) from the glass _g (_pick slot);
+        # T7 and T9 at the world UV 0.075 (dominant axis of the native normal: y, then x, then z).
         rim = P.sat(P.m('MULTIPLY', P.m('POWER', om, P.const('glass rim exp', p['rim_exp'])), 4.0))
-        interior, glass_g = img('_n'), img('_pick')
+        interior, glass_g, painted = img('_n'), img('_pick'), img('_window_c')
         if interior is not None:
             inside = P.tex(interior, P.game_uv(), 'glass interior map').outputs['Color']
         else:
             inside = (0.0, 0.0, 0.0)
             limits.append('no interior texture bound: Q = 0')
-        g_r, g_g = 0.0, 0.0
-        if glass_g is not None:
+        g_r, g_g, world_uv = 0.0, 0.0, None
+        if glass_g is not None or painted is not None:
             wx, wy, wz = P.sep(P.native_position())
             nx, ny, nz = P.sep(P.native_normal())
             ax, ay, az = P.m('ABSOLUTE', nx), P.m('ABSOLUTE', ny), P.m('ABSOLUTE', nz)
-            mx = P.m('MULTIPLY', P.ge(ax, ay), P.ge(ax, az))                       # x dominant
-            my = P.m('MULTIPLY', P.m('SUBTRACT', 1.0, mx), P.ge(ay, az))          # else y dominant
+            my = P.m('MULTIPLY', P.ge(ay, ax), P.ge(ay, az))                       # y dominant
+            mx = P.m('MULTIPLY', P.m('SUBTRACT', 1.0, my), P.ge(ax, az))          # else x dominant
             mz = P.m('SUBTRACT', P.m('SUBTRACT', 1.0, mx), my)                    # else z
             sx, sy, sz = P.m('SIGN', nx), P.m('SIGN', ny), P.m('SIGN', nz)
             u = P.m('ADD', P.m('ADD', P.m('MULTIPLY', mx, P.m('MULTIPLY', P.m('MULTIPLY', sx, wz), -1.0)), P.m('MULTIPLY', my, wx)),
                     P.m('MULTIPLY', mz, P.m('MULTIPLY', sz, wx)))
             v = P.m('ADD', P.m('MULTIPLY', P.m('ADD', mx, mz), P.m('MULTIPLY', wy, -1.0)), P.m('MULTIPLY', my, P.m('MULTIPLY', sy, wz)))
-            g_r, g_g, _ = P.sep(P.tex(glass_g, P.gl_coord(P.m('MULTIPLY', u, 0.075), P.m('MULTIPLY', v, 0.075)),
-                                      'glass world map').outputs['Color'])
+            world_uv = P.gl_coord(P.m('MULTIPLY', u, 0.075), P.m('MULTIPLY', v, 0.075))
+        if glass_g is not None:
+            g_r, g_g, _ = P.sep(P.tex(glass_g, world_uv, 'glass world map').outputs['Color'])
         else:
             limits.append('no glass _g texture bound: T7 = 0')
         gloss = P.sat(P.m('MULTIPLY_ADD', P.const('glass gloss', p['gloss']), g_r, 0.5))
         F = P.m('ADD', P.m('MULTIPLY', P.const('glass f0 weight', p['f0_weight']), g_g), P.m('POWER', rim, 10.0))
         lobe, f90 = spec_lobe(P.v('SCALE', tint_k(P.const3('glass tint', p['tint'])), F), gloss)
         Q = P.v('SCALE', inside, P.const('glass interior weight', p['interior_weight']))
+        if painted is not None:   # CB2[12] C (0.5 + mask)^5 T9 (1 + CB2[7] sky) with mask = 0 and sky = 0
+            layer = P.v('MULTIPLY', P.const3('glass colour', p['colour']), P.tex(painted, world_uv, 'glass painted map').outputs['Color'])
+            Q = P.v('ADD', Q, P.v('SCALE', layer, P.m('MULTIPLY', P.const('glass glass weight', p['glass_weight']), 0.03125)))
+        else:
+            limits.append('no painted-glass _c image in the material: the painted layer (API 9) is omitted')
         em = P.N.new('ShaderNodeEmission'); em.name = 'VR glass emission'
         P.L.new(P.v('SCALE', Q, P.m('MULTIPLY', P.const('glass interior light', p['interior_light']), P.sep(inside)[2])),
                 em.inputs['Color'])
@@ -1632,7 +1639,9 @@ def _viewer_rule_glass(mat, rule, key, img):
         alpha = 1.0
         limits.extend(p.get('limitations') or ())
         limits.append('Novalis window glass 8DF14766 (labelled preview, game_equivalence False): the interior is sampled at the '
-                      'unshifted UV0 (the parallax march over T10.a is not built in Blender); the world projection uses the '
+                      'unshifted UV0 (the parallax march over T10.a is not built in Blender); the Blender mesh carries no second '
+                      'UV pair, so the mask (API 5) is 0 and the detail normal (API 8) is absent, and the window normal (API 6) is '
+                      'not built either (geometric normal); the painted-glass sky term CB2[7] sky is 0; the world projection uses the '
                       'object (native model) space, not the level world position; the tint multiplies F, the '
                       'environment reflection is the Principled split sum, not E F, and F90 is collapsed to its maximum channel')
     else:   # character_glass_02

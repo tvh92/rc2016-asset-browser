@@ -6,7 +6,7 @@ from pathlib import Path
 import threading
 import numpy as np
 from rc2016.formats.archive import Archive, asset_references, locate, decompress
-from rc2016.formats.native_model import decode_model
+from rc2016.formats.native_model import decode_model, secondary_uv
 from rc2016.formats.container import section_table
 
 
@@ -47,7 +47,7 @@ def _mesh_payload_arrays(decoded, meshes, selected):
     as numpy arrays (viewport.prepare_viewport takes them as-is); uvs, skin and rock alpha as the
     same flat lists as the list path, since the viewport tests those for truth."""
     vertices,normals,raw_vectors,triangles,uvs,batches,joints,weights,alpha,alpha_sources=[],[],[],[],[],[],[],[],[],[]
-    tangents=[]
+    tangents=[];uv1s=[];has_uv1=False
     raw_vector_eligible = True
     base=triangle_total=0
     for mesh in meshes:
@@ -78,6 +78,9 @@ def _mesh_payload_arrays(decoded, meshes, selected):
             uv0=np.asarray(uv0,dtype=np.float64).reshape(-1,2)
             uvs.append(np.stack((uv0[:,0],1.0-uv0[:,1]),axis=1))
         else:uvs=None
+        uv1=secondary_uv(mesh)   # the window glass rule's UV1; zeros where a mesh has no second pair
+        has_uv1=has_uv1 or (uv1 is not None and len(uv1)==count)
+        uv1s.append(uv1 if uv1 is not None and len(uv1)==count else np.zeros((count,2)))
         tris=np.asarray(mesh['triangles'],dtype=np.int64).reshape(-1,3)
         batches.append(((mesh.get('material') or {}).get('index'),triangle_total,len(tris)))
         triangles.append(tris+base if base else tris)
@@ -89,6 +92,7 @@ def _mesh_payload_arrays(decoded, meshes, selected):
                 tangents=np.concatenate(tangents) if len(tangents)==len(vertices) else None,
                 triangles=np.concatenate(triangles),
                 uvs=np.concatenate(uvs).tolist() if uvs is not None else None,batches=batches,
+                **({'uv1s':np.concatenate(uv1s)} if has_uv1 else {}),
                 skin_joints=np.concatenate(joints).ravel().tolist(),skin_weights=np.concatenate(weights).ravel().tolist(),
                 rock_alpha=np.concatenate(alpha).tolist(),rock_alpha_sources=alpha_sources,
                 source_sha256=decoded['source_sha256'],selected_mesh_indices=sorted(selected),
@@ -107,7 +111,7 @@ def mesh_payload(decoded, lod='Highest', look=0):
     # Up to 8 skin influences per vertex as flat (joint, weight) lists; all-zero
     # weights mean "not skinned" and the vertex keeps its rest position.
     skin_joints,skin_weights=[],[]
-    rock_alpha=[];rock_alpha_sources=[]
+    rock_alpha=[];rock_alpha_sources=[];uv1s=[];has_uv1=False
     for mesh in decoded['meshes']:
         if mesh['index'] not in selected:continue
         base=len(vertices)
@@ -134,6 +138,10 @@ def mesh_payload(decoded, lod='Highest', look=0):
         # The decoder flips V for Blender; textures upload top row first, so flip back.
         if uvs is not None and mesh.get('uv0'):uvs.extend([(u,1.0-v) for u,v in mesh['uv0']])
         else:uvs=None  # untextured if any selected mesh lacks UV0
+        uv1=secondary_uv(mesh)   # the window glass rule's UV1; zeros where a mesh has no second pair
+        count=len(mesh['positions'])
+        has_uv1=has_uv1 or (uv1 is not None and len(uv1)==count)
+        uv1s.extend(uv1.tolist() if uv1 is not None and len(uv1)==count else [(0.0,0.0)]*count)
         # (material slot, first triangle, triangle count) for per-material drawing.
         batches.append(((mesh.get('material') or {}).get('index'),len(triangles),len(mesh['triangles'])))
         triangles.extend([(a+base,b+base,c+base) for a,b,c in mesh['triangles']] if base else [tuple(t) for t in mesh['triangles']])
@@ -141,7 +149,7 @@ def mesh_payload(decoded, lod='Highest', look=0):
     eligible = bool(raw_vector_eligible and len(raw_vectors)==len(vertices))
     return dict(vertices=vertices,normals=normals,raw_vectors=raw_vectors if eligible else None,
                 tangents=tangents if len(tangents)==len(vertices) else None,
-                static_vector_eligible=eligible,triangles=triangles,uvs=uvs,batches=batches,
+                static_vector_eligible=eligible,triangles=triangles,uvs=uvs,batches=batches,**({'uv1s':uv1s} if has_uv1 else {}),
                 skin_joints=skin_joints,skin_weights=skin_weights,rock_alpha=rock_alpha,rock_alpha_sources=rock_alpha_sources,
                 source_sha256=decoded['source_sha256'],selected_mesh_indices=sorted(selected),
                 source_exact_geometry=True,game_equivalence=False,material_preview='neutral geometry inspection')

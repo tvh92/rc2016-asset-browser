@@ -177,6 +177,7 @@ LIGHTING_UNIFORMS = (*SCENE_UNIFORMS, "uLighting", "uLightingEnabled", "uLightFr
 ATTRIBUTES = {"aJoints0": 1, "aJoints1": 6, "aWeights0": 7, "aWeights1": 9}
 STATIC_VECTOR_ATTRIBUTE = 4
 TANGENT_ATTRIBUTE = 5   # decoded vertex tangent (unaliased fog-coordinate slot, as 4 is for the static vector)
+UV1_ATTRIBUTE = 3   # second UV pair (native_model.secondary_uv) in the colour slot, which no vertex shader reads
 BONE_TEXTURE_UNIT = 3
 ROCK_TEXTURE_UNIT = 15   # RockBlend sole new sampler, four tiled source slices
 ROCK_ALPHA_ATTRIBUTE = 14
@@ -211,6 +212,7 @@ attribute vec3 aGroundBlend; varying vec3 vGroundBlend;
 attribute vec3 aStaticPackedVector; varying vec3 vStaticPackedVector;
 // Decoded vertex tangent, w the stored bitangent sign (position w); zero when the mesh has no decoded tangent.
 attribute vec4 aTangent; varying vec3 vTangent; varying float vTangentSign;
+attribute vec2 aUV1; varying vec2 vUV1;   // second UV pair (read by the window glass rule only)
 // Rows of joint j's row-major skin matrix, as the columns of its transpose.
 mat4 boneT(float j) {
     float x = j * 4.0 + 0.5;
@@ -240,7 +242,7 @@ void main() {
     vec4 view = gl_ModelViewMatrix * p;
     // Camera-to-vertex offset in the vTintWorldPos frame (affine, so it interpolates exactly).
     vec3 o = (gl_ModelViewMatrixInverse * vec4(view.xyz, 0.0)).xyz; vTintViewOffset = vec3(o.x, o.z, -o.y);
-    vPos = view.xyz; vNrm = gl_NormalMatrix * n; vUV = gl_MultiTexCoord0.xy;
+    vPos = view.xyz; vNrm = gl_NormalMatrix * n; vUV = gl_MultiTexCoord0.xy; vUV1 = aUV1;
     vNativeToView = gl_NormalMatrix * mat3(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0);
     gl_Position = gl_ProjectionMatrix * view;
 }
@@ -1093,12 +1095,22 @@ void main() {
 # uKind 14, window_glass 8DF14766 (jn_glass_parallax_mask, the Novalis windows; docs/material-decoding/novalis-window-glass.md),
 #   a labelled PREVIEW (game_equivalence False): uA = reflection tint T.rgb (CB2[8..10]), gloss CB2[3]; uB = parallax depth
 #   CB2[11], rim exponent CB2[13], F weight CB2[14], interior weight CB2[15]; uC.x = interior light CB2[16], uC.y = 1 when the
-#   interior image is sRGB. _n unit = interior _c (API 10 alpha height, API 11 colour), _pick unit = glass _g (API 7).
-#   Opaque: rgb = (CB2[16] T11.b + Ld) Q + k (sun/rig lobes + E F), Q = CB2[15] T11 at uv11 = uv - (1 - h*) D,
-#   D = CB2[11] f (V.T, -V.B) / (n.V), h* the secant height of int(64 - 48 sat(n.V)) T10.a steps; F = CB2[14] T7.g + rim^10,
-#   rim = sat(4 (1 - N.V)^CB2[13]), gloss g = sat(0.5 + CB2[3] T7.r) at the world UV 0.075 (dominant-axis projection),
-#   k = sat(T / luma(T)). The probe ambient A_c and reflection E_c are the viewer's ambient and environment, ao = 1, r = 0
-#   (no SSR), no light list; the mask (API 5, taken as 0), both normal maps (API 6, 8) and the painted glass (API 9) are not bound.
+#   interior image is sRGB; uD = painted-glass colour C (CB2[0..2]), glass weight CB2[12]; uE = mask tint Z (CB2[4..6]), sky
+#   weight CB2[7]; uWindowP = (CB0[95], instance record dwords 2, 3), the captured presentation inputs of the detail fade.
+#   _n unit = interior _c (API 10 alpha height, API 11 colour), _pick unit = glass _g (API 7); WINDOW_GLASS_TEXTURE_UNITS hold
+#   the mask (API 5, UV1), window normal (API 6, world UV), detail normal (API 8, UV1) and painted glass _c (API 9, world UV).
+#   UV1 is vUV1 (the second UV pair); uHasUV1 = 0 leaves mask = 0 and m2 = 0.
+#   Opaque: rgb = (CB2[16] T11.b + Ld) Q + k (sun/rig lobes + E F), Q = Z mask + CB2[15] T11 + CB2[12] C (0.5 + mask)^5 T9
+#   (1 + CB2[7] sky), T11 at uv11 = uv - (1 - h*) D, D = CB2[11] f (V.T, -V.B) / (n.V), h* the secant height of
+#   int(64 - 48 sat(n.V)) T10.a steps; F = CB2[14] T7.g + rim^10, rim = sat(4 (1 - N.V)^CB2[13]) (geometric normal), gloss
+#   g = sat(0.5 + CB2[3] T7.r - 2 mask) at the world UV 0.075 (dominant-axis projection), k = sat(T / luma(T)). Shaded normal
+#   N' (lights, environment, sky): T6 (a, b) = rg - 0.5, (a, b, 1 - a^2 - b^2) moved to the projection axis with
+#   sigma = f sign(n_axis), normalised to w, (t, bb, nn) = w in the frame (T, B, n); u1 = k (t, bb),
+#   k = (sqrt(t^2 + bb^2 + nn^2/4) - nn/2) / max(t^2 + bb^2, 1/256), z1 = 1 - |u1|^2; m2 = S2 (T8.rg - 0.5),
+#   S2 = 2 CB0[95] (1 - sat(w rec[3] + rec[2])), w = view depth, z2 = 1 - |m2|^2;
+#   N' = normalize(T (z2 u1.x/2 + z1 m2.x) + B (z2 u1.y/2 + z1 m2.y) + n z1 z2), built in the native world frame (T, B from
+#   screen derivatives of the world position and UV0). The probe ambient A_c, reflection E_c and the sky cube (cube 255) are the
+#   viewer's ambient and environment along R = reflect(-V, N'), ao = 1, r = 0 (no SSR), no light list.
 # uKind 12, ion_tubes 86DDE345 (enm_victor_von_ion_tubes_w_rust; docs/material-decoding/victor-von-ion-tubes.md): uA = tint C
 #   (CB2[0..2]) and gain g (CB2[3]); uB.x = amplitude (CB0[115], labelled presentation value); uC = base colour; uD = rim colour.
 #   rgb = 2 amp (1 + m) (base + rim F^5 + m C g), m = sat(API6.R + API5.G) from the one electricity image, F = max(N.V - 0.001, 0);
@@ -1129,8 +1141,11 @@ uniform int uKind;
 uniform vec4 uA; uniform vec4 uB; uniform vec4 uC; uniform vec4 uD; uniform vec4 uE;
 uniform sampler2D uTexN; uniform bool uHasN;
 uniform sampler2D uTexP; uniform bool uHasP; uniform bool uSrgbP;
-varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
-varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm;
+uniform sampler2D uTexWindowMask; uniform sampler2D uTexWindowN1; uniform sampler2D uTexWindowN2; uniform sampler2D uTexWindowC;
+uniform bool uHasWindowMask; uniform bool uHasWindowN1; uniform bool uHasWindowN2; uniform bool uHasWindowC;
+uniform bool uSrgbWindowMask; uniform bool uSrgbWindowC; uniform bool uHasUV1; uniform vec4 uWindowP;
+varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV; varying vec2 vUV1;
+varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm; varying mat3 vNativeToView;
 const float PI = 3.14159265;
 vec3 linear(vec3 c) { return pow(max(c, 0.0), vec3(2.2)); }
 float sat(float x) { return clamp(x, 0.0, 1.0); }
@@ -1261,8 +1276,8 @@ void main() {
         float face = gl_FrontFacing ? 1.0 : -1.0, nv = dot(n, V);
         float rim = sat(4.0 * pow(om, uB.y));
         vec2 uv11 = vUV;
-#ifdef GL_ARB_shader_texture_lod
         vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
+#ifdef GL_ARB_shader_texture_lod
         vec3 dp1 = dFdx(vPos), dp2 = dFdy(vPos);
         vec3 t = cross(dp2, n) * du1.x + cross(n, dp1) * du2.x, b = cross(dp2, n) * du1.y + cross(n, dp1) * du2.y;
         if (uHasN && nv != 0.0 && dot(t, t) > 0.0 && dot(b, b) > 0.0) {   // interior parallax: T10.a march, secant height h*
@@ -1284,21 +1299,45 @@ void main() {
 #endif
         vec3 interior = uHasN ? texture2D(uTexN, uv11).rgb : vec3(0.0);
         if (uC.y > 0.5) interior = linear(interior);
-        // World projection of the glass maps (scale 0.075, dominant axis of the geometric normal, s its sign).
+        // UV1 images: mask (API 5) and the detail normal (API 8); without the second UV pair both are absent.
+        float mask = uHasUV1 && uHasWindowMask ? texture2D(uTexWindowMask, vUV1).r : 0.0;
+        if (uSrgbWindowMask) mask = linear(vec3(mask)).r;
+        // World projection of APIs 6, 7, 9 (scale 0.075, dominant axis of the geometric normal: y, then x, then z; s its sign).
         vec3 wn = normalize(vTintWorldNrm), aw = abs(wn), W = vTintWorldPos;
-        vec2 wuv = aw.x >= aw.y && aw.x >= aw.z ? vec2(-sign(wn.x) * W.z, -W.y)
-                 : aw.y >= aw.z ? vec2(W.x, sign(wn.y) * W.z) : vec2(sign(wn.z) * W.x, -W.y);
-        vec3 g7 = uHasP ? texture2D(uTexP, 0.075 * wuv).rgb : vec3(0.0);
+        int axis = aw.y >= aw.x && aw.y >= aw.z ? 1 : (aw.x >= aw.z ? 0 : 2);
+        float s = axis == 0 ? sign(wn.x) : (axis == 1 ? sign(wn.y) : sign(wn.z));
+        vec2 wuv = 0.075 * (axis == 0 ? vec2(-s * W.z, -W.y) : (axis == 1 ? vec2(W.x, s * W.z) : vec2(s * W.x, -W.y)));
+        vec3 g7 = uHasP ? texture2D(uTexP, wuv).rgb : vec3(0.0);
         if (uSrgbP) g7 = linear(g7);
-        float a = pow(2.0, -5.5 * sqrt(sat(0.5 + uA.w * g7.r)));      // mask (API 5) taken as 0
+        vec3 c9 = uHasWindowC ? texture2D(uTexWindowC, wuv).rgb : vec3(0.0);
+        if (uSrgbWindowC) c9 = linear(c9);
+        // Shaded normal N' (see the uKind 14 comment), in the native world frame, then to view space.
+        vec3 Ns = N;
+        vec3 dw1 = dFdx(W), dw2 = dFdy(W);
+        vec3 tw = cross(dw2, wn) * du1.x + cross(wn, dw1) * du2.x, bw = cross(dw2, wn) * du1.y + cross(wn, dw1) * du2.y;
+        if (dot(tw, tw) > 0.0 && dot(bw, bw) > 0.0) {
+            vec3 Tw = normalize(tw), Bw = -normalize(bw);
+            vec2 e = (uHasWindowN1 ? texture2D(uTexWindowN1, wuv).rg : vec2(0.5)) - 0.5;
+            float c = 1.0 - dot(e, e), sg = face * s;
+            vec3 w1 = normalize(axis == 0 ? vec3(sg * c, e.y, -sg * e.x) : (axis == 1 ? vec3(e.x, sg * c, -sg * e.y) : vec3(e.x, e.y, sg * c)));
+            float tt = dot(Tw, w1), bb = dot(Bw, w1), nn = dot(wn, w1), r2 = tt * tt + bb * bb;
+            vec2 u1 = (sqrt(r2 + 0.25 * nn * nn) - 0.5 * nn) / max(r2, 1.0 / 256.0) * vec2(tt, bb);
+            float z1 = 1.0 - dot(u1, u1);
+            float s2 = 2.0 * uWindowP.x * (1.0 - sat(-vPos.z * uWindowP.z + uWindowP.y));   // distance fade of the detail map
+            vec2 m2 = uHasUV1 && uHasWindowN2 ? s2 * (texture2D(uTexWindowN2, vUV1).rg - 0.5) : vec2(0.0);
+            float z2 = 1.0 - dot(m2, m2);
+            vec3 Nn = Tw * (0.5 * z2 * u1.x + z1 * m2.x) + Bw * (0.5 * z2 * u1.y + z1 * m2.y) + wn * (z1 * z2);
+            if (dot(Nn, Nn) > 0.0) Ns = normalize(vNativeToView * Nn);
+        }
+        float a = pow(2.0, -5.5 * sqrt(sat(0.5 + uA.w * g7.r - 2.0 * mask)));
         float F = uB.z * g7.g + pow(rim, 10.0);
         vec3 k = clamp(uA.rgb / max(dot(vec3(0.2126, 0.7152, 0.0722), uA.rgb), 1e-6), 0.0, 1.0);
-        vec3 ambient = ambientLight(N);
-        vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
+        vec3 ambient = ambientLight(Ns);
+        vec3 Ld = (max(dot(Ns, L1), 0.0) * C1 + max(dot(Ns, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
         vec3 F0 = vec3(F), F90 = vec3(sat(60.0 * F));
-        vec3 spec = k * (ggxGlass(N, V, L1, F0, F90, a) * C1 + ggxGlass(N, V, L2, F0, F90, a) * C2
-                         + windowEnvironment(reflect(-V, N), a) * F);   // Wocc = 1 (ao 1), r = 0
-        vec3 Q = uB.w * interior;                                       // + Z mask (0) + painted glass (not bound)
+        vec3 E = windowEnvironment(reflect(-V, Ns), a);                  // stands in for E_c and the cube-255 sky sample
+        vec3 spec = k * (ggxGlass(Ns, V, L1, F0, F90, a) * C1 + ggxGlass(Ns, V, L2, F0, F90, a) * C2 + E * F);   // Wocc = 1, r = 0
+        vec3 Q = uE.rgb * mask + uB.w * interior + uD.w * uD.rgb * pow(0.5 + mask, 5.0) * c9 * (1.0 + uE.w * E);
         color = (uC.x * interior.b + Ld) * Q + spec;
         alpha = 1.0;
     } else if (uKind == 9) { // character_glass_02 4DF1D438
@@ -1587,7 +1626,8 @@ def glass_uniforms(forward, time=None):
     if forward["kind"] == "window_glass":
         return (GLASS_KINDS["window_glass"], (*p["tint"], p["gloss"]),
                 (p["parallax_depth"], p["rim_exp"], p["f0_weight"], p["interior_weight"]),
-                (p["interior_light"], 1.0 if p.get("interior_srgb") else 0.0, 0.0, 0.0), (0.0,) * 4, (0.0,) * 4)
+                (p["interior_light"], 1.0 if p.get("interior_srgb") else 0.0, 0.0, 0.0),
+                (*p["colour"], p["glass_weight"]), (*p["mask_tint"], p["sky_weight"]))
     if forward["kind"] == "glass_cg02":
         return (GLASS_KINDS["glass_cg02"], (*p["body"], p["gloss"]), (*p["tint"], p["tint_scale"]),
                 (p["env_scale"], p["env_exp"], p["alpha_floor"], p["alpha_exp"]), (*p["rim_colour"], p["rim_exp"]),
@@ -1602,6 +1642,21 @@ def glass_uniforms(forward, time=None):
 # Texture units of the decoded water closure's extra samplers (the glass pass binds no other texture there).
 WATER_FOAM_TEXTURE_UNITS = (7, 8)
 SCENE_DEPTH_TEXTURE_UNIT = 9
+# The window glass rule's extra images (uKind 14), unused by every other glass kind:
+# (unit, texture_preview role, sampler, has flag, sRGB flag or None). Normal maps are always Non-Color.
+WINDOW_GLASS_TEXTURES = ((10, "_window_mask", "uTexWindowMask", "uHasWindowMask", "uSrgbWindowMask"),
+                         (11, "_window_n1", "uTexWindowN1", "uHasWindowN1", None),
+                         (12, "_window_n2", "uTexWindowN2", "uHasWindowN2", None),
+                         (13, "_window_c", "uTexWindowC", "uHasWindowC", "uSrgbWindowC"))
+WINDOW_GLASS_TEXTURE_UNITS = tuple(row[0] for row in WINDOW_GLASS_TEXTURES)
+
+
+def window_glass_uniform(forward):
+    """uWindowP of GLASS_FRAGMENT uKind 14: (CB0[95], instance record dwords 2, 3); zeros for every other forward kind."""
+    if (forward or {}).get("kind") != "window_glass":
+        return (0.0, 0.0, 0.0, 0.0)
+    p = forward["params"]
+    return (float(p["cb0_95"]), float(p["record_fade"][0]), float(p["record_fade"][1]), 0.0)
 
 
 def water_surface_uniforms(forward):
@@ -1641,13 +1696,15 @@ GLASS_UNIFORMS = ("uSkin", "uBoneTex", "uBoneWidth", "uKind", "uA", "uB", "uC", 
                   "uWaterHeightA", "uWaterHeightB", "uHasWaterHeights", "uTexN", "uHasN", "uTexP", "uHasP", "uSrgbP",
                   "uW", "uWaterFoamA", "uWaterFoamB", "uHasWaterFoam", "uWaterFoamSrgbA", "uWaterFoamSrgbB",
                   "uSceneDepth", "uHasSceneDepth", "uSceneDepthInfo",
-                  "uScreenNoiseA", "uScreenNoiseB", "uScreenSrgbN", "uScreenSrgbA", "uScreenSrgbB", *LIGHTING_UNIFORMS)
+                  "uScreenNoiseA", "uScreenNoiseB", "uScreenSrgbN", "uScreenSrgbA", "uScreenSrgbB",
+                  "uTexWindowMask", "uTexWindowN1", "uTexWindowN2", "uTexWindowC", "uHasWindowMask", "uHasWindowN1",
+                  "uHasWindowN2", "uHasWindowC", "uSrgbWindowMask", "uSrgbWindowC", "uHasUV1", "uWindowP", *LIGHTING_UNIFORMS)
 
 # Level viewer: one draw per model and material for all its instances. The zone's row-vector
 # instance matrix arrives as four per-instance attributes (rows; docs/levels.md), in texcoord
 # 2-5's aliased slots, which no shader reads. Geometry and matrices stay in native Y-up space;
 # the camera matrix carries the presentation basis.
-INSTANCE_ATTRIBUTES = {"aInst0": 10, "aInst1": 11, "aInst2": 12, "aInst3": 13, "aRockAlpha": ROCK_ALPHA_ATTRIBUTE, "aGroundBlend": GROUND_BLEND_ATTRIBUTE, "aStaticPackedVector": STATIC_VECTOR_ATTRIBUTE}
+INSTANCE_ATTRIBUTES = {"aInst0": 10, "aInst1": 11, "aInst2": 12, "aInst3": 13, "aRockAlpha": ROCK_ALPHA_ATTRIBUTE, "aGroundBlend": GROUND_BLEND_ATTRIBUTE, "aStaticPackedVector": STATIC_VECTOR_ATTRIBUTE, "aUV1": UV1_ATTRIBUTE}
 INSTANCED_VERTEX = """
 #version 120
 attribute vec4 aInst0; attribute vec4 aInst1; attribute vec4 aInst2; attribute vec4 aInst3;
@@ -1659,6 +1716,7 @@ varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm; varying vec3 vTintViewOf
 varying mat3 vNativeToView;
 varying float vRockAlpha; varying vec3 vStaticPackedVector;
 varying vec3 vTangent; varying float vTangentSign;   // the level viewer draws no tangent stream: zero keeps the derivative frame
+attribute vec2 aUV1; varying vec2 vUV1;   // second UV pair (read by the window glass rule only)
 void main() {
     vTangent = vec3(0.0); vTintWorldTan = vec3(0.0); vTangentSign = 0.0;
     vRockAlpha = aRockAlpha * aRockAlpha; // zone position-keyed colour alpha (inferred), else 1
@@ -1683,7 +1741,7 @@ void main() {
     vTintWorldPos = p; vTintWorldNrm = n;   // native Y-up world space, as the tint writers read it
     vec4 view = gl_ModelViewMatrix * vec4(p, 1.0);
     vTintViewOffset = (gl_ModelViewMatrixInverse * vec4(view.xyz, 0.0)).xyz;   // p minus the camera, native world
-    vPos = view.xyz; vNrm = gl_NormalMatrix * n; vUV = gl_MultiTexCoord0.xy;
+    vPos = view.xyz; vNrm = gl_NormalMatrix * n; vUV = gl_MultiTexCoord0.xy; vUV1 = aUV1;
     vNativeToView = gl_NormalMatrix;
     gl_Position = gl_ProjectionMatrix * view;
 }
@@ -2066,7 +2124,7 @@ class Shading:
             raise ShaderError(f"{joints} joints exceed the {MAX_JOINTS}-joint preview limit")
         size = MAX_JOINTS
         if size not in self.programs:
-            self.programs[size] = (*self._link(VERTEX, FRAGMENT, dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE, aGroundBlend=GROUND_BLEND_ATTRIBUTE, aStaticPackedVector=STATIC_VECTOR_ATTRIBUTE, aTangent=TANGENT_ATTRIBUTE), OPAQUE_UNIFORMS), size)
+            self.programs[size] = (*self._link(VERTEX, FRAGMENT, dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE, aGroundBlend=GROUND_BLEND_ATTRIBUTE, aStaticPackedVector=STATIC_VECTOR_ATTRIBUTE, aTangent=TANGENT_ATTRIBUTE, aUV1=UV1_ATTRIBUTE), OPAQUE_UNIFORMS), size)
         return self.programs[size]
 
     def native_program_key(self, translation, srgb, instanced=False, scene=False, experimental=False, rule_preview=False):
@@ -2082,7 +2140,7 @@ class Shading:
         if key not in self.programs:
             surface = fragment_source(translation, srgb, experimental=experimental, rule_preview=rule_preview)
             names = (*OPAQUE_UNIFORMS, *(s['uniform'] for s in surface['samplers']))
-            attributes = INSTANCE_ATTRIBUTES if instanced else dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE, aGroundBlend=GROUND_BLEND_ATTRIBUTE, aStaticPackedVector=STATIC_VECTOR_ATTRIBUTE, aTangent=TANGENT_ATTRIBUTE)
+            attributes = INSTANCE_ATTRIBUTES if instanced else dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE, aGroundBlend=GROUND_BLEND_ATTRIBUTE, aStaticPackedVector=STATIC_VECTOR_ATTRIBUTE, aTangent=TANGENT_ATTRIBUTE, aUV1=UV1_ATTRIBUTE)
             source=surface['source'].replace('#version 120', '#version 120\n#define RC_SCENE_EFFECTS 1',1) if scene else surface['source']
             self.programs[key] = self._link(vertex, source, attributes, names)
         return self.programs[key]
@@ -2092,7 +2150,7 @@ class Shading:
         if "glass" not in self.programs:
             attributes = dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE,
                               aGroundBlend=GROUND_BLEND_ATTRIBUTE,
-                              aStaticPackedVector=STATIC_VECTOR_ATTRIBUTE, aTangent=TANGENT_ATTRIBUTE)
+                              aStaticPackedVector=STATIC_VECTOR_ATTRIBUTE, aTangent=TANGENT_ATTRIBUTE, aUV1=UV1_ATTRIBUTE)
             self.programs["glass"] = self._link(VERTEX, GLASS_FRAGMENT, attributes, GLASS_UNIFORMS)
         return self.programs["glass"]
 

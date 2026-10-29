@@ -26,14 +26,15 @@ RIG_TO_WORLD = ((1.0, 0.0, 0.0), (0.0, 0.0, -1.0), (0.0, 1.0, 0.0))
 # texture_preview entry roles uploaded as 2D GL textures, deduplicated by texture path. Other textures
 # in an entry (tint palette, screen timeline, puddle and RockBlend sources) are only sampled on the CPU.
 GL_TEXTURE_ROLES = ("_water_height_a", "_water_height_b", "_water_foam_a", "_water_foam_b", "_c", "_g", "_n", "_pick", "_h", "_sequence", "_tint_detail", "_bng_detail", "_vehicle_p2",
-                    "_glow_parallax", "_puddle_atlas", "_parallax_height", "_cma", "_reticle")
+                    "_glow_parallax", "_puddle_atlas", "_parallax_height", "_cma", "_reticle",
+                    "_window_mask", "_window_n1", "_window_n2", "_window_c")
 
 
 # GL_TEXTURE_ROLES sampled as ordinary surface textures by UV. Palettes and sequences (_pick,
 # _vehicle_p2, _sequence) are lookup tables, and the puddle atlas is sampled through fract(), so those
 # keep their top mip only.
 MIPMAP_ROLES = frozenset(("_water_height_a", "_water_height_b", "_water_foam_a", "_water_foam_b", "_c", "_g", "_n", "_h", "_tint_detail", "_bng_detail", "_glow_parallax",
-                          "_parallax_height", "_cma"))
+                          "_parallax_height", "_cma", "_window_mask", "_window_n1", "_window_n2", "_window_c"))
 
 
 def _mat3_mul(a, b):
@@ -480,6 +481,11 @@ class ModelViewport(_TkFrame):
         self._payload = payload
         alpha = payload.get('rock_alpha') or []
         self._rock_alpha = (ctypes.c_float*len(alpha))(*alpha) if len(alpha)==len(payload.get('vertices',[])) else None
+        self._uv1 = None   # the second UV pair (window glass rule), (u, v) per vertex
+        uv1 = payload.get('uv1s')
+        if uv1 is not None and len(uv1) == len(payload.get('vertices', [])):
+            import numpy as np
+            self._uv1 = (ctypes.c_float * (2 * len(uv1))).from_buffer_copy(np.ascontiguousarray(uv1, dtype=np.float32))
         self._bones, self._bone_count = None, 0
         try:
             prepared=payload.get("_prepared_viewport")
@@ -813,7 +819,8 @@ class ModelViewport(_TkFrame):
     def _release_textures(self):
         if self._gl_textures and self._make_current():
             ids = list({entry[role][0] for entry in self._gl_textures.values()
-                        for role in ("_c", "_g", "_n", "_pick", "_h", "_bng_detail", "_vehicle_p2", "_tint_detail") if entry.get(role)})
+                        for role in ("_c", "_g", "_n", "_pick", "_h", "_bng_detail", "_vehicle_p2", "_tint_detail",
+                                     "_window_mask", "_window_n1", "_window_n2", "_window_c") if entry.get(role)})
             ids.extend({texture[0] for entry in self._gl_textures.values() for texture in entry.get('native_textures', {}).values()})
             ids.extend({texture[0] for entry in self._gl_textures.values() for texture in entry.get('graph_rule_textures', {}).values()})
             ids = list(set(ids))
@@ -1750,7 +1757,7 @@ class ModelViewport(_TkFrame):
         (SRC_ALPHA, ONE), alpha-over (SRC_ALPHA, ONE_MINUS_SRC_ALPHA); an opaque flag draws without
         blending and with depth write; mode 3 (never captured) falls back to alpha-over.
         """
-        from rc2016.viewer.shading import BONE_TEXTURE_UNIT, PICK_TEXTURE_UNIT, glass_uniforms
+        from rc2016.viewer.shading import BONE_TEXTURE_UNIT, PICK_TEXTURE_UNIT, UV1_ATTRIBUTE, glass_uniforms
         gl, sh = self._gl, self._shading
         program, u = sh.glass_program()
         sh.glUseProgram(program)
@@ -1760,6 +1767,12 @@ class ModelViewport(_TkFrame):
             sh.glUniform1i(u["uBoneTex"], BONE_TEXTURE_UNIT)
             sh.glUniform1f(u["uBoneWidth"], float(4 * self._bone_count))
         sh.glUniform1i(u["uTexN"], 2); sh.glUniform1i(u["uTexP"], PICK_TEXTURE_UNIT)
+        uv1 = getattr(self, "_uv1", None)
+        if uv1 is not None:   # the second UV pair, read only by the window glass rule
+            sh.glEnableVertexAttribArray(UV1_ATTRIBUTE)
+            sh.glVertexAttribPointer(UV1_ATTRIBUTE, 2, self.GL_FLOAT, 0, 0, self._vptr(uv1))
+        else:
+            sh.glDisableVertexAttribArray(UV1_ATTRIBUTE)
         gl.glBlendFunc.argtypes = [ctypes.c_uint, ctypes.c_uint]; gl.glDepthMask.argtypes = [ctypes.c_ubyte]
         gl.glCullFace.argtypes = [ctypes.c_uint]; gl.glGetFloatv.argtypes = [ctypes.c_uint, ctypes.c_void_p]
         cached = getattr(self, "_glass_centres", None)
@@ -1796,12 +1809,34 @@ class ModelViewport(_TkFrame):
                     gl.glBindTexture(self.GL_TEXTURE_2D, texture[0] if texture else 0)
                     sh.glUniform1i(u[name], unit)
             self._apply_water_surface(u, entry, forward, scene_depth=None)
+            self._apply_window_glass(u, entry, forward, uv1 is not None)
             kind, *vectors = glass_uniforms(forward, self._effect_time(forward))
             sh.glUniform1i(u["uKind"], kind)
             for name, vector in zip(("uA", "uB", "uC", "uD", "uE"), vectors):
                 sh.glUniform4f(u[name], *(float(x) for x in vector))
             self._draw_range(index_array, first, count)
         gl.glDepthMask(1); gl.glDisable(self.GL_BLEND); gl.glDisable(self.GL_CULL_FACE)
+        sh.glDisableVertexAttribArray(UV1_ATTRIBUTE)
+
+    def _apply_window_glass(self, u, entry, forward, has_uv1):
+        """The window glass rule's extra images (shading.WINDOW_GLASS_TEXTURES: mask, window normal, detail normal,
+        painted glass _c), the UV1 flag and uWindowP (GLASS_FRAGMENT uKind 14). Every other forward kind gets the
+        flags cleared and no textures bound."""
+        from rc2016.viewer.shading import WINDOW_GLASS_TEXTURES, window_glass_uniform
+        gl, sh = self._gl, self._shading
+        window = forward.get("kind") == "window_glass"
+        sh.glUniform1i(u["uHasUV1"], 1 if window and has_uv1 else 0)
+        sh.glUniform4f(u["uWindowP"], *window_glass_uniform(forward))
+        for unit, role, sampler, has, srgb in WINDOW_GLASS_TEXTURES:
+            texture = entry.get(role) if window else None
+            sh.glUniform1i(u[sampler], unit)
+            sh.glUniform1i(u[has], 1 if texture else 0)
+            if srgb:
+                sh.glUniform1i(u[srgb], 1 if texture and texture[1] else 0)
+            if window:
+                sh.glActiveTexture(self.GL_TEXTURE0 + unit)
+                gl.glBindTexture(self.GL_TEXTURE_2D, texture[0] if texture else 0)
+        sh.glActiveTexture(self.GL_TEXTURE0)
 
     def _begin_orbit(self, event): self._drag = (event.x, event.y, self._yaw, self._pitch)
     def _orbit(self, event):

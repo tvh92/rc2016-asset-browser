@@ -312,6 +312,8 @@ GEOMETRY_CACHE_DIR = Path(__file__).resolve().parents[2] / '.cache' / 'level_geo
 GEOMETRY_CACHE_VERSION = 2
 GEOMETRY_ARRAYS = (('positions', 'f', '<f4'), ('normals', 'f', '<f4'), ('raw_vectors', 'f', '<f4'),
                    ('uvs', 'f', '<f4'), ('indices', 'I', '<u4'))
+# Stored only when present: 'uv1s', the second UV pair (native_model.secondary_uv) of models that carry one.
+OPTIONAL_GEOMETRY_ARRAYS = (('uv1s', 'f', '<f4'),)
 _fingerprint = []
 
 
@@ -351,7 +353,7 @@ def save_cached_geometry(path, geometry):
     import os
     import threading
     import numpy as np
-    names = {name for name, _code, _dtype in GEOMETRY_ARRAYS}
+    names = {name for name, _code, _dtype in GEOMETRY_ARRAYS + OPTIONAL_GEOMETRY_ARRAYS}
     meta = {k: v for k, v in geometry.items() if k not in names}
     try:
         text = json.dumps(meta)
@@ -361,7 +363,9 @@ def save_cached_geometry(path, geometry):
         return
     buffer = io.BytesIO()
     np.savez(buffer, meta=np.frombuffer(text.encode(), np.uint8),
-             **{name: np.frombuffer(geometry[name], dtype) for name, _code, dtype in GEOMETRY_ARRAYS})
+             **{name: np.frombuffer(geometry[name], dtype) for name, _code, dtype in GEOMETRY_ARRAYS},
+             **{name: np.frombuffer(geometry[name], dtype) for name, _code, dtype in OPTIONAL_GEOMETRY_ARRAYS
+                if name in geometry})
     path = Path(path)
     temp = path.with_name(f'{path.name}.{os.getpid()}.{threading.get_ident():x}.tmp')
     try:
@@ -382,7 +386,9 @@ def load_cached_geometry(path):
     try:
         with np.load(path, allow_pickle=False) as stored:
             geometry = _restore_meta(json.loads(stored['meta'].tobytes().decode()))
-            for name, code, dtype in GEOMETRY_ARRAYS:
+            for name, code, dtype in GEOMETRY_ARRAYS + OPTIONAL_GEOMETRY_ARRAYS:
+                if name not in stored.files and (name, code, dtype) in OPTIONAL_GEOMETRY_ARRAYS:
+                    continue
                 values = array(code)
                 values.frombytes(np.ascontiguousarray(stored[name], dtype).tobytes())
                 geometry[name] = values
@@ -394,7 +400,8 @@ def load_cached_geometry(path):
 def model_geometry(archive, model_path, lod='Highest', look=0, cache=True):
     """Packed native-space geometry of one model's selected look/LOD.
 
-    {'positions', 'normals', 'uvs' (array 'f'), 'indices' (array 'I'),
+    {'positions', 'normals', 'uvs' (array 'f'), 'indices' (array 'I'), 'uv1s' (array 'f', only when a mesh has
+     the second UV pair; zeros for the meshes without it),
      'batches': [(material slot, first triangle, triangle count, has UV0)],
      'materials': [{'index', 'name', 'path'}], 'radius', 'triangles', 'source_sha256'}
 
@@ -421,9 +428,10 @@ def model_geometry(archive, model_path, lod='Highest', look=0, cache=True):
 def decode_geometry(model_path, data, lod='Highest', look=0):
     """model_geometry from decompressed model bytes, without the cache."""
     import numpy as np
-    from rc2016.formats.native_model import decode_model
+    from rc2016.formats.native_model import decode_model, secondary_uv
     decoded = decode_model(model_path, lod=lod, look=look, data=data, as_arrays=True)
     positions, normals, raw_vectors, uvs, indices, batches = [], [], [], [], [], []
+    uv1s, has_uv1 = [], False
     raw_vector_eligible = True
     skinned = any(any(bool(pairs) for pairs in m.get('weights', [])) for m in decoded['meshes'])
     vertex_total = triangle_total = 0
@@ -455,6 +463,9 @@ def decode_geometry(model_path, data, lod='Highest', look=0):
             uvs.append(np.stack((uv0[:, 0], 1.0 - uv0[:, 1]), axis=1))
         else:
             uvs.append(np.zeros((count, 2)))
+        uv1 = secondary_uv(mesh)   # GL convention already (the pair is not V-flipped by the decoder)
+        has_uv1 = has_uv1 or (uv1 is not None and len(uv1) == count)
+        uv1s.append(uv1 if uv1 is not None and len(uv1) == count else np.zeros((count, 2)))
         batches.append(((mesh.get('material') or {}).get('index'), triangle_total, len(mesh['triangles']),
                         uv0 is not None and bool(len(uv0))))
         indices.append(mesh['triangles'] + vertex_total)
@@ -480,7 +491,8 @@ def decode_geometry(model_path, data, lod='Highest', look=0):
     positions, normals = packed(positions, 'f', np.float32), packed(normals, 'f', np.float32)
     raw_vectors = packed(raw_vectors, 'f', np.float32)
     uvs, indices = packed(uvs, 'f', np.float32), packed(indices, 'I', np.uint32)
-    return dict(positions=positions, normals=normals, raw_vectors=raw_vectors,
+    extra = dict(uv1s=packed(uv1s, 'f', np.float32)) if has_uv1 else {}
+    return dict(**extra, positions=positions, normals=normals, raw_vectors=raw_vectors,
                 static_vector_eligible=raw_vector_eligible, uvs=uvs, indices=indices, batches=batches,
                 materials=[dict(index=m.get('index', i), name=m.get('name'), path=m.get('path'))
                            for i, m in enumerate(decoded['materials'])],

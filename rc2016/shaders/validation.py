@@ -574,6 +574,8 @@ def _viewer_expected_constants(rule):
         if key in ported:
             p = terms[key]["params"]
             e.update({"glass " + name: p[name.replace(" ", "_")] for name in GLASS_CONSTANTS[key]})
+            if key == "window_glass":   # the painted-glass layer, built only when its _c image is in the material
+                e.update({"glass colour": p["colour"], "glass glass weight": p["glass_weight"]})
             if key == "glass_cg02" and (rule.get("textures") or {}).get("_n"):
                 e.update({"glass normal u": p["normal_u"], "glass normal v": p["normal_v"]})
     if "screen" in ported:
@@ -758,7 +760,7 @@ def _viewer_required(rule, has_n):
                 if not tex.get("_n"):
                     names.remove("glass normal strength")
                 req("_n")
-            if key == "window_glass":   # _n = interior _c (API 10/11), _pick = glass _g (API 7)
+            if key == "window_glass":   # _n = interior _c (API 10/11), _pick = glass _g (API 7); _window_c is optional
                 req("_n", "_pick")
     if "screen" in ported:
         names += ["screen alpha base", "screen mask strength", "screen colour A", "screen colour B", "screen intensity A",

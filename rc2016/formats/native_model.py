@@ -512,6 +512,20 @@ def decode_model(path, lod='Highest', look=0, expected_sha256=None, preserve_sou
         unsupported_sections=[f'0x{k:08X}' for k in sections if isinstance(k,int) and k not in known])
 
 
+def secondary_uv(mesh):
+    """(n, 2) float64 GL-convention coordinates (no V flip) from the second binary16 pair of the 8-byte UV0 record, or None.
+
+    Read as UV1 only by the Novalis window glass viewer rule (forward program 8DF14766, its mask and detail normal):
+    on that draw (capture event 14519) the pair equals the program's attribute1.xy at all nine vertices of a captured
+    instance. Not established as UV1 for other writers; the decoder's uv_semantic_evidence still lists it as unassigned."""
+    import numpy as np
+    packed=mesh.get('uv0_secondary_packed')
+    if packed is None or not len(packed):
+        return None
+    pairs=np.ascontiguousarray(np.asarray(packed,dtype=np.uint16).reshape(-1,2)).view('<f2').astype(np.float64)
+    return pairs if np.all(np.isfinite(pairs)) else None
+
+
 def inspect_native_model(path, lod='Highest', look=0):
     decoded=decode_model(path,lod,look)
     summary={k:v for k,v in decoded.items() if k!='meshes'}

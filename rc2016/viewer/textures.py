@@ -242,26 +242,33 @@ LIQUID_ORIENTATION_CONSTANTS = dict(
 # Novalis window glass, forward program 8DF14766 of jn_glass_parallax_mask (pass contract 0; docs/material-decoding/
 # novalis-window-glass.md, evidence Research/2026-10-29_novalis-window-glass/WINDOW_GLASS_DECODE.md). Slots in API order
 # (API = 5 + resource index): 5 mask (R), 6 window normal (world UV), 7 glass _g (world UV), 8 detail normal (UV1),
-# 9 painted glass _c (world UV), 10 interior height (alpha) and 11 interior colour, read as one image. The forward
-# pass of the viewer binds two images (_n, _pick): the interior (_n, mipmapped) and the glass _g (_pick); the other
-# slots are resolved and listed, not drawn. Labelled preview: game_equivalence stays False.
+# 9 painted glass _c (world UV), 10 interior height (alpha) and 11 interior colour, read as one image. The viewer
+# binds the interior in the _n unit (mipmapped) and the glass _g in the _pick unit; the other four slots get roles of
+# their own (WINDOW_GLASS_ROLES, only for this rule) on the window texture units. UV1 is the second binary16 pair of
+# the 8-byte UV0 record (native_model.secondary_uv), which equals the captured attribute1 of the window draw.
+# Labelled preview: game_equivalence stays False.
 WINDOW_GLASS_GRAPH_SHA256 = 'bc5bb839d7b389638d55b0bb8784798aade5215aa31e5fd692bdf970ffd89c2c'
 WINDOW_GLASS_SLOTS = (('mask', 0x49A7866B0056CBD0), ('window_normal', 0x49A7866B641CFAC2), ('glass_g', 0x49A7866B1576D848),
                       ('detail_normal', 0x49A7866B7AE34E7A), ('glass_c', 0x49A7866BABDAD780),
                       ('interior_height', 0x49A7866BB521DFCB), ('interior', 0x49A7866B40A7D737))
+# (texture_preview role, slot name): mask API 5 (UV1), window normal API 6 (world UV), detail normal API 8 (UV1),
+# painted glass _c API 9 (world UV).
+WINDOW_GLASS_ROLES = (('_window_mask', 'mask'), ('_window_n1', 'window_normal'), ('_window_n2', 'detail_normal'),
+                      ('_window_c', 'glass_c'))
 WINDOW_GLASS_CONSTANTS = dict(
     presentation=True, game_equivalence=False, writer='8DF14766', world_uv_scale=0.075,
-    frozen_inputs=dict(mask=0.0, painted_glass=False, ao=1.0, specular_occlusion=1.0, ssr=False, light_list=False,
+    # CB0[95] (normal strength) and the instance record dwords 2, 3 (detail-normal distance fade) as captured on the
+    # Novalis window draw (event 14519, every window record); presentation inputs, not material values.
+    cb0_95=1.0, record_fade=(-2.3333332538604736, 0.007156095467507839),
+    frozen_inputs=dict(ao=1.0, specular_occlusion=1.0, ssr=False, light_list=False, sky='viewer environment',
                        width_factor=1.0, fog=1.0, instance_flags=0x2061, program_variant='8DF14766 (pass contract 0)'),
     limitations=(
-        'labelled preview, not game-equivalent: the engine probe ambient A_c, probe/cube reflection E_c and sun are '
-        'replaced by the viewer lighting (rig or HDRI)',
+        'labelled preview, not game-equivalent: the engine probe ambient A_c, probe/cube reflection E_c, the sky cube '
+        'of the painted-glass layer and the sun are replaced by the viewer lighting (rig or HDRI)',
         'no screen-space reflection (r = 0) and no engine light list',
-        'the forward pass binds two images: the mask (API 5, taken as 0), the window and detail normal maps (API 6, 8; '
-        'geometric normal instead) and the painted-glass _c layer (API 9, omitted) are not drawn',
         'ambient occlusion is taken as 1, so the specular occlusion is 1',
-        'the parallax tangent frame comes from screen derivatives, not the vertex tangent; outside a level the world '
-        'projection uses the model\'s own space',
+        'the tangent frame comes from screen derivatives, not the vertex tangent; outside a level the world '
+        'projection uses the model\'s own space; a mesh without the second UV pair draws no mask and no detail normal',
         'the interior texture is sampled trilinear; the game samples it with 2x anisotropic wrap filtering',
         'the decoded program matches its capture to within about 0.1 % at most pixels, with residuals of up to about '
         '30 % (red channel) at some pixels'))
@@ -1437,6 +1444,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
             # The viewer reads the interior from the _n unit, which carries no sRGB flag: the native format decides.
             result['forward']['slots'] = window_slots
             params['interior_srgb'] = texture_is_srgb(archive, window_slots['interior'])
+            for role, name in WINDOW_GLASS_ROLES:   # the other four images, on roles only this rule uses
+                result[role] = window_slots[name]
         if rule.get('water_sampling'):
             result['forward']['sampling'] = sampling
             result['forward']['writer'] = sampling['shader_id']
@@ -2057,7 +2066,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             entry['alpha_cut'] = float(paths['alpha_cut'])
         if 'za_fresnel_power' in paths:
             entry['za_fresnel_power'] = paths['za_fresnel_power']
-        for role in (*ROLES, *(('_water_height_a', '_water_height_b') if paths.get('forward', {}).get('sampling') else ()), *(('_water_foam_a', '_water_foam_b') if paths.get('forward', {}).get('surface') else ()),*(('_reticle',) if paths.get('forward', {}).get('kind') == 'victor_reticle' and paths.get('_reticle') else ()), *(('_parallax_height',) if paths.get('parallax') else ()), *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') or paths.get('skin_detail') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ()), *(('_cma',) if paths.get('leaf_colour') else ())):
+        for role in (*ROLES, *(('_water_height_a', '_water_height_b') if paths.get('forward', {}).get('sampling') else ()), *(('_water_foam_a', '_water_foam_b') if paths.get('forward', {}).get('surface') else ()),*(('_reticle',) if paths.get('forward', {}).get('kind') == 'victor_reticle' and paths.get('_reticle') else ()), *(('_parallax_height',) if paths.get('parallax') else ()), *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') or paths.get('skin_detail') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ()), *(('_cma',) if paths.get('leaf_colour') else ()), *(tuple(role for role, _name in WINDOW_GLASS_ROLES) if paths.get('forward', {}).get('kind') == 'window_glass' else ())):
             path = paths.get(role)
             if not path:
                 continue
