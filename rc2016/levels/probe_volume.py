@@ -4,7 +4,8 @@ reflection").
 The Novalis window program (``0x8df14766``, docs/material-decoding/novalis-window-glass.md) reads its reflection E from
 the lightgrid cell's probe selector: per corner cell ``i`` of the 8 around the point (the lightgrid weights ``w_i``,
 renormalised), ``E_probe = sum w_i [mix_i cube[A_i](R) + (1 - mix_i) cube[B_i](R)]``,
-``m = min(1, sum w_i conf_i)`` and ``E = (1 - m) E_probe + m cube[255](R)``.
+``m = min(1, sum w_i conf_i)`` and ``E = (1 - m) E_probe + m cube[255](R)``. The same corners give its probe ambient
+(``ambient``: the lightgrid cell colours at the shaded normal, without the viewer's coverage fade).
 
 Decoded from the archive and checked against the shadPS4 capture of one Novalis frame:
 
@@ -125,7 +126,7 @@ def build_selectors(grid, confidence=VIEWER_CONFIDENCE):
 
 
 def reflection(grid, volume, position, direction, cube, sky):
-    """CPU mirror of the viewer shader's ``windowProbeReflection``: (E (N, 3), m (N,)) at native world ``position`` (N, 3)
+    """CPU mirror of the reflection of the viewer shader's ``windowProbeVolume``: (E (N, 3), m (N,)) at native world ``position`` (N, 3)
     along native ``direction`` (N, 3). ``cube(index, directions)`` returns (N, 3) radiance of probe ``index``; ``sky`` is
     (N, 3), the global cube along ``direction``. Corner weights are the lightgrid's (``LightGrid.sample``: trilinear times
     validity, floored at 2^-18, renormalised over existing tiles); a point with no existing corner returns the sky."""
@@ -182,6 +183,42 @@ def reflection(grid, volume, position, direction, cube, sky):
     return ((1.0 - m)[:, None] * probe + m[:, None] * sky).astype(np.float32), m.astype(np.float32)
 
 
+def ambient(grid, position, normal, sky_scale, fallback):
+    """CPU mirror of the probe ambient of the viewer shader's ``windowProbeVolume``: (N, 3) ``A'`` in grid units at native
+    world ``position`` (N, 3) with the unit shaded normal ``normal`` (N, 3). Per corner ``B + (0.5 + 0.5 d.N) (A - B) +
+    0.5 S (1 + N.y) C`` (S = ``sky_scale``, the program's CB0[118]) with the lightgrid's weights, renormalised; no
+    coverage fade and no cube-255 irradiance (confidence 0, so ``A_mix = A_probe``; CB0[116] and CB0[117] are 1 as
+    captured, so the luma/saturation step is the identity). A point with no existing corner keeps ``fallback`` (N, 3)."""
+    import numpy as np
+    from rc2016.levels.lightgrid import cell_light
+    position = np.asarray(position, np.float64).reshape(-1, 3)
+    normal = np.asarray(normal, np.float64).reshape(-1, 3)
+    shifted = position - 0.5
+    base = np.floor(shifted)
+    frac = shifted - base
+    total = np.zeros(len(position))
+    light = np.zeros((len(position), 3))
+    for corner in range(8):
+        bits = np.array([corner & 1, (corner >> 1) & 1, (corner >> 2) & 1])
+        cell = base + bits
+        trilinear = np.prod(np.where(bits == 1, frac, 1.0 - frac), axis=1)
+        tile = tile_of(cell)
+        entry = grid.table[tuple((tile & (TABLE - 1)).T[::-1])]
+        exists = entry[:, 3] > 0.5
+        if not exists.any():
+            continue
+        local = (cell - tile * TILE).astype(np.int64)
+        slot = np.where(exists, (entry[:, 2] * ATLAS_XY * ATLAS_XY + entry[:, 1] * ATLAS_XY + entry[:, 0]).astype(np.int64), 0)
+        fields = decode_cells(grid.cells[slot, cell_index(local[:, 0], local[:, 1], local[:, 2])])
+        weight = np.where(exists, np.maximum(VALIDITY_FLOOR, trilinear * corner_validity(fields['q'], fields['w'], shifted - cell)), 0.0)
+        light += weight[:, None] * cell_light(fields, normal, sky_scale)
+        total += weight
+    covered = total > 0.0
+    out = np.array(np.broadcast_to(np.asarray(fallback, np.float64), light.shape))
+    out[covered] = light[covered] / total[covered, None]
+    return out.astype(np.float32)
+
+
 # Archive -------------------------------------------------------------------------------------------
 
 def envprobe_blocks(archive, path):
@@ -220,5 +257,5 @@ def load_probe_volume(archive, grid):
     return volume
 
 
-__all__ = ['GLOBAL_CUBE', 'MAX_PROBES', 'ProbeVolume', 'VIEWER_CONFIDENCE', 'build_selectors', 'cube_face_uv',
+__all__ = ['GLOBAL_CUBE', 'MAX_PROBES', 'ProbeVolume', 'VIEWER_CONFIDENCE', 'ambient', 'build_selectors', 'cube_face_uv',
            'envprobe_blocks', 'envprobe_faces', 'load_probe_volume', 'reflection', 'sample_faces']

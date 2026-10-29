@@ -263,17 +263,22 @@ WINDOW_GLASS_CONSTANTS = dict(
     frozen_inputs=dict(ao=1.0, specular_occlusion=1.0, ssr=False, light_list=False, sky='viewer environment',
                        width_factor=1.0, fog=1.0, instance_flags=0x2061, program_variant='8DF14766 (pass contract 0)'),
     limitations=(
-        'labelled preview, not game-equivalent: the engine probe ambient A_c, the sky cube of the painted-glass layer '
-        'and the sun are replaced by the viewer lighting (rig or HDRI)',
-        'the reflection E_c reads the lightgrid probe selector and the archive probe cubes only in the level viewer '
-        '(Level atmosphere lighting with scene effects): mip 0 at every gloss (the runtime mips are not decoded), the '
-        'runtime confidence byte is not decoded and taken as 0 (local probes alone), and the viewer environment '
-        'stands in for cube 255; elsewhere E_c is replaced by the viewer lighting',
+        'labelled preview, not game-equivalent: the sky cube of the painted-glass layer and the sun colour and '
+        'direction are the viewer lighting (rig or HDRI; the Level atmosphere sun in a level)',
+        'the reflection E_c and the probe ambient A\' read the lightgrid probe volume only in the level viewer '
+        '(Level atmosphere lighting with the lightgrid and scene effects on): cubes at mip 0 for every gloss (the runtime '
+        'mips are not decoded), the runtime confidence byte is not decoded and taken as 0 (local probes alone, no '
+        'cube-255 irradiance in A\'), the viewer environment stands in for cube 255, and CB0[116], CB0[117] are the '
+        'captured 1; elsewhere E_c and the ambient are the viewer lighting',
+        'sun visibility T43 is the viewer\'s own sun cascades at the fragment (level viewer only, else 1)',
         'no screen-space reflection (r = 0) and no engine light list',
-        'ambient occlusion is taken as 1, so the specular occlusion is 1',
-        'the tangent frame comes from screen derivatives, not the vertex tangent; outside a level the world '
-        'projection uses the model\'s own space; a mesh without the second UV pair draws no mask and no detail normal',
-        'the interior texture is sampled trilinear; the game samples it with 2x anisotropic wrap filtering',
+        'ambient occlusion T32 is taken as 1 (the viewer has no screen AO of the window surface), so the specular '
+        'occlusion is 1',
+        'the tangent comes from screen derivatives, not the vertex tangent (the bitangent is n x T as in the '
+        'program); outside a level the world projection uses the model\'s own space; a mesh without the second UV '
+        'pair draws no mask and no detail normal',
+        'the interior and normal maps are sampled with the viewer\'s mipmapped filtering; the game uses 2x '
+        'anisotropic wrap filtering on them',
         'the decoded program matches its capture to within about 0.1 % at most pixels, with residuals of up to about '
         '30 % (red channel) at some pixels'))
 # Decoded writers that do not read _g as coloured F0 + gloss alpha (first matching prefix wins).

@@ -195,14 +195,83 @@ class ReflectionTests(unittest.TestCase):
         self.assertEqual(float(m[0]), 1.0)
 
 
+class AmbientTests(unittest.TestCase):
+    def setUp(self):
+        rng = np.random.default_rng(11)
+        self.grid = tiles(2, [[], []])
+        cells = self.grid.cells
+        cells[..., 0:3] = rng.integers(0, 256, cells.shape[:2] + (3,))
+        cells[..., 4:16] = rng.integers(0, 256, cells.shape[:2] + (12,))
+        cells[..., 16:19] = rng.integers(0, 256, cells.shape[:2] + (3,))
+        cells[..., 19] = rng.choice([0, 255, 200], cells.shape[:2])
+        self.rng = rng
+
+    def decode_formula(self, point, normal, sky_scale):
+        """The decode's A_probe for one point: per corner B + hl (A - B) + gU C, hl = 0.5 + 0.5 d.N (not clamped),
+        gU = 0.5 CB0[118] (1 + N.y), weight max(2^-18, tri vis), renormalised."""
+        p = np.asarray(point, float) - 0.5
+        cell = np.floor(p)
+        f = p - cell
+        acc, total = np.zeros(3), 0.0
+        for dz in (0, 1):
+            for dy in (0, 1):
+                for dx in (0, 1):
+                    c = cell + (dx, dy, dz)
+                    tile = lg.tile_of(c[None])[0]
+                    entry = self.grid.table[tuple((tile & (lg.TABLE - 1))[::-1])]
+                    if entry[3] < 0.5:
+                        continue
+                    slot = int(entry[2] * lg.ATLAS_XY * lg.ATLAS_XY + entry[1] * lg.ATLAS_XY + entry[0])
+                    local = (c - tile * lg.TILE).astype(int)
+                    raw = self.grid.cells[slot, lg.cell_index(*local)]
+                    fields = lg.decode_cells(raw[None])
+                    tri = np.prod([f[k] if b else 1.0 - f[k] for k, b in enumerate((dx, dy, dz))])
+                    vis = float(lg.corner_validity(fields['q'], fields['w'], (p - c)[None])[0])
+                    w = max(2.0 ** -18, tri * vis)
+                    A, B, C, d = (fields[k][0].astype(float) for k in ('A', 'B', 'C', 'd'))
+                    hl = 0.5 + 0.5 * float(d @ normal)
+                    acc += w * (B + hl * (A - B) + 0.5 * sky_scale * (1.0 + normal[1]) * C)
+                    total += w
+        return acc / total
+
+    def test_matches_the_decode_formula(self):
+        points = np.column_stack([self.rng.uniform(1, 31, 40), self.rng.uniform(1, 15, 40), self.rng.uniform(1, 15, 40)])
+        points[:3] = [(15.9, 7.5, 7.5), (16.1, 7.5, 7.5), (0.2, 0.2, 0.2)]
+        normals = self.rng.normal(size=(40, 3))
+        normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+        got = pv.ambient(self.grid, points, normals, 1.75, np.zeros(3))
+        for i in range(40):
+            np.testing.assert_allclose(got[i], self.decode_formula(points[i], normals[i], 1.75), rtol=2e-5, atol=1e-6)
+
+    def test_no_coverage_fade_and_fallback_outside(self):
+        point, normal = [(8.3, 8.6, 8.1)], [(0.0, 1.0, 0.0)]
+        light, cover = self.grid.sample(point, normal, 1.75)
+        np.testing.assert_allclose(pv.ambient(self.grid, point, normal, 1.75, (0, 0, 0))[0], light[0], rtol=1e-5)
+        np.testing.assert_allclose(pv.ambient(self.grid, [(500.0, 500.0, 500.0)], normal, 1.75, (3, 2, 1))[0], (3, 2, 1))
+
+
 class ShaderTests(unittest.TestCase):
     def test_window_glass_reads_the_probe_volume(self):
-        self.assertIn('windowProbeReflection(vTintWorldPos', shading.GLASS_FRAGMENT)
-        for name in ('uProbeOn', 'uProbeSel', 'uProbeAtlas', 'uProbeAtlasGrid', 'uGridTable', 'uGridDirQ', 'uGridInvSize'):
+        self.assertIn('windowProbeVolume(vTintWorldPos, viewToNative * Ns, viewToNative * Rs, sky, ambientLight(Ns), ambient)',
+                      shading.GLASS_FRAGMENT)
+        for name in ('uProbeOn', 'uProbeSel', 'uProbeAtlas', 'uProbeAtlasGrid', 'uGridTable', 'uGridDirQ', 'uGridInvSize',
+                     'uGridOn', 'uGridColour', 'uGridParams'):
             self.assertIn(name, shading.GLASS_UNIFORMS)
         # The sky term of Q keeps the cube-255 stand-in, not the probe reflection.
         self.assertIn('(1.0 + uE.w * sky)', shading.GLASS_FRAGMENT)
-        self.assertEqual(shading.GLASS_FRAGMENT.count('windowProbeReflection('), 2)
+        self.assertEqual(shading.GLASS_FRAGMENT.count('windowProbeVolume('), 2)
+        self.assertIn('ambAcc += w * (B + (0.5 + 0.5 * dot(d, N)) * (A - B) + 0.5 * uGridParams.x * (1.0 + N.y) * C)',
+                      shading.GLASS_FRAGMENT)
+        self.assertIn('amb = ambAcc / total * uGridParams.y', shading.GLASS_FRAGMENT)
+
+    def test_window_glass_sun_visibility_only_in_the_level_glass_program(self):
+        branch = shading.GLASS_FRAGMENT.split('uKind == 14')[1].split('uKind == 9')[0]
+        self.assertIn('float sun = sceneShadow(vPos, N)', branch)
+        self.assertIn('sun * max(dot(Ns, L1), 0.0) * C1', branch)
+        self.assertIn('sun * ggxGlass(Ns, V, L1, F0, F90, a) * C1', branch)
+        # The level glass program gets the scene helpers, not the lightgrid ambient path of every other glass kind.
+        self.assertIn('#if defined(RC_SCENE_EFFECTS) || defined(RC_SCENE_SHADOW)', shading.GLASS_FRAGMENT)
+        self.assertNotIn('defined(RC_SCENE_SHADOW)', shading.GLASS_FRAGMENT.split('vec3 ambientLight(vec3 N)')[1].split('}')[0])
 
 
 @unittest.skipUnless(os.environ.get('RC2016_RESEARCH'), 'needs the game archive (RC2016_RESEARCH)')
@@ -236,6 +305,17 @@ class NovalisArchiveTests(unittest.TestCase):
         self.assertEqual(blocks.shape, (64, 128, 16))
         faces = pv.envprobe_faces(blocks)
         self.assertTrue(all(f.shape == (128, 128, 3) and np.isfinite(f).all() for f in faces))
+
+    def test_ambient_equals_the_captured_probe_ambient(self):
+        # The program's A_probe at the six captured window pixels (interpreter run of event 14519) against the CPU mirror
+        # at the game's own position and shaded normal, S = CB0[118] = 1.75 (Novalis' sky-term scale).
+        terms = ROOT / 'Research' / '2026-10-29_novalis-window-glass' / 'interp' / 's6_game_terms.json'
+        if not terms.is_file():
+            self.skipTest('saved interpreter terms not available')
+        import json
+        game = json.loads(terms.read_text(encoding='utf-8'))
+        got = pv.ambient(self.grid, [g['W'] for g in game], [g['Np'] for g in game], 1.75, np.zeros(3))
+        np.testing.assert_allclose(got, [g['A_probe'] for g in game], rtol=1e-4)
 
     def test_probe_faces_equal_the_captured_cube(self):
         capture = ROOT / 'Research' / 'captures' / '2026-10-23_clank-antenna' / 'eid_14519' / 'tex'

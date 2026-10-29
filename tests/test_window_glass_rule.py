@@ -48,8 +48,9 @@ class RuleBindingTests(unittest.TestCase):
         self.assertIs(c['game_equivalence'], False)
         self.assertTrue(c['presentation'])
         text = ' '.join(c['limitations'])
-        for phrase in ('replaced by the viewer lighting', 'no screen-space reflection', 'no engine light list',
-                       '30 %', '2x anisotropic', 'not game-equivalent'):
+        for phrase in ('are the viewer lighting', 'no screen-space reflection', 'no engine light list',
+                       '30 %', '2x anisotropic', 'not game-equivalent', 'ambient occlusion T32 is taken as 1',
+                       'confidence byte is not decoded', 'viewer\'s own sun cascades'):
             self.assertIn(phrase, text)
 
     def test_kind_and_uniform_packing(self):
@@ -81,7 +82,8 @@ class RuleBindingTests(unittest.TestCase):
                      'Ns = normalize(vNativeToView * Nn)',
                      'float F = uB.z * g7.g + pow(rim, 10.0)', 'F90 = vec3(sat(60.0 * F))',
                      'vec3 Rs = reflect(-V, Ns)', 'vec3 sky = windowEnvironment(Rs, a)',
-                     'uProbeOn ? windowProbeReflection(vTintWorldPos, transpose(vNativeToView) * Rs, sky) : sky', '+ E * F)',
+                     'vec3 E = windowProbeVolume(vTintWorldPos, viewToNative * Ns, viewToNative * Rs, sky, ambientLight(Ns), ambient)',
+                     '+ E * F)', 'Bw = cross(wn, Tw)', 'B = cross(n, T)',
                      'vec3 Q = uE.rgb * mask + uB.w * interior + uD.w * uD.rgb * pow(0.5 + mask, 5.0) * c9 * (1.0 + uE.w * sky)',
                      'color = (uC.x * interior.b + Ld) * Q + spec', 'alpha = 1.0'):
             self.assertIn(text, branch)
