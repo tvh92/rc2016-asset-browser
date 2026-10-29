@@ -50,7 +50,11 @@ Details and CLI options are in [pipeline](docs/pipeline.md); these are the traps
 
 ## Testing
 
-Run from the repository root; both must pass before committing (`python -m pip install ruff` once):
+Run from the repository root (`python -m pip install ruff` once). Scale the checks to the change:
+
+- **Default:** ruff, the tests for the code you touched (its own test module plus any that exercise the same functions), and one real-archive check of the affected asset (viewer render, export, or a pipeline build with reopen validation). This is enough to commit and push.
+- **Full suite** (the unittest command below): only when the change touches shared code broadly, such as archive/format decoders, the shared BRDF or lighting, the viewport or shading plumbing used by every material, the pipeline driver, or a refactor across modules. A new or changed per-graph rule is not broad.
+- Don't rerun a check that already passed on the same code, and don't hold a commit for a failure in another session's uncommitted changes; name it in the report.
 
 ```bash
 python -m unittest discover -s tests -t .
