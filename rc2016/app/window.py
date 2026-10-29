@@ -234,7 +234,7 @@ class AssetBrowserApp:
         self.retained_clips: dict[str, tuple[str, ...]] = {}  # those of an export that did not finish, for the next picker
         self.export_summary_var = tk.StringVar()
         self.exported_names: set[str] = set()
-        self.selection_var = tk.StringVar(value="0 models selected")
+        self.selection_var = tk.StringVar(value=", 0 selected")
         self.progress_var = tk.StringVar(value="Step 1: pick the game folder (Browse…).")
 
     def _build_ui(self) -> None:
@@ -266,7 +266,17 @@ class AssetBrowserApp:
         scan_button = ttk.Button(actions, text="Scan archive", command=self.scan)
         scan_button.grid(row=0, column=0, padx=(0, 8), sticky="ns")
         # Sized to its text, so the bar gets the room the text does not use; the bar moves as the text changes.
-        ttk.Label(actions, textvariable=self.progress_var, anchor="w").grid(row=0, column=1, padx=(0, 8), sticky="ns")
+        # The model counts read "N models found, N visible, N selected", then the selection actions.
+        status_row = ttk.Frame(actions)
+        status_row.grid(row=0, column=1, padx=(0, 8), sticky="ns")
+        ttk.Label(status_row, textvariable=self.progress_var, anchor="w").pack(side="left")
+        ttk.Label(status_row, textvariable=self.selection_var, anchor="w").pack(side="left", padx=(0, 10))
+        select_button = ttk.Button(status_row, text="Select visible", command=self.select_visible)
+        select_button.pack(side="left")
+        clear_button = ttk.Button(status_row, text="Deselect all", command=self.clear_selection)
+        clear_button.pack(side="left", padx=(6, 0))
+        self._tip(HELP["select_visible"], select_button)
+        self._tip(HELP["clear_selection"], clear_button)
         # A scan reports fractions of PROGRESS_STEPS; a batch counts models.
         self.progressbar = ttk.Progressbar(actions, mode="determinate", maximum=1, value=0)
         # The 4 px right pad matches Extract's left pad, so the bar is centred between the two buttons.
@@ -416,17 +426,6 @@ class AssetBrowserApp:
         self.log.grid(row=0, column=1, sticky="nsew")
         self._status_colors()
         listen(self._status_colors)
-
-        # Selection: the actions on the model list, then how many models are selected.
-        selection_row = ttk.Frame(self.root)
-        selection_row.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 10))
-        select_button = ttk.Button(selection_row, text="Select visible", command=self.select_visible)
-        select_button.pack(side="left")
-        clear_button = ttk.Button(selection_row, text="Deselect all", command=self.clear_selection)
-        clear_button.pack(side="left", padx=(6, 12))
-        ttk.Label(selection_row, textvariable=self.selection_var, anchor="w").pack(side="left")
-        self._tip(HELP["select_visible"], select_button)
-        self._tip(HELP["clear_selection"], clear_button)
 
     def _status_colors(self) -> None:
         """Queue-row and log-line colours; tags are not widget options, so a theme switch calls this again."""
@@ -1045,7 +1044,7 @@ class AssetBrowserApp:
 
     def update_selection_label(self) -> None:
         selected = self._selected_records() if hasattr(self, "table") else []
-        self.selection_var.set(f"{len(selected)} models selected")
+        self.selection_var.set(f", {len(selected)} selected")
         items = self.table.selection() if hasattr(self, "table") else ()
         if len(items) == 1 and items[0] in self.item_by_record and hasattr(self, "browser"):
             self.browser.select_asset(self.item_by_record[items[0]])
