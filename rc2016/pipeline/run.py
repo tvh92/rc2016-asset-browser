@@ -16,10 +16,11 @@ from rc2016.pipeline import VERSION
 from rc2016.formats import archive as archive_module
 from rc2016.formats.archive import Archive,locate
 from rc2016.formats.clips import extract_set
-from rc2016.formats.animation_sources import (CINEMATIC_LIMITATION,CINEMATIC_SOURCE,borrowed_animset,
-    cinematic_sources)
+from rc2016.formats.animation_sources import (CINEMATIC_LIMITATION,CINEMATIC_SOURCE,animset_rig_model,borrowed_animset,
+    cinematic_sources,clip_fits_source,translation_retarget)
+from rc2016.formats.animation_transforms import model_skeleton
 from rc2016.pipeline.clip_selection import ClipSelectionError, resolve_clip_selection
-from rc2016.common import dump,ensure_separate,extended,file_hash,load,read,safe_name,sha,write,promote
+from rc2016.common import dump,ensure_separate,extended,file_hash,load,read,safe_name,sha,unzip_json,write,promote
 from rc2016.formats.index import AssetIndex
 from rc2016.pipeline.projectile_mounts import idle_offsets
 from rc2016.pipeline.lighting import NOVALIS_REGION,inventory_lighting,prepare_game_lighting
@@ -319,6 +320,24 @@ def animation_coverage(entries, animset_errors=()):
         source_relation_note='Partial/additive source classes are derived from extract_set evidence and remain distinct from unrelated clips and decode failures.')
 
 
+RETARGET_LIMITATION=('Viewing rule, not decoded game behaviour: the animset was built for a model of other proportions, '
+    'so each translation is the rest translation plus the clip offset from the rest of that model, scaled by the ratio of '
+    'the two rest lengths; rotations and scales are as decoded.')
+
+
+def animset_translation_retarget(archive,path,rows,model_id):
+    """``translation_retarget`` from the model an animset names to ``rows`` ({model, limitation, joints}), or None.
+
+    None when the animset names this model, no single model, or a model with the same rest rig. The viewer's
+    AnimationLibrary applies the same rule."""
+    source=animset_rig_model(read(path))
+    ids=[k for k in archive.resolve(source) if archive.entries[k]['type']=='model'] if source and rows else []
+    if len(ids)!=1 or ids[0]==model_id:return None
+    try:joints=translation_retarget(rows,model_skeleton(archive.asset_data(ids[0])))
+    except (ValueError,KeyError):return None   # KeyError: a model without a joint section
+    return dict(model=archive.entries[ids[0]]['path'],limitation=RETARGET_LIMITATION,joints=joints) if joints else None
+
+
 def geometry_game_equivalence(native_sources, mesh_manifest, validation):
     """Separate reopened structural integrity from source-semantic equivalence."""
     geometry=validation.get('geometry_validation') or {}
@@ -589,8 +608,13 @@ def process_model(key,index,args,code_hash,previous,log):
             clips,errors=extract_set(path,model['skeleton'],cache,model['profile'],log,
                 experimental_ambiguous_inheritance=args.experimental_ambiguous_inheritance,
                 clip_names=source.get('clip_names'))
+            retarget=animset_translation_retarget(archive,path,model['skeleton'],key) if source['source_type']=='animset' else None
             for entry in clips:
                 entry['animset_path']=archive.entries[animset]['path']
+                # Only clips that sit on the animset's own rig are moved (clip_fits_source); the samples cache stays as decoded.
+                if (retarget and entry.get('kind') in ('absolute skeletal','partial absolute skeletal') and entry.get('samples')
+                        and clip_fits_source(unzip_json(entry['samples'])['frames'][0],retarget['joints'])):
+                    entry['translation_retarget']=retarget
                 if source['source_type']!='animset':
                     entry.update(source_type=source['source_type'],source_limitation=source['limitation'],
                         source_provenance=source.get('provenance',{}))

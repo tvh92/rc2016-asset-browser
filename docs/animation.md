@@ -68,7 +68,7 @@ These figures were established in the research notes (not included). Regression 
 
 ## Not decoded
 
-Root-motion paths, runtime subframe interpolation, further joint-flag semantics, negative or high-bit scales, other codecs, additive animation graphs, how the game plays an animset on a model of other proportions (the viewer and portable export use a labelled translation rule, see [viewer](viewer.md#animation-playback)), and shader or VFX animation are separate problems and are reported as unsupported rather than approximated. Numeric parser coverage does not prove clips look right in game.
+Root-motion paths, runtime subframe interpolation, further joint-flag semantics, negative or high-bit scales, other codecs, additive animation graphs, how the game plays an animset on a model of other proportions (the viewer, portable export and pipeline use a labelled translation rule, see [viewer](viewer.md#animation-playback)), and shader or VFX animation are separate problems and are reported as unsupported rather than approximated. Numeric parser coverage does not prove clips look right in game.
 
 ## From clips to Blender Actions
 

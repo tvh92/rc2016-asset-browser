@@ -259,6 +259,19 @@ class RetargetTests(unittest.TestCase):
             self.assertEqual([[round(v, 6) for v in row['translation']] for row in frames[0]],
                              [list(map(float, t)) for _n, _p, t in self.small])
 
+    def test_pipeline_retargets_only_from_another_model(self):
+        from rc2016.pipeline.run import animset_translation_retarget
+        archive = FakeArchive([('m1', 'model', 'character/test/source.model', model(self.source)),
+                               ('m2', 'model', 'character/test/small.model', model(self.small))])
+        blob = animset([('Idle', clip('Idle', ['root'], [(0, 0, 0)]))], strings=['Anim Set Built File', 'character/test/source.model'])
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'a.animset'
+            path.write_bytes(blob)
+            found = animset_translation_retarget(archive, path, rig(self.small), 'm2')
+            self.assertEqual(found['model'], 'character/test/source.model')
+            self.assertEqual(len(found['joints']), 3)
+            self.assertIsNone(animset_translation_retarget(archive, path, rig(self.source), 'm1'))
+
 
 class BorrowTests(unittest.TestCase):
     joints = [('root', -1, (0, 0, 0)), ('spine', 0, (0, 1, 0))]

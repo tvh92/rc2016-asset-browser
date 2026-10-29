@@ -5,6 +5,7 @@ import json
 import numpy as np
 import bpy
 from mathutils import Matrix,Quaternion
+from rc2016.formats.animation_sources import retarget_frames
 from rc2016.formats.skeleton import worlds
 from rc2016.pipeline.bulk_checks import split_polygons
 
@@ -21,6 +22,9 @@ def _relative_frame(rows,frame,entry):
             sample['rotation_xyzw']=[result.x,result.y,result.z,result.w]
             sample['translation']=[a+b for a,b in zip(r['translation'],sample['translation'])]
             sample['scale']=[a*b for a,b in zip(r['scale'],sample['scale'])]
+    elif entry.get('translation_retarget'):
+        # The animset was built for a model of other proportions (run.animset_translation_retarget).
+        frame=retarget_frames([frame],entry['translation_retarget']['joints'])[0]
     return frame
 
 
