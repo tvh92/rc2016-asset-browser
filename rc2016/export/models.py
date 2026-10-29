@@ -37,6 +37,8 @@ import weakref
 
 import numpy as np
 
+from rc2016.viewer.animation import NotPlayable
+
 FORMATS = {   # key: (label, file suffix, needs Blender)
     'glb': ('glTF binary (.glb)', '.glb', False),
     'gltf': ('glTF + textures (.gltf)', '.gltf', False),
@@ -79,10 +81,6 @@ class ExportOptions:
 
 class Cancelled(Exception):
     pass
-
-
-class NotPlayable(ValueError):
-    """A clip decoded but is classified as not driving this model's skeleton (unrelated or ambiguous)."""
 
 
 def safe_name(value, maximum=70):
@@ -484,22 +482,8 @@ def clip_tracks(library, index):
 
 
 def _clip_tracks(library, index):
-    from rc2016.formats.animation_samples import decode_clip
-    from rc2016.formats.animation_transforms import sample_transforms
-    from rc2016.formats.clips import classify, worlds_batch
-    from rc2016.viewer.animation import PLAYABLE, _quat_mul
-    entry = library.clips[index]
-    clip = decode_clip(library.animset_data[entry['animset']], entry['offset'], library.names)
-    frames = sample_transforms(clip)
-    kind, _evidence = classify(library.rows, frames)
-    if kind not in PLAYABLE:
-        raise NotPlayable(f"{kind}; it does not drive this model's skeleton")
-    if kind == 'relative/additive-style layer':
-        rest = {r['hash']: r for r in library.rows}
-        frames = [[dict(row, translation=[a + b for a, b in zip(rest[row['hash']]['translation'], row['translation'])],
-                        rotation_xyzw=_quat_mul(rest[row['hash']]['rotation_xyzw'], row['rotation_xyzw']) if row['rotation_xyzw'] else None,
-                        scale=[a * b for a, b in zip(rest[row['hash']]['scale'], row['scale'])])
-                   for row in frame if row['hash'] in rest] for frame in frames]
+    from rc2016.formats.clips import worlds_batch
+    clip, kind, frames = library.clip_frames(index)
     fps = float(clip['metadata'].get('sample_rate_fps') or 30.0)
     tracks = Tracks(*local_trs_batch(library.rows, worlds_batch(library.rows, frames, library.inheritance)))
     return kind, fps, tracks

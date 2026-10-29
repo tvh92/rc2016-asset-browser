@@ -25,7 +25,8 @@ from rc2016.formats.animation_samples import decode_clip
 from rc2016.formats.animation_transforms import sample_transforms
 from rc2016.formats.archive import decompress
 from rc2016.formats.clips import classify, ordered_containers
-from rc2016.formats.animation_sources import borrowed_animset, crc_string_names
+from rc2016.formats.animation_sources import (animset_rig_model, borrowed_animset, clip_fits_source, crc_string_names,
+                                              retarget_frames, translation_retarget)
 from rc2016.formats.animation_transforms import model_skeleton
 from rc2016.formats.index import AssetIndex, open_asset_index, references
 from rc2016.common import sha
@@ -114,6 +115,10 @@ def borrowable_animsets(archive, graph, model_id, model_bytes, exclude=()):
     return found
 
 
+class NotPlayable(ValueError):
+    """A clip decoded but is classified as not driving this model's skeleton (unrelated or ambiguous)."""
+
+
 def _quat_mul(a, b):
     ax, ay, az, aw = a
     bx, by, bz, bw = b
@@ -139,8 +144,12 @@ class AnimationLibrary:
             self.names = {int(r['hash'], 16): r['name'] for r in self.rows}
             self.clips, self.animset_data = [], {}
             self._kinds = {}   # (animset, offset) -> first-frame classification; shared with copies
+            # animset -> {model, joints}: the animset was built for a model of other proportions (Mr. Zurkon
+            # and Zurkon Jr. play Evil Zurkon's set), so its absolute clips are moved onto this rig (translation_retarget).
+            self.retarget = {}
             if not self.rows or len(self.inverse) != len(self.rows):
                 return
+            source_rigs = {}   # source model path -> translation_retarget mapping or None
             for number, animset in enumerate(animsets):
                 data = _blob(archive, animset, 'animset')
                 if data is None:
@@ -152,6 +161,11 @@ class AnimationLibrary:
                 except ValueError:
                     continue
                 self.animset_data[animset] = data
+                source = animset_rig_model(data) if containers else None
+                if source and source not in source_rigs:
+                    source_rigs[source] = self._source_retarget(archive, source, model_bytes)
+                if source and source_rigs[source]:
+                    self.retarget[animset] = dict(model=source, joints=source_rigs[source])
                 file_names = None   # {name hash: string} of this animset, read for the first clip whose own name does not match
                 for container in containers:
                     name = container['name']
@@ -164,6 +178,19 @@ class AnimationLibrary:
                         name = file_names.get(int(metadata['name_hash'], 16)) or name
                     self.clips.append(dict(animset=animset, offset=container['offset'], size=container['declared_size'],
                                            name=name))
+
+    def _source_retarget(self, archive, source, model_bytes):
+        """``translation_retarget`` from the model ``source`` names to this one; None for the same rig or no such model."""
+        ids = [k for k in archive.resolve(source) if archive.entries[k]['type'] == 'model'] if archive else []
+        if len(ids) != 1:
+            return None
+        data = archive.asset_data(ids[0])
+        if data == model_bytes:
+            return None
+        try:
+            return translation_retarget(self.rows, model_skeleton(data))
+        except (ValueError, KeyError):   # KeyError: a model without a joint section
+            return None
 
     def with_cinematic(self, archive, replace=False, sources=None):
         """Copy of this library that also offers the real-time cutscene shots covering the whole model.
@@ -223,14 +250,19 @@ class AnimationLibrary:
             notes.append('layer' if kind == 'relative/additive-style layer' else None if kind in PLAYABLE else 'unplayable')
         return notes
 
-    def pose(self, index):
-        """Per-frame skin matrices (joints x 4 x 4, preview basis) for clip ``index``."""
+    def clip_frames(self, index):
+        """(decoded clip, kind, frames) for clip ``index``: the source samples as this model plays them.
+
+        Additive-style clips become standalone poses on the rest pose; absolute clips of an animset built for a
+        model of other proportions get their translations moved onto this rig (``retarget``) when they sit on that
+        model's rig (``clip_fits_source``). Raises NotPlayable
+        for a clip that does not drive the skeleton."""
         entry = self.clips[index]
         clip = decode_clip(self.animset_data[entry['animset']], entry['offset'], self.names)
         frames = sample_transforms(clip)
         kind, _evidence = classify(self.rows, frames)
         if kind not in PLAYABLE:
-            raise ValueError(f"'{entry['name']}' is {kind}; it does not drive this model's skeleton")
+            raise NotPlayable(f"'{entry['name']}' is {kind}; it does not drive this model's skeleton")
         if kind == 'relative/additive-style layer':
             rest = {r['hash']: r for r in self.rows}
             frames = [[dict(row, translation=[a + b for a, b in zip(rest[row['hash']]['translation'], row['translation'])],
@@ -238,6 +270,16 @@ class AnimationLibrary:
                             if row['rotation_xyzw'] else None,
                             scale=[a * b for a, b in zip(rest[row['hash']]['scale'], row['scale'])])
                        for row in frame if row['hash'] in rest] for frame in frames]
+        elif entry['animset'] in getattr(self, 'retarget', {}):
+            joints = self.retarget[entry['animset']]['joints']
+            if frames and clip_fits_source(frames[0], joints):
+                frames = retarget_frames(frames, joints)
+        return clip, kind, frames
+
+    def pose(self, index):
+        """Per-frame skin matrices (joints x 4 x 4, preview basis) for clip ``index``."""
+        entry = self.clips[index]
+        clip, kind, frames = self.clip_frames(index)
         inverse = np.stack(self.inverse)
         poses = []
         for frame in frames:

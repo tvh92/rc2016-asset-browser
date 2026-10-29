@@ -15,6 +15,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import statistics
 import threading
 import zlib
 
@@ -235,6 +236,70 @@ def rig_comparison(rows, anchor_rows, tolerance=BORROW_TOLERANCE):
     return dict(same_rig=bool(shared) and not failed, shared_joints=shared, joints=len(rows),
                 absent_from_anchor=absent, failed=failed, max_difference=worst,
                 tolerance=dict(tolerance, anchor_extent=extent))
+
+
+def animset_rig_model(data):
+    """Archive path of the model an animset was built for (the first model its header names), or None.
+
+    An animset's strings start with 'Anim Set Built File' and the path of one model (Evil Zurkon's set names
+    ``enm_Evil_Zurkon.model``); its absolute clips carry that model's rest translations.
+    """
+    from rc2016.formats.index import references
+    return next((ref['path'] for ref in references(data) if ref.get('path', '').endswith('.model')), None)
+
+
+# Below this fraction of the source rig's largest rest translation, a joint offset is too short to give a length ratio.
+RETARGET_MIN_LENGTH = 1e-3
+
+
+def translation_retarget(rows, source_rows, tolerance=BORROW_TOLERANCE):
+    """Translation mapping from the rig an animset was built for (``source_rows``) to ``rows``; None for the same rig.
+
+    The game drives some models with an animset built for a model of other proportions: Mr. Zurkon and Zurkon Jr.
+    play Evil Zurkon's clips (Mr. Zurkon's rig is Evil Zurkon's at about 2/3 scale). Absolute clips store the source
+    rig's local translations, which pull such a model apart (Mr. Zurkon's antenna leaves its head). How the game
+    adapts them is not decoded; this is a viewing rule: keep the model's rest translation and add the clip's offset
+    from the source rest, scaled by the ratio of the two rest lengths,
+    ``T = T_rest + k (T_clip - T_source_rest)`` with ``k = |T_rest| / |T_source_rest|``, and the rig's median ``k``
+    where the source offset is too short to give one (``RETARGET_MIN_LENGTH``). Rotations and scales stay as decoded.
+    Returns {joint hash: (rest translation, source rest translation, k)} for the joints both rigs have.
+    """
+    if rig_comparison(rows, source_rows, tolerance)['same_rig']:
+        return None
+    source = {r['hash']: r['translation'] for r in source_rows}
+    length = lambda v: sum(x * x for x in v) ** .5
+    shortest = RETARGET_MIN_LENGTH * max((length(t) for t in source.values()), default=0.)
+    pairs = [(r['hash'], r['translation'], source[r['hash']]) for r in rows if r['hash'] in source]
+    ratios = {h: length(t) / length(s) for h, t, s in pairs if length(s) > shortest}
+    fallback = statistics.median(ratios.values()) if ratios else 1.
+    return {h: (list(t), list(s), ratios.get(h, fallback)) for h, t, s in pairs} or None
+
+
+def clip_fits_source(frame, mapping):
+    """True when ``frame`` (a clip's first frame) sits on the source rig of ``mapping`` rather than on the model's.
+
+    An animset can hold clips already made for the model's proportions (most of the Horned Toad clips the Alien
+    Swarmer plays match the Swarmer's brows, not the Toad's); those are left as decoded. Over the joints whose rest
+    translations differ, the median distance of the clip's translations to the source rest must be at most half the
+    distance to the model's rest (Evil Zurkon's clips: 1e-4 against 0.06 on Mr. Zurkon).
+    """
+    extent = max((sum(x * x for x in s) ** .5 for _rest, s, _k in mapping.values()), default=0.)
+    to_rest, to_source = [], []
+    for row in frame:
+        rest, source, _k = mapping.get(row['hash'], (None, None, None))
+        if rest is None or sum((a - b) ** 2 for a, b in zip(rest, source)) ** .5 <= RETARGET_MIN_LENGTH * extent:
+            continue
+        to_rest.append(sum((a - b) ** 2 for a, b in zip(row['translation'], rest)) ** .5)
+        to_source.append(sum((a - b) ** 2 for a, b in zip(row['translation'], source)) ** .5)
+    return bool(to_rest) and statistics.median(to_source) <= .5 * statistics.median(to_rest)
+
+
+def retarget_frames(frames, mapping):
+    """``sample_transforms`` frames with each mapped joint's translation moved onto the model (``translation_retarget``)."""
+    def moved(row):
+        rest, source, k = mapping[row['hash']]
+        return dict(row, translation=[r + k * (c - s) for r, s, c in zip(rest, source, row['translation'])])
+    return [[moved(row) if row['hash'] in mapping else row for row in frame] for frame in frames]
 
 
 def borrowed_animset(archive, graph, animset_path, rows, model_id):

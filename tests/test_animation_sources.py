@@ -216,6 +216,50 @@ class RigComparisonTests(unittest.TestCase):
         self.assertFalse(S.rig_comparison(rig([('tail', -1, (0, 0, 0))]), self.anchor)['same_rig'])
 
 
+class RetargetTests(unittest.TestCase):
+    """An animset built for a model of other proportions (Evil Zurkon's set on Mr. Zurkon) plays on the model's rig."""
+    source = [('root', -1, (0, 0, 0)), ('spine', 0, (0, 3, 0)), ('head', 1, (0, 6, 0))]
+    small = [('root', -1, (0, 0, 0)), ('spine', 0, (0, 2, 0)), ('head', 1, (0, 4, 0))]
+
+    @staticmethod
+    def frame(translations):
+        return [dict(hash=f'0x{game_crc32(name):08X}', translation=list(t), rotation_xyzw=[0., 0., 0., 1.], scale=[1., 1., 1.])
+                for name, t in zip(('root', 'spine', 'head'), translations)]
+
+    def test_the_same_rig_is_not_retargeted(self):
+        self.assertIsNone(S.translation_retarget(rig(self.source), rig(self.source)))
+
+    def test_offsets_from_the_source_rest_scale_onto_the_model(self):
+        mapping = S.translation_retarget(rig(self.small), rig(self.source))
+        self.assertEqual(sorted(round(k, 6) for _rest, _source, k in mapping.values()), [round(2 / 3, 6)] * 3)
+        moved = S.retarget_frames([self.frame([(3, 0, 0), (0, 3, 0), (0, 9, 0)])], mapping)[0]
+        # The root has no rest length to compare, so it takes the rig's median ratio.
+        self.assertEqual([[round(v, 6) for v in row['translation']] for row in moved], [[2, 0, 0], [0, 2, 0], [0, 6, 0]])
+
+    def test_only_a_clip_on_the_source_rig_is_retargeted(self):
+        mapping = S.translation_retarget(rig(self.small), rig(self.source))
+        self.assertTrue(S.clip_fits_source(self.frame([t for _n, _p, t in self.source]), mapping))
+        self.assertFalse(S.clip_fits_source(self.frame([t for _n, _p, t in self.small]), mapping))
+
+    def test_library_plays_the_source_rest_as_the_model_rest(self):
+        from unittest import mock
+        names = [n for n, _p, _t in self.source]
+        blob = animset([('Idle', clip('Idle', names, [t for _n, _p, t in self.source])),
+                        ('Own', clip('Own', names, [t for _n, _p, t in self.small]))],
+                       strings=['Anim Set Built File', 'character/test/source.model'])
+        archive = FakeArchive([('m1', 'model', 'character/test/source.model', model(self.source))])
+        inspected = dict(skeleton=rig(self.small), inverse_bind_matrices=[[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]] * 3,
+                         profile=dict(inheritance='full', inheritance_candidates=['full']))
+        with mock.patch('rc2016.viewer.animation.inspect_model', return_value=inspected),                 mock.patch('rc2016.viewer.animation._blob', return_value=blob):
+            library = AnimationLibrary(archive, b'small', ['a.animset'])
+        self.assertEqual(library.retarget['a.animset']['model'], 'character/test/source.model')
+        for index in range(2):
+            _clip, kind, frames = library.clip_frames(index)
+            self.assertEqual(kind, 'absolute skeletal')
+            self.assertEqual([[round(v, 6) for v in row['translation']] for row in frames[0]],
+                             [list(map(float, t)) for _n, _p, t in self.small])
+
+
 class BorrowTests(unittest.TestCase):
     joints = [('root', -1, (0, 0, 0)), ('spine', 0, (0, 1, 0))]
 
