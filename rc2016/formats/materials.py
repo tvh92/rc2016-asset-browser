@@ -171,6 +171,7 @@ def texture_binding(source_path, built_asset_id, stream_asset_id, colorspace, re
 
 def texture_role(path):
     stem=Path(path).stem.lower()
+    if stem.endswith('_specularcolor_c'):return 'additional'   # a specular tint map, not a base colour
     for suffix,role in (('_c','base_color'),('_g','colored_specular_gloss'),('_n','normal'),
                         ('_e','emission'),('_m','packed_mask'),('_ao','ambient_occlusion')):
         if stem.endswith(suffix):

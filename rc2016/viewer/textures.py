@@ -642,6 +642,8 @@ def _role(path):
     stem = Path(path).stem.lower()
     if stem.endswith(PICK_SUFFIX):
         return '_pick'
+    if stem.endswith('_specularcolor_c'):
+        return None   # a specular tint map, not the base colour the '_c' suffix suggests
     return next((r for r in ('_c', '_g', '_n', '_h') if stem.endswith(r)), None)
 
 
