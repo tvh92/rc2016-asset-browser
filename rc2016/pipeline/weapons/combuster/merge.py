@@ -5,6 +5,7 @@ import bpy
 from mathutils import Matrix
 sys.path.insert(0,str(Path(__file__).resolve().parents[4]))
 from rc2016.common import file_hash,load,dump,read,unzip_json
+from rc2016.pipeline.scene_defaults import pack_scene_images_except_shared_hdri
 from rc2016.pipeline.builder import validate_reopened_native_descriptor,review_preview_lighting,_configure_optix_gpu,matrix_error
 from rc2016.pipeline.blender_support import targets
 from rc2016.formats.animation_samples import decode_clip
@@ -83,7 +84,7 @@ def build(j):
         cat.clear();cat.write(json.dumps(data,indent=2,sort_keys=True))
     start=bpy.data.texts.get('START HERE')
     if start:start.write('\n\nCOMBUSTER V1/V5: Run Combuster Variant Controls.py once, then call switch_combuster_version("V1") or ("V5"). Default mode includes source-supported Turn_360 only. Opt-in FULL and SSC0 Actions are labelled experimental sampler interpretations; runtime choice remains unproven.\n')
-    state(cols,'V1');bpy.ops.file.pack_all();bpy.ops.wm.save_as_mainfile(filepath=j['candidate'],compress=True)
+    state(cols,'V1');pack_scene_images_except_shared_hdri(scene);bpy.ops.wm.save_as_mainfile(filepath=j['candidate'],compress=True)
 
 def validate(j):
     bpy.ops.wm.open_mainfile(filepath=j['candidate']);_configure_optix_gpu(bpy);scene=bpy.context.scene
