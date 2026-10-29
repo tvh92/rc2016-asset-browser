@@ -1357,6 +1357,12 @@ class LevelViewport(ModelViewport):
             phase = time.perf_counter()
             try:
                 self._draw_level()
+                if self.decals_enabled:
+                    try:
+                        self._draw_decals()
+                    except Exception as exc:   # the level stays; the decals are switched off
+                        print(f"level viewer: decals failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+                        self.decals_enabled = False
                 if self.beams_enabled:
                     try:
                         self._draw_beams()
@@ -1375,6 +1381,76 @@ class LevelViewport(ModelViewport):
         self._emit_stats()
 
     GL_ONE, GL_NORMAL_ARRAY, GL_COLOR_ARRAY = 1, 0x8075, 0x8076
+
+    decals_enabled = True
+
+    def set_show_decals(self, show):
+        self.decals_enabled = bool(show)
+        self._schedule_draw()
+
+    def _scorch_decals(self):
+        """The loaded zones' scorch-mark decals (rc2016.levels.decals.load_scorch_decals), or None without any."""
+        data = self._scene_lighting
+        decals = data.get("scorch_decals") if isinstance(data, dict) else None
+        return decals if decals and decals.get("count") else None
+
+    def _decal_textures(self, decals):
+        """(mask, emissive) GL textures of the scorch-mark decals, uploaded once per loaded set."""
+        gl = self._gl
+        cached = self.__dict__.get("_decal_gl")
+        if cached is None or cached[0] is not decals:
+            if cached is not None:
+                for name in cached[1:]:
+                    if name:
+                        gl.glDeleteTextures(1, ctypes.byref(ctypes.c_uint(name)))
+            cached = self._decal_gl = (decals, self._upload_texture(decals["mask"], mipmaps=False),
+                                       self._upload_texture(decals["emissive"], mipmaps=False))
+        return cached[1], cached[2]
+
+    def _draw_decals(self):
+        """The scorch-mark decals, after the level and before the beams: their meshes already lie on the surfaces they mark, so
+        they are depth-tested with a polygon offset and no depth write, blended as premultiplied alpha over (SCORCH_FRAGMENT)."""
+        decals = self._scorch_decals()
+        if decals is None or self._mode not in ("Shaded", "Textured"):
+            return
+        positions, _normals, uvs, indices = decals["mesh"]
+        mask, emissive = self._decal_textures(decals)
+        if not (mask and emissive and len(indices)):
+            return
+        from rc2016.viewer.shading import SCORCH_EMBER
+        gl, sh, ext = self._gl, self._shading, self._ext
+        program, u = sh.scorch_program()
+        sh.glUseProgram(program)
+        gl.glBlendFunc.argtypes = [ctypes.c_uint, ctypes.c_uint]; gl.glDepthMask.argtypes = [ctypes.c_ubyte]
+        gl.glPolygonOffset.argtypes = [ctypes.c_float, ctypes.c_float]
+        gl.glMatrixMode(self.GL_MODELVIEW)
+        gl.glLoadMatrixf((ctypes.c_float * 16)(*view_matrix(self._eye, self._yaw, self._pitch)))
+        gl.glMultMatrixf((ctypes.c_float * 16)(*BASIS))
+        for unit, name in ((0, mask), (1, emissive)):
+            sh.glActiveTexture(self.GL_TEXTURE0 + unit)
+            gl.glBindTexture(self.GL_TEXTURE_2D, name)
+        sh.glUniform1i(u["uDecalMask"], 0); sh.glUniform1i(u["uDecalEmissive"], 1)
+        sh.glUniform3f(u["uEmber"], *SCORCH_EMBER)
+        gl.glEnable(self.GL_BLEND); gl.glBlendFunc(self.GL_ONE, 0x0303)   # GL_ONE_MINUS_SRC_ALPHA
+        gl.glDepthMask(0); gl.glDisable(self.GL_CULL_FACE)
+        gl.glEnable(0x8037); gl.glPolygonOffset(-2.0, -2.0)               # GL_POLYGON_OFFSET_FILL
+        ext["glBindVertexArray"](0)
+        ext["glBindBuffer"](self.GL_ARRAY_BUFFER, 0); ext["glBindBuffer"](self.GL_ELEMENT_ARRAY_BUFFER, 0)
+        pointer = lambda array: ctypes.cast(array.ctypes.data, ctypes.c_void_p)
+        for array in (self.GL_VERTEX_ARRAY, self.GL_TEXTURE_COORD_ARRAY):
+            gl.glEnableClientState(array)
+        try:
+            gl.glVertexPointer(3, self.GL_FLOAT, 0, pointer(positions))
+            gl.glTexCoordPointer(2, self.GL_FLOAT, 0, pointer(uvs))
+            gl.glDrawElements(self.GL_TRIANGLES, len(indices), self.GL_UNSIGNED_INT, pointer(indices))
+        finally:
+            for array in (self.GL_VERTEX_ARRAY, self.GL_TEXTURE_COORD_ARRAY):
+                gl.glDisableClientState(array)
+            gl.glDisable(0x8037); gl.glDisable(self.GL_BLEND); gl.glDepthMask(1)
+            sh.glUseProgram(0)
+            for unit in (1, 0):
+                sh.glActiveTexture(self.GL_TEXTURE0 + unit)
+                gl.glBindTexture(self.GL_TEXTURE_2D, 0)
 
     def _beam_lights(self):
         """The light cones drawn as beams (rc2016.levels.beams): the decoded light-cone effect placements of the loaded

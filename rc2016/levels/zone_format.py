@@ -43,19 +43,24 @@ Decals (projected, pre-clipped meshes) are split between the `.zone` and its `.z
 ("Zone Decal Built File"):
 
     .zone 0xBCF43558        u32[n] heap offsets of decal objects: +0x00 float32 4x4 projector matrix
-                            (not needed for geometry), +0x48 inline NUL-terminated material path,
-                            +0x288 u32 index of the decal's mesh record in the .zone_static
+                            (row vectors: rows 0-2 are the box axes times their half extents, row 3 the
+                            box centre), +0x48 inline NUL-terminated material path, +0x288 u32 index of
+                            the decal's mesh record in the .zone_static
     .zone_static 0x657512BB 0x58-byte mesh records: u16 vertex count, u16 index count, u32 flags
                             (0xF12/0xE12/0xD12, raw), u32 absolute data offset, +0x40 float32[4]
                             bounding sphere (centre xyz, radius R)
-    .zone_static 0xCF30405E mesh data: n_v 16-byte vertices (u16[3] position, u16 1, u32 normal,
+    .zone_static 0xCF30405E mesh data: n_v 16-byte vertices (s16[3] position, u16 1, u32 normal,
                             u32 tangent, both 10:10:10:2 UNORM as in models), then n_v half2 UVs,
                             then n_i u16 triangle-list indices
-    position = centre + (u / 65535 * 2 - 1) * R / sqrt(3)  (world-axis cube inscribed in the sphere)
+    local    = s / 32768                  (signed, so a surface at the box centre wraps around 0)
+    position = local @ M[:3, :3] + M[3, :3]    (M the projector matrix)
+    normal   = stored normal @ inverse(M[:3, :3]).T, normalised
 
-The position frame was chosen over projector-space variants because decoded face normals match
-the stored vertex normals (median |dot| 1.000 on 76 Novalis building decals, 0.990 on 27 terrain
-decals, against ~0.4 for every projector frame); 19 small building decals still disagree.
+Read as unsigned values over a world-axis cube (the first reading), the surfaces near the box centre
+split into two sheets at the box faces and the decals stood up as walls; with the signed values a
+Novalis pit's decal is 0.65 units deep and lies on the crater patch. The stored normals are in the box
+frame (most point along local -Z, the projection axis). Face normals of the box-frame mesh match the
+stored ones with median |dot| 0.994 (86% of 35,859 Novalis triangles above 0.95, against 78% unsigned).
 
 Usage: python zone_instances.py <decoded .zone file> <out.json> [<decoded .zone_static file>]
 """
@@ -304,6 +309,7 @@ def _unorm_1010102(word):
 
 def decode_decals(zone_data, static_data):
     """Decal meshes in native Y-up world space, joined with their material paths."""
+    import numpy as np
     table, static_table = sections(zone_data), sections(static_data)
     if DECAL_OFFSETS not in table:
         return []
@@ -328,18 +334,19 @@ def decode_decals(zone_data, static_data):
         rec = meshes_off + index * DECAL_RECORD_SIZE
         n_v, n_i, flags, data = struct.unpack_from('<HHII', static_data, rec)
         cx, cy, cz, radius = struct.unpack_from('<4f', static_data, rec + 0x40)
-        half = radius / math.sqrt(3)
-        positions, normals = [], []
-        for j in range(n_v):
-            x, y, z, w, normal, _tangent = struct.unpack_from('<3HHII', static_data, data + 16 * j)
-            positions.append([c + (u / 65535 * 2 - 1) * half for c, u in ((cx, x), (cy, y), (cz, z))])
-            normals.append(_unorm_1010102(normal))
+        projector = np.array(struct.unpack_from('<16f', zone_data, r)).reshape(4, 4)
+        vertices = [struct.unpack_from('<3hHII', static_data, data + 16 * j) for j in range(n_v)]
+        local = np.array([v[:3] for v in vertices], np.float64).reshape(-1, 3) / 32768.0
+        positions = (local @ projector[:3, :3] + projector[3, :3]).tolist()
+        stored = np.array([_unorm_1010102(v[4]) for v in vertices], np.float64).reshape(-1, 3)
+        rotated = stored @ np.linalg.inv(projector[:3, :3]).T
+        normals = (rotated / np.maximum(np.linalg.norm(rotated, axis=1, keepdims=True), 1e-12)).tolist()
         uvs = [list(struct.unpack_from('<2e', static_data, data + 16 * n_v + 4 * j)) for j in range(n_v)]
         indices = struct.unpack_from(f'<{n_i}H', static_data, data + 20 * n_v)
         if n_i % 3 or (indices and max(indices) >= n_v):
             raise ValueError(f'decal {n}: bad index buffer')
         decals.append(dict(index=n, mesh_index=index, material=material, flags=f'{flags:#06x}',
-                           sphere=[cx, cy, cz, radius], positions=positions, normals=normals, uvs=uvs,
+                           sphere=[cx, cy, cz, radius], projector=projector.tolist(), positions=positions, normals=normals, uvs=uvs,
                            triangles=[list(indices[i:i + 3]) for i in range(0, n_i, 3)]))
     if len(used) != count:
         raise ValueError(f'{count - len(used)} .zone_static meshes have no decal object')

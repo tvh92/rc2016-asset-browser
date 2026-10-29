@@ -1922,6 +1922,32 @@ void main() {
 BEAM_UNIFORMS = (*LIGHTING_UNIFORMS, "uBeamNoise", "uBeamDepth", "uBeamViewport", "uBeamNearFar", "uBeamTime")
 
 
+# Level viewer scorch-mark decals (rc2016.levels.decals): the zone's pre-clipped `wpn_explosion_scorchmark` meshes, drawn after the
+# level with premultiplied alpha over, depth-tested with no depth write. The graph's two named textures are decoded: the scorch mask
+# (R, BC4) darkens the surface by its value, the ember map (R, BC4) adds light. Inferred, not decoded: the graph's pixel program
+# (it also samples fx_noise_blobby_01, left out), the ember colour and gain (SCORCH_EMBER) and the blend. Added in display space.
+SCORCH_VERTEX = """
+#version 120
+varying vec2 vUV;
+void main() {
+    vUV = gl_MultiTexCoord0.xy;
+    gl_Position = gl_ProjectionMatrix * (gl_ModelViewMatrix * gl_Vertex);
+}
+"""
+SCORCH_FRAGMENT = """
+#version 120
+varying vec2 vUV;
+uniform sampler2D uDecalMask; uniform sampler2D uDecalEmissive; uniform vec3 uEmber;
+void main() {
+    float mask = texture2D(uDecalMask, vUV).r;
+    float ember = texture2D(uDecalEmissive, vUV).r;
+    gl_FragColor = vec4(uEmber * ember, mask);
+}
+"""
+SCORCH_UNIFORMS = ("uDecalMask", "uDecalEmissive", "uEmber")
+SCORCH_EMBER = (1.0, 0.35, 0.05)
+
+
 class ShaderError(RuntimeError):
     pass
 
@@ -2175,6 +2201,12 @@ class Shading:
         if "beam" not in self.programs:
             self.programs["beam"] = self._link(BEAM_VERTEX, BEAM_FRAGMENT, {}, BEAM_UNIFORMS)
         return self.programs["beam"]
+
+    def scorch_program(self):
+        """Level viewer scorch-mark decals (SCORCH_FRAGMENT)."""
+        if "scorch" not in self.programs:
+            self.programs["scorch"] = self._link(SCORCH_VERTEX, SCORCH_FRAGMENT, {}, SCORCH_UNIFORMS)
+        return self.programs["scorch"]
 
     def pick_program(self):
         """Level viewer click-to-identify: INSTANCED_VERTEX writing a flat id colour (uPickColour)."""

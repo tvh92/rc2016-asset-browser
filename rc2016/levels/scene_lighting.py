@@ -347,8 +347,18 @@ def load_scene_lighting(archive, zone_paths):
         cones = load_light_cones(archive, zone_paths)
     except Exception as exc:   # the lights stay usable without their beams
         notes.append(dict(status='light_cones_unavailable', message=f'{type(exc).__name__}: {exc}'))
+    decals = dict(mesh=None, count=0, undrawn={}, mask=None, emissive=None)
+    try:
+        from rc2016.levels.decals import load_scorch_decals
+        decals = load_scorch_decals(archive, zone_paths)
+    except Exception as exc:   # the lights stay usable without their decals
+        notes.append(dict(status='decals_unavailable', message=f'{type(exc).__name__}: {exc}'))
+    if decals['undrawn']:
+        notes.append(dict(status='undrawn_decals', counts=decals['undrawn'],
+                          message='Decal materials that are decoded (decode_decals) but not drawn; only wpn_explosion_scorchmark is.'))
     if cones['undrawn']:
         notes.append(dict(status='undrawn_light_cones', counts=cones['undrawn'], reasons=cones['undrawn_reasons'],
                           message='Light-cone effect placements that are decoded (rc2016.levels.effects) but not drawn.'))
     return dict(lights=lights, probes=probes, notes=notes, source_zones=loaded_zones,
-                light_cones=cones['cones'], cone_geometry=cones['geometry'], cone_noise=cones['noise'])
+                light_cones=cones['cones'], cone_geometry=cones['geometry'], cone_noise=cones['noise'],
+                scorch_decals=decals)

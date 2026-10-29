@@ -601,6 +601,10 @@ class LevelPanel:
         actors_check = ttk.Checkbutton(scene, text="Actors", variable=self.actors_var,
                                        command=lambda: self.view.set_show_actors(self.actors_var.get()))
         actors_check.grid(row=1, column=1, sticky="w", padx=(8, 0))
+        self.decals_var = kept(remember, tk.BooleanVar(value=True), "level.decals")
+        decals_check = ttk.Checkbutton(scene, text="Scorch decals", variable=self.decals_var,
+                                       command=lambda: self.view.set_show_decals(self.decals_var.get()))
+        decals_check.grid(row=2, column=0, columnspan=2, sticky="w")
         experimental = ttk.LabelFrame(side, text="Experimental", padding=(4, 2)); experimental.grid(row=7, column=0, sticky="ew", pady=(3, 0))
         self.experimental_var = kept(remember, tk.BooleanVar(value=bool(spawn_preview or experimental_materials)), "level.experimental")
         enable_check = ttk.Checkbutton(experimental, text="Enable", variable=self.experimental_var,
@@ -629,6 +633,7 @@ class LevelPanel:
         _Tooltip(tk, overrides_check, "Apply the level's material overrides on top of each model's own materials.")
         _Tooltip(tk, hidden_check, "Also draw collision and helper meshes, which the game never shows.")
         _Tooltip(tk, sky_check, "Draw the level's sky.")
+        _Tooltip(tk, decals_check, "Draw the zones' wpn_explosion_scorchmark decals (the pit scorch marks). Other decal materials are not drawn; the blend and ember colour are a preview.")
         _Tooltip(tk, actors_check, "Draw the actors (enemies, props) the level places, not only its static scenery.")
         _Tooltip(tk, spawn_check, "Mark where the level data places enemy spawns. A preview.")
         _Tooltip(tk, previews_check, "Best-effort material previews (Novalis mountain, terrain, and a generic adapter). Matte lighting; inferred inputs; not game-equivalent.")
@@ -689,6 +694,7 @@ class LevelPanel:
         self.view.set_show_hidden(self.hidden_var.get())
         self.view.set_show_sky(self.sky_var.get())
         self.view.set_show_actors(self.actors_var.get())
+        self.view.set_show_decals(self.decals_var.get())
         self.view.show_spawn_preview = self.spawn_var.get()
         self.view.native_translation = self.native_translation_var.get()
         self.view.set_lighting_enabled(self.lighting_enabled_var.get())
