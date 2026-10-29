@@ -32,9 +32,9 @@ class ScorchMeshTests(unittest.TestCase):
         self.assertEqual((positions.dtype, indices.dtype), (np.float32, np.uint32))
         self.assertEqual(positions[4, 0], 9.0)
 
-    def test_v_is_flipped_like_the_models(self):
+    def test_uvs_are_as_stored(self):
         _positions, _normals, uvs, _indices = decals.scorch_mesh([decal(SCORCH)])
-        np.testing.assert_allclose(uvs[:, 1], [1.0, 1.0, 0.75, 0.75])
+        np.testing.assert_allclose(uvs[:, 1], [0.0, 0.0, 0.25, 0.25])
         np.testing.assert_allclose(uvs[:, 0], [0, 1, 1, 0])
 
     def test_no_scorch_decal_gives_an_empty_mesh(self):
@@ -42,10 +42,18 @@ class ScorchMeshTests(unittest.TestCase):
         self.assertEqual((len(positions), len(indices)), (0, 0))
 
 
+class DecalStateTests(unittest.TestCase):
+    def test_every_decal_blends_alpha_over_except_additive(self):
+        for blend in ('opaque', 'alpha_over', None):
+            self.assertEqual(decals.decal_state(OTHER, blend, 'x.materialgraph'), dict(blend='alpha_over', two_sided=False))
+        self.assertEqual(decals.decal_state(OTHER, 'additive_alpha', '')['blend'], 'additive')
+
+
 class ScorchShaderTests(unittest.TestCase):
     def test_program_declares_what_the_fragment_reads(self):
         self.assertIn('uniform sampler2D uDecalMask; uniform sampler2D uDecalEmissive; uniform vec3 uEmber;', shading.SCORCH_FRAGMENT)
         self.assertEqual(shading.SCORCH_UNIFORMS, ('uDecalMask', 'uDecalEmissive', 'uEmber'))
+        self.assertTrue(any('uniform int uAlphaOut;' in v for v in vars(shading).values() if isinstance(v, str)))
 
 
 class ScorchArchiveTests(unittest.TestCase):
@@ -93,7 +101,22 @@ class ScorchArchiveTests(unittest.TestCase):
         # scorch materials, which are not drawn) have mesh vertices within the decal's radius (at most 3.5) of their centre.
         near = sum(1 for centre in centres if np.linalg.norm(positions - centre, axis=1).min() < 4.0)
         self.assertGreaterEqual(near, 3)
-        self.assertNotIn(decals.SCORCH_MATERIAL, loaded['undrawn'])
+
+    def test_other_decal_materials_become_one_synthetic_model_per_zone_and_material(self):
+        models, undrawn = decals.decal_models(self.archive, [self.zone])
+        self.assertGreater(len(models), 5)
+        self.assertTrue(all(m['path'].startswith(decals.MODEL_PREFIX) and m['zone'] == self.zone for m in models))
+        self.assertEqual(len({m['path'] for m in models}), len(models))
+        for model in models:
+            geometry = model['geometry']
+            self.assertEqual(len(geometry['positions']) % 3, 0)
+            self.assertEqual(geometry['decal']['blend'], 'alpha_over')
+            self.assertEqual(geometry['batches'], [(0, 0, geometry['triangles'], True)])
+            self.assertEqual(list(model['groups'].values())[0].tolist()[::5], [1, 1, 1, 1])   # identity row
+            self.assertNotIn(model['path'].rsplit('|', 1)[-1].lower(), undrawn)
+        paths = {m['path'].rsplit('|', 1)[-1].lower() for m in models}
+        self.assertFalse(any(decals.is_scorch(p) for p in paths))
+        self.assertTrue(any('moss' in p for p in paths))
 
 
 if __name__ == '__main__':

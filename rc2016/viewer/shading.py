@@ -291,6 +291,7 @@ uniform vec4 uMetalP; // tint power, rim-gloss power, C texture scale, normal st
 uniform bool uParallax; uniform bool uParallaxNormal; uniform bool uHasParallaxHeight;
 uniform sampler2D uTexParallaxHeight; uniform vec4 uParallaxP; // H, face/grazing steps, fade
 uniform bool uFoliage; // FE32FE79/1E0AE45A close-range normal z weight
+uniform int uAlphaOut; // level decals: write _c.a as the fragment alpha (blend set by the caller); 0 = 1.0
 uniform float uAlphaCut; // leaf cut-out: discard when _c.a < threshold (0 = off); threshold inferred, see textures.FOLIAGE_ALPHA_CUTOFF
 // Novalis tree leaf colour, rp_nov pass-0 writer 0476D929. uLeafP = (E, S, mapped-normal Fresnel, unused);
 // palette U is a frozen preview input (textures.LEAF_PALETTE_U_PLACEHOLDER).
@@ -1032,7 +1033,7 @@ void main() {
             color += uFacingGlowP.x * vec3(2.0 * a * (1.0 + a), uFacingGlowQ.y * f * (1.0 + a), 0.0);
         }
     }
-    gl_FragColor = vec4(displayFog(color), 1.0);
+    gl_FragColor = vec4(displayFog(color), (uAlphaOut != 0 && uHasC) ? c.a : 1.0);
 }
 """
 
@@ -1679,7 +1680,7 @@ OPAQUE_UNIFORMS = (
     "uSrgbC", "uSrgbG", "uGMode", "uSpecScale", "uGlossScale", "uSelfLitG", "uK",
     "uTwoColorMetal", "uMetalDiffuseA", "uMetalDiffuseB", "uMetalSpecA", "uMetalSpecB", "uMetalP",
     "uParallax", "uParallaxNormal", "uHasParallaxHeight", "uTexParallaxHeight", "uParallaxP",
-    "uFoliage", "uAlphaCut", "uLeafColour", "uLeafP", "uLeafPalette", "uTexCma", "uHasCma", "uSrgbCma",
+    "uFoliage", "uAlphaCut", "uAlphaOut", "uLeafColour", "uLeafP", "uLeafPalette", "uTexCma", "uHasCma", "uSrgbCma",
     "uFresnelTint", "uFresnelC", "uFresnelE", "uLiquidFlow", "uLiquidUV", "uFlatSurface", "uFlatColour", "uFlatSpec", "uFlatF0", "uBasicFlatColor", "uBasicFlatEmissionScale", "uVictorReticle", "uTexReticle", "uHasReticle", "uReticleP", "uReticleF0",
     "uHair", "uHairA", "uHairB", "uHairP",
     "uSkinKind", "uSkinA", "uSkinB", "uSkinC",

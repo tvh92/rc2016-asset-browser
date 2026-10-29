@@ -822,7 +822,7 @@ class LevelViewport(ModelViewport):
         for stream in geometry.get('vertex_paints',{}).values():
             if len(stream['alpha'])*3!=len(geometry['positions']) or len(stream['ground'])!=len(geometry['positions']):
                 raise ValueError('Paint stream does not match model vertex count')
-        record = dict(path=path, hidden=hidden, batches=geometry["batches"], triangles=geometry["triangles"],
+        record = dict(path=path, hidden=hidden, decal=geometry.get("decal"), batches=geometry["batches"], triangles=geometry["triangles"],
                       slots={m["index"]: m["path"] for m in geometry["materials"]},
                       vbo=self._buffer(self.GL_ARRAY_BUFFER, geometry["positions"]),
                       nbo=self._buffer(self.GL_ARRAY_BUFFER, geometry["normals"]),
@@ -1630,14 +1630,29 @@ class LevelViewport(ModelViewport):
             gl.glEnable(self.GL_POLYGON_OFFSET_FILL); gl.glPolygonOffset(SHADOW_SLOPE_BIAS if shadow else 1.0, 1.0)
             sh.glUniform3f(u["uColor"], 0.72, 0.74, 0.78)
             current = None
-            for item in self._draw_list:
+            decal_on = culling = False
+            for item in sorted(self._draw_list, key=lambda item: bool(item[1].get("decal"))):   # decals last (stable order)
                 key, model, span, groups = item
+                decal = model.get("decal")
                 entry = self._materials.get(key[0]) or {}
+                if decal and (shadow or geometry or not self.decals_enabled):
+                    continue   # projected marks cast no shadow and leave no depth
                 if shadow and entry.get("no_shadow_cast"):
                     continue   # not a sun caster in the captured frame (textures.NO_SHADOW_CAST_MATERIALS); still in the AO depth
-                if key[1] == 2 and entry.get("forward"):
+                if key[1] == 2 and entry.get("forward") and not decal:
                     glass.append(item)
                     continue
+                if decal and not decal_on:   # level decals (rc2016.levels.decals): over the surfaces they mark, no depth write
+                    decal_on = True
+                    gl.glIsEnabled.restype = ctypes.c_ubyte; gl.glIsEnabled.argtypes = [ctypes.c_uint]
+                    culling = bool(gl.glIsEnabled(self.GL_CULL_FACE))
+                    gl.glBlendFunc.argtypes = [ctypes.c_uint, ctypes.c_uint]; gl.glDepthMask.argtypes = [ctypes.c_ubyte]
+                    gl.glPolygonOffset.argtypes = [ctypes.c_float, ctypes.c_float]
+                    gl.glPolygonOffset(-2.0, -2.0); gl.glDepthMask(0); gl.glDisable(self.GL_CULL_FACE)
+                if decal:
+                    blend = decal.get("blend")
+                    (gl.glEnable if blend != "opaque" else gl.glDisable)(self.GL_BLEND)
+                    gl.glBlendFunc(self.GL_SRC_ALPHA, self.GL_ONE if blend == "additive" else self.GL_ONE_MINUS_SRC_ALPHA)
                 self._static_vector_draw_eligible = self._static_vector_eligible_for_model(model)
                 next_program, next_u = self._surface_program(entry, key[1], instanced=True)
                 if next_program != program:
@@ -1660,8 +1675,13 @@ class LevelViewport(ModelViewport):
                         sh.glUniform1i(u["uMode"], key[1])
                     self._material_state(u, key, entry)
                     current = key
+                if decal and "uAlphaOut" in u:
+                    sh.glUniform1i(u["uAlphaOut"], 1)
                 self._draw_span(model, span, groups)
                 self._static_vector_draw_eligible = False
+            if decal_on:
+                gl.glDisable(self.GL_BLEND); gl.glDepthMask(1)
+                (gl.glEnable if culling else gl.glDisable)(self.GL_CULL_FACE)
             gl.glDisable(self.GL_POLYGON_OFFSET_FILL)
             program, u = base_program, base_u
             sh.glUseProgram(program)

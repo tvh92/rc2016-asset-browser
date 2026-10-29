@@ -318,6 +318,16 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None, workers=N
             entry["vertex_colours"].extend(model.get("vertex_colours", []))
             entry.setdefault("vertex_paint_blocks",{}).update(model.get("vertex_paint_blocks",{}))
             entry["zones"].append((zone, model["groups"], bool(model.get("static_vector_instances_eligible"))))
+    synthetic = {}
+    try:   # decals with a `_c` texture are drawn as synthetic models (rc2016.levels.decals)
+        from rc2016.levels.decals import decal_models
+        decal_list, decals_undrawn = decal_models(archive, zones)
+        for item in decal_list:
+            synthetic[item["path"]] = item["geometry"]
+            entry = models.setdefault(item["path"], dict(hidden=False, count=1, zones=[], vertex_colours=[]))
+            entry["zones"].append((item["zone"], item["groups"], False))
+    except Exception as exc:
+        out.put(("error", "decals", f"{type(exc).__name__}: {exc}"))
     out.put(("bounds", level_scene.core_bounds(points)))
     if level_path.endswith(".level"):
         try:
@@ -328,7 +338,7 @@ def load_level(get_archive, level_path, out, cancel, zone_filter=None, workers=N
     pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="level-load")
     try:
         _load_models(archive, pool, workers, models, catalog, actor_groups, points, out, cancel, started,
-                     actor_decode_seconds, translations_before)
+                     actor_decode_seconds, translations_before, synthetic)
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 
@@ -344,9 +354,10 @@ def _post_scene_lighting(archive, zones, out, cancel):
 
 
 def _load_models(archive, pool, workers, models, catalog, actor_groups, points, out, cancel, started, actor_decode_seconds,
-                 translations_before=None):
+                 translations_before=None, synthetic=None):
     materials = MaterialJobs(archive, pool, out)
-    geometry_of = lambda path: level_scene.model_geometry(archive, path)
+    synthetic = synthetic or {}
+    geometry_of = lambda path: synthetic[path] if path in synthetic else level_scene.model_geometry(archive, path)
     geometries, geometry_cache, geometry_paths, overrides = [], {}, {}, dict(outcomes=Counter(), instances=0, models=set())
     ordered = sorted(models.items(), key=lambda item: -item[1]["count"])
     for (path, entry), future in ordered_results(pool, ordered, lambda item: geometry_of(item[0]), workers, cancel):
@@ -602,7 +613,7 @@ class LevelPanel:
                                        command=lambda: self.view.set_show_actors(self.actors_var.get()))
         actors_check.grid(row=1, column=1, sticky="w", padx=(8, 0))
         self.decals_var = kept(remember, tk.BooleanVar(value=True), "level.decals")
-        decals_check = ttk.Checkbutton(scene, text="Scorch decals", variable=self.decals_var,
+        decals_check = ttk.Checkbutton(scene, text="Decals", variable=self.decals_var,
                                        command=lambda: self.view.set_show_decals(self.decals_var.get()))
         decals_check.grid(row=2, column=0, columnspan=2, sticky="w")
         experimental = ttk.LabelFrame(side, text="Experimental", padding=(4, 2)); experimental.grid(row=7, column=0, sticky="ew", pady=(3, 0))
@@ -633,7 +644,7 @@ class LevelPanel:
         _Tooltip(tk, overrides_check, "Apply the level's material overrides on top of each model's own materials.")
         _Tooltip(tk, hidden_check, "Also draw collision and helper meshes, which the game never shows.")
         _Tooltip(tk, sky_check, "Draw the level's sky.")
-        _Tooltip(tk, decals_check, "Draw the zones' wpn_explosion_scorchmark decals (the pit scorch marks). Other decal materials are not drawn; the blend and ember colour are a preview.")
+        _Tooltip(tk, decals_check, "Draw the zones' decals: scorch marks, dirt, moss, screws, icons, posters. Blend and alpha are inferred; decals with VFX graphs are not drawn.")
         _Tooltip(tk, actors_check, "Draw the actors (enemies, props) the level places, not only its static scenery.")
         _Tooltip(tk, spawn_check, "Mark where the level data places enemy spawns. A preview.")
         _Tooltip(tk, previews_check, "Best-effort material previews (Novalis mountain, terrain, and a generic adapter). Matte lighting; inferred inputs; not game-equivalent.")
