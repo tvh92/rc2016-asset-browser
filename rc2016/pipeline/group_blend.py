@@ -172,6 +172,14 @@ def assemble(job):
             for obj in objects:
                 if obj.parent is None:
                     obj.location = obj.location + right * offset
+        # ``native_offset`` (game Y-up units, see projectile_mounts.py) moves a member to where it rests on the weapon
+        # it is grouped with; the presentation basis maps native (x, y, z) to Blender (x, -z, y).
+        native = member.get("native_offset")
+        if native:
+            shift = Vector((native[0], -native[2], native[1]))
+            for obj in objects:
+                if obj.parent is None:
+                    obj.location = obj.location + shift
         # ``x`` places a member on the world X axis (its own origin, so equal spacing gives equal gaps), and
         # ``rotate_z_degrees`` turns it about the world Z axis through that origin, before the placement.
         turn = float(member.get("rotate_z_degrees", 0.0))
