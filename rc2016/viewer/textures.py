@@ -294,6 +294,11 @@ GRAPH_RULES = (
     # Deferred writer E680AA40 (pass 0 record 4): albedo _c, F0 = P * _g.rgb, gloss = sqrt(sat(Q _g.a^2)), self-lit =
     # K * _m.G (K = 0x06F19114, _m = slot 0x6A016FF9), detail normal at E3BD962E * UV0 masked by _m.R, strength 0x49AFC3A0.
     ('required/materials/basic_normal_coloredgloss_detail_emissive.', dict(self_lit_key=0x06F19114, bng=10)),
+    # Deferred writer 16541306 (pass 0): albedo = key 0x7F058428 x k8 (0xEF187899) x (R+G+B of the _c slot), F0 = the colour
+    # key 0x17DE448C (no texture), gloss = sqrt(sat(0x24F4CA4C)), base normal from the _n slot with a linear-z blend; the
+    # detail normal slot (0x45A52060) is unbound for the Blarg armored transport's glass and flat. Pass 1 (8CFB14B9) has no normals.
+    ('required/materials/colored_basic_normal_colored_gloss_detail.',
+     dict(g_mode='colored', self_lit_key=None, linear_z=True, flat_surface='colored_gloss_detail')),
     # basic_emissive deferred writer 452EDC8C (pass 0 record 4): albedo = key 0x7F058428 (no texture), grey F0 = P,
     # gloss = sqrt(sat(key 0x4069EA80)), self-lit = albedo * K (key 0x06F19114). The graph's one texture is a default normal.
     ('materialgraph/global/basic_emissive/basic_emissive.',
@@ -1388,7 +1393,22 @@ def material_texture_paths(archive, material_path: str) -> dict:
         # No _c/_g texture: the writer's colour, F0 and gloss are material constants (FLAT_SURFACE_GOO, basic_emissive).
         for role in ('_c', '_g', '_n', '_h', '_pick'):
             result.pop(role, None)
-        if rule['flat_surface'] == 'basic_flat_color':
+        if rule['flat_surface'] == 'colored_gloss_detail':
+            # Writer 16541306 samples by serialized slot (never by suffix: the _c slot may hold a suffix-less constant map).
+            material_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
+            for role, slot in (('_c', 0x49A7866BABDAD780), ('_n', 0x49A7866B7AE34E7A)):
+                path = material_slots.get(slot) or slots.get(slot)
+                if path and not is_placeholder_texture(path): result[role] = path
+            tint = vec3(0x7F058428, (1.0, 0.0, 1.0)); scale = value(0xEF187899, 1.0)
+            total = None   # R+G+B of the _c sample: a one-channel image (BC4 and R8) reads (r, 0, 0)
+            if '_c' in result:
+                try: total = 'r' if texture_header(archive, result['_c'])['format'] in SINGLE_CHANNEL_FORMATS else 'rgb'
+                except (ValueError, KeyError): total = 'rgb'
+            flat = dict(model='colored_gloss_detail', colour=[x * scale for x in tint], f0_colour=vec3(0x17DE448C, (1.0, 0.0, 1.0)),
+                        gloss=value(0x24F4CA4C, 1.0), texture_sum=total, writer='16541306',
+                        detail_strength=value(0x49AFC3A0, 0.75),
+                        keys=dict(colour=0x7F058428, scale=0xEF187899, f0=0x17DE448C, gloss=0x24F4CA4C))
+        elif rule['flat_surface'] == 'basic_flat_color':
             try:
                 flat = dict(model='basic_flat_color', colour=strict_flat_value(0x7F058428, 12),
                             emission_scale=strict_flat_value(0x77591534, 4), f0=strict_flat_value(0x62835AF9, 4),
@@ -1651,6 +1671,7 @@ def load_texture(archive, texture_path: str, hd: bool = False) -> dict:
 
 
 PLACEHOLDER_TEXTURE_PREFIX = 'textures/default_pink_shader/'
+SINGLE_CHANNEL_FORMATS = frozenset({54, 56, 61, 80, 81})   # R16_FLOAT, R16_UNORM, R8_UNORM, BC4_UNORM, BC4_SNORM
 
 
 def is_placeholder_texture(path: str) -> bool:

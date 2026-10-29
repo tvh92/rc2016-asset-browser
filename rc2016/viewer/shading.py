@@ -294,7 +294,8 @@ uniform float uAlphaCut; // leaf cut-out: discard when _c.a < threshold (0 = off
 // palette U is a frozen preview input (textures.LEAF_PALETTE_U_PLACEHOLDER).
 uniform bool uLeafColour; uniform vec4 uLeafP; uniform vec3 uLeafPalette; // uLeafPalette = cmb ramp sample
 uniform bool uLiquidFlow; uniform vec3 uLiquidUV; // EA6006F6/BACB8758 C/G coordinates, time=0
-uniform bool uFlatSurface; uniform vec3 uFlatColour; uniform vec4 uFlatSpec; // constant surfaces: basic_emissive 452EDC8C, goo floor 4A73CC38, basic_flat_color D169A814
+uniform bool uFlatSurface; uniform vec3 uFlatColour; uniform vec4 uFlatSpec; uniform vec3 uFlatF0; // uFlatSpec: grey F0, gloss, texture-sum albedo (writer 16541306), coloured F0 (uFlatF0)
+// Constant surfaces: basic_emissive 452EDC8C, goo floor 4A73CC38, basic_flat_color D169A814
 uniform bool uBasicFlatColor; uniform float uBasicFlatEmissionScale; // D169A814: independent CB2 colour * scale additive output
 uniform bool uVictorReticle; uniform sampler2D uTexReticle; uniform bool uHasReticle; uniform vec4 uReticleP; uniform vec3 uReticleF0;
 uniform bool uFresnelTint; uniform vec3 uFresnelC; uniform float uFresnelE; // Novalis glow mushroom F69ADC40 albedo tint
@@ -574,7 +575,7 @@ void main() {
 
     if (uMode >= 1 && uFacingGlow) albedo = vec3(1.0); // 0CD2AAFB: no albedo input, v76-v78 = 1
     if (uMode == 2 && uBrightCentre && uBrightWhite) albedo = vec3(1.0); // preview override: white_c stands in for the unbound _c
-    if (uMode == 2 && uFlatSurface) albedo = uBasicFlatColor ? vec3(0.0) : uFlatColour; // D169A814 has no diffuse albedo term
+    if (uMode == 2 && uFlatSurface) albedo = uBasicFlatColor ? vec3(0.0) : (uFlatSpec.z > 0.5 && uHasC) ? uFlatColour * (c.r + c.g + c.b) : uFlatColour; // D169A814 has no diffuse albedo term; 16541306 scales it by the _c channel sum
     if (uMode == 2 && uPuddles && uHasPuddleAtlas) {
         vec3 g=texture2D(uTexG,vUV).rgb;if(uSrgbG)g=linear(g);
         vec3 color=puddleShade(normalize(vNrm),V,albedo,g.rg);
@@ -995,7 +996,7 @@ void main() {
             }
             if (uVehicle) { F0 = vec3(0.0, 0.0999755859375, 0.0999755859375); gloss = 0.948681201424; } // packed rel 860, AA=1
             if (uBrightCentre) { F0 = vec3(uBrightP.z); gloss = sqrt(clamp(uBrightP.w, 0.0, 1.0)); }
-            if (uFlatSurface) { F0 = vec3(uFlatSpec.x); gloss = sqrt(clamp(uFlatSpec.y, 0.0, 1.0)); }
+            if (uFlatSurface) { F0 = uFlatSpec.w > 0.5 ? uFlatF0 : vec3(uFlatSpec.x); gloss = sqrt(clamp(uFlatSpec.y, 0.0, 1.0)); }
             if (uVictorReticle) { F0 = uReticleF0; gloss = 0.0; }
             if (uTintVariant >= 3) gloss = sqrt(clamp(uGlossScale * gl.r * 2.0 * tintDetailMask, 0.0, 1.0));
             if (uRockBlend || uGrassBlend || uMudBlend || uCraterBlend || uCoralBlend || uSedKind != 0) { F0 = vec3(uSpecScale*rockG.g); gloss = sqrt(clamp(uGlossScale*rockG.r, 0.0, 1.0)); }
@@ -1559,7 +1560,7 @@ OPAQUE_UNIFORMS = (
     "uTwoColorMetal", "uMetalDiffuseA", "uMetalDiffuseB", "uMetalSpecA", "uMetalSpecB", "uMetalP",
     "uParallax", "uParallaxNormal", "uHasParallaxHeight", "uTexParallaxHeight", "uParallaxP",
     "uFoliage", "uAlphaCut", "uLeafColour", "uLeafP", "uLeafPalette", "uTexCma", "uHasCma", "uSrgbCma",
-    "uFresnelTint", "uFresnelC", "uFresnelE", "uLiquidFlow", "uLiquidUV", "uFlatSurface", "uFlatColour", "uFlatSpec", "uBasicFlatColor", "uBasicFlatEmissionScale", "uVictorReticle", "uTexReticle", "uHasReticle", "uReticleP", "uReticleF0",
+    "uFresnelTint", "uFresnelC", "uFresnelE", "uLiquidFlow", "uLiquidUV", "uFlatSurface", "uFlatColour", "uFlatSpec", "uFlatF0", "uBasicFlatColor", "uBasicFlatEmissionScale", "uVictorReticle", "uTexReticle", "uHasReticle", "uReticleP", "uReticleF0",
     "uHair", "uHairA", "uHairB", "uHairP",
     "uSkinKind", "uSkinA", "uSkinB", "uSkinC",
     "uLinearZ", "uZaFresnel", "uZaFresnelPower",

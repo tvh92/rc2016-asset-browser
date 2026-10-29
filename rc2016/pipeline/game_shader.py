@@ -1881,6 +1881,16 @@ def apply_viewer_graph_rule(mat, source):
                 limits.append('basic_flat_color signed finite input domain: raw values are retained in the source math nodes, but '
                               'Cycles emission/BRDF handling of negative radiance or specular parameters has not been validated; '
                               'the Blender render is unsupported for this domain')
+        elif flat.get('model') == 'colored_gloss_detail':
+            # 16541306 MRT1 rgb = key 7F058428 * k8 * (R+G+B of the _c slot): a one-channel image counts its R only.
+            albedo = P.const3('flat surface colour', flat['colour'])
+            if c is not None and flat.get('texture_sum'):
+                cr, cg, cb = P.sep(c.outputs['Color'])
+                albedo = P.v('SCALE', albedo, cr if flat['texture_sum'] == 'r' else P.m('ADD', P.m('ADD', cr, cg), cb))
+            view_terms.append('flat surface colour times _c channel sum')
+            limits.append('colored_basic_normal_colored_gloss_detail writer %s: F0 is the constant colour key 0x17DE448C, gloss '
+                          'sqrt(sat(0x24F4CA4C)); the unbound detail normal is flat and the geometric-AA gloss widening and the '
+                          'instance normal fade are taken as 0' % flat['writer'])
         else:
             # basic_emissive 452EDC8C / goo floor 4A73CC38: MRT1 rgb, grey MRT2 F0 and gloss are constants.
             albedo = P.const3('flat surface colour', flat['colour'])
@@ -2439,9 +2449,12 @@ def apply_viewer_graph_rule(mat, source):
         elif g is not None:
             f0, gloss_in = g_rgb, g.outputs['Alpha']
         if flat:   # grey F0 = P, gloss = sqrt(sat(Q)); basic_flat_color uses independent emission instead
-            fs = P.const('flat surface F0', flat['f0']); f0 = P.comb(fs, fs, fs)
+            if flat.get('f0_colour'):
+                f0 = P.const3('flat surface F0', flat['f0_colour'])
+            else:
+                fs = P.const('flat surface F0', flat['f0']); f0 = P.comb(fs, fs, fs)
             gloss_in = P.m('SQRT', P.sat(P.const('flat surface gloss', flat['gloss']))); spec = gloss_scale = 1.0
-            if flat.get('model') != 'basic_flat_color':
+            if flat.get('model') not in ('basic_flat_color', 'colored_gloss_detail'):
                 self_mask = P.const('flat surface self-lit mask', 1.0)
         if bright:   # D14A48D7: grey constant F0, gloss = sqrt(sat(G))
             fs = P.const('bright centre F0', bright['f0']); f0 = P.comb(fs, fs, fs)

@@ -582,7 +582,7 @@ def _viewer_expected_constants(rule):
                   "screen intensity A": p["intensity_a"], "screen intensity B": p["intensity_b"]})
     if "flat_surface" in ported:
         f = terms["flat_surface"]
-        e.update({"flat surface F0": f["f0"], "flat surface gloss": f["gloss"]})
+        e.update({"flat surface F0": f.get("f0_colour") or f["f0"], "flat surface gloss": f["gloss"]})
         if f.get("model") == "basic_flat_color":
             e.update({"flat surface albedo zero": [0.0, 0.0, 0.0], "flat surface emission colour": f["colour"],
                       "flat surface emission scale": f["emission_scale"]})
@@ -766,7 +766,8 @@ def _viewer_required(rule, has_n):
             names += ["flat surface albedo zero", "flat surface emission colour", "flat surface emission scale",
                       "flat surface F0", "flat surface gloss"]
         else:
-            names += ["flat surface colour", "flat surface F0", "flat surface gloss"] + (["flat surface self-lit mask"] if lit else [])
+            names += ["flat surface colour", "flat surface F0", "flat surface gloss"] + (
+                ["flat surface self-lit mask"] if lit and terms["flat_surface"].get("model") != "colored_gloss_detail" else [])
     if "number_display" in ported:
         names += ["number distort", "number b scale", "number vignette w", "number kc", "number ko", "number amplitude"]
         req("_c", "_n", "_pick", "_g")
@@ -1220,6 +1221,9 @@ def _validate_viewer_rule_material(source, material):
     elif "flat_surface" in ported and flat.get("model") == "basic_flat_color":
         assert {node.name for node in _viewer_upstream(brdf.inputs[0])} == {"VR flat surface albedo zero"}, \
             "basic_flat_color albedo is not the zero source constant"
+    elif "flat_surface" in ported and flat.get("model") == "colored_gloss_detail":   # 16541306: constant tint times the _c channel sum
+        assert "VR flat surface colour" in {node.name for node in _viewer_upstream(brdf.inputs[0])},             "colored_gloss_detail albedo does not start from the tint constant"
+        assert bool(flat.get("texture_sum")) == reaches(brdf.inputs[0], "_c"),             "colored_gloss_detail albedo and the _c channel sum disagree"
     elif "flat_surface" in ported:   # MRT1 rgb is the material constant
         assert {node.name for node in _viewer_upstream(brdf.inputs[0])} == {"VR flat surface colour"}, \
             "Flat-surface albedo is not the source colour constant"

@@ -1484,7 +1484,9 @@ class ModelViewport(_TkFrame):
         flat = entry.get("flat_surface") or {}   # constant albedo, F0 and gloss: no texture input
         sh.glUniform1i(u["uFlatSurface"], 1 if flat and level == 2 else 0)
         sh.glUniform3f(u["uFlatColour"], *(float(x) for x in flat.get("colour", (1.0, 1.0, 1.0))))
-        sh.glUniform4f(u["uFlatSpec"], float(flat.get("f0", 0.0)), float(flat.get("gloss", 0.0)), 0.0, 0.0)
+        sh.glUniform4f(u["uFlatSpec"], float(flat.get("f0", 0.0)), float(flat.get("gloss", 0.0)),
+                       1.0 if flat.get("texture_sum") else 0.0, 1.0 if flat.get("f0_colour") else 0.0)
+        sh.glUniform3f(u["uFlatF0"], *(float(x) for x in flat.get("f0_colour", (0.0, 0.0, 0.0))))
         sh.glUniform1i(u["uBasicFlatColor"], 1 if flat.get("model") == "basic_flat_color" and level == 2 else 0)
         sh.glUniform1f(u["uBasicFlatEmissionScale"], float(flat.get("emission_scale", 0.0)))
         reticle = (entry.get('forward') or {}) if (entry.get('forward') or {}).get('kind') == 'victor_reticle' else {}
