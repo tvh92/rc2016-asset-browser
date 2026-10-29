@@ -901,6 +901,23 @@ def group_member_labels(paths):
     return labels
 
 
+def attach_owners(paths):
+    """{attach part path: body path} for each ``<folder>/bangle_set/<name>_attach/<name>_attach.model`` in ``paths``
+    whose body model (a ``.model`` directly in ``<folder>``) is also in ``paths``."""
+    keyed = {str(path).replace(chr(92),'/').casefold(): path for path in paths}
+    bodies = {}
+    for key,path in keyed.items():
+        folder,_,name = key.rpartition('/')
+        if name.endswith('.model'):bodies.setdefault(folder,[]).append(path)
+    owners = {}
+    for key,path in keyed.items():
+        folder,separator,rest = key.partition('/bangle_set/')
+        stem = rest.rpartition('/')[2][:-len('.model')]
+        if separator and rest.endswith('.model') and 'attach' in stem.split('_') and len(bodies.get(folder,[])) == 1:
+            owners[path] = bodies[folder][0]
+    return owners
+
+
 def assemble_group_blend(selection,manifest,args,log):
     """One .blend holding every delivered selected model, framed by one camera (rc2016/pipeline/group_blend.py).
 
@@ -915,7 +932,10 @@ def assemble_group_blend(selection,manifest,args,log):
             delivered.append((result.get('model',key),final))
     labels=group_member_labels([path for path,_ in delivered])
     mounts=idle_offsets([path for path,_ in delivered])
-    members=[dict(name=label,blend=final,sha256=file_hash(final),**({'native_offset':list(mounts[path])} if path in mounts else {}))
+    owners=attach_owners([path for path,_ in delivered])
+    label_of={path:label for label,(path,_) in zip(labels,delivered)}
+    members=[dict(name=label,blend=final,sha256=file_hash(final),**({'native_offset':list(mounts[path])} if path in mounts else {}),
+        **({'rig_of':label_of[owners[path]]} if path in owners else {}))
         for label,(path,final) in zip(labels,delivered)]
     if not members:
         manifest['group_blend']=dict(status='skipped',name=name,reason='no selected model was delivered')

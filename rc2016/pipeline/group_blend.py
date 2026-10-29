@@ -126,6 +126,56 @@ def _load_member(member, label):
     return kept
 
 
+def _deforming_rig(objects):
+    """(armature, mesh) of the first mesh in ``objects`` that an Armature modifier deforms, else (None, None)."""
+    for obj in objects:
+        if obj.type != "MESH":
+            continue
+        for modifier in obj.modifiers:
+            if modifier.type == "ARMATURE" and modifier.object is not None:
+                return modifier.object, obj
+    return None, None
+
+
+def _bind_to_owner_rigs(defs, loaded):
+    """Skin every ``rig_of`` member (an attach plate) to the rig of the member it names; returns {index: owner index}.
+
+    A plate's own .blend carries a small skeleton with its root moved to the origin, so it cannot follow its body's
+    pose. Its vertices are in the body's bind space, so pointing its Armature modifiers at the body's rig (the vertex
+    groups are the body's joint names) puts it on the body and moves it with it. The plate's own armatures are
+    removed from the group. A plate whose joints, rig transform or mesh transform do not match the body's is kept
+    on its own rig and named in the log."""
+    index_of = {member["name"]: index for index, member in enumerate(defs)}
+    bound = {}
+    for index, member in enumerate(defs):
+        owner = index_of.get(member.get("rig_of"))
+        if owner is None or owner == index:
+            continue
+        rig, body_mesh = _deforming_rig(loaded[owner])
+        meshes = [obj for obj in loaded[index] if obj.type == "MESH"]
+        own_rigs = [obj for obj in loaded[index] if obj.type == "ARMATURE"]
+        if rig is None or not meshes:
+            continue
+        joints = {bone.name for bone in rig.data.bones}
+        unknown = sorted({group.name for obj in meshes for group in obj.vertex_groups} - joints)
+        moved = any(obj.matrix_basis != rig.matrix_basis for obj in own_rigs) or any(
+            obj.matrix_basis != body_mesh.matrix_basis for obj in meshes)
+        if unknown or moved:
+            print("GROUP plate kept on its own rig", member["name"], "unknown joints:", unknown[:5], "moved:", moved,
+                  flush=True)
+            continue
+        for obj in meshes:
+            for modifier in obj.modifiers:
+                if modifier.type == "ARMATURE":
+                    modifier.object = rig
+        for obj in own_rigs:
+            loaded[index].remove(obj)
+            bpy.data.objects.remove(obj, do_unlink=True)
+        bound[index] = owner
+        print("GROUP plate bound to", defs[owner]["name"], member["name"], flush=True)
+    return bound
+
+
 def _layout(members, right):
     """Record each member's visible extent along ``right`` without moving it.
 
@@ -163,9 +213,11 @@ def assemble(job):
     scene = bpy.context.scene
     apply_new_scene_defaults(scene, job.get("hdri"), configure_world=True, lighting=job.get("shared_lighting"))
     right = Euler(tuple(math.radians(v) for v in CAMERA_EULER_DEGREES)).to_matrix() @ Vector((1.0, 0.0, 0.0))
+    loaded = [_load_member(member, member["name"]) for member in job["members"]]
+    owners = _bind_to_owner_rigs(job["members"], loaded)
     members = []
-    for index, member in enumerate(job["members"]):
-        objects = _load_member(member, member["name"])
+    for index, objects in enumerate(loaded):
+        member = job["members"][owners.get(index, index)]  # a part bound to its body's rig is placed with the body
         # An offset moves a whole member sideways, along the camera's right axis, so repeated suits sit side by side.
         offset = float(member.get("offset", 0.0))
         if offset:
@@ -191,7 +243,7 @@ def assemble(job):
                     # matrix_basis, not matrix_world: appended objects have no evaluated world matrix yet.
                     obj.matrix_basis = place @ obj.matrix_basis
         members.append(objects)
-        print("GROUP member", index + 1, len(job["members"]), member["name"], flush=True)
+        print("GROUP member", index + 1, len(job["members"]), job["members"][index]["name"], flush=True)
     _timeline(scene, members)
     layout = _layout(members, right)
     camera_data = bpy.data.cameras.new("Group review camera")
