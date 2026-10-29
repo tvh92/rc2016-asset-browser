@@ -11,8 +11,10 @@ Veldin frame (the runtime tile buffer equals the archive tiles in bytes 0 to 19)
   p reads the 8 cells around ``floor(p - 0.5)`` with trilinear weights of ``p - 0.5``.
 - Bytes 0 to 2: unorm8 direction ``d = 2 q - 1`` (unit length). Bytes 4 to 15: three R11G11B10_FLOAT colours,
   A (the colour facing +d), B (facing -d, mostly black) and C (a sky-facing term). Bytes 16 to 19: unorm8
-  ``(qx, qy, qz, w)``, a per-cell validity plane. Bytes 20 to 23 select reflection probes at run time; the
-  viewer does not use them.
+  ``(qx, qy, qz, w)``, a per-cell validity plane. Bytes 20 to 23 are the reflection-probe selector: bytes 20 and
+  22 index the tile's probe list (section ``0x96D77BBD``, ``tile_probe_paths``; 255 is the global cube), byte 21 is
+  the mix between the two. The runtime replaces the indices with its cube-array slots and byte 23 with a value of
+  its own (``rc2016.levels.probe_volume``); bytes 0 to 19 and 21 reach the GPU unchanged.
 - Per cell, for a unit normal n: ``E(n) = lerp(B, A, 0.5 + 0.5 dot(n, d)) + S (0.5 + 0.5 n.y) C``.
 - Per corner k with o = p - centre(k): ``v = clamp(8 dot(q - 0.5, o) + 16 w - 7, 0, 1)`` and the corner
   weight is ``max(2^-18, trilinear_k v)``; the weights are renormalised to sum to 1. (The shader spells the
@@ -35,7 +37,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CACHE_DIR = ROOT / '.cache' / 'lightgrid'
-LIGHTGRID_VERSION = 1           # bump when the packed arrays change; it names the cache files
+LIGHTGRID_VERSION = 2           # bump when the packed arrays change; it names the cache files
 TILE = 16
 CELLS_PER_TILE = TILE ** 3
 CELL_BYTES = 24
@@ -44,7 +46,7 @@ ATLAS_XY = 8                    # atlas tiles per axis in x and y; z grows to fi
 VALIDITY_FLOOR = 2.0 ** -18     # smallest corner weight, as in the shader
 COVER_GAIN = 4.0                # viewer choice: coverage is the valid trilinear weight times this, clamped to 1
 CELL_SECTION = 0x9989BB49       # DAT1 section that holds the 4096 cells
-PROBE_SELECTOR_SECTION = 0x96D77BBD
+PROBE_SELECTOR_SECTION = 0x96D77BBD   # the tile's probe list: u32 file offsets of NUL-terminated texture paths
 # SKY_TERM_SCALE is the sky-term scale S used when an atmosphere's own (``sky.sky_term_scale``, header offset 128) is
 # unreadable; 2.33 is the Veldin capture's. Visual calibration, not decoded data (docs/levels.md, Level atmosphere
 # lighting): AMBIENT_SCALE converts grid units to the viewer's ambient units (diffuse is albedo * ambient / pi). It was
@@ -134,25 +136,36 @@ def cell_light(fields, normal, sky_scale):
 class LightGrid:
     """Tiles packed for lookup: ``table`` (64, 64, 64, 4) float32 holds the atlas tile (x, y, z) and 1 where a tile
     exists; ``cells`` is (n_slots, 4096, 24) uint8 in slot order (the CPU reference reads it, the GPU gets the atlas
-    arrays of ``atlas``)."""
+    arrays of ``atlas``). ``probes`` lists, per slot, the tile's reflection-probe texture paths (``tile_probe_paths``;
+    empty when the tile has none or the grid was packed without them)."""
 
-    def __init__(self, table, cells, slots_xyz):
+    def __init__(self, table, cells, slots_xyz, probes=None):
         self.table, self.cells, self.slots = table, cells, slots_xyz
+        self.probes = [list(p) for p in probes] if probes is not None else [[] for _ in range(len(cells))]
         self.atlas_tiles = (ATLAS_XY, ATLAS_XY, max(1, -(-len(cells) // (ATLAS_XY * ATLAS_XY))))
 
     @property
     def tile_count(self):
         return len(self.cells)
 
+    def atlas_layout(self, per_cell):
+        """(D, H, W, ...) array of per-cell values (n_slots, 4096, ...) placed as the atlas: x, y, z of the atlas are a
+        tile's cells at its slot's atlas tile (``table`` rgb); unused atlas tiles are zero."""
+        import numpy as np
+        per_cell = np.asarray(per_cell)
+        ax, ay, az = self.atlas_tiles
+        tail = per_cell.shape[2:]
+        padded = np.zeros((ax * ay * az, CELLS_PER_TILE) + tail, per_cell.dtype)
+        padded[:len(per_cell)] = per_cell
+        grid = padded.reshape((az, ay, ax, TILE, TILE, TILE) + tail)
+        grid = grid.transpose((0, 3, 1, 4, 2, 5) + tuple(range(6, 6 + len(tail))))
+        return np.ascontiguousarray(grid.reshape((az * TILE, ay * TILE, ax * TILE) + tail))
+
     def atlas(self):
         """(colour, dirq): uint32 (D, H, 3 W) words A, B, C per cell interleaved along x, and uint8 (D, H, 2 W, 4)
         bytes (d, 0) then (q, w); x, y, z of the atlas are the tile's cells placed at its table slot."""
         import numpy as np
-        ax, ay, az = self.atlas_tiles
-        padded = np.zeros((ax * ay * az, CELLS_PER_TILE, CELL_BYTES), np.uint8)
-        padded[:len(self.cells)] = self.cells
-        grid = padded.reshape(az, ay, ax, TILE, TILE, TILE, CELL_BYTES).transpose(0, 3, 1, 4, 2, 5, 6)
-        grid = np.ascontiguousarray(grid.reshape(az * TILE, ay * TILE, ax * TILE, CELL_BYTES))
+        grid = self.atlas_layout(self.cells)
         colour = np.ascontiguousarray(grid[..., 4:16]).view('<u4').reshape(grid.shape[:3] + (3,))
         dirq = np.stack([grid[..., 0:4], grid[..., 16:20]], axis=3)
         return (colour.reshape(grid.shape[0], grid.shape[1], -1),
@@ -197,8 +210,9 @@ class LightGrid:
         return light.astype(np.float32), np.clip(coverage * COVER_GAIN, 0.0, 1.0)
 
 
-def pack_tiles(cells, coordinates):
-    """Build a LightGrid from (n, 4096, 24) uint8 tiles and their (n, 3) path coordinates (tile centres).
+def pack_tiles(cells, coordinates, probes=None):
+    """Build a LightGrid from (n, 4096, 24) uint8 tiles and their (n, 3) path coordinates (tile centres); ``probes`` is
+    each tile's probe path list (``tile_probe_paths``) in the same order.
 
     Raises ValueError for a centre that is not 8 mod 16, a cell block of the wrong size, or two tiles that
     share a wrapped table slot."""
@@ -227,13 +241,35 @@ def pack_tiles(cells, coordinates):
         cleaned = words.copy()
         cleaned[bad.any(axis=-1)] = 0
         cells.view('<u4').reshape(len(cells), CELLS_PER_TILE, 6)[..., 1:4] = cleaned
-    return LightGrid(table, cells, atlas_xyz)
+    if probes is not None and len(probes) != len(cells):
+        raise ValueError('one probe list per lightgrid tile is required')
+    return LightGrid(table, cells, atlas_xyz, probes)
 
 
 # Loading ---------------------------------------------------------------------------------------------
 
+def tile_probe_paths(data):
+    """The reflection-probe texture paths of one lightgrid asset, in the order cell bytes 20 and 22 index them:
+    section ``PROBE_SELECTOR_SECTION`` holds u32 file offsets of NUL-terminated paths (Novalis:
+    ``levels\\Novalis\\...\\envprobes\\<id>.texture``, up to 23 per tile). [] when the asset has no such section.
+    Raises ValueError for an offset outside the file or an unterminated path."""
+    import struct
+    from rc2016.levels.zone_format import sections
+    found = sections(data)
+    if PROBE_SELECTOR_SECTION not in found:
+        return []
+    start, size = found[PROBE_SELECTOR_SECTION]
+    paths = []
+    for offset in struct.unpack_from(f'<{size // 4}I', data, start):
+        end = data.find(b'\0', offset) if 0 <= offset < len(data) else -1
+        if end < 0:
+            raise ValueError('lightgrid probe path is outside the file or unterminated')
+        paths.append(data[offset:end].decode('utf-8'))
+    return paths
+
+
 def _tile_cells(archive, asset_id):
-    """The (4096, 24) uint8 cell block of one lightgrid asset."""
+    """(cells, probes) of one lightgrid asset: the (4096, 24) uint8 cell block and its probe path list."""
     import numpy as np
     from rc2016.formats.archive import asset_data
     from rc2016.levels.zone_format import sections
@@ -242,7 +278,8 @@ def _tile_cells(archive, asset_id):
     if CELL_SECTION not in found or found[CELL_SECTION][1] != CELLS_PER_TILE * CELL_BYTES:
         raise ValueError('lightgrid asset has no 4096-cell block')
     offset = found[CELL_SECTION][0]
-    return np.frombuffer(data, np.uint8, CELLS_PER_TILE * CELL_BYTES, offset).reshape(CELLS_PER_TILE, CELL_BYTES)
+    cells = np.frombuffer(data, np.uint8, CELLS_PER_TILE * CELL_BYTES, offset).reshape(CELLS_PER_TILE, CELL_BYTES)
+    return cells, tile_probe_paths(data)
 
 
 def _location(entry):
@@ -337,23 +374,27 @@ def level_lightgrid(archive, zone_paths, workers=None, night=False):
     coordinates = np.array([row['coordinates'] for row in rows], np.int64)
     if cache.is_file():
         try:
+            import json
             with np.load(cache) as stored:
                 if np.array_equal(stored['coordinates'], coordinates):
-                    return pack_tiles(stored['cells'], coordinates)
+                    probes = json.loads(stored['probes'].tobytes().decode())
+                    return pack_tiles(stored['cells'], coordinates, probes)
         except (OSError, ValueError, KeyError):
             pass
     workers = workers or max(2, min(6, (os.cpu_count() or 2) - 1))
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='lightgrid') as pool:
-        cells = np.stack(list(pool.map(lambda row: _tile_cells(archive, row['asset_id']), rows)))
+        tiles = list(pool.map(lambda row: _tile_cells(archive, row['asset_id']), rows))
+    cells, probes = np.stack([tile[0] for tile in tiles]), [tile[1] for tile in tiles]
     try:
+        import json
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         temporary = cache.with_suffix('.tmp.npz')
-        np.savez(temporary, cells=cells, coordinates=coordinates)
+        np.savez(temporary, cells=cells, coordinates=coordinates, probes=np.frombuffer(json.dumps(probes).encode(), np.uint8))
         temporary.replace(cache)
     except OSError:
         pass
-    return pack_tiles(cells, coordinates)
+    return pack_tiles(cells, coordinates, probes)
 
 
 __all__ = ['AMBIENT_SCALE', 'ambient_scale', 'LightGrid', 'SKY_TERM_SCALE', 'cell_index', 'cell_light', 'corner_validity', 'decode_cells',
-           'decode_r11g11b10', 'level_lightgrid', 'pack_tiles', 'table_slot', 'tile_of']
+           'decode_r11g11b10', 'level_lightgrid', 'pack_tiles', 'table_slot', 'tile_of', 'tile_probe_paths']

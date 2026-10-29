@@ -4,6 +4,7 @@ import time
 from rc2016.levels.capture_calibration import frame
 AO_UNIT, SHADOW_UNIT = 16, 17
 GRID_UNITS = (19, 20, 21)   # lightgrid tile table, colour atlas, direction/plane atlas (unit 18 is the display table)
+PROBE_UNITS = (22, 23)      # window glass probe volume: per-cell selector atlas, probe cube atlas (rc2016.levels.probe_volume)
 # Scene content changes (models, instances, materials) arrive many times a second during a load; each
 # shadow refresh redraws the whole unculled level, so content-driven refreshes wait this long apart.
 SHADOW_REFRESH_SECONDS = 2.0
@@ -131,6 +132,13 @@ class SceneEffects:
             self.image3d=fn('glTexImage3D',None,[ui,si,si,si,si,si,si,ui,ui,vp])
         except RuntimeError as exc:
             self.image3d=None;self.grid_error=str(exc)
+        # Probe volume of the window glass (optional): the selector atlas (3D) and the BC6H probe atlas (2D).
+        self.probe_textures=[];self.probe_source=None;self.probe_grid=None;self.probe_failed=None;self.probe_error=None
+        try:
+            if maximum.value<=max(PROBE_UNITS):raise RuntimeError('the probe volume needs %d fragment texture units'%(max(PROBE_UNITS)+1))
+            self.compressed2d=fn('glCompressedTexImage2D',None,[ui,si,ui,si,si,si,si,vp])
+        except RuntimeError as exc:
+            self.compressed2d=None;self.probe_error=str(exc)
     def _texture(self,w,h,internal,fmt,typ,shadow=False):
         gl=self.gl;obj=C.c_uint();gl.glGenTextures(1,C.byref(obj));self.textures.append(obj.value)
         self.sh.glActiveTexture(0x84C0+SHADOW_UNIT);gl.glBindTexture(0x0DE1,obj)
@@ -253,7 +261,45 @@ class SceneEffects:
         ax,ay,az=grid.atlas_tiles;self.grid_size=(ax*16,ay*16,az*16);self.grid_source=grid;return True
     def release_grid(self):
         if self.grid_textures:self.gl.glDeleteTextures(len(self.grid_textures),(C.c_uint*len(self.grid_textures))(*self.grid_textures))
-        self.grid_textures=[];self.grid_source=None;self.grid_size=None
+        self.grid_textures=[];self.grid_source=None;self.grid_size=None;self.release_probes()
+    def _upload_probes(self,grid,volume):
+        """Upload a probe_volume.ProbeVolume: its selectors in the lightgrid atlas layout (3D RGBA8, NEAREST) and its BC6H
+        probe images in one 2D atlas (LINEAR, mip 0 only). False (and the reason recorded) when the driver refuses."""
+        import numpy as np
+        gl=self.gl;self.release_probes()
+        try:
+            limit=C.c_int();gl.glGetIntegerv(0x0D33,C.byref(limit))
+            columns=max(1,min(len(volume.blocks),limit.value//512))
+            atlas,(columns,rows)=volume.atlas_blocks(columns)
+            if rows*256>limit.value:raise RuntimeError('%d probes exceed the %d texel texture limit'%(len(volume.blocks),limit.value))
+            selectors=grid.atlas_layout(volume.selectors)
+            names=(C.c_uint*2)();gl.glGenTextures(2,names);self.probe_textures=list(names)
+            gl.glPixelStorei(0x0CF5,1)
+            self.sh.glActiveTexture(0x84C0+PROBE_UNITS[0]);gl.glBindTexture(0x806F,names[0])
+            for parameter,value in ((0x2801,0x2600),(0x2800,0x2600),(0x2802,0x812F),(0x2803,0x812F),(0x8072,0x812F)):gl.glTexParameteri(0x806F,parameter,value)
+            d,h,w=selectors.shape[:3]
+            self.image3d(0x806F,0,0x8058,w,h,d,0,0x1908,0x1401,selectors.ctypes.data_as(C.c_void_p))
+            if gl.glGetError():raise RuntimeError('glTexImage3D failed for the probe selectors')
+            self.sh.glActiveTexture(0x84C0+PROBE_UNITS[1]);gl.glBindTexture(0x0DE1,names[1])
+            for parameter,value in ((0x2801,0x2601),(0x2800,0x2601),(0x2802,0x812F),(0x2803,0x812F),(0x813D,0)):gl.glTexParameteri(0x0DE1,parameter,value)
+            data=np.ascontiguousarray(atlas)
+            self.compressed2d(0x0DE1,0,0x8E8F,columns*512,rows*256,0,data.nbytes,data.ctypes.data_as(C.c_void_p))   # BC6H unsigned
+            if gl.glGetError():raise RuntimeError('glCompressedTexImage2D failed for the probe atlas')
+        except Exception as exc:
+            self.probe_error=str(exc);self.release_probes();gl.glPixelStorei(0x0CF5,4);self.sh.glActiveTexture(0x84C0);return False
+        gl.glPixelStorei(0x0CF5,4);self.sh.glActiveTexture(0x84C0)
+        self.probe_grid=(columns,rows);self.probe_source=volume;return True
+    def release_probes(self):
+        if self.probe_textures:self.gl.glDeleteTextures(len(self.probe_textures),(C.c_uint*len(self.probe_textures))(*self.probe_textures))
+        self.probe_textures=[];self.probe_source=None;self.probe_grid=None
+    def _probes_ready(self,view,grid):
+        """The ProbeVolume to sample this frame with ``grid`` (uploaded on first use), or None."""
+        volume=view._environment.get('probe_volume') if grid is not None else None
+        if volume is None or self.compressed2d is None or not volume.blocks:return None
+        if self.probe_source is not volume:
+            if self.probe_failed is volume or not self._upload_probes(grid,volume):
+                self.probe_failed=volume;return None
+        return volume
     def _grid_ready(self,view):
         """The LightGrid to sample this frame (uploaded on first use), or None."""
         if self.image3d is None or self.view_to_native is None or not getattr(view,'lightgrid_enabled',True):return None
@@ -276,6 +322,12 @@ class SceneEffects:
             self.uniform_matrix(u.get('uGridFromView',-1),1,0,(C.c_float*16)(*self.view_to_native.T.flat))
             self.uniform2(u.get('uGridParams',-1),(getattr(view,'_sky',None) or {}).get('sky_scale') or SKY_TERM_SCALE,ambient_scale((getattr(view,'_sky',None) or {}).get('atmosphere')))
             sh.glUniform3f(u.get('uGridInvSize',-1),*(1.0/s for s in self.grid_size))
+        probes=self._probes_ready(view,grid)
+        sh.glUniform1i(u.get('uProbeOn',-1),int(probes is not None))
+        if probes is not None:
+            for name,unit,target,texture in zip(('uProbeSel','uProbeAtlas'),PROBE_UNITS,(0x806F,0x0DE1),self.probe_textures):
+                sh.glUniform1i(u.get(name,-1),unit);sh.glActiveTexture(0x84C0+unit);gl.glBindTexture(target,texture)
+            sh.glActiveTexture(0x84C0);self.uniform2(u.get('uProbeAtlasGrid',-1),*(float(x) for x in self.probe_grid))
         sh.glUniform1i(u['uSceneEnabled'],int(ready));sh.glUniform1i(u.get('uSceneGeometry',-1),int(view._scene_geometry))
         sh.glUniform1i(u['uSceneAOEnabled'],int(ready and view.scene_ao and self.ao_valid and bool(self.ao_texture)))
         sh.glUniform1i(u['uSceneShadowEnabled'],int(ready and view.scene_shadows and self.view_shadow is not None))

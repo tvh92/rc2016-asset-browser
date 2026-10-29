@@ -1110,8 +1110,11 @@ void main() {
 #   k = (sqrt(t^2 + bb^2 + nn^2/4) - nn/2) / max(t^2 + bb^2, 1/256), z1 = 1 - |u1|^2; m2 = S2 (T8.rg - 0.5),
 #   S2 = 2 CB0[95] (1 - sat(w rec[3] + rec[2])), w = view depth, z2 = 1 - |m2|^2;
 #   N' = normalize(T (z2 u1.x/2 + z1 m2.x) + B (z2 u1.y/2 + z1 m2.y) + n z1 z2), built in the native world frame (T, B from
-#   screen derivatives of the world position and UV0). The probe ambient A_c, reflection E_c and the sky cube (cube 255) are the
-#   viewer's ambient and environment along R = reflect(-V, N'), ao = 1, r = 0 (no SSR), no light list.
+#   screen derivatives of the world position and UV0). Reflection E_c: with the level's probe volume bound (uProbeOn; Level
+#   atmosphere lighting with scene effects, rc2016/levels/probe_volume.py), the lightgrid cell's selector picks the archive
+#   probe cubes (mip 0 only) and blends them with cube 255, for which the viewer environment along R = reflect(-V, N') stands
+#   in; the runtime confidence byte is not decoded (0: local probes alone). Without it, E_c is that environment. The probe
+#   ambient A_c and the sky term's cube are the viewer's ambient and environment, ao = 1, r = 0 (no SSR), no light list.
 # uKind 12, ion_tubes 86DDE345 (enm_victor_von_ion_tubes_w_rust; docs/material-decoding/victor-von-ion-tubes.md): uA = tint C
 #   (CB2[0..2]) and gain g (CB2[3]); uB.x = amplitude (CB0[115], labelled presentation value); uC = base colour; uD = rim colour.
 #   rgb = 2 amp (1 + m) (base + rim F^5 + m C g), m = sat(API6.R + API5.G) from the one electricity image, F = max(N.V - 0.001, 0);
@@ -1183,11 +1186,56 @@ vec3 waterEnvironment(vec3 R) {
     if (uLighting == 1) return prefiltered(uViewToWorld * R, 0.0);
     return ambientLight(R);
 }
-// Stand-in for the window glass probe/cube reflection E_c (uKind 14): the viewer environment along R at GGX alpha a.
+// Stand-in for the window glass global cube (cube 255, uKind 14): the viewer environment along R at GGX alpha a.
 vec3 windowEnvironment(vec3 R, float a) {
     if (!uLightingEnabled) return vec3(0.0);
     if (uLighting == 1) return prefiltered(uViewToWorld * R, sqrt(a));
     return ambientLight(R);
+}
+// Probe-volume reflection E_c of the window glass (uKind 14; rc2016/levels/probe_volume.py is the CPU reference and
+// documents the layout): the lightgrid cell's selector (A, mix, B, confidence) picks the level's probe cubes, which are
+// the archive probe images (six 128 x 128 faces in a 4 x 2 BC6H tile, mip 0 only) in one atlas texture. Index 255 is the
+// global cube, here `sky`. uGridTable / uGridDirQ / uGridInvSize are the lightgrid textures of the scene programs.
+#ifndef RC_SCENE_EFFECTS
+uniform sampler3D uGridTable; uniform sampler3D uGridDirQ; uniform vec3 uGridInvSize;
+#endif
+uniform bool uProbeOn; uniform sampler3D uProbeSel; uniform sampler2D uProbeAtlas; uniform vec2 uProbeAtlasGrid;   // probes per row, rows
+vec3 probeCube(float index, vec3 d) {   // GCN cube faces: uv = sc / |ma| + 0.5, face f at tile (f mod 4, f / 4)
+    vec3 ad = abs(d); float face, major; vec2 st;
+    if (ad.x >= ad.y && ad.x >= ad.z) { major = ad.x; face = d.x > 0.0 ? 0.0 : 1.0; st = vec2(d.x > 0.0 ? -d.z : d.z, -d.y); }
+    else if (ad.y >= ad.z) { major = ad.y; face = d.y > 0.0 ? 2.0 : 3.0; st = vec2(d.x, d.y > 0.0 ? d.z : -d.z); }
+    else { major = ad.z; face = d.z > 0.0 ? 4.0 : 5.0; st = vec2(d.z > 0.0 ? d.x : -d.x, -d.y); }
+    vec2 uv = clamp((0.5 * st / major + 0.5) * 128.0, 0.5, 127.5);   // half a texel inside the face
+    float row = floor(index / uProbeAtlasGrid.x), col = index - row * uProbeAtlasGrid.x;
+    float fy = floor(face / 4.0), fx = face - 4.0 * fy;
+    vec2 p = vec2(col * 512.0 + fx * 128.0, row * 256.0 + fy * 128.0) + uv;
+    return texture2D(uProbeAtlas, p / (uProbeAtlasGrid * vec2(512.0, 256.0))).rgb;
+}
+// E = (1 - m) sum w_i [mix_i cube[A_i](R) + (1 - mix_i) cube[B_i](R)] + m sky, m = min(1, sum w_i conf_i), w_i the
+// lightgrid corner weights; P and R in the native world frame.
+vec3 windowProbeReflection(vec3 P, vec3 R, vec3 sky) {
+    vec3 s = P - 0.5, base = floor(s), f = s - base;
+    vec3 acc = vec3(0.0); float total = 0.0, conf = 0.0;
+    for (int i = 0; i < 8; i++) {
+        vec3 b = vec3(mod(float(i), 2.0), mod(floor(float(i) * 0.5), 2.0), floor(float(i) * 0.25));
+        vec3 cell = base + b, tw = mix(1.0 - f, f, b);
+        vec3 tile = floor(cell / 16.0);
+        vec4 e = texture3D(uGridTable, (mod(tile, 64.0) + 0.5) / 64.0);
+        if (e.a > 0.5) {
+            vec3 c = e.rgb * 16.0 + (cell - tile * 16.0);
+            vec2 yz = (c.yz + 0.5) * uGridInvSize.yz;
+            vec4 qw = texture3D(uGridDirQ, vec3((c.x * 2.0 + 1.5) * uGridInvSize.x * 0.5, yz));
+            float v = clamp(8.0 * dot(qw.xyz - 0.5, s - cell) + 16.0 * qw.w - 7.0, 0.0, 1.0);
+            float w = max(3.814697265625e-06, tw.x * tw.y * tw.z * v);
+            vec4 sel = texture3D(uProbeSel, vec3((c.x + 0.5) * uGridInvSize.x, yz));
+            float ia = floor(sel.r * 255.0 + 0.5), ib = floor(sel.b * 255.0 + 0.5);
+            vec3 ca = ia > 254.5 ? sky : probeCube(ia, R);
+            vec3 cb = ib == ia ? ca : (ib > 254.5 ? sky : probeCube(ib, R));
+            acc += w * mix(cb, ca, sel.g); conf += w * sel.a; total += w;
+        }
+    }
+    if (total <= 0.0) return sky;
+    return mix(acc / total, sky, min(1.0, conf / total));
 }
 // One water normal sample: s = q (2 rg - 1), n = normalize(N (1 - s.s) + B s.y + T s.x) (F4D47ECE, no absolute values).
 vec3 waterNormal(vec3 N, vec3 T, vec3 B, float q, vec2 rg) {
@@ -1336,9 +1384,11 @@ void main() {
         vec3 ambient = ambientLight(Ns);
         vec3 Ld = (max(dot(Ns, L1), 0.0) * C1 + max(dot(Ns, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
         vec3 F0 = vec3(F), F90 = vec3(sat(60.0 * F));
-        vec3 E = windowEnvironment(reflect(-V, Ns), a);                  // stands in for E_c and the cube-255 sky sample
+        vec3 Rs = reflect(-V, Ns);
+        vec3 sky = windowEnvironment(Rs, a);                              // stands in for the cube-255 sample
+        vec3 E = uProbeOn ? windowProbeReflection(vTintWorldPos, transpose(vNativeToView) * Rs, sky) : sky;   // E_c
         vec3 spec = k * (ggxGlass(Ns, V, L1, F0, F90, a) * C1 + ggxGlass(Ns, V, L2, F0, F90, a) * C2 + E * F);   // Wocc = 1, r = 0
-        vec3 Q = uE.rgb * mask + uB.w * interior + uD.w * uD.rgb * pow(0.5 + mask, 5.0) * c9 * (1.0 + uE.w * E);
+        vec3 Q = uE.rgb * mask + uB.w * interior + uD.w * uD.rgb * pow(0.5 + mask, 5.0) * c9 * (1.0 + uE.w * sky);
         color = (uC.x * interior.b + Ld) * Q + spec;
         alpha = 1.0;
     } else if (uKind == 9) { // character_glass_02 4DF1D438
@@ -1699,7 +1749,8 @@ GLASS_UNIFORMS = ("uSkin", "uBoneTex", "uBoneWidth", "uKind", "uA", "uB", "uC", 
                   "uSceneDepth", "uHasSceneDepth", "uSceneDepthInfo",
                   "uScreenNoiseA", "uScreenNoiseB", "uScreenSrgbN", "uScreenSrgbA", "uScreenSrgbB",
                   "uTexWindowMask", "uTexWindowN1", "uTexWindowN2", "uTexWindowC", "uHasWindowMask", "uHasWindowN1",
-                  "uHasWindowN2", "uHasWindowC", "uSrgbWindowMask", "uSrgbWindowC", "uHasUV1", "uWindowP", *LIGHTING_UNIFORMS)
+                  "uHasWindowN2", "uHasWindowC", "uSrgbWindowMask", "uSrgbWindowC", "uHasUV1", "uWindowP",
+                  "uProbeOn", "uProbeSel", "uProbeAtlas", "uProbeAtlasGrid", *LIGHTING_UNIFORMS)
 
 # Level viewer: one draw per model and material for all its instances. The zone's row-vector
 # instance matrix arrives as four per-instance attributes (rows; docs/levels.md), in texcoord

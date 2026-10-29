@@ -263,8 +263,12 @@ WINDOW_GLASS_CONSTANTS = dict(
     frozen_inputs=dict(ao=1.0, specular_occlusion=1.0, ssr=False, light_list=False, sky='viewer environment',
                        width_factor=1.0, fog=1.0, instance_flags=0x2061, program_variant='8DF14766 (pass contract 0)'),
     limitations=(
-        'labelled preview, not game-equivalent: the engine probe ambient A_c, probe/cube reflection E_c, the sky cube '
-        'of the painted-glass layer and the sun are replaced by the viewer lighting (rig or HDRI)',
+        'labelled preview, not game-equivalent: the engine probe ambient A_c, the sky cube of the painted-glass layer '
+        'and the sun are replaced by the viewer lighting (rig or HDRI)',
+        'the reflection E_c reads the lightgrid probe selector and the archive probe cubes only in the level viewer '
+        '(Level atmosphere lighting with scene effects): mip 0 at every gloss (the runtime mips are not decoded), the '
+        'runtime confidence byte is not decoded and taken as 0 (local probes alone), and the viewer environment '
+        'stands in for cube 255; elsewhere E_c is replaced by the viewer lighting',
         'no screen-space reflection (r = 0) and no engine light list',
         'ambient occlusion is taken as 1, so the specular occlusion is 1',
         'the tangent frame comes from screen derivatives, not the vertex tangent; outside a level the world '

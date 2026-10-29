@@ -99,16 +99,18 @@ class LevelLightgridTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder, mock.patch.object(lg, 'CACHE_DIR', Path(folder)), \
                 mock.patch('rc2016.levels.scene.asset_bytes', return_value=dat1({ZONE_GRID_PATHS: b'', ZONE_GRID_COORDINATES: b''})) as read, \
                 mock.patch.object(lg, 'zone_grid_map', return_value=rows) as grid_map, \
-                mock.patch.object(lg, '_tile_cells', return_value=cells):
+                mock.patch.object(lg, '_tile_cells', return_value=(cells, ['probe.texture'])):
             grid = lg.level_lightgrid(archive, [LGT_NIGHT, LGT])
             self.assertEqual(grid.tile_count, 2)
+            self.assertEqual(grid.probes, [['probe.texture']] * 2)
             read.assert_called_once_with(archive, LGT)
             grid_map.assert_called_once()
             files = sorted(p.name for p in Path(folder).iterdir())
             self.assertEqual(len(files), 1)
             self.assertTrue(files[0].startswith('zone_'))
-            again = lg.level_lightgrid(archive, [LGT])      # warm: tiles come from the cache
+            again = lg.level_lightgrid(archive, [LGT])      # warm: tiles and probe lists come from the cache
             self.assertEqual(again.tile_count, 2)
+            self.assertEqual(again.probes, [['probe.texture']] * 2)
             read.assert_called_with(archive, LGT)
 
     def test_novalis_keeps_its_decoder_and_cache_name(self):
@@ -119,7 +121,7 @@ class LevelLightgridTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder, mock.patch.object(lg, 'CACHE_DIR', Path(folder)), \
                 mock.patch('rc2016.levels.scene.asset_bytes', return_value=b'zone') as read, \
                 mock.patch('rc2016.pipeline.lighting._decode_lighting_zone_grid_map', return_value=dict(grids=rows)) as novalis, \
-                mock.patch.object(lg, 'zone_grid_map') as generic, mock.patch.object(lg, '_tile_cells', return_value=cells):
+                mock.patch.object(lg, 'zone_grid_map') as generic, mock.patch.object(lg, '_tile_cells', return_value=(cells, [])):
             grid = lg.level_lightgrid(archive, ['levels/Novalis/atmosphere.zone', NOVALIS_LIGHTING_ZONE], night=True)
             self.assertEqual(grid.tile_count, 1)
             novalis.assert_called_once()

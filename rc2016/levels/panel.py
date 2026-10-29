@@ -103,6 +103,13 @@ def load_sky(archive, zones, probe_position=None):
                 raise ValueError("the level has no atmosphere zone with exactly one reflection probe and no lightgrid")
             maps = level_environment(archive, sky, lightgrid=grid)   # a level without a probe takes its ambient from the grid
             maps["lightgrid"] = grid
+            maps["probe_volume"] = None   # the window glass probe cubes (rc2016.levels.probe_volume)
+            if grid is not None:
+                try:
+                    from rc2016.levels.probe_volume import load_probe_volume
+                    maps["probe_volume"] = load_probe_volume(archive, grid)
+                except Exception as exc:   # the window glass keeps the environment reflection
+                    print(f"probe volume unavailable: {type(exc).__name__}: {exc}", file=sys.stderr)
             return maps
         sky["environment_loader"] = environment_loader   # Level atmosphere lighting, built on demand
     return sky

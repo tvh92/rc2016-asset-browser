@@ -80,8 +80,9 @@ class RuleBindingTests(unittest.TestCase):
                      'Tw * (0.5 * z2 * u1.x + z1 * m2.x) + Bw * (0.5 * z2 * u1.y + z1 * m2.y) + wn * (z1 * z2)',
                      'Ns = normalize(vNativeToView * Nn)',
                      'float F = uB.z * g7.g + pow(rim, 10.0)', 'F90 = vec3(sat(60.0 * F))',
-                     'windowEnvironment(reflect(-V, Ns), a)', '+ E * F)',
-                     'vec3 Q = uE.rgb * mask + uB.w * interior + uD.w * uD.rgb * pow(0.5 + mask, 5.0) * c9 * (1.0 + uE.w * E)',
+                     'vec3 Rs = reflect(-V, Ns)', 'vec3 sky = windowEnvironment(Rs, a)',
+                     'uProbeOn ? windowProbeReflection(vTintWorldPos, transpose(vNativeToView) * Rs, sky) : sky', '+ E * F)',
+                     'vec3 Q = uE.rgb * mask + uB.w * interior + uD.w * uD.rgb * pow(0.5 + mask, 5.0) * c9 * (1.0 + uE.w * sky)',
                      'color = (uC.x * interior.b + Ld) * Q + spec', 'alpha = 1.0'):
             self.assertIn(text, branch)
 
