@@ -14,7 +14,7 @@ A Windows desktop tool that reads the Ratchet & Clank (PS4, 2016) game archive d
 | `rc2016/export/` | Portable model export and the Blender conversion script |
 | `rc2016/formats/` | Archive, index, model, skeleton, texture, material and animation decoders |
 | `rc2016/shaders/` | Materialgraph shader analysis: GCN decoder, translation, families, Blender node emission and validation |
-| `rc2016/pipeline/` | Research Blender pipeline (`run.py` CLI, `builder.py` in Blender), deferred BRDF (`game_shader.py`), scene defaults, lighting, profiles, per-weapon assemblies (`weapons/`) |
+| `rc2016/pipeline/` | Research Blender pipeline (`run.py` CLI, `builder.py` in Blender), deferred BRDF (`game_shader.py`), scene defaults, lighting, profiles, weapon profile data (`weapons/`) |
 | `assets/` | Shared review lighting (JSON + CC0 HDRI) and the captured game-view tables |
 | `third_party/` | ALERT `dat1lib` (GPL-3.0, weapon config links) and opengnm `gcn_types.h` (MIT) |
 
@@ -46,7 +46,6 @@ Details and CLI options are in [pipeline](docs/pipeline.md); these are the traps
 - Keep native Y-up values for numerical checks; apply the presentation basis to displayed objects only.
 - Build a candidate `.blend`, reopen and validate it in a separate Blender process, then promote atomically. One failed model must not discard the other results.
 - Lighting defaults are review lighting, not game lighting; the captured Veldin look is opt-in. Missing Cycles or HDRI must fail loudly; never edit global Blender preferences.
-- Weapon V1/V5 variants switch with ordinary eye hiding and `hide_render`; never with viewport disable, view-layer exclusion or `hide_viewport`.
 - Any code change invalidates cached builds (`run.py` fingerprints the package); that is intended.
 
 ## Testing
