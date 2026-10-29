@@ -80,7 +80,7 @@ class FlatSurfaceTests(unittest.TestCase):
         self.assertEqual(got['k'], 0.0)
 
     def test_glsl_branches(self):
-        for text in ('uBasicFlatColor ? vec3(0.0) : uFlatColour', 'F0 = vec3(uFlatSpec.x)', 'sqrt(clamp(uFlatSpec.y', 'albedo * uK'):
+        for text in ('uBasicFlatColor ? vec3(0.0) : (uFlatSpec.z > 0.5 && uHasC) ? uFlatColour * (c.r + c.g + c.b) : uFlatColour', ': vec3(uFlatSpec.x)', 'sqrt(clamp(uFlatSpec.y', 'albedo * uK'):
             self.assertIn(text, FRAGMENT)
 
     def test_basic_flat_color_reads_material_instance_and_emits_independently(self):
@@ -139,7 +139,7 @@ class FlatSurfaceTests(unittest.TestCase):
         self.assertEqual(signed_flat['emission_scale'], -2.0)
         self.assertAlmostEqual(signed_flat['f0'], -0.2)
         self.assertAlmostEqual(signed_flat['gloss'], -0.4)
-        self.assertIn('uBasicFlatColor ? vec3(0.0) : uFlatColour', FRAGMENT)
+        self.assertIn('uBasicFlatColor ? vec3(0.0) : (uFlatSpec.z > 0.5 && uHasC) ? uFlatColour * (c.r + c.g + c.b) : uFlatColour', FRAGMENT)
         self.assertIn('if (uBasicFlatColor) color += uFlatColour * uBasicFlatEmissionScale', FRAGMENT)
 
     def test_basic_flat_color_rejects_malformed_and_nonfinite_overrides(self):
