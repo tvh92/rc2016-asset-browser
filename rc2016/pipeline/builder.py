@@ -914,7 +914,7 @@ def validate(job):
                 assert modifiers,'Weighted native mesh is not bound to the selected armature: '+obj.name
         source_materials=[m for m in bpy.data.materials if m.get('source_material_path')]
         # A model whose only slots reference no material asset keeps its labelled placeholder instead.
-        placeholder_materials=[m for m in bpy.data.materials if m.get('source_material_unset')]
+        placeholder_materials=[m for m in bpy.data.materials if m.get('source_material_unset') or m.get('source_material_absent')]
         assert source_materials or placeholder_materials,'No source materials survived reopen'
         for material in source_materials+placeholder_materials:
             output=material.node_tree.nodes.get('Material Output')

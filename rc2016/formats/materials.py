@@ -744,6 +744,7 @@ def prepare_materials(archive, model_geometry, output_dir, export_textures, log,
                 shader_translation,profile,shader_preflights,graph_paths)
         except Exception as exc:
             result=dict(index=source['index'],name=source['name'],path=canonical,status='failed',reason=str(exc),textures=[])
+            if not material_ids:result['absent_from_archive']=True   # no archive record at all, not an ambiguous or undecodable one
             errors.append(result.copy())
         material_results.append(result)
         dump(material_dir/(f"{source['index']:03d}_"+source['name'].replace('/','_').replace('\\','_')+'.json'),result)

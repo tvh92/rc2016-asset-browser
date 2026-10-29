@@ -1348,6 +1348,10 @@ def validate_polygon_used_material_preflights(descriptors, objects):
                 if expected.get("status") == "unset":
                     assert mat and mat.get("source_material_unset") and mat.get("source_material_path") == "" and                         mat.get("shader_status") == "unset_source_material",                         "Unset source material slot %d is not a labelled placeholder" % source_index
                     continue
+                if expected.get("status") == "failed" and expected.get("absent_from_archive"):
+                    assert (mat and mat.get("source_material_absent") and mat.get("source_material_path") == expected.get("path")
+                            and mat.get("shader_status") == "failed"), "Absent source material slot %d is not a labelled placeholder" % source_index
+                    continue
                 if expected.get("status") == "failed":
                     raise AssertionError("Polygon-used source material %d (%s) failed to prepare: %s" % (
                         source_index, expected.get("path"), expected.get("reason")))

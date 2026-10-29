@@ -322,6 +322,11 @@ def _material(source):
         material['source_material_unset']=True
         principled.label='UNSET SOURCE MATERIAL SLOT (placeholder)'
         principled.inputs['Base Color'].default_value=(1.0,0.0,1.0,1.0)
+    elif source.get('absent_from_archive'):
+        # The model names a material the archive does not contain; nothing similar is substituted.
+        material['source_material_absent']=True
+        principled.label='SOURCE MATERIAL ABSENT FROM ARCHIVE (placeholder)'
+        principled.inputs['Base Color'].default_value=(1.0,0.0,1.0,1.0)
     role_nodes={};path_nodes={}
     for index,entry in enumerate(source.get('textures',[])):
         node=nodes.new('ShaderNodeTexImage');node.name=f"Source texture {index:03d} | {entry['role']}";node.label=entry['path'];node.image=_image(entry)
