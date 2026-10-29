@@ -239,6 +239,32 @@ LIQUID_ORIENTATION_CONSTANTS = dict(
     presentation=True, game_equivalence=False, writer='F0F45D78',
     frozen_inputs=dict(CB0_99=0.0, CB0_95=1.0, instance_fade=0.0, instance_flags=0x2261, geometric_aa=0.0, fog=1.0,
                        ssr=False, alpha_test=False, waterline=False, record_origin='model origin'))
+# Novalis window glass, forward program 8DF14766 of jn_glass_parallax_mask (pass contract 0; docs/material-decoding/
+# novalis-window-glass.md, evidence Research/2026-10-29_novalis-window-glass/WINDOW_GLASS_DECODE.md). Slots in API order
+# (API = 5 + resource index): 5 mask (R), 6 window normal (world UV), 7 glass _g (world UV), 8 detail normal (UV1),
+# 9 painted glass _c (world UV), 10 interior height (alpha) and 11 interior colour, read as one image. The forward
+# pass of the viewer binds two images (_n, _pick): the interior (_n, mipmapped) and the glass _g (_pick); the other
+# slots are resolved and listed, not drawn. Labelled preview: game_equivalence stays False.
+WINDOW_GLASS_GRAPH_SHA256 = 'bc5bb839d7b389638d55b0bb8784798aade5215aa31e5fd692bdf970ffd89c2c'
+WINDOW_GLASS_SLOTS = (('mask', 0x49A7866B0056CBD0), ('window_normal', 0x49A7866B641CFAC2), ('glass_g', 0x49A7866B1576D848),
+                      ('detail_normal', 0x49A7866B7AE34E7A), ('glass_c', 0x49A7866BABDAD780),
+                      ('interior_height', 0x49A7866BB521DFCB), ('interior', 0x49A7866B40A7D737))
+WINDOW_GLASS_CONSTANTS = dict(
+    presentation=True, game_equivalence=False, writer='8DF14766', world_uv_scale=0.075,
+    frozen_inputs=dict(mask=0.0, painted_glass=False, ao=1.0, specular_occlusion=1.0, ssr=False, light_list=False,
+                       width_factor=1.0, fog=1.0, instance_flags=0x2061, program_variant='8DF14766 (pass contract 0)'),
+    limitations=(
+        'labelled preview, not game-equivalent: the engine probe ambient A_c, probe/cube reflection E_c and sun are '
+        'replaced by the viewer lighting (rig or HDRI)',
+        'no screen-space reflection (r = 0) and no engine light list',
+        'the forward pass binds two images: the mask (API 5, taken as 0), the window and detail normal maps (API 6, 8; '
+        'geometric normal instead) and the painted-glass _c layer (API 9, omitted) are not drawn',
+        'ambient occlusion is taken as 1, so the specular occlusion is 1',
+        'the parallax tangent frame comes from screen derivatives, not the vertex tangent; outside a level the world '
+        'projection uses the model\'s own space',
+        'the interior texture is sampled trilinear; the game samples it with 2x anisotropic wrap filtering',
+        'the decoded program matches its capture to within about 0.1 % at most pixels, with residuals of up to about '
+        '30 % (red channel) at some pixels'))
 # Decoded writers that do not read _g as coloured F0 + gloss alpha (first matching prefix wins).
 # g_mode 'grey': F0 = grey spec*_g.G, gloss = sqrt(sat(gloss*_g.R)); 'grey_skin': the basic_skin
 # front-end (F0 cap 0.5). self_lit 'g_blue' takes the mask from _g.B instead of _c.a.
@@ -398,6 +424,15 @@ GRAPH_RULES = (
      dict(forward='glass_liquid', writer='F0F45D78', constants=LIQUID_ORIENTATION_CONSTANTS,
           _graph_sha256=LIQUID_ORIENTATION_GRAPH_SHA256, slots={'_n': LIQUID_ORIENTATION_FLOW_SLOT},
           params=(('gloss', 0x24F4CA4C, 1), ('fill', 0x66583BF6, 1)))),
+    # Novalis window glass 8DF14766 (pass contract 0): exact graph + SHA only (docs/material-decoding/novalis-window-glass.md).
+    # Opaque; diffuse light x albedo plus the reflection term, with the engine lighting replaced by the viewer's.
+    ('materialgraph/global/basic_glass/jn_glass_parallax_mask.',
+     dict(forward='window_glass', writer='8DF14766', constants=WINDOW_GLASS_CONSTANTS,
+          _graph_sha256=WINDOW_GLASS_GRAPH_SHA256, slots={'_n': WINDOW_GLASS_SLOTS[6][1], '_pick': WINDOW_GLASS_SLOTS[2][1]},
+          params=(('colour', 0x7F058428, 3), ('gloss', 0x24F4CA4C, 1), ('mask_tint', 0x93C5FD2C, 3), ('sky_weight', 0xEBF9478B, 1),
+                  ('tint', 0x4B4DAB19, 3), ('parallax_depth', 0x5DB5EFC7, 1), ('glass_weight', 0xAF4BB549, 1),
+                  ('rim_exp', 0xECE213A3, 1), ('f0_weight', 0x62835AF9, 1), ('interior_weight', 0xEE0F9FF8, 1),
+                  ('interior_light', 0x1B128294, 1)))),
     # Other models/enm_blarg_saucer/evidence/GLASS_DECODE.md (FEEC00CE). The graph binds two textures,
     # by slot hash: the colour-pick palette (api5) and Patterns_cma in the _n slot (api6). The
     # material's _c/_g use slots this graph does not have, so the writer never reads them.
@@ -608,6 +643,14 @@ def material_flags(data):
     """Render-state flags word of a decoded .material, or None."""
     offset, size = _sections(data).get(MATERIAL_FLAGS_SECTION, (0, 0))
     return struct.unpack_from('<I', data, offset + 16)[0] if size >= 20 else None
+
+
+def texture_is_srgb(archive, texture_path):
+    """True when the texture's native DXGI format is an sRGB one (SRGB_FORMATS), read from its built header."""
+    built = [k for k in archive.resolve(texture_path) if archive.entries[k]['built_path'].lower().endswith('.built')]
+    if len(built) != 1:
+        raise ValueError(f'Texture {texture_path} has {len(built)} built assets')
+    return parse_header(asset_data(archive, built[0]))['format'] in SRGB_FORMATS
 
 
 def blend_state(flags):
@@ -1317,6 +1360,17 @@ def material_texture_paths(archive, material_path: str) -> dict:
         tube_paths = {tube_slots.get(slot) or slots.get(slot) for slot in ION_TUBES_SLOTS}
         if len(tube_paths) != 1 or None in tube_paths or value(ION_TUBES_POWER_KEY, 0.0) != 0.0:
             rule = {}
+    window_slots = None
+    if rule.get('forward') == 'window_glass':
+        # Every decoded slot must resolve (material binding, else the graph's); the interior height (API 10) and colour
+        # (API 11) are read as one image. An unresolved or split slot fails loudly instead of guessing a texture.
+        bound_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
+        window_slots = {name: bound_slots.get(slot) or slots.get(slot) for name, slot in WINDOW_GLASS_SLOTS}
+        missing = [name for name, path in window_slots.items() if not path]
+        if missing:
+            raise ValueError('Novalis window glass 8DF14766: unresolved texture slot(s) %s' % ', '.join(missing))
+        if window_slots['interior_height'] != window_slots['interior']:
+            raise ValueError('Novalis window glass 8DF14766: interior height and colour slots bind different images')
     if rule.get('forward'):
         # Roles the writer binds by slot hash: the material's texture in that slot, else the graph's.
         material_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
@@ -1371,6 +1425,10 @@ def material_texture_paths(archive, material_path: str) -> dict:
                                  **({'graph_path': rule['graph_path'], 'graph_sha256': rule['graph_sha256']}
                                     if rule.get('graph_path') and rule.get('graph_sha256') else {}),
                                  **blend_state(material_flags(data)))
+        if window_slots:
+            # The viewer reads the interior from the _n unit, which carries no sRGB flag: the native format decides.
+            result['forward']['slots'] = window_slots
+            params['interior_srgb'] = texture_is_srgb(archive, window_slots['interior'])
         if rule.get('water_sampling'):
             result['forward']['sampling'] = sampling
             result['forward']['writer'] = sampling['shader_id']

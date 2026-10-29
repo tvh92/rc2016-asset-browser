@@ -1446,7 +1446,7 @@ def _viewer_skin_spec(P, skin, gR, gG, f, tinted):
     rgb = P.comb(*(P.sat(P.m('MULTIPLY', grey, ch)) for ch in P.sep(tinted))) if qwark else None
     return grey, gloss_in, rgb
 
-GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_liquid')
+GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_liquid', 'window_glass')
 
 
 def _viewer_rule_glass(mat, rule, key, img):
@@ -1594,6 +1594,47 @@ def _viewer_rule_glass(mat, rule, key, img):
                       'strength CB0[95] = 1 and the record origin is the model origin; F0 = 1 + rim^10 is clamped to 1 by the Principled '
                       'metallic base colour (the grey rim term is dropped); the alpha test (attribute0.2), the water_cma waterline mask, '
                       'the fade and the fill CB2[1] = %g are not drawn; the tangent frame is the UV tangent of Blender' % p['fill'])
+    elif key == 'window_glass':
+        # 8DF14766 (docs/material-decoding/novalis-window-glass.md), labelled preview: opaque, rgb = (CB2[16] T11.b + L) Q
+        # + k (lights + environment) F with Q = CB2[15] T11 (interior, _n slot), F = CB2[14] T7.g + rim^10 and gloss
+        # sat(0.5 + CB2[3] T7.r) from the glass _g (_pick slot) at the world UV 0.075 (dominant axis of the native normal).
+        rim = P.sat(P.m('MULTIPLY', P.m('POWER', om, P.const('glass rim exp', p['rim_exp'])), 4.0))
+        interior, glass_g = img('_n'), img('_pick')
+        if interior is not None:
+            inside = P.tex(interior, P.game_uv(), 'glass interior map').outputs['Color']
+        else:
+            inside = (0.0, 0.0, 0.0)
+            limits.append('no interior texture bound: Q = 0')
+        g_r, g_g = 0.0, 0.0
+        if glass_g is not None:
+            wx, wy, wz = P.sep(P.native_position())
+            nx, ny, nz = P.sep(P.native_normal())
+            ax, ay, az = P.m('ABSOLUTE', nx), P.m('ABSOLUTE', ny), P.m('ABSOLUTE', nz)
+            mx = P.m('MULTIPLY', P.ge(ax, ay), P.ge(ax, az))                       # x dominant
+            my = P.m('MULTIPLY', P.m('SUBTRACT', 1.0, mx), P.ge(ay, az))          # else y dominant
+            mz = P.m('SUBTRACT', P.m('SUBTRACT', 1.0, mx), my)                    # else z
+            sx, sy, sz = P.m('SIGN', nx), P.m('SIGN', ny), P.m('SIGN', nz)
+            u = P.m('ADD', P.m('ADD', P.m('MULTIPLY', mx, P.m('MULTIPLY', P.m('MULTIPLY', sx, wz), -1.0)), P.m('MULTIPLY', my, wx)),
+                    P.m('MULTIPLY', mz, P.m('MULTIPLY', sz, wx)))
+            v = P.m('ADD', P.m('MULTIPLY', P.m('ADD', mx, mz), P.m('MULTIPLY', wy, -1.0)), P.m('MULTIPLY', my, P.m('MULTIPLY', sy, wz)))
+            g_r, g_g, _ = P.sep(P.tex(glass_g, P.gl_coord(P.m('MULTIPLY', u, 0.075), P.m('MULTIPLY', v, 0.075)),
+                                      'glass world map').outputs['Color'])
+        else:
+            limits.append('no glass _g texture bound: T7 = 0')
+        gloss = P.sat(P.m('MULTIPLY_ADD', P.const('glass gloss', p['gloss']), g_r, 0.5))
+        F = P.m('ADD', P.m('MULTIPLY', P.const('glass f0 weight', p['f0_weight']), g_g), P.m('POWER', rim, 10.0))
+        lobe, f90 = spec_lobe(P.v('SCALE', tint_k(P.const3('glass tint', p['tint'])), F), gloss)
+        Q = P.v('SCALE', inside, P.const('glass interior weight', p['interior_weight']))
+        em = P.N.new('ShaderNodeEmission'); em.name = 'VR glass emission'
+        P.L.new(P.v('SCALE', Q, P.m('MULTIPLY', P.const('glass interior light', p['interior_light']), P.sep(inside)[2])),
+                em.inputs['Color'])
+        lit = add(add(diffuse(Q), em.outputs[0], 'VR glass interior'), scaled(lobe, f90), 'VR glass lit')
+        alpha = 1.0
+        limits.extend(p.get('limitations') or ())
+        limits.append('Novalis window glass 8DF14766 (labelled preview, game_equivalence False): the interior is sampled at the '
+                      'unshifted UV0 (the parallax march over T10.a is not built in Blender); the world projection uses the '
+                      'object (native model) space, not the level world position; the tint multiplies F, the '
+                      'environment reflection is the Principled split sum, not E F, and F90 is collapsed to its maximum channel')
     else:   # character_glass_02
         rim = P.sat(P.m('MULTIPLY', P.m('POWER', om, P.const('glass alpha exp', p['alpha_exp'])), 4.0))
         alpha = P.sat(P.m('ADD', P.const('glass alpha floor', p['alpha_floor']), rim))

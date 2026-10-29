@@ -1090,6 +1090,15 @@ void main() {
 #   (t = CB0[99] = 0), x, y = 2 q (S1 - S2) rg, N' = normalize((1 - x^2 - y^2) N + |y| B + |x| T) with B taken as in uKind 11.
 #   rim = sat(4 (1 - N.V)^2), F0 = 1 + rim^10 (grey), gloss alpha = 2^(-5.5 sqrt(gloss)); rgb = K Ld + tint specular (opaque). The alpha
 #   test (attribute0.2), the water_cma waterline mask and the fade are not drawn; the light list, probes, shadows, SSR and fog are the viewer rig.
+# uKind 14, window_glass 8DF14766 (jn_glass_parallax_mask, the Novalis windows; docs/material-decoding/novalis-window-glass.md),
+#   a labelled PREVIEW (game_equivalence False): uA = reflection tint T.rgb (CB2[8..10]), gloss CB2[3]; uB = parallax depth
+#   CB2[11], rim exponent CB2[13], F weight CB2[14], interior weight CB2[15]; uC.x = interior light CB2[16], uC.y = 1 when the
+#   interior image is sRGB. _n unit = interior _c (API 10 alpha height, API 11 colour), _pick unit = glass _g (API 7).
+#   Opaque: rgb = (CB2[16] T11.b + Ld) Q + k (sun/rig lobes + E F), Q = CB2[15] T11 at uv11 = uv - (1 - h*) D,
+#   D = CB2[11] f (V.T, -V.B) / (n.V), h* the secant height of int(64 - 48 sat(n.V)) T10.a steps; F = CB2[14] T7.g + rim^10,
+#   rim = sat(4 (1 - N.V)^CB2[13]), gloss g = sat(0.5 + CB2[3] T7.r) at the world UV 0.075 (dominant-axis projection),
+#   k = sat(T / luma(T)). The probe ambient A_c and reflection E_c are the viewer's ambient and environment, ao = 1, r = 0
+#   (no SSR), no light list; the mask (API 5, taken as 0), both normal maps (API 6, 8) and the painted glass (API 9) are not bound.
 # uKind 12, ion_tubes 86DDE345 (enm_victor_von_ion_tubes_w_rust; docs/material-decoding/victor-von-ion-tubes.md): uA = tint C
 #   (CB2[0..2]) and gain g (CB2[3]); uB.x = amplitude (CB0[115], labelled presentation value); uC = base colour; uD = rim colour.
 #   rgb = 2 amp (1 + m) (base + rim F^5 + m C g), m = sat(API6.R + API5.G) from the one electricity image, F = max(N.V - 0.001, 0);
@@ -1108,6 +1117,7 @@ void main() {
 #   SSR weight 0, scene depth (thickness) only where the viewer binds uSceneDepth.
 GLASS_FRAGMENT = """
 #version 120
+#extension GL_ARB_shader_texture_lod : enable
 uniform sampler2D uWaterHeightA; uniform sampler2D uWaterHeightB; uniform bool uHasWaterHeights;
 uniform vec4 uW[6];
 uniform sampler2D uWaterFoamA; uniform sampler2D uWaterFoamB; uniform bool uHasWaterFoam;
@@ -1120,7 +1130,7 @@ uniform vec4 uA; uniform vec4 uB; uniform vec4 uC; uniform vec4 uD; uniform vec4
 uniform sampler2D uTexN; uniform bool uHasN;
 uniform sampler2D uTexP; uniform bool uHasP; uniform bool uSrgbP;
 varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
-varying vec3 vTintWorldPos;
+varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm;
 const float PI = 3.14159265;
 vec3 linear(vec3 c) { return pow(max(c, 0.0), vec3(2.2)); }
 float sat(float x) { return clamp(x, 0.0, 1.0); }
@@ -1155,6 +1165,12 @@ vec3 glassSpec(vec3 N, vec3 V, vec3 L1, vec3 L2, vec3 C1, vec3 C2, vec3 F0, floa
 vec3 waterEnvironment(vec3 R) {
     if (!uLightingEnabled) return vec3(0.0);
     if (uLighting == 1) return prefiltered(uViewToWorld * R, 0.0);
+    return ambientLight(R);
+}
+// Stand-in for the window glass probe/cube reflection E_c (uKind 14): the viewer environment along R at GGX alpha a.
+vec3 windowEnvironment(vec3 R, float a) {
+    if (!uLightingEnabled) return vec3(0.0);
+    if (uLighting == 1) return prefiltered(uViewToWorld * R, sqrt(a));
     return ambientLight(R);
 }
 // One water normal sample: s = q (2 rg - 1), n = normalize(N (1 - s.s) + B s.y + T s.x) (F4D47ECE, no absolute values).
@@ -1239,6 +1255,51 @@ void main() {
         vec3 ambient = ambientLight(N);
         vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
         color = uA.rgb * Ld + uB.rgb * glassSpec(N, V, L1, L2, C1, C2, F0, a, ambient);
+        alpha = 1.0;
+    } else if (uKind == 14) { // jn_glass_parallax_mask 8DF14766 Novalis window glass PREVIEW (see the uKind 14 comment)
+        vec3 n = normalize(vNrm);
+        float face = gl_FrontFacing ? 1.0 : -1.0, nv = dot(n, V);
+        float rim = sat(4.0 * pow(om, uB.y));
+        vec2 uv11 = vUV;
+#ifdef GL_ARB_shader_texture_lod
+        vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
+        vec3 dp1 = dFdx(vPos), dp2 = dFdy(vPos);
+        vec3 t = cross(dp2, n) * du1.x + cross(n, dp1) * du2.x, b = cross(dp2, n) * du1.y + cross(n, dp1) * du2.y;
+        if (uHasN && nv != 0.0 && dot(t, t) > 0.0 && dot(b, b) > 0.0) {   // interior parallax: T10.a march, secant height h*
+            vec3 T = normalize(t), B = -normalize(b);
+            vec2 D = uB.x * face * vec2(dot(V, T), -dot(V, B)) / nv;
+            int count = int(64.0 - 48.0 * sat(nv));
+            float inv = 1.0 / float(count), depth = 1.0, oldHeight = 1.0, upper = 0.0, lower = 0.0, hu = 0.0, hl = 0.0;
+            vec2 p = vUV;
+            for (int i = 0; i < count; i++) {
+                p -= D * inv; float h = texture2DGradARB(uTexN, p, du1, du2).a;
+                float nextDepth = depth - inv;
+                if (h > nextDepth) { upper = depth; lower = nextDepth; hu = oldHeight; hl = h; break; }
+                oldHeight = h; depth = nextDepth;
+            }
+            float dPrev = upper - hu, dHit = lower - hl;
+            float hs = dPrev != dHit ? (dPrev * lower - dHit * upper) / (dPrev - dHit) : 0.0;
+            uv11 = vUV - (1.0 - hs) * D;
+        }
+#endif
+        vec3 interior = uHasN ? texture2D(uTexN, uv11).rgb : vec3(0.0);
+        if (uC.y > 0.5) interior = linear(interior);
+        // World projection of the glass maps (scale 0.075, dominant axis of the geometric normal, s its sign).
+        vec3 wn = normalize(vTintWorldNrm), aw = abs(wn), W = vTintWorldPos;
+        vec2 wuv = aw.x >= aw.y && aw.x >= aw.z ? vec2(-sign(wn.x) * W.z, -W.y)
+                 : aw.y >= aw.z ? vec2(W.x, sign(wn.y) * W.z) : vec2(sign(wn.z) * W.x, -W.y);
+        vec3 g7 = uHasP ? texture2D(uTexP, 0.075 * wuv).rgb : vec3(0.0);
+        if (uSrgbP) g7 = linear(g7);
+        float a = pow(2.0, -5.5 * sqrt(sat(0.5 + uA.w * g7.r)));      // mask (API 5) taken as 0
+        float F = uB.z * g7.g + pow(rim, 10.0);
+        vec3 k = clamp(uA.rgb / max(dot(vec3(0.2126, 0.7152, 0.0722), uA.rgb), 1e-6), 0.0, 1.0);
+        vec3 ambient = ambientLight(N);
+        vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
+        vec3 F0 = vec3(F), F90 = vec3(sat(60.0 * F));
+        vec3 spec = k * (ggxGlass(N, V, L1, F0, F90, a) * C1 + ggxGlass(N, V, L2, F0, F90, a) * C2
+                         + windowEnvironment(reflect(-V, N), a) * F);   // Wocc = 1 (ao 1), r = 0
+        vec3 Q = uB.w * interior;                                       // + Z mask (0) + painted glass (not bound)
+        color = (uC.x * interior.b + Ld) * Q + spec;
         alpha = 1.0;
     } else if (uKind == 9) { // character_glass_02 4DF1D438
         if (uHasN) {
@@ -1464,7 +1525,7 @@ FRAGMENT = FRAGMENT.replace("// @lighting\n", LIGHTING+FOG+_SCENE_OUTPUT)
 GLASS_FRAGMENT = GLASS_FRAGMENT.replace("// @lighting\n", LIGHTING+FOG)
 GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4, "bright_glow": 5,
                "eye_cornea": 6, "number_display": 7, "glass_basic": 8, "glass_cg02": 9, "glass_jn": 10, "glass_thumper": 11,
-               "ion_tubes": 12, "glass_liquid": 13}
+               "ion_tubes": 12, "glass_liquid": 13, "window_glass": 14}
 
 
 def frame_fade(time, rate):
@@ -1523,6 +1584,10 @@ def glass_uniforms(forward, time=None):
     if forward["kind"] == "glass_liquid":
         return (GLASS_KINDS["glass_liquid"], (*p["body"], p["normal_strength"]), (*p["spec_tint"], p["gloss"]),
                 (p["fill"], 0.0, 0.0, 0.0), (0.0,) * 4, (0.0,) * 4)
+    if forward["kind"] == "window_glass":
+        return (GLASS_KINDS["window_glass"], (*p["tint"], p["gloss"]),
+                (p["parallax_depth"], p["rim_exp"], p["f0_weight"], p["interior_weight"]),
+                (p["interior_light"], 1.0 if p.get("interior_srgb") else 0.0, 0.0, 0.0), (0.0,) * 4, (0.0,) * 4)
     if forward["kind"] == "glass_cg02":
         return (GLASS_KINDS["glass_cg02"], (*p["body"], p["gloss"]), (*p["tint"], p["tint_scale"]),
                 (p["env_scale"], p["env_exp"], p["alpha_floor"], p["alpha_exp"]), (*p["rim_colour"], p["rim_exp"]),

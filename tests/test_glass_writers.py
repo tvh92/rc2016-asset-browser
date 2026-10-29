@@ -88,8 +88,9 @@ class GlassRuleTests(unittest.TestCase):
             self.assertEqual(rule_coverage([graph])[0], EXACT)
             self.assertEqual(GLASS_KINDS[kind], {'glass_basic': 8, 'glass_cg02': 9, 'glass_jn': 10}[kind])
             self.assertEqual(tp._graph_rule([graph.replace('.materialgraph', '_extra.materialgraph')]), {})
-        # sibling graphs with their own, undecoded writers
-        for sibling in ('jn_glass_rain', 'jn_glass_parallax_mask', 'basic_glass_keyable', 'character_glass_03'):
+        # sibling graphs with their own, undecoded writers (jn_glass_parallax_mask has a hash-bound rule:
+        # tests/test_window_glass_rule.py)
+        for sibling in ('jn_glass_rain', 'basic_glass_keyable', 'character_glass_03'):
             self.assertEqual(tp._graph_rule(['materialgraph/global/basic_glass/%s.materialgraph' % sibling]), {})
         self.assertEqual(tp._graph_rule(['materialgraph/global/basic_glass/character_glass.materialgraph'])['forward'], 'character_glass')
 
