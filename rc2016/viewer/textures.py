@@ -813,6 +813,14 @@ def material_texture_paths(archive, material_path: str) -> dict:
             path = instance_slots.get(slot) or slots.get(slot)
             if path:
                 result[role] = path
+    else:
+        # A texture whose name carries no role suffix (rc1 ``tie1530_tex1``) is still bound to the
+        # graph slot whose default has that role; it replaces a missing or placeholder default.
+        instance_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
+        for slot, default in slots.items():
+            role, path = _role(default), instance_slots.get(slot)
+            if role and path and path != default and not is_placeholder_texture(path) and (role not in result or is_placeholder_texture(result[role])):
+                result[role] = path
     rows = {}
     try:
         from rc2016.formats.materials import extract_material_parameters
