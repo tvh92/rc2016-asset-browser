@@ -432,15 +432,15 @@ def classify_absent_texture(path, refs, material_data, graph_datas):
 # Viewer reading keys that change the result beyond the generic _g/self-lit front-end
 # ('screen' is the viewer's forward 'screen' entry; 'bng'/'bng_detail' the basic_normal_gloss variants).
 VIEWER_RULE_EXTRAS=('pick','tint','spec_tint','arch_sequence','vehicle','glow','two_color_metal','puddles',
-    'foliage','za_fresnel_power','screen','rock_blend','grass_blend','mud_blend','crater_blend','coral_blend','sediment_blend','bng','bng_detail','facing_glow','bright_center','parallax','alpha_cut','leaf_colour','bright_glow','fresnel_tint','number_display','victor_reticle','flat_surface','eye_cornea','hair','skin','skin_detail','glass_basic','glass_cg02','glass_jn','glass_thumper','glass_liquid','window_glass','ion_tubes','liquid_flow','water','lava_surface','swap')
+    'foliage','za_fresnel_power','screen','rock_blend','grass_blend','mud_blend','crater_blend','coral_blend','sediment_blend','bng','bng_detail','facing_glow','bright_center','parallax','alpha_cut','leaf_colour','bright_glow','fresnel_tint','number_display','victor_reticle','flat_surface','eye_cornea','hair','skin','skin_detail','glass_basic','glass_cg02','glass_jn','glass_thumper','glass_liquid','window_glass','ion_tubes','liquid_flow','water','lava_surface','zurkon','swap')
 # Terms rc_game_shader.apply_viewer_graph_rule builds (same GLSL math as gl_shading.FRAGMENT/GLASS_FRAGMENT).
 VIEWER_RULE_BUILT=frozenset(VIEWER_RULE_EXTRAS)-{'parallax','swap'}
 # Extra source images each term samples (texture_preview.material_texture_paths roles).
 VIEWER_TERM_ROLES=dict(lava_surface=tuple('_lava_surface_api%d' % api for api in range(5,9)),water=('_water_height_a','_water_height_b','_n','_pick'),liquid_flow=('_c','_g'),pick=('_pick',),tint=('_h','_tint_detail','_tint_palette','_pick'),arch_sequence=('_h','_sequence','_pick'),
-    vehicle=('_pick','_vehicle_p2','_h'),glow=('_h','_glow_parallax'),puddles=('_puddle_noise','_puddle_ripple'),victor_reticle=('_reticle',),
+    vehicle=('_pick','_vehicle_p2','_h'),glow=('_h','_glow_parallax'),puddles=('_puddle_noise','_puddle_ripple'),victor_reticle=('_reticle',),zurkon=('_h',),
     screen=('_screen_timeline','_c','_n','_pick','_g'),rock_blend=('_rock_mask','_rock_c2','_rock_g2','_rock_n2'),grass_blend=('_grass_r','_grass_g','_grass_g9'),mud_blend=('_mud_h','_mud_c','_mud_g2','_mud_n7','_mud_n8'),crater_blend=('_crater_c',),coral_blend=('_coral_n_wavy','_coral_n_coral','_coral_c_wavy','_coral_c_rock','_coral_g_rock','_coral_g_sand','_coral_cma','_caustic_blur','_caustic_noise','_caustic_smoke'),sediment_blend=('_sed_slag_n','_sed_noise','_sed_gm','_sed_slag_cma','_sed_slag_gma','_sed_wall_g','_sed_wall_n','_sed_wall_c','_sed_sediment'),bng=('_h',),bng_detail=('_bng_detail',),number_display=('_c','_n','_pick','_g'),parallax=('_parallax_height',),leaf_colour=('_cma','_cmb'),eye_cornea=('_n',),skin_detail=('_bng_detail',),glass_thumper=('_n','_pick'),glass_liquid=('_n',),window_glass=('_n','_pick','_window_mask','_window_n1','_window_n2','_window_c'),ion_tubes=('_pick',))
 # Writers whose tangent normal z is 1-x*x-y*y (gl_shading.FRAGMENT), not sqrt(1-x*x-y*y).
-VIEWER_LINEAR_Z_TERMS=('bng','foliage','za_fresnel_power','glow','two_color_metal','rock_blend','grass_blend','mud_blend','coral_blend','sediment_blend','parallax','hair','skin')
+VIEWER_LINEAR_Z_TERMS=('bng','foliage','za_fresnel_power','glow','two_color_metal','rock_blend','grass_blend','mud_blend','coral_blend','sediment_blend','parallax','hair','skin','zurkon')
 
 
 def _viewer_rule_wins_translation(translated, rule):
@@ -560,7 +560,7 @@ def viewer_graph_rule(archive, material_path, bound_paths=None):
         else:ported.append(key);continue
         unported.append(key)
     terms={key:paths[key] for key in ('pick','tint','spec_tint','arch_sequence','vehicle','glow','two_color_metal',
-        'puddles','za_fresnel_power','rock_blend','grass_blend','mud_blend','crater_blend','coral_blend','sediment_blend','bng','facing_glow','bright_center','parallax','alpha_cut','leaf_colour','fresnel_tint','flat_surface','hair','skin','skin_detail','liquid_flow','lava_surface') if key in paths and key in present+['bng']}
+        'puddles','za_fresnel_power','rock_blend','grass_blend','mud_blend','crater_blend','coral_blend','sediment_blend','bng','facing_glow','bright_center','parallax','alpha_cut','leaf_colour','fresnel_tint','flat_surface','hair','skin','skin_detail','liquid_flow','lava_surface','zurkon') if key in paths and key in present+['bng']}
     if forward.get('kind')=='water' and forward.get('sampling'):terms['water']=forward
     if forward.get('kind')=='screen':terms['screen']=forward
     if forward.get('kind')=='bright_glow':terms['bright_glow']=forward

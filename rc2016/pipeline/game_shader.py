@@ -1961,6 +1961,8 @@ def apply_viewer_graph_rule(mat, source):
     za_w = None
     bright = terms.get('bright_center') if on('bright_center') else None
     bright_self = None
+    zurkon = terms.get('zurkon') if on('zurkon') else None
+    zurkon_rim = zurkon_tint = zurkon_self = None
     if on('za_fresnel_power'):    # E08357DC: geometry-normal rim suppression of spec and gloss
         ndv = P.sat(P.v('DOT_PRODUCT', Ng, V))
         za_w = P.m('SUBTRACT', 1.0, P.m('POWER', P.m('SUBTRACT', 1.00100004673, ndv), P.const('za fresnel power', terms['za_fresnel_power']), clamp=True))
@@ -2463,6 +2465,22 @@ def apply_viewer_graph_rule(mat, source):
             if bright.get('preview_override'):
                 limits.append('PREVIEW OVERRIDE, not decoded: %s; the decoded writer 0CD2AAFB (white base plus a CB0[115] facing glow) '
                               'is not drawn and the halo mesh Qwark adds does not exist on this model' % bright['preview_override'])
+        if zurkon:   # 2F0F9452 rel 964-976 / 13220-13552: r = |1.001 - sat(N.V)| with the mapped normal
+            r = P.m('ABSOLUTE', P.m('SUBTRACT', 1.00100004673, P.sat(P.v('DOT_PRODUCT', final_n, V))))
+            zurkon_rim = P.m('POWER', r, P.const('zurkon rim exponent', zurkon['rim_exponent']))
+            facing_w = P.m('SUBTRACT', 1.0, P.m('POWER', r, P.const('zurkon facing exponent', zurkon['facing_exponent'])))
+            glow_w = P.m('MULTIPLY', P.m('MULTIPLY', P.const('zurkon glow gain', zurkon['glow_gain']),
+                                         c.outputs['Alpha'] if c is not None else 0.0), gB)
+            albedo = P.v('SCALE', P.v('ADD', albedo, P.v('SCALE', P.const3('zurkon glow colour', zurkon['glow_colour']), glow_w)), facing_w)
+            if zurkon.get('texture_tint') and img('_h') is not None:   # rel 11512-11564: specularColor_c / Rec.709 luma
+                t = img('_h').outputs['Color']; tr, tg, tb = P.sep(t)
+                luma = P.m('MAXIMUM', P.m('MULTIPLY_ADD', tb, 0.0722, P.m('MULTIPLY_ADD', tg, 0.7152, P.m('MULTIPLY', tr, 0.2126))), 1e-6)
+                zurkon_tint = P.v('SCALE', t, P.m('DIVIDE', 1.0, luma))
+            elif not zurkon.get('texture_tint'):
+                zurkon_tint = P.const3('zurkon specular tint', zurkon['tint'])
+            zurkon_self = c.outputs['Alpha'] if c is not None else None
+            view_terms.append('Mrs. Zurkon rim and facing')
+            limits.append('zurkon (%s): %s' % (zurkon['writer'], zurkon['limitation']))
         glow_mask = P.sep(img('_h').outputs['Color'])[0] if glow and img('_h') else (0.0 if glow else None)
         if glow and int(glow['kind']) == 1:   # 2685144F: _c.rgb never sampled; environment = viewer ambient
             up = P.sep(final_n)[2]
@@ -2506,6 +2524,13 @@ def apply_viewer_graph_rule(mat, source):
             gloss_in = P.m('SQRT', P.sat(P.const('flat surface gloss', flat['gloss']))); spec = gloss_scale = 1.0
             if flat.get('model') not in ('basic_flat_color', 'colored_gloss_detail'):
                 self_mask = P.const('flat surface self-lit mask', 1.0)
+        if zurkon and g is not None:   # 2F0F9452 rel 980-1052: rim-boosted grey F0 and gloss argument; the tint multiplies F0
+            rw = P.const('zurkon rim weight', zurkon['rim_weight'])
+            f0v = P.m('MULTIPLY', P.const('zurkon F0 scale', zurkon['f0_scale']), P.m('MULTIPLY_ADD', rw, zurkon_rim, gG))
+            f0 = P.comb(f0v, f0v, f0v) if zurkon_tint is None else P.v('MULTIPLY', P.comb(f0v, f0v, f0v), zurkon_tint)
+            gloss_in = P.m('SQRT', P.sat(P.m('MULTIPLY', P.const('zurkon gloss scale', zurkon['gloss_scale']),
+                                                P.m('MULTIPLY_ADD', rw, zurkon_rim, gR))))
+            spec = gloss_scale = 1.0
         if bright:   # D14A48D7: grey constant F0, gloss = sqrt(sat(G))
             fs = P.const('bright centre F0', bright['f0']); f0 = P.comb(fs, fs, fs)
             gloss_in = P.m('SQRT', P.sat(P.const('bright centre gloss', bright['gloss_sq']))); spec = gloss_scale = 1.0
@@ -2549,6 +2574,8 @@ def apply_viewer_graph_rule(mat, source):
             self_mask = arch_self; k = 5.0 * float(arch['intensity'])   # K = 5 * intensity
         elif bright_self is not None:
             self_mask = bright_self   # K from material key 0xB7305C21
+        elif zurkon_self is not None:
+            self_mask = zurkon_self   # 2F0F9452 rel 13508-13552: (diffuse light + _c.a) x albedo, K = 1 from the rule
     if reticle_emission is not None:
         self_mask = reticle_emission; k = 1.0
     # Wire the BRDF.

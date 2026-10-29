@@ -340,6 +340,8 @@ uniform bool uVehicle; uniform sampler2D uTexVehicleP2; uniform bool uHasVehicle
 uniform vec3 uVehicleA; uniform vec3 uVehicleB; uniform vec3 uVehicleP; // palette blend, rim suppression
 uniform float uArchPhase; // t=0; instance interpolants frozen to zero
 uniform bool uFacingGlow; uniform vec4 uFacingGlowP; uniform vec3 uFacingGlowQ; // amplitude, exponent, a scale, a offset; bias, g scale
+uniform bool uZurkon; uniform vec4 uZurkonP; uniform vec4 uZurkonQ; uniform vec3 uZurkonGlow; uniform vec3 uZurkonTint; uniform bool uSrgbZurkonTint;
+// 2F0F9452: P = F0 scale, gloss scale, rim weight, rim exponent; Q = facing exponent, glow gain, texture tint (1/0), unused
 uniform bool uBrightCentre; uniform bool uBrightWhite; uniform vec3 uBrightEdge; uniform vec3 uBrightColour; uniform vec4 uBrightP; // D14A48D7: exponent, weight, F0, gloss^2
 varying vec3 vPos; varying vec3 vNrm; varying vec2 vUV;
 varying vec3 vTintWorldPos; varying vec3 vTintWorldNrm; varying vec3 vTangent; varying vec3 vTintViewOffset;
@@ -959,6 +961,19 @@ void main() {
         brightSelfLit = uK * albedo.r * f.r;
         albedo *= f;
     }
+    float zurkonRim = 0.0; vec3 zurkonTint = vec3(1.0);
+    if (uMode == 2 && uZurkon) { // 2F0F9452 rel 964-976 / 13220-13552: r = |1.001 - sat(N.V)|, mapped normal
+        float r = abs(1.00100004673 - clamp(dot(N, V), 0.0, 1.0));
+        zurkonRim = pow(r, uZurkonP.w);
+        vec3 zg = uHasG ? texture2D(uTexG, materialUV).rgb : vec3(0.0);
+        if (uSrgbG) zg = linear(zg);
+        albedo = (1.0 - pow(r, uZurkonQ.x)) * (albedo + uZurkonQ.y * c.a * zg.b * uZurkonGlow);
+        if (uZurkonQ.z > 0.5) { // rel 11512-11564: specularColor_c / Rec.709 luma
+            vec3 t = uHasH ? texture2D(uTexH, materialUV).rgb : vec3(1.0);
+            if (uSrgbZurkonTint) t = linear(t);
+            zurkonTint = t / max(dot(t, vec3(0.2126, 0.7152, 0.0722)), 1e-6);
+        } else zurkonTint = uZurkonTint;
+    }
     vec3 L1 = rigKey(), L2 = rigFill();
     vec3 C1 = keyColour(), C2 = fillColour();
     vec3 ambient = ambientLight(N);
@@ -1001,6 +1016,10 @@ void main() {
             }
             if (uVehicle) { F0 = vec3(0.0, 0.0999755859375, 0.0999755859375); gloss = 0.948681201424; } // packed rel 860, AA=1
             if (uBrightCentre) { F0 = vec3(uBrightP.z); gloss = sqrt(clamp(uBrightP.w, 0.0, 1.0)); }
+            if (uZurkon) { // rel 980-1052: rim-boosted grey F0 and gloss argument; tint on F0 (the game tints the summed specular)
+                F0 = uZurkonP.x * (gl.g + uZurkonP.z * zurkonRim) * zurkonTint;
+                gloss = sqrt(clamp(uZurkonP.y * (gl.r + uZurkonP.z * zurkonRim), 0.0, 1.0));
+            }
             if (uFlatSurface) { F0 = uFlatSpec.w > 0.5 ? uFlatF0 : vec3(uFlatSpec.x); gloss = sqrt(clamp(uFlatSpec.y, 0.0, 1.0)); }
             if (uVictorReticle) { F0 = uReticleF0; gloss = 0.0; }
             if (uTintVariant >= 3) gloss = sqrt(clamp(uGlossScale * gl.r * 2.0 * tintDetailMask, 0.0, 1.0));
@@ -1025,6 +1044,7 @@ void main() {
         } else if (uBngKind == 1 || uBngKind == 2 || uBngKind == 4 || uBngKind == 6 || uBngKind == 9 || uBngKind == 10) color += albedo * bngSelfLit;
         else if (uArchSequence) color += albedo * archSelfLit;
         else if (uBrightCentre) color += albedo * brightSelfLit;
+        else if (uZurkon) color += albedo * c.a; // rel 13508-13552: (diffuse light + _c.a) x albedo
         else if (uFlatSurface) color += albedo * uK;
         else if (uCoralBlend) color += albedo * coralSelfLit * uK;
         else if (uHasC) color += albedo * (uSelfLitG ? gl.b : c.a) * uK;
@@ -1776,7 +1796,7 @@ OPAQUE_UNIFORMS = (
     "uTexP", "uHasP", "uSrgbP", "uPick", "uSpecTint", "uTint", "uTintA", "uTintB", "uTintP", "uTintM",
     "uTintVariant", "uTintPalette", "uTintPaletteBlend", "uTintDetailP", "uTintWorldOrigin",
     "uTexTintDetail", "uHasTintDetail", "uSrgbTintDetail", "uTexH", "uHasH", "uArchSequence", "uTexSequence", "uHasSequence", "uArchColour", "uArchP", "uArchPhase",
-    "uFacingGlow", "uFacingGlowP", "uFacingGlowQ", "uBrightCentre", "uBrightWhite", "uBrightEdge", "uBrightColour", "uBrightP",
+    "uFacingGlow", "uFacingGlowP", "uFacingGlowQ", "uZurkon", "uZurkonP", "uZurkonQ", "uZurkonGlow", "uZurkonTint", "uSrgbZurkonTint", "uBrightCentre", "uBrightWhite", "uBrightEdge", "uBrightColour", "uBrightP",
     "uSceneGeometry", *LIGHTING_UNIFORMS)
 GLASS_UNIFORMS = ("uSkin", "uBoneTex", "uBoneWidth", "uKind", "uA", "uB", "uC", "uD", "uE",
                   "uWaterHeightA", "uWaterHeightB", "uHasWaterHeights", "uTexN", "uHasN", "uTexP", "uHasP", "uSrgbP",

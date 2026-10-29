@@ -841,7 +841,7 @@ class ModelViewport(_TkFrame):
         """One material's texture_preview entry with its textures uploaded: {role: (GL id, sRGB)} + parameters.
 
         ``by_path`` maps texture path -> (GL id, sRGB) or None and is shared across materials."""
-        uploaded = {key: entry[key] for key in ("k", "g_mode", "self_lit", "spec", "gloss", "pick", "tint", "spec_tint", "forward", "arch_sequence", "vehicle", "facing_glow", "bright_center", "flat_surface", "liquid_flow", "no_shadow_cast") if key in entry}
+        uploaded = {key: entry[key] for key in ("k", "g_mode", "self_lit", "spec", "gloss", "pick", "tint", "spec_tint", "forward", "arch_sequence", "vehicle", "facing_glow", "bright_center", "flat_surface", "liquid_flow", "no_shadow_cast", "zurkon") if key in entry}
         if "two_color_metal" in entry:
             uploaded["two_color_metal"] = entry["two_color_metal"]
         if "puddles" in entry:
@@ -1619,6 +1619,14 @@ class ModelViewport(_TkFrame):
         sh.glUniform1i(u["uFacingGlow"], 1 if fg and level else 0)
         sh.glUniform4f(u["uFacingGlowP"], *(float(fg.get(key, 0.0)) for key in ("amplitude", "exponent", "a_scale", "a_offset")))
         sh.glUniform3f(u["uFacingGlowQ"], float(fg.get("bias", 0.0)), float(fg.get("g_scale", 0.0)), 0.0)
+        zk = entry.get("zurkon") or {}   # Mrs. Zurkon 2F0F9452: _c, _g, _n and the specular tint in the "_h" role
+        sh.glUniform1i(u["uZurkon"], 1 if zk and level == 2 else 0)
+        sh.glUniform4f(u["uZurkonP"], *(float(zk.get(key, 0.0)) for key in ("f0_scale", "gloss_scale", "rim_weight", "rim_exponent")))
+        sh.glUniform4f(u["uZurkonQ"], float(zk.get("facing_exponent", 1.0)), float(zk.get("glow_gain", 0.0)),
+                       1.0 if zk.get("texture_tint") else 0.0, 0.0)
+        sh.glUniform3f(u["uZurkonGlow"], *(float(x) for x in zk.get("glow_colour", (0.0, 0.0, 0.0))))
+        sh.glUniform3f(u["uZurkonTint"], *(float(x) for x in zk.get("tint", (1.0, 1.0, 1.0))))
+        sh.glUniform1i(u["uSrgbZurkonTint"], 1 if zk and entry.get("_h") and entry["_h"][1] else 0)
         bc = entry.get("bright_center") or {}
         sh.glUniform1i(u["uBrightCentre"], 1 if bc and level == 2 else 0)
         sh.glUniform1i(u["uBrightWhite"], 1 if bc.get("albedo_white") else 0)

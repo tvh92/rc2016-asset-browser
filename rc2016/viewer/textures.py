@@ -185,6 +185,11 @@ CLANK_ANTENNA_GRAPH_SHA256 = 'd3e43dc01666699bfbaefedf8b018eb9db4e34583d1ad859cf
 CLANK_ANTENNA_CENTRE_GAIN = 10.0                  # literal multiplier of the centre colour in the writer
 CLANK_ANTENNA_GLOSS_SQ = (-math.log2(1.0 - 0.9890101552009583) / 11.0) ** 2
 CLANK_ANTENNA_BLINK_RATE = 4.2                    # phase = 4.2 CB0[99]; no per-vertex phase term
+# Mrs. Zurkon's own graph (forward program 2F0F9452, pass 0; Research/decodes/2026-10-30_mrs-zurkon-glow/README.md).
+# Glow colour = (dw6, G0 + G1 dw6, 1 - dw6) with dw6 = key 0xFD2DF20D: 0 is the stored cyan, 1 red. Literals from the code.
+MRS_ZURKON_GRAPH_SHA256 = '33c7fd2cf4991229c5f79eb498c0e513707a06963e464b00c1d99f943697e38b'
+MRS_ZURKON_GLOW_GREEN = (0.28314873576164246, -0.1502804160118103)
+MRS_ZURKON_GLOW_GAIN = 20.0
 FLAT_SURFACE_GOO = dict(colour_key=0x34392B3C, f0_key=0x17DE448C, gloss_key=GLOSS_SCALE_KEY)
 BASIC_FLAT_COLOR_SHA256 = '6d9bcad5a9dab38dd5988195cc9e87514c08a90c6b8fa899c2d21f3e42c14f95'
 GRASS_BLEND_GRAPH_SHA256 = '3634199da89150f03c56b21d855f83d840e4dd06eeb33b748f8e16df1bd7ba65'
@@ -569,6 +574,12 @@ GRAPH_RULES = (
     # F0 = grey Fs, gloss = sqrt(sat(G)). w is a blink sat(1 + (1 - B)(0.5 sin(phase) - 0.5)), frozen at sin = 0.
     ('materialgraph/character/hero/hero_bright_center_light/hero_bright_center_light_variable.',
      dict(self_lit='bright_center', self_lit_key=0xB7305C21, bright_center=True)),
+    # Forward program 2F0F9452 (pass 0; 0C76522B is the same shading without the normal map), no deferred writer:
+    # r = |1.001 - sat(N.V)|; F0 = grey dw3 (_g.G + dw7 r^dw8), gloss = sqrt(sat(dw4 (_g.R + dw7 r^dw8))); albedo =
+    # (1 - r^dw9)(_c.rgb + 20 _c.a _g.B glow colour), self-lit _c.a; specular tint specularColor_c / luma (dw10 >= 1).
+    # Normal z = 1 - x*x - y*y. Exact graph + SHA only.
+    ('materialgraph/character/enemy/enm_mrs_zurkon/enm_mrs_zurkon.',
+     dict(g_mode='grey', self_lit_key=None, linear_z=True, zurkon=True, _graph_sha256=MRS_ZURKON_GRAPH_SHA256)),
     # Deferred writer 7BEC2D2F of the sibling graph (Clank's antenna, hero_bright_center_light_clank): the same
     # bright-centre form with the exponent taken directly from key 0x9E351D7A, a literal centre gain of 10, a baked
     # gloss and a blink phase of 4.2 CB0[99] only, so CB0[99] = 0 gives the exact sin = 0 weight. `_c` is the material's
@@ -1563,6 +1574,29 @@ def material_texture_paths(archive, material_path: str) -> dict:
             weight=min(1.0, max(0.0, 1.0 - 0.5 * (1.0 - steady))),
             f0=value(0x08FE9F29, 0.2), gloss_sq=value(0x0B065E94, 0.35), steady=steady, writer='D14A48D7')
         result['spec'] = result['gloss'] = 1.0   # F0 and gloss are the writer's constants
+    if rule.get('zurkon'):
+        # Pass-contract APIs 11 (_c), 6 (_g; APIs 7 and 9 bind the same texture), 5 (_n), 10 (specular tint, '_h' role).
+        material_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
+        for role, slot in (('_c', 0x49A7866BABDAD780), ('_g', 0x49A7866B1576D848),
+                           ('_n', 0x49A7866B7AE34E7A), ('_h', 0x49A7866B0056CBD0)):
+            path = material_slots.get(slot) or slots.get(slot)
+            if path: result[role] = path
+            else: result.pop(role, None)
+        result.pop('_pick', None)
+        blend, dissolve = value(0xFD2DF20D, 0.0), value(0x6424A3B7, 0.0)
+        result['zurkon'] = dict(
+            f0_scale=value(0x223DC13C, 1.0), gloss_scale=value(0x4B804EF2, 1.0), rim_weight=value(0x9BFF641D, 0.5),
+            rim_exponent=value(0x9ACE7120, 2.0), facing_exponent=value(0x07CC3BD9, 1.0), glow_blend=blend,
+            glow_colour=[blend, MRS_ZURKON_GLOW_GREEN[0] + MRS_ZURKON_GLOW_GREEN[1] * blend, 1.0 - blend],
+            glow_gain=MRS_ZURKON_GLOW_GAIN, tint=vec3(0x3FC4F8A5, (1.0, 1.0, 1.0)),
+            texture_tint=value(0x3DD27B1C, 1.0) >= 1.0, dissolve=dissolve, writer='2F0F9452',
+            graph_path=rule['graph_path'], graph_sha256=rule['graph_sha256'], game_equivalence=False,
+            limitation='the engine light loop, probes, shadows and fog are replaced by the viewer lighting; the specular '
+                       'tint multiplies F0 (the game tints the accumulated specular, F90 included); geometric specular AA '
+                       'and the normal-map distance fade are taken as 1' + (
+                       '; the dissolve term (key 0x6424A3B7 = %g) is not drawn' % dissolve if dissolve else ''))
+        result['k'] = 1.0   # self-lit = albedo x _c.a (rel 13508-13552)
+        result['spec'] = result['gloss'] = 1.0   # F0 and gloss come from the term
     return result
 
 
@@ -2064,7 +2098,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             paths = {}
         entry.update(k=paths.get('k', 0.0), g_mode=paths.get('g_mode', 'colored'), self_lit=paths.get('self_lit', 'c_alpha'),
                      spec=paths.get('spec', 1.0), gloss=paths.get('gloss', 1.0))
-        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'bright_center', 'flat_surface', 'parallax', 'parallax_normal', 'hair', 'skin', 'skin_detail', 'fresnel_tint', 'liquid_flow', 'lava_surface'):
+        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'bright_center', 'flat_surface', 'parallax', 'parallax_normal', 'hair', 'skin', 'skin_detail', 'fresnel_tint', 'liquid_flow', 'lava_surface', 'zurkon'):
             if paths.get(key):
                 entry[key] = paths[key]
         if paths.get('foliage'):

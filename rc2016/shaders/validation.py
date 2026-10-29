@@ -446,6 +446,13 @@ def _viewer_expected_constants(rule):
         l = terms["leaf_colour"]; e.update({"leaf exponent":l["exponent"], "leaf scale":l["scale"], "leaf palette":l["palette_rgb"]})
     if "fresnel_tint" in ported:
         f = terms["fresnel_tint"]; e.update({"mushroom fresnel exponent": f["exponent"], "mushroom fresnel colour": f["colour"]})
+    if "zurkon" in ported:
+        z = terms["zurkon"]
+        e.update({"zurkon rim exponent": z["rim_exponent"], "zurkon facing exponent": z["facing_exponent"],
+                  "zurkon glow gain": z["glow_gain"], "zurkon glow colour": z["glow_colour"], "zurkon rim weight": z["rim_weight"],
+                  "zurkon F0 scale": z["f0_scale"], "zurkon gloss scale": z["gloss_scale"]})
+        if not z.get("texture_tint"):
+            e["zurkon specular tint"] = z["tint"]
     if "hair" in ported:
         h = terms["hair"]; e.update({"hair albedo": h["albedo"], "hair spec colour": h["spec"], "hair rim exponent": h["rim_exponent"],
                                      "hair gloss scale": h["gloss_scale"], "hair normal strength": h["normal_strength"]})
@@ -637,6 +644,14 @@ def _viewer_required(rule, has_n):
         names += ["leaf exponent", "leaf scale", "leaf palette"]; req("_cma")
     if "fresnel_tint" in ported:
         names += ["mushroom fresnel exponent", "mushroom fresnel colour"]; req("_c")
+    if "zurkon" in ported:
+        names += ["zurkon rim exponent", "zurkon facing exponent", "zurkon glow gain", "zurkon glow colour"]; req("_c")
+        if tex.get("_g"):
+            names += ["zurkon rim weight", "zurkon F0 scale", "zurkon gloss scale"]; req("_g")
+        if terms["zurkon"].get("texture_tint"):
+            req("_h")
+        else:
+            names.append("zurkon specular tint")
     if "hair" in ported:
         names += ["hair albedo", "hair spec colour", "hair rim exponent", "hair gloss scale", "hair normal strength"]; req("_c", "_g")
     if "skin" in ported:
