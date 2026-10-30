@@ -356,6 +356,37 @@ def _convert_maps(c_tex, g_tex, n_tex, paths):
 
 
 # ---------------------------------------------------------------- geometry / skeleton / clips
+def bind_worlds(rows):
+    """World matrix of every joint in a model's bind pose: the local scale, rotation and translation rows chained down
+    the parents (column vectors)."""
+    worlds = []
+    for row in rows:
+        x, y, z, w = row['rotation_xyzw']
+        rotation = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                             [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                             [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+        local = np.eye(4)
+        local[:3, :3] = rotation * np.asarray(row['scale'])
+        local[:3, 3] = row['translation']
+        worlds.append(worlds[row['parent']] @ local if row['parent'] >= 0 else local)
+    return worlds
+
+
+def root_shift(part_rows, body_indices, body_worlds, tolerance=1e-3):
+    """The translation that takes an attach part's bind pose onto the body's, or None when the joints disagree.
+
+    A part's skeleton is the body's joints with the root moved to the origin: every joint has the body joint's
+    rotation and scale and the same offset from it, and the part's vertices are relative to that moved root."""
+    shifts = []
+    for world, index in zip(bind_worlds(part_rows), body_indices):
+        if np.abs(world[:3, :3] - body_worlds[index][:3, :3]).max() > tolerance:
+            return None
+        shifts.append(body_worlds[index][:3, 3] - world[:3, 3])
+    if not shifts or any(np.abs(shift - shifts[0]).max() > tolerance for shift in shifts):
+        return None
+    return shifts[0]
+
+
 def selected_meshes(decoded, lod, look):
     from rc2016.formats.native_model import _selected_meshes
     chosen = set(_selected_meshes(decoded['looks'], decoded['mesh_record_count'], lod, look))
@@ -841,10 +872,11 @@ class ModelExporter:
         """The model's attach parts as extra skinned parts of its own rig, and notes for the parts left out.
 
         A part (``<model folder>/bangle_set/<name>_attach/<name>_attach.model``) carries a small skeleton of the
-        body's own joints with the root moved to the origin, so on its own it cannot follow the body's pose. Its
-        vertices are in the body's bind space (checked below against the body's bounds), so skinning them to the
-        body's joints with the body's inverse binds puts them where the part sits on the body and moves them with
-        it. Returns ([{path, meshes, parts}], notes); every part that does not meet the checks is skipped with a note.
+        body's own joints with the root moved to the origin, so on its own it cannot follow the body's pose, and
+        its vertices are relative to that root. Adding the offset from the part's joints to the body's puts them in
+        the body's bind space (checked below against the body's bounds), so skinning them to the body's joints with
+        the body's inverse binds puts them where the part sits on the body and moves them with it.
+        Returns ([{path, meshes, parts}], notes); every part that does not meet the checks is skipped with a note.
         """
         from rc2016.formats.animation_transforms import model_skeleton
         folder = source_path.rsplit('/', 1)[0] + f'/{self.ATTACH_FOLDER}/'
@@ -853,6 +885,7 @@ class ModelExporter:
         if not paths:
             return [], []
         body_joint = {row['hash']: index for index, row in enumerate(library.rows)}
+        body_worlds = bind_worlds(library.rows)
         lows = np.min([p['arrays']['positions'].min(axis=0) for p in body_parts], axis=0)
         highs = np.max([p['arrays']['positions'].max(axis=0) for p in body_parts], axis=0)
         margin = float(np.linalg.norm(highs - lows)) * self.ATTACH_MARGIN
@@ -866,9 +899,14 @@ class ModelExporter:
                 notes.append(f'Attach part {name} skipped: {len(ids)} archive entries for its path.')
                 continue
             try:
-                joints = [row['hash'] for row in model_skeleton(archive.decode(ids[0]))]
+                part_rows = model_skeleton(archive.decode(ids[0]))
+                joints = [row['hash'] for row in part_rows]
                 if not joints or any(h not in body_joint for h in joints):
                     notes.append(f'Attach part {name} skipped: its skeleton has joints that are not in the body rig.')
+                    continue
+                shift = root_shift(part_rows, [body_joint[h] for h in joints], body_worlds)
+                if shift is None:
+                    notes.append(f"Attach part {name} skipped: its skeleton is not the body's with a moved root.")
                     continue
                 cached = self.loader._decode(archive, ids[0], path, 'export', self.texture_cache)['decoded']
                 meshes = selected_meshes(cached, options.lod, options.look)
@@ -879,6 +917,7 @@ class ModelExporter:
                     arrays = mesh_arrays(mesh, len(joints))
                     if arrays['skin'] is None:
                         raise ValueError('it has no skin weights')
+                    arrays['positions'] = (arrays['positions'] + shift).astype(np.float32)
                     if (arrays['positions'].min(axis=0) < lows - margin).any() or (arrays['positions'].max(axis=0) > highs + margin).any():
                         raise ValueError("its vertices lie outside the body's bind space")
                     arrays['skin']['joints'] = remap[arrays['skin']['joints']]

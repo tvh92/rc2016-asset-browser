@@ -6,7 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from rc2016.export.models import ExportOptions, ModelExporter
+import numpy as np
+
+from rc2016.export.models import ExportOptions, ModelExporter, bind_worlds, root_shift
 
 ROOT = os.environ.get('RC2016_RESEARCH')
 ZURKON = ('6d8653db864e5c7763b2', 'character/enemy/enm_mrs_zurkon/enm_mrs_zurkon.model')
@@ -23,6 +25,31 @@ class AttachmentOption(unittest.TestCase):
         self.assertTrue(ExportOptions().attachments)
         self.assertTrue(ExportOptions().key()['attachments'])
         self.assertFalse(ExportOptions(attachments=False).key()['attachments'])
+
+
+def row(parent, translation):
+    return dict(parent=parent, translation=translation, rotation_xyzw=[0, 0, 0, 1], scale=[1, 1, 1])
+
+
+class RootShift(unittest.TestCase):
+    BODY = [row(-1, [0, 1, 0]), row(0, [0, 2, 0]), row(1, [0, 3, 0])]
+
+    def test_a_part_with_its_root_at_the_origin_shifts_by_the_body_root(self):
+        part = [row(-1, [0, 0, 0]), row(0, [0, 2, 0])]
+        shift = root_shift(part, [0, 1], bind_worlds(self.BODY))
+        self.assertEqual(shift.tolist(), [0, 1, 0])
+
+    def test_a_part_with_the_body_translations_has_no_shift_to_find(self):
+        part = [row(-1, [0, 1, 0]), row(0, [0, 2, 0])]
+        self.assertEqual(root_shift(part, [0, 1], bind_worlds(self.BODY)).tolist(), [0, 0, 0])
+
+    def test_joints_that_disagree_give_no_shift(self):
+        part = [row(-1, [0, 0, 0]), row(0, [0, 5, 0])]
+        self.assertIsNone(root_shift(part, [0, 1], bind_worlds(self.BODY)))
+
+    def test_a_rotated_joint_gives_no_shift(self):
+        part = [dict(row(-1, [0, 0, 0]), rotation_xyzw=[0, 0, 1, 0]), row(0, [0, 2, 0])]
+        self.assertIsNone(root_shift(part, [0, 1], bind_worlds(self.BODY)))
 
 
 @unittest.skipUnless(ROOT, 'needs the game archive (RC2016_RESEARCH)')
@@ -42,6 +69,17 @@ class ZurkonAttachments(unittest.TestCase):
         self.assertEqual({n['skin'] for n in nodes}, {0})
         self.assertEqual(sum(1 for n in nodes if 'attach' in n['name']), 9)
         self.assertEqual(len(info['attached_parts']), 9)
+
+    def test_a_part_sits_at_its_root_offset_on_the_body(self):
+        _info, document = self.export()
+        hatch = next(n for n in document['nodes'] if n.get('name', '').startswith('enm_mrs_zurkon_bangle_00_hatch') and 'mesh' in n)
+        primitive = document['meshes'][hatch['mesh']]['primitives'][0]
+        low = document['accessors'][primitive['attributes']['POSITION']]['min']
+        high = document['accessors'][primitive['attributes']['POSITION']]['max']
+        # authored around the door hinge at the part's origin; the body's door joint is at (0, 0.60, 2.15)
+        self.assertGreater(low[2], 1.7)
+        self.assertLess(high[2], 3.6)
+        self.assertGreater(low[1], 0.5)
 
     def test_the_body_alone_without_the_option(self):
         _result, document = self.export(attachments=False)

@@ -137,14 +137,26 @@ def _deforming_rig(objects):
     return None, None
 
 
+def _root_shift(plate_rig, body_rig, tolerance=1e-3):
+    """Where the plate's root joint sits on the body: the one translation from each of the plate's joints to the
+    body's joint of the same name, or None when the joints disagree (the plate is then not the body's skeleton cut
+    down to a root at the origin)."""
+    offsets = [body_rig.data.bones[bone.name].head_local - bone.head_local for bone in plate_rig.data.bones
+               if bone.name in body_rig.data.bones and not bone.name.startswith("__")]
+    if not offsets or any((offset - offsets[0]).length > tolerance for offset in offsets):
+        return None
+    return offsets[0].copy()
+
+
 def _bind_to_owner_rigs(defs, loaded):
     """Skin every ``rig_of`` member (an attach plate) to the rig of the member it names; returns {index: owner index}.
 
     A plate's own .blend carries a small skeleton with its root moved to the origin, so it cannot follow its body's
-    pose. Its vertices are in the body's bind space, so pointing its Armature modifiers at the body's rig (the vertex
-    groups are the body's joint names) puts it on the body and moves it with it. The plate's own armatures are
-    removed from the group. A plate whose joints, rig transform or mesh transform do not match the body's is kept
-    on its own rig and named in the log."""
+    pose, and its vertices are relative to that root. Moving them by the offset from the plate's joints to the body's
+    puts them in the body's bind space; pointing its Armature modifiers at the body's rig (the vertex groups are the
+    body's joint names) then moves it with the body. The plate's own armatures are removed from the group. A plate
+    whose joints, rig transform or mesh transform do not match the body's is kept on its own rig and named in the
+    log."""
     index_of = {member["name"]: index for index, member in enumerate(defs)}
     bound = {}
     for index, member in enumerate(defs):
@@ -158,12 +170,17 @@ def _bind_to_owner_rigs(defs, loaded):
             continue
         joints = {bone.name for bone in rig.data.bones}
         unknown = sorted({group.name for obj in meshes for group in obj.vertex_groups} - joints)
-        moved = any(obj.matrix_basis != rig.matrix_basis for obj in own_rigs) or any(
-            obj.matrix_basis != body_mesh.matrix_basis for obj in meshes)
-        if unknown or moved:
+        own_rig, _mesh = _deforming_rig(loaded[index])
+        moved = own_rig is None or any(obj.matrix_basis != rig.matrix_basis for obj in own_rigs) or any(
+            obj.matrix_basis != body_mesh.matrix_basis or obj.matrix_basis != own_rig.matrix_basis for obj in meshes)
+        shift = None if unknown or moved else _root_shift(own_rig, rig)
+        if shift is None:
             print("GROUP plate kept on its own rig", member["name"], "unknown joints:", unknown[:5], "moved:", moved,
                   flush=True)
             continue
+        for obj in meshes:  # the plate's vertices are relative to its own root joint
+            obj.data.transform(Matrix.Translation(shift))
+            obj.data.update()
         for obj in meshes:
             for modifier in obj.modifiers:
                 if modifier.type == "ARMATURE":
