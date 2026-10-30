@@ -10,7 +10,6 @@ from array import array
 import math
 from pathlib import Path
 import sys
-import tempfile
 
 from rc2016.formats.archive import Archive, decompress, locate
 
@@ -24,11 +23,11 @@ HIDDEN_MARKERS = ('collision', 'camera_coll', '_coll.model', 'environment/templa
 def open_archive(source_root):
     """Archive for a source root that holds the level assets (the `Image0` tree)."""
     root = locate(Path(source_root).expanduser().resolve())
-    archive = Archive(root, Path(tempfile.gettempdir()) / 'rcps4-level-view', lambda *_a, **_k: None)
+    cache = Path(__file__).resolve().parents[2] / '.cache'
+    archive = Archive(root, cache / 'level_view', lambda *_a, **_k: None)
     archive.verify_repeats = False   # preview only: skip re-reading every repeated copy of an asset
     from rc2016.viewer.textures import TextureDiskCache
     from rc2016.viewer.native_glsl import TranslationDiskCache
-    cache = Path(__file__).resolve().parents[2] / '.cache'
     archive.texture_disk_cache = TextureDiskCache(cache / 'texture_preview')
     archive.translation_disk_cache = TranslationDiskCache(cache / 'native_translation')
     archive.probe_disk_cache = cache / 'probe_faces'   # decoded reflection cubes (probe_lighting.probe_faces)
