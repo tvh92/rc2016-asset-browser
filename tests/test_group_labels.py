@@ -35,9 +35,15 @@ class AttachOwnerTests(unittest.TestCase):
     def test_two_models_in_the_body_folder_are_ambiguous(self):
         self.assertEqual(attach_owners([self.BODY, 'c/enm/zurkon/other.model', self.PART]), {})
 
-    def test_non_attach_model_under_bangle_set_is_not_a_part(self):
-        plain = 'c/enm/zurkon/bangle_set/zurkon_bangle_00_hatch/zurkon_bangle_00_hatch.model'
-        self.assertEqual(attach_owners([self.BODY, plain]), {})
+    def test_pads_without_attach_in_the_name_follow_the_body_too(self):
+        pads = 'c/wpn/thumper/bangle_set/thumper_bangle_v1_pads/thumper_bangle_v1_pads.model'
+        body = 'c/wpn/thumper/thumper.model'
+        self.assertEqual(attach_owners([body, pads]), {pads: body})
+
+    def test_debris_under_bangle_set_is_not_a_part(self):
+        for name in ('zurkon_bangle_00_chunk', 'zurkon_bangle_00_stump'):
+            debris = f'c/enm/zurkon/bangle_set/{name}/{name}.model'
+            self.assertEqual(attach_owners([self.BODY, debris]), {})
 
 
 if __name__ == '__main__':

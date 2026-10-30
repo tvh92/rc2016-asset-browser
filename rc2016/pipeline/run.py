@@ -901,9 +901,14 @@ def group_member_labels(paths):
     return labels
 
 
+DEBRIS_WORDS = {'chunk','stump'}
+
+
 def attach_owners(paths):
-    """{attach part path: body path} for each ``<folder>/bangle_set/<name>_attach/<name>_attach.model`` in ``paths``
-    whose body model (a ``.model`` directly in ``<folder>``) is also in ``paths``."""
+    """{part path: body path} for each ``<folder>/bangle_set/<name>/<name>.model`` in ``paths`` whose body model
+    (a ``.model`` directly in ``<folder>``) is also in ``paths``. Attach plates and pads (``zurkon_..._attach``,
+    ``thumper_..._pads``) are the body's skeleton cut down, so they follow its clips; a ``chunk`` or ``stump`` is
+    debris with a motion of its own and stays a separate model."""
     keyed = {str(path).replace(chr(92),'/').casefold(): path for path in paths}
     bodies = {}
     for key,path in keyed.items():
@@ -913,7 +918,7 @@ def attach_owners(paths):
     for key,path in keyed.items():
         folder,separator,rest = key.partition('/bangle_set/')
         stem = rest.rpartition('/')[2][:-len('.model')]
-        if separator and rest.endswith('.model') and 'attach' in stem.split('_') and len(bodies.get(folder,[])) == 1:
+        if separator and rest.endswith('.model') and not DEBRIS_WORDS.intersection(stem.split('_')) and len(bodies.get(folder,[])) == 1:
             owners[path] = bodies[folder][0]
     return owners
 
