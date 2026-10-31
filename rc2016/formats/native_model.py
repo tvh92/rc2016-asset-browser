@@ -295,12 +295,14 @@ def blender_safe_triangles(positions, triangles):
 
     Triangles with a repeated index, or whose (unscaled source) positions span zero
     area, crash Blender 5.0's custom-normal setter (mesh_normals_corner_custom_set)
-    or are rewritten on save/reopen. They cover no surface, so the importer leaves
-    them out; the source index buffer stays untouched and every dropped triangle is
-    returned with its source triangle index for the reports. Valid meshes come back
-    unchanged.
+    or are rewritten on save/reopen. A triangle on the same three vertices as an
+    earlier kept one is a duplicate face: Blender's validate() removes it, which
+    would no longer match the kept list. These cover no surface, so the importer
+    leaves them out; the source index buffer stays untouched and every dropped
+    triangle is returned with its source triangle index for the reports. Valid
+    meshes come back unchanged.
     """
-    kept, dropped = [], []
+    kept, dropped, seen = [], [], set()
     for index, tri in enumerate(triangles):
         tri = tuple(int(x) for x in tri)
         if len(set(tri)) < 3:
@@ -313,6 +315,11 @@ def blender_safe_triangles(positions, triangles):
         if not math.sqrt(sum(x*x for x in cross)) > 1e-12:
             dropped.append(dict(source_triangle_index=index, indices=list(tri), reason='zero_area'))
             continue
+        key = frozenset(tri)
+        if key in seen:
+            dropped.append(dict(source_triangle_index=index, indices=list(tri), reason='duplicate_face'))
+            continue
+        seen.add(key)
         kept.append(tri)
     return kept, dropped
 
