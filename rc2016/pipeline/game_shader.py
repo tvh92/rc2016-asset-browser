@@ -1116,7 +1116,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 21
+VIEWER_RULE_FRONTEND_VERSION = 22
 
 
 def _viewer_rule_images(nt):
@@ -1446,13 +1446,13 @@ def _viewer_skin_spec(P, skin, gR, gG, f, tinted):
     rgb = P.comb(*(P.sat(P.m('MULTIPLY', grey, ch)) for ch in P.sep(tinted))) if qwark else None
     return grey, gloss_in, rgb
 
-GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_liquid', 'window_glass')
+GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_patterned', 'glass_liquid', 'window_glass')
 
 
 def _viewer_rule_glass(mat, rule, key, img):
-    """Forward glass writers basic_glass 4FC5703F, character_glass_02 4DF1D438, jn_glass E7118623 and
-    wpn_thumper_glove_glass 5226F404 and the Hydrodisplacer liquid F0F45D78 (gl_shading.GLASS_FRAGMENT uKind 8, 9, 10,
-    11, 13). alpha comes from the rim,
+    """Forward glass writers basic_glass 4FC5703F, character_glass_02 4DF1D438, jn_glass E7118623,
+    wpn_thumper_glove_glass 5226F404, blarg_saucer_glass FEEC00CE and the Hydrodisplacer liquid F0F45D78
+    (gl_shading.GLASS_FRAGMENT uKind 8, 9, 10, 11, 2, 13). alpha comes from the rim,
     the lit part is a diffuse term plus the writers' specular lobe (F0, F90 = sat(60 F0), Schlick), the blend
     from the flags word.
     """
@@ -1570,6 +1570,29 @@ def _viewer_rule_glass(mat, rule, key, img):
                       'flags word, and the dither-kept opaque rim of the game is not drawn; the tint multiplies F0 and the Principled '
                       'F90 is collapsed to its maximum channel; the program variant (5226F404, with the pattern normal, or 1D429528 '
                       'without it) is not selected per draw' % (p['amplitude'], blend))
+    elif key == 'glass_patterned':
+        # FEEC00CE (Blarg saucer dome): rim from the geometry normal, Patterns_cma (_n slot) at uv * tiling perturbs the
+        # shading normal; P = the colour-pick palette at u; F0 = sat(inf P) (P2 + rim^10); rgb = specular + 0.400295 P Ld.
+        rim = P.sat(P.m('MULTIPLY', P.m('POWER', om, P.const('glass rim exp', p['rim_exp'])), 4.0))
+        pattern = img('_n')
+        if pattern is not None:
+            tiling = P.const('glass tiling', p['tiling'])
+            u, vb, _ = P.uv_split()
+            vec = P.comb(P.m('MULTIPLY', u, tiling), P.m('SUBTRACT', 1.0, P.m('MULTIPLY', P.m('SUBTRACT', 1.0, vb), tiling)))
+            x, y = P.rg(P.tex(pattern, vec, 'glass pattern map').outputs['Color'],
+                        P.sat(P.const('glass normal strength', p['normal_strength'])))
+            shade = P.v('NORMALIZE', P.tangent_normal(x, y, P.m('SUBTRACT', 1.0, P.dot2(x, y)), "glass pattern normal N'"))
+        else:
+            limits.append('no pattern texture bound: geometric normal')
+        pick = P.const3('glass pick rgb', p['pick_rgb'])
+        gate = P.vsat(P.v('SCALE', pick, 1e30))
+        f0 = P.v('SCALE', gate, P.m('ADD', P.const('glass f0', p['f0']), P.m('POWER', rim, 10.0)))
+        lobe, f90 = spec_lobe(f0, P.const('glass gloss', p['gloss']))
+        lit = add(diffuse(P.v('SCALE', pick, 0.400295)), scaled(lobe, f90), 'VR glass lit')
+        alpha = P.sat(P.m('ADD', P.const('glass rim bias', p['rim_bias']), rim))
+        limits.append('Blarg saucer glass FEEC00CE: the colour-pick palette is sampled once on the CPU at u = %g (%s), as the '
+                      'viewer samples it per fragment; the per-channel F90 = (F0 > 0) is 1 wherever F0 > 0'
+                      % (p['pick_u'], f.get('pick_source', 'palette')))
     elif key == 'glass_liquid':
         # F0F45D78 (docs/material-decoding/hydrodisplacer-liquid.md): opaque; the flow normal map (_n slot) is read at the model-space
         # XZ of the fragment, (0.4 gx, 0.466667 gz) and (gx / 3, gz / 3) with gx, gz = -x, -z; x, y = 2 q (S1 - S2) rg and
