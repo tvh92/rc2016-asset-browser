@@ -62,32 +62,34 @@ def zone_placements(archive, zone_path, prefix, anchor_model):
 
 
 def lead_with_anchor(rows):
-    """Rows with the anchor moved to the head of the other placed actors (``run.py --group-lead``), a viewing rule.
+    """Rows with the other placed actors lined up behind the anchor (``run.py --group-lead``), a viewing rule.
 
     The Pokitaru convoy placements are spawn positions, not a towing arrangement: convoys #1 and #3 put the five tanks
-    along the locomotive's local +Z, #2 along its local +X, and #1 has the locomotive behind the tank whose tow arm
-    points away from it. The tanks themselves hitch: each tank's arm reaches into the next tank's rear. So the others
-    keep their placements, ordered by distance from the anchor, and the anchor goes one median spacing of that line
-    beyond its far end, along the line from its nearest to its farthest member, with its own rotation. Every matrix is
-    then re-expressed relative to the moved anchor, which stays at its own build's position. Needs two other actors.
+    along the locomotive's local +Z, #2 along its local +X, #1 has the locomotive behind the tank whose tow arm points
+    away from it, and the line drifts sideways (3.6 units over convoy #1). The tanks themselves hitch in a straight
+    line: each tank's arm reaches into the next tank's rear. So the anchor leads and the others follow on one line:
+    the anchor axis (local +-X, +-Y or +-Z) nearest the line from the nearest to the farthest other actor, one median
+    spacing of that line apart, the farthest actor first behind the anchor and so on in reverse distance order. Every
+    member keeps its own rotation; the anchor stays at its own build's position. Needs two other actors.
     """
     anchor = next(i for i, row in enumerate(rows) if np.allclose(row['native_matrix'], np.eye(4)))
-    others = sorted((row for i, row in enumerate(rows) if i != anchor),
-                    key=lambda row: np.linalg.norm(np.array(row['native_matrix'])[3, :3]))
-    if len(others) < 2:
+    order = sorted((i for i in range(len(rows)) if i != anchor),
+                   key=lambda i: np.linalg.norm(np.array(rows[i]['native_matrix'])[3, :3]))
+    if len(order) < 2:
         raise ValueError('--group-lead needs at least two other placed actors to give a spacing')
-    points = [np.array(row['native_matrix'])[3, :3] for row in others]
+    points = [np.array(rows[i]['native_matrix'])[3, :3] for i in order]
     spacing = float(np.median([np.linalg.norm(b - a) for a, b in zip(points, points[1:])]))
-    direction = (points[-1] - points[0]) / np.linalg.norm(points[-1] - points[0])
-    head = points[-1] + direction * spacing
-    moved = []
-    for row in rows:
-        matrix = np.array(row['native_matrix'])
-        matrix[3, :3] -= head   # relative to an anchor translated by ``head`` (rotations are unchanged)
-        moved.append(dict(row, native_matrix=matrix.tolist()))
-    moved[anchor]['native_matrix'] = np.eye(4).tolist()
-    moved[anchor]['lead'] = dict(spacing=spacing, zone_offset=head.tolist(),
-                                 rule='anchor moved one median spacing beyond the far end of the other actors')
+    line = points[-1] - points[0]
+    axis = np.zeros(3)
+    axis[int(np.argmax(np.abs(line)))] = np.sign(line[np.argmax(np.abs(line))])
+    moved = [dict(row) for row in rows]
+    for rank, i in enumerate(reversed(order), 1):
+        matrix = np.array(rows[i]['native_matrix'])
+        matrix[3, :3] = -axis * spacing * rank   # behind the anchor along its own axis
+        moved[i]['native_matrix'] = matrix.tolist()
+    moved[anchor]['lead'] = dict(spacing=spacing, axis=axis.tolist(),
+                                 rule='others lined up behind the anchor along its nearest axis, median spacing apart, '
+                                      'farthest first')
     return moved
 
 

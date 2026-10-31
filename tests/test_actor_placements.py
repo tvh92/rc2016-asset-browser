@@ -80,14 +80,17 @@ class ZonePlacementTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'places'):
             self.rows(anchor='character/other.model')
 
-    def test_lead_moves_the_anchor_one_spacing_beyond_the_far_end(self):
-        tank = lambda z: dict(name='t', native_matrix=matrix(0, z))
-        rows = [tank(10), dict(name='h', native_matrix=np.eye(4).tolist()), tank(30), tank(18)]
+    def test_lead_lines_the_others_up_behind_the_anchor(self):
+        tank = lambda x, z: dict(name='t', native_matrix=matrix(x, z))
+        rows = [tank(0.5, 10), dict(name='h', native_matrix=np.eye(4).tolist()), tank(3, 30), tank(1, 18)]
         moved = P.lead_with_anchor(rows)
         self.assertTrue(np.allclose(moved[1]['native_matrix'], np.eye(4)))
-        self.assertAlmostEqual(moved[1]['lead']['spacing'], 10.0)   # median of the gaps 8 and 12
-        # The head lands at z = 40, so the tanks sit 30, 10 and 22 behind it.
-        self.assertEqual([np.array(moved[i]['native_matrix'])[3, 2] for i in (0, 2, 3)], [-30.0, -10.0, -22.0])
+        self.assertEqual(moved[1]['lead']['axis'], [0.0, 0.0, 1.0])
+        spacing = moved[1]['lead']['spacing']   # median of the two gaps between the tanks
+        self.assertAlmostEqual(spacing, np.median([np.hypot(0.5, 8), np.hypot(2, 12)]))
+        # The farthest tank comes first behind the anchor, then the others, on the axis with no sideways drift.
+        self.assertTrue(np.allclose([np.array(moved[i]['native_matrix'])[3, :3] for i in (2, 3, 0)],
+                                    [(0, 0, -spacing), (0, 0, -2 * spacing), (0, 0, -3 * spacing)]))
         with self.assertRaisesRegex(ValueError, 'two other'):
             P.lead_with_anchor(rows[:2])
 

@@ -1035,7 +1035,7 @@ def main():
     parser.add_argument('--group-actors',default='',metavar='ZONE:PREFIX',
         help='With --group-blend: fill the group with the actors of zone ZONE (archive path) whose placement name starts with PREFIX, each at its zone matrix relative to the first such actor of the first --model; repeated models are allowed, every placed model must be selected')
     parser.add_argument('--group-lead',action='store_true',
-        help='With --group-actors: move the anchor actor to the head of the others, one median spacing beyond their far end (a viewing rule for convoys whose spawn placements are not the towing order)')
+        help='With --group-actors: line the other actors up behind the anchor along its nearest axis, one median spacing apart (a viewing rule for convoys whose spawn placements are not the towing order)')
     parser.add_argument('--blend-only',action='store_true',help='After a fully successful run, keep only the delivered .blend files and the viewer animation index: delete reports, meshes, textures, caches and validation')
     parser.add_argument('--lighting-source',choices=('veldin','novalis','hdri'),default='hdri',
         help='hdri (default): the shared review lighting from --lighting-config; veldin: opt-in captured Veldin key light, ambient, exposure and RC PS4 Game tonemap; novalis: decoded probe')
