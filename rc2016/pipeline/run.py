@@ -923,7 +923,7 @@ def attach_owners(paths):
     return owners
 
 
-def assemble_group_blend(selection,manifest,args,log):
+def assemble_group_blend(selection,manifest,args,log,archive=None):
     """One .blend holding every delivered selected model, framed by one camera (rc2016/pipeline/group_blend.py).
 
     Runs after the per-model builds, so each member is its own finished, validated .blend. A failure is
@@ -935,6 +935,14 @@ def assemble_group_blend(selection,manifest,args,log):
         final=result.get('final')
         if result.get('status') in GROUP_STATUSES and final and Path(final).is_file():
             delivered.append((result.get('model',key),final))
+    if getattr(args,'group_actors',''):
+        try:members=placed_group_members(archive,selection,delivered,args,log)
+        except Exception as exc:
+            error=dict(group=name,error=str(exc),traceback=traceback.format_exc())
+            manifest['errors'].append(error)
+            manifest['group_blend']=dict(status='FAILED',name=name,error=str(exc))
+            log('group_blend_failed',**error);return
+        run_group_blend(name,members,manifest,args,log);return
     labels=group_member_labels([path for path,_ in delivered])
     mounts=idle_offsets([path for path,_ in delivered])
     owners=attach_owners([path for path,_ in delivered])
@@ -942,6 +950,36 @@ def assemble_group_blend(selection,manifest,args,log):
     members=[dict(name=label,blend=final,sha256=file_hash(final),**({'native_offset':list(mounts[path])} if path in mounts else {}),
         **({'rig_of':label_of[owners[path]]} if path in owners else {}))
         for label,(path,final) in zip(labels,delivered)]
+    run_group_blend(name,members,manifest,args,log)
+
+
+def placed_group_members(archive,selection,delivered,args,log=None):
+    """Group members for ``--group-actors ZONE:PREFIX``: one per matching zone actor, at its zone matrix relative to
+    the first matching actor of the first selected model (``actor_placements.zone_placements``). Every placed actor's
+    model must be selected and delivered. A placement is a rest arrangement, so members are shown in their bind pose."""
+    from rc2016.pipeline.actor_placements import lead_with_anchor,placement_labels,zone_placements
+    zone,separator,prefix=args.group_actors.partition(':')
+    if not separator or not prefix:
+        raise ValueError('--group-actors takes ZONE:PREFIX, for example levels/pokitaru/.../gp_flight.zone:Hydroharvester #1')
+    if not selection:
+        raise ValueError('--group-actors needs a selected model as its anchor')
+    rows,skipped=zone_placements(archive,zone,prefix,archive.entries[selection[0]]['path'])
+    if skipped and log:
+        log('group_actors_without_model',zone=zone,actors=skipped)
+    if getattr(args,'group_lead',False):
+        rows=lead_with_anchor(rows)
+    finals={path.replace(chr(92),'/').casefold():final for path,final in delivered}
+    missing=sorted({row['model'] for row in rows if row['model'] not in finals})
+    if missing:
+        raise ValueError('Placed actors need these models selected and delivered: '+', '.join(missing))
+    return [dict(name=label,blend=finals[row['model']],sha256=file_hash(finals[row['model']]),bind_pose=True,
+                 native_matrix=row['native_matrix'],placement=dict(zone=zone,actor=row['actor'],actor_id=row['id'],
+                 **({'lead':row['lead']} if 'lead' in row else {})))
+            for label,row in zip(placement_labels(rows),rows)]
+
+
+def run_group_blend(name,members,manifest,args,log):
+    """Build, reopen-validate and promote ``groups/<name>.blend`` from ``members`` (see ``assemble_group_blend``)."""
     if not members:
         manifest['group_blend']=dict(status='skipped',name=name,reason='no selected model was delivered')
         log('group_blend_skipped',name=name);return
@@ -994,6 +1032,10 @@ def main():
     parser.add_argument('--borrow-animset',action='append',default=[],
         help='Also offer this animset (archive path) when the game pairs it with another model whose rest rig matches the selected model; repeat for several')
     parser.add_argument('--group-blend',default='',help='Also write one .blend under groups/ holding every selected model that was delivered, framed by one camera. Names the file.')
+    parser.add_argument('--group-actors',default='',metavar='ZONE:PREFIX',
+        help='With --group-blend: fill the group with the actors of zone ZONE (archive path) whose placement name starts with PREFIX, each at its zone matrix relative to the first such actor of the first --model; repeated models are allowed, every placed model must be selected')
+    parser.add_argument('--group-lead',action='store_true',
+        help='With --group-actors: move the anchor actor to the head of the others, one median spacing beyond their far end (a viewing rule for convoys whose spawn placements are not the towing order)')
     parser.add_argument('--blend-only',action='store_true',help='After a fully successful run, keep only the delivered .blend files and the viewer animation index: delete reports, meshes, textures, caches and validation')
     parser.add_argument('--lighting-source',choices=('veldin','novalis','hdri'),default='hdri',
         help='hdri (default): the shared review lighting from --lighting-config; veldin: opt-in captured Veldin key light, ambient, exposure and RC PS4 Game tonemap; novalis: decoded probe')
@@ -1010,6 +1052,10 @@ def main():
         parser.error('--no-animations writes no clips; drop --clip, --active-clip, --cinematic-clips and --borrow-animset')
     if args.clip_map and (args.clip or args.no_animations or args.no_skeleton):
         parser.error('--clip-map chooses the clips of each model; drop --clip, --no-animations and --no-skeleton')
+    if args.group_actors and not args.group_blend:
+        parser.error('--group-actors places the members of a group: add --group-blend NAME')
+    if args.group_lead and not args.group_actors:
+        parser.error('--group-lead moves a placed anchor: add --group-actors ZONE:PREFIX')
     clip_map={}
     if args.clip_map:
         clip_map={model_path_key(path):list(clips) for path,clips in load(args.clip_map).items()}
@@ -1121,7 +1167,7 @@ def main():
             archive.checkpoint, lambda: dump(manifest_path,manifest), log,
             model_name=lambda key: archive.entries[key]['path'])
         if args.group_blend:
-            assemble_group_blend(selection,manifest,args,log)
+            assemble_group_blend(selection,manifest,args,log,archive)
         index.save()
         validations={};unresolved={};unsupported={};geometry_models={}
         for key,result in manifest['models'].items():

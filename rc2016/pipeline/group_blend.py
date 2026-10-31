@@ -4,9 +4,10 @@ Run by ``run.py --group-blend NAME`` inside Blender (``blender --background --py
 ``--validate`` reopens the candidate).  Each member is a finished per-model .blend: its meshes and armature are
 appended at the position they have in that .blend, so a part built as part of a larger model (a glove of a suit)
 overlaps the model it belongs to exactly.  Each member keeps the animation it was built with (its NLA strips and their
-Actions), so the timeline plays every member's clips; ``bind_pose`` on a member clears it instead.  The scene then
-uses the shared review lighting, one camera dollied to fit the whole group and one Render Region around it, exactly
-as a single-model build does.
+Actions), so the timeline plays every member's clips; ``bind_pose`` on a member clears it instead.  A member with a
+``native_matrix`` (``run.py --group-actors``) is placed by that zone matrix, and the same .blend may then appear in
+several members.  The scene then uses the shared review lighting, one camera dollied to fit the whole group and one
+Render Region around it, exactly as a single-model build does.
 """
 import argparse
 import json
@@ -29,6 +30,8 @@ from rc2016.pipeline.scene_defaults import (  # noqa: E402
     fit_render_region, fit_render_size, frame_camera_zoom, visible_mesh_points)
 
 MEMBER_KEY = "group_member"
+# Native Y-up game frame to the presentation basis: (x, y, z) -> (x, -z, y).
+PRESENTATION = Matrix(((1.0, 0.0, 0.0, 0.0), (0.0, 0.0, -1.0, 0.0), (0.0, 1.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)))
 
 
 def _embed(name, payload):
@@ -66,6 +69,29 @@ def _load_materials(path, names):
 def _mesh_key(obj):
     """The part name of a mesh object: the last ``|`` field of ``<model> | subset NNN | <part>``, without ``.001``."""
     return _base_name(obj.name).split("|")[-1].strip()
+
+
+def _native_placement(rows):
+    """Presentation-space matrix for a native row-vector placement ``rows`` (``p_world = p_local @ M``)."""
+    column = Matrix([list(row) for row in rows]).transposed()
+    return PRESENTATION @ column @ PRESENTATION.inverted()
+
+
+def _copy_member(objects, label):
+    """Copies of an already loaded member's objects in a new collection, sharing their mesh, armature and material
+    data, with parents and Armature modifiers pointed at the copies."""
+    collection = bpy.data.collections.new(label)
+    bpy.context.scene.collection.children.link(collection)
+    copies = {obj: obj.copy() for obj in objects}
+    for copy in copies.values():
+        if copy.parent in copies:
+            copy.parent = copies[copy.parent]
+        for modifier in copy.modifiers:
+            if modifier.type == "ARMATURE" and modifier.object in copies:
+                modifier.object = copies[modifier.object]
+        copy[MEMBER_KEY] = label
+        collection.objects.link(copy)
+    return list(copies.values())
 
 
 def _load_member(member, label):
@@ -230,7 +256,17 @@ def assemble(job):
     scene = bpy.context.scene
     apply_new_scene_defaults(scene, job.get("hdri"), configure_world=True, lighting=job.get("shared_lighting"))
     right = Euler(tuple(math.radians(v) for v in CAMERA_EULER_DEGREES)).to_matrix() @ Vector((1.0, 0.0, 0.0))
-    loaded = [_load_member(member, member["name"]) for member in job["members"]]
+    loaded, first = [], {}
+    for member in job["members"]:
+        # A placed member repeats a model (five tanks): later copies share the first one's data instead of
+        # appending the file again, which would duplicate every packed texture.
+        options = json.dumps({k: v for k, v in member.items() if k not in ("name", "native_matrix", "placement")},
+                             sort_keys=True)
+        if "native_matrix" in member and options in first:
+            loaded.append(_copy_member(first[options], member["name"]))
+        else:
+            loaded.append(_load_member(member, member["name"]))
+            first.setdefault(options, loaded[-1])
     owners = _bind_to_owner_rigs(job["members"], loaded)
     members = []
     for index, objects in enumerate(loaded):
@@ -243,6 +279,12 @@ def assemble(job):
                     obj.location = obj.location + right * offset
         # ``native_offset`` (game Y-up units, see projectile_mounts.py) moves a member to where it rests on the weapon
         # it is grouped with; the presentation basis maps native (x, y, z) to Blender (x, -z, y).
+        rows = member.get("native_matrix")
+        if rows:
+            place = _native_placement(rows)
+            for obj in objects:
+                if obj.parent is None:
+                    obj.matrix_basis = place @ obj.matrix_basis
         native = member.get("native_offset")
         if native:
             shift = Vector((native[0], -native[2], native[1]))
@@ -281,8 +323,12 @@ def assemble(job):
     region_receipt["render_size"] = fit_render_size(scene)
     _embed("Camera zoom.json", camera_receipt)
     _embed("Render region.json", region_receipt)
-    _embed("Group members.json", dict(members=[dict(name=m["name"], sha256=m["sha256"]) for m in job["members"]],
-                                      layout=layout, placement="original", camera_right_axis=list(right)))
+    placed = any("native_matrix" in m for m in job["members"])
+    _embed("Group members.json", dict(members=[dict(name=m["name"], sha256=m["sha256"],
+                                                    **{k: m[k] for k in ("native_matrix", "placement") if k in m})
+                                               for m in job["members"]],
+                                      layout=layout, placement="zone actors" if placed else "original",
+                                      camera_right_axis=list(right)))
     bpy.data.orphans_purge(do_local_ids=True, do_linked_ids=False, do_recursive=True)
     bpy.ops.wm.save_as_mainfile(filepath=job["candidate"], compress=True)
     print("GROUP built", job["candidate"], flush=True)
@@ -302,9 +348,36 @@ def validate(job):
         if not meshes:
             problems.append("member missing: " + member["name"])
     problems.extend("lighting." + item for item in check_shared_lighting(scene))
+    problems.extend(_placement_problems(scene, job["members"]))
     if problems:
         raise RuntimeError("Group validation failed: " + ", ".join(problems))
     print("GROUP validation passed:", len(job["members"]), "members", flush=True)
+
+
+def _placement_problems(scene, members, tolerance=1e-4):
+    """Placed members built from one .blend must sit relative to each other as their zone matrices say: the root
+    armature (or root mesh) world matrices relate exactly as the converted native placements do."""
+    roots = {}
+    for obj in scene.objects:
+        label = obj.get(MEMBER_KEY)
+        if label and obj.parent is None and (label not in roots or obj.type == "ARMATURE"):
+            roots[label] = obj
+    problems = []
+    by_blend = {}
+    for member in members:
+        if "native_matrix" in member:
+            by_blend.setdefault(member["blend"], []).append(member)
+    for group in by_blend.values():
+        base = group[0]
+        for member in group[1:]:
+            if base["name"] not in roots or member["name"] not in roots:
+                problems.append("placement root missing: " + member["name"])
+                continue
+            expected = _native_placement(member["native_matrix"]) @ _native_placement(base["native_matrix"]).inverted()
+            actual = roots[member["name"]].matrix_world @ roots[base["name"]].matrix_world.inverted()
+            if max(abs(expected[i][j] - actual[i][j]) for i in range(4) for j in range(4)) > tolerance:
+                problems.append("placement: " + member["name"])
+    return problems
 
 
 def main():
