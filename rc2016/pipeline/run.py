@@ -953,11 +953,16 @@ def assemble_group_blend(selection,manifest,args,log,archive=None):
     run_group_blend(name,members,manifest,args,log)
 
 
+GROUP_PATH_FPS=30   # frame rate of the baked flight-path tracks
+
+
 def placed_group_members(archive,selection,delivered,args,log=None):
     """Group members for ``--group-actors ZONE:PREFIX``: one per matching zone actor, at its zone matrix relative to
     the first matching actor of the first selected model (``actor_placements.zone_placements``). Every placed actor's
-    model must be selected and delivered. A placement is a rest arrangement, so members are shown in their bind pose."""
-    from rc2016.pipeline.actor_placements import lead_with_anchor,placement_labels,zone_placements
+    model must be selected and delivered. A placement is a rest arrangement, so members are shown in their bind pose.
+    With ``--group-path`` every member also gets ``native_track``, its per-frame matrices flying the anchor's flight
+    path (``actor_placements.flight_path_track``), and the anchor carries the path record as ``flight_path``."""
+    from rc2016.pipeline.actor_placements import flight_path_track,lead_with_anchor,placement_labels,zone_placements
     zone,separator,prefix=args.group_actors.partition(':')
     if not separator or not prefix:
         raise ValueError('--group-actors takes ZONE:PREFIX, for example levels/pokitaru/.../gp_flight.zone:Hydroharvester #1')
@@ -972,10 +977,19 @@ def placed_group_members(archive,selection,delivered,args,log=None):
     missing=sorted({row['model'] for row in rows if row['model'] not in finals})
     if missing:
         raise ValueError('Placed actors need these models selected and delivered: '+', '.join(missing))
-    return [dict(name=label,blend=finals[row['model']],sha256=file_hash(finals[row['model']]),bind_pose=True,
-                 native_matrix=row['native_matrix'],placement=dict(zone=zone,actor=row['actor'],actor_id=row['id'],
-                 **({'lead':row['lead']} if 'lead' in row else {})))
-            for label,row in zip(placement_labels(rows),rows)]
+    members=[dict(name=label,blend=finals[row['model']],sha256=file_hash(finals[row['model']]),bind_pose=True,
+                  native_matrix=row['native_matrix'],placement=dict(zone=zone,actor=row['actor'],actor_id=row['id'],
+                  **({'lead':row['lead']} if 'lead' in row else {})))
+             for label,row in zip(placement_labels(rows),rows)]
+    if getattr(args,'group_path',False):
+        tracks,info=flight_path_track(archive,zone,rows,args.group_path_speed,GROUP_PATH_FPS)
+        for member,row,track in zip(members,rows,tracks):
+            member.update(native_matrix=track[0],native_track=dict(fps=GROUP_PATH_FPS,matrices=track))
+            if 'lead' in row:
+                member['flight_path']=info
+        if log:
+            log('group_flight_path',path=info['path'],length=info['length'],frames=info['frames'],speed=info['speed'])
+    return members
 
 
 def run_group_blend(name,members,manifest,args,log):
@@ -1036,6 +1050,10 @@ def main():
         help='With --group-blend: fill the group with the actors of zone ZONE (archive path) whose placement name starts with PREFIX, each at its zone matrix relative to the first such actor of the first --model; repeated models are allowed, every placed model must be selected')
     parser.add_argument('--group-lead',action='store_true',
         help='With --group-actors: line the other actors up behind the anchor along its nearest axis, one median spacing apart (a viewing rule for convoys whose spawn placements are not the towing order)')
+    parser.add_argument('--group-path',action='store_true',
+        help="With --group-lead: animate the group flying the anchor's ContainerShip FlightPath curve for one lap, the others trailing along it (speed and direction are viewing choices)")
+    parser.add_argument('--group-path-speed',type=float,default=10.0,
+        help="Preview speed of --group-path in game units per second (default 10; the game's speed is not decoded)")
     parser.add_argument('--blend-only',action='store_true',help='After a fully successful run, keep only the delivered .blend files and the viewer animation index: delete reports, meshes, textures, caches and validation')
     parser.add_argument('--lighting-source',choices=('veldin','novalis','hdri'),default='hdri',
         help='hdri (default): the shared review lighting from --lighting-config; veldin: opt-in captured Veldin key light, ambient, exposure and RC PS4 Game tonemap; novalis: decoded probe')
@@ -1056,6 +1074,10 @@ def main():
         parser.error('--group-actors places the members of a group: add --group-blend NAME')
     if args.group_lead and not args.group_actors:
         parser.error('--group-lead moves a placed anchor: add --group-actors ZONE:PREFIX')
+    if args.group_path and not args.group_lead:
+        parser.error('--group-path flies a led convoy: add --group-lead')
+    if args.group_path_speed<=0:
+        parser.error('--group-path-speed must be positive')
     clip_map={}
     if args.clip_map:
         clip_map={model_path_key(path):list(clips) for path,clips in load(args.clip_map).items()}

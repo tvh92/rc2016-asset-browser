@@ -168,6 +168,7 @@ Two front ends share one implementation:
 | `viewport.py` | `LevelViewport` (a `ModelViewport` subclass): instanced renderer, fly camera, PNG capture |
 | `scene.py` | Data only, no GL: archive access, `zone_scene`, `model_geometry`, `core_bounds`, material lookup |
 | `actor_format.py`, `actors.py` | Actor/component decoding, structural primary binding, source-placement policy and exclusions |
+| `curves.py` | Data only, no GL: curve actor splines from kind-4 placement records and arc-length sampling ([Curve actors](#curve-actors-curvespy)) |
 | `sky.py` | Data only, no GL: the level's atmosphere, cloud domes and clear-sky profile ([sky](#sky-in-the-level-viewer-skypy)) |
 | `scene_lighting.py` | Data only, no GL: the authored light records and lightgrid references ([Authored lights](#authored-lights-scene_lightingpy)) |
 | `effects.py`, `beams.py`, `cone_shader.py` | Data only, no GL: the visual-effect placements of a zone, the light cones among them, the beam mesh they give, and the cone pixel program as Python ([Light beams](#authored-lights-scene_lightingpy)) |
@@ -540,6 +541,23 @@ Placement records retain the complete finite affine float32[16] matrix at +0x00,
 The decoder raises on container/section bounds, duplicate tags, malformed string references, invalid indices, duplicate IDs, nonfinite/nonaffine matrices, record sizes/alignment, render ID/sentinel mismatches, component name CRCs, payload ranges and component ownership failures. A final actor record may extend fewer than eight bytes beyond an unpadded heap, as with model instances (ten corpus cases, all four bytes).
 
 `read_component(data, component)` reuses the guarded generic dat1lib SerializedSection reader under the explicitly named 202300 wire-layout hypothesis, not a game-version claim. Unknown types and out-of-range reads raise; extra objects and unread ranges are reported with absolute offsets/raw bytes. The corpus has 45 actor-descriptor and 156 zone-component payloads with unread four- or eight-byte tails; successful parsing is not complete semantic coverage. ActorAttachment, ScalePrototyping, PositionOffset, MaterialOverrideComponent and StaticMaterialOverrideList data are retained, but attachment placement, component scale, spawn visibility and default-material-state behavior are not implemented. MaterialConstant values are not interpreted as shader parameters.
+
+### Curve actors (`curves.py`)
+
+Curve actors (`gbl_curve_Static_Path`, `_Ledge_Path`, `_Formation_Curve`, `_Bot_Spawn_Path`, `_Patrol_Path` and others) have no components; their spline is in the kind-4 placement record, after the matrix, kind and byte size. `curves.decode_curve` reads it (offsets relative to the record):
+
+| Offset | Type | Meaning |
+| --- | --- | --- |
+| +0x48 | float32[7] | not identified |
+| +0x64 | u16 | point count N |
+| +0x66 .. +0x6E | u16 x 5 | offsets of the points (0x78; N float32[3]), up vectors (N float32[3]), segments (S x 4 float32[3]), segment lengths (U float32) and the arc table (A float32) |
+| +0x70 | u16 | arc table count A = 8 U + 1: cumulative length at eight even parameter steps per used segment |
+| +0x72 | u16 | stored segments S (= N; an open curve also stores the unused closing segment) |
+| +0x74 | u16 | used segments U (S closed, S - 1 open) |
+| +0x76 | u8 | closed flag |
+| +0x77 | u8 | raw 1 or 3, not identified |
+
+Segment i is `a + b t + c t^2 + d t^3` over t in [0, 1], in the actor's local frame; `a` is point i and `a + b + c + d` point i + 1. Across all zones 3,707 of 3,716 kind-4 records pass every layout, continuity and length check; the other nine (empty, or another point layout) are refused. `curves.sample` walks a curve by arc length through the arc table. A convoy locomotive's `ContainerShip` component names its curve by actor id (`FlightPath`); the Pokitaru Hydro Harvester paths are closed loops of 349.8 to 478.7 units. Curves are not drawn by the level viewer.
 
 ### Corpus counts and unresolved classes
 

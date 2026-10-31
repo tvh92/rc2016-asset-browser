@@ -13,9 +13,12 @@ game moves a convoy along its flight path.
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
-from rc2016.levels.actor_format import decode_actor, decode_zone_actors
+from rc2016.levels.actor_format import decode_actor, decode_zone_actors, read_component
+from rc2016.levels.curves import CURVE_RECORD_KIND, decode_curve, frame_matrix, sample
 
 
 def _model_path(archive, actor_path):
@@ -87,6 +90,7 @@ def lead_with_anchor(rows):
         matrix = np.array(rows[i]['native_matrix'])
         matrix[3, :3] = -axis * spacing * rank   # behind the anchor along its own axis
         moved[i]['native_matrix'] = matrix.tolist()
+        moved[i]['lead_rank'] = rank
     moved[anchor]['lead'] = dict(spacing=spacing, axis=axis.tolist(),
                                  rule='others lined up behind the anchor along its nearest axis, median spacing apart, '
                                       'farthest first')
@@ -105,3 +109,58 @@ def placement_labels(rows):
         else:
             labels.append(name)
     return labels
+
+
+def flight_path_track(archive, zone_path, rows, speed, fps):
+    """Per-frame native matrices of led rows (``lead_with_anchor``) flying the anchor's flight path (``--group-path``).
+
+    The anchor's ``ContainerShip`` component in the zone names its ``FlightPath``, the id of a curve actor of the same
+    zone (``Hydroharvester #1 path``); its spline is decoded by ``levels.curves``. The anchor starts at the curve point
+    nearest its zone position and moves along increasing arc length at ``speed`` units per second for one lap (closed
+    curve) or to the end (open); each other row trails ``lead_rank`` spacings behind along the curve. Every member's
+    local +Z follows the curve tangent and +Y its up vector. Matrices are relative to the anchor's first-frame pose, so
+    frame 1 puts the anchor where its own build does. The direction, speed and +Z-forward are viewing choices: the
+    game's speed and travel direction are not decoded.
+
+    Returns (tracks, info): tracks[i] is the list of row-vector matrices of rows[i]; info records the path, its length,
+    the start distance, speed, fps and frame count, and ``preview``: curve points every unit, relative like the tracks.
+    """
+    ids = [k for k in archive.resolve(zone_path.replace('\\', '/').lower()) if archive.entries[k]['type'] == 'zone']
+    data = archive.asset_data(ids[0])
+    actors = {actor['id']: actor for actor in decode_zone_actors(data)['actors']}
+    anchor = next(row for row in rows if 'lead' in row)
+    flight = None
+    for component in actors[anchor['id']]['components']:
+        if component['name'] == 'ContainerShip':
+            flight = (read_component(data, component) or {}).get('value', {}).get('FlightPath')
+    if flight is None:
+        raise ValueError(f"Anchor {anchor['name']} has no ContainerShip FlightPath")
+    path = actors.get(f'{int(flight):016X}')
+    if path is None or path['record_kind'] != CURVE_RECORD_KIND:
+        raise ValueError(f'FlightPath {int(flight):016X} is not a curve actor of {zone_path}')
+    curve = decode_curve(data, path['record_offset'], path['record_size'])
+    to_zone = np.array(path['matrix_rows'], dtype=float)
+    spawn = np.array(actors[anchor['id']]['matrix_rows'], dtype=float)[3, :3]
+    local = (np.append(spawn, 1.0) @ np.linalg.inv(to_zone))[:3]
+    total = float(curve['arc'][-1])
+    candidates = np.linspace(0.0, total, max(int(total * 4), 2))
+    start = float(min(candidates, key=lambda s: np.linalg.norm(sample(curve, s)[0] - local)))
+    spacing = anchor['lead']['spacing']
+    step = speed / fps
+    frames = math.ceil(total / step) if curve['closed'] else max(math.floor((total - start) / step), 1) + 1
+
+    def pose(distance):
+        return frame_matrix(*sample(curve, distance)) @ to_zone
+
+    origin = np.linalg.inv(pose(start))
+    tracks = []
+    for row in rows:
+        behind = row.get('lead_rank', 0) * spacing
+        tracks.append([np.round(pose(start + f * step - behind) @ origin, 6).tolist() for f in range(frames)])
+    preview = [np.round((np.append(frame_matrix(*sample(curve, s))[3, :3], 1.0) @ to_zone @ origin)[:3], 4).tolist()
+               for s in np.arange(0.0, total + 1e-6, 1.0)]
+    info = dict(path=path['name'], path_id=path['id'], path_actor=path['actor_path'], length=total,
+                closed=curve['closed'], start=start, speed=speed, fps=fps, frames=frames, preview=preview,
+                rule='anchor from the curve point nearest its zone position along increasing arc length; others '
+                     'trail by lead rank x spacing; +Z along the tangent; speed and direction are viewing choices')
+    return tracks, info

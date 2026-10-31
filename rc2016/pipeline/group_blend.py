@@ -77,6 +77,51 @@ def _native_placement(rows):
     return PRESENTATION @ column @ PRESENTATION.inverted()
 
 
+def _bake_track(obj, base, matrices):
+    """Key ``obj`` at every native row-vector matrix of ``matrices`` (frame 1 onward) on top of its ``base`` matrix,
+    with linear interpolation, in a new action of its own."""
+    obj.rotation_mode = "QUATERNION"
+    values = np.empty((len(matrices), 10), dtype=np.float32)
+    previous = None
+    for frame, rows in enumerate(matrices):
+        location, rotation, scale = (_native_placement(rows) @ base).decompose()
+        if previous is not None and rotation.dot(previous) < 0:
+            rotation.negate()   # keep quaternion signs continuous so the interpolation takes the short way
+        previous = rotation
+        values[frame] = [*location, *rotation, *scale]
+    action = bpy.data.actions.new(obj.name + " flight path")
+    slot = action.slots.new(id_type="OBJECT", name=obj.name)
+    bag = action.layers.new("Flight path").strips.new(type="KEYFRAME").channelbags.new(slot)
+    frames = np.arange(1, len(matrices) + 1, dtype=np.float32)
+    for path, offset, count in (("location", 0, 3), ("rotation_quaternion", 3, 4), ("scale", 7, 3)):
+        for index in range(count):
+            curve = bag.fcurves.new(data_path=path, index=index)
+            curve.keyframe_points.add(len(matrices))
+            curve.keyframe_points.foreach_set("co", np.column_stack((frames, values[:, offset + index])).ravel())
+            for point in curve.keyframe_points:
+                point.interpolation = "LINEAR"
+            curve.update()
+    obj.animation_data_create()
+    obj.animation_data.action = action
+    obj.animation_data.action_slot = slot
+
+
+def _path_curve(scene, path):
+    """The flight path as a poly curve (``path["preview"]``, native points), shown in the viewport, not rendered."""
+    data = bpy.data.curves.new("Flight path", type="CURVE")
+    data.dimensions = "3D"
+    spline = data.splines.new("POLY")
+    points = path["preview"]
+    spline.points.add(len(points) - 1)
+    for point, (x, y, z) in zip(spline.points, points):
+        point.co = (x, -z, y, 1.0)
+    spline.use_cyclic_u = bool(path.get("closed"))
+    curve = bpy.data.objects.new("Flight path", data)
+    curve.hide_render = True
+    curve["flight_path"] = json.dumps({k: v for k, v in path.items() if k != "preview"})
+    scene.collection.objects.link(curve)
+
+
 def _copy_member(objects, label):
     """Copies of an already loaded member's objects in a new collection, sharing their mesh, armature and material
     data, with parents and Armature modifiers pointed at the copies."""
@@ -260,8 +305,8 @@ def assemble(job):
     for member in job["members"]:
         # A placed member repeats a model (five tanks): later copies share the first one's data instead of
         # appending the file again, which would duplicate every packed texture.
-        options = json.dumps({k: v for k, v in member.items() if k not in ("name", "native_matrix", "placement")},
-                             sort_keys=True)
+        options = json.dumps({k: v for k, v in member.items() if k not in (
+            "name", "native_matrix", "placement", "native_track", "flight_path")}, sort_keys=True)
         if "native_matrix" in member and options in first:
             loaded.append(_copy_member(first[options], member["name"]))
         else:
@@ -282,8 +327,11 @@ def assemble(job):
         rows = member.get("native_matrix")
         if rows:
             place = _native_placement(rows)
+            track = member.get("native_track")
             for obj in objects:
                 if obj.parent is None:
+                    if track:
+                        _bake_track(obj, obj.matrix_basis.copy(), track["matrices"])
                     obj.matrix_basis = place @ obj.matrix_basis
         native = member.get("native_offset")
         if native:
@@ -304,6 +352,15 @@ def assemble(job):
         members.append(objects)
         print("GROUP member", index + 1, len(job["members"]), job["members"][index]["name"], flush=True)
     _timeline(scene, members)
+    tracked = [m for m in job["members"] if m.get("native_track")]
+    if tracked:
+        # The flight-path tracks set the range: one baked frame per scene frame, from frame 1.
+        scene.render.fps = int(tracked[0]["native_track"]["fps"])
+        scene.frame_start, scene.frame_end = 1, len(tracked[0]["native_track"]["matrices"])
+        scene.frame_set(1)
+    for member in job["members"]:
+        if member.get("flight_path"):
+            _path_curve(scene, member["flight_path"])
     layout = _layout(members, right)
     camera_data = bpy.data.cameras.new("Group review camera")
     camera_data.type = "PERSP"
@@ -349,6 +406,22 @@ def validate(job):
             problems.append("member missing: " + member["name"])
     problems.extend("lighting." + item for item in check_shared_lighting(scene))
     problems.extend(_placement_problems(scene, job["members"]))
+    for member in job["members"]:
+        track = member.get("native_track")
+        if not track:
+            continue
+        frames = len(track["matrices"])
+        for obj in scene.objects:
+            if obj.get(MEMBER_KEY) != member["name"] or obj.parent is not None:
+                continue
+            action = obj.animation_data.action if obj.animation_data else None
+            curves = [c for layer in action.layers for strip in layer.strips for bag in strip.channelbags
+                      for c in bag.fcurves] if action else []
+            if len(curves) != 10 or any(len(c.keyframe_points) != frames for c in curves):
+                problems.append("flight path keys: " + obj.name)
+    if any(m.get("native_track") for m in job["members"]) and scene.frame_end - scene.frame_start + 1 != len(
+            next(m for m in job["members"] if m.get("native_track"))["native_track"]["matrices"]):
+        problems.append("flight path frame range")
     if problems:
         raise RuntimeError("Group validation failed: " + ", ".join(problems))
     print("GROUP validation passed:", len(job["members"]), "members", flush=True)
