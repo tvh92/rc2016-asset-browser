@@ -1446,13 +1446,13 @@ def _viewer_skin_spec(P, skin, gR, gG, f, tinted):
     rgb = P.comb(*(P.sat(P.m('MULTIPLY', grey, ch)) for ch in P.sep(tinted))) if qwark else None
     return grey, gloss_in, rgb
 
-GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_patterned', 'glass_liquid', 'window_glass')
+GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_patterned', 'glass_liquid', 'glass_tank', 'window_glass')
 
 
 def _viewer_rule_glass(mat, rule, key, img):
     """Forward glass writers basic_glass 4FC5703F, character_glass_02 4DF1D438, jn_glass E7118623,
-    wpn_thumper_glove_glass 5226F404, blarg_saucer_glass FEEC00CE and the Hydrodisplacer liquid F0F45D78
-    (gl_shading.GLASS_FRAGMENT uKind 8, 9, 10, 11, 2, 13). alpha comes from the rim,
+    wpn_thumper_glove_glass 5226F404, blarg_saucer_glass FEEC00CE, the Hydrodisplacer liquid F0F45D78 and the hydro harvester
+    tank glass 7EB73491 (gl_shading.GLASS_FRAGMENT uKind 8, 9, 10, 11, 2, 13, 15). alpha comes from the rim,
     the lit part is a diffuse term plus the writers' specular lobe (F0, F90 = sat(60 F0), Schlick), the blend
     from the flags word.
     """
@@ -1618,6 +1618,43 @@ def _viewer_rule_glass(mat, rule, key, img):
                       'strength CB0[95] = 1 and the record origin is the model origin; F0 = 1 + rim^10 is clamped to 1 by the Principled '
                       'metallic base colour (the grey rim term is dropped); the alpha test (attribute0.2), the water_cma waterline mask, '
                       'the fade and the fill CB2[1] = %g are not drawn; the tangent frame is the UV tangent of Blender' % p['fill'])
+    elif key == 'glass_tank':
+        # 7EB73491 (docs/material-decoding/hydro-water-tank-glass.md): the flow normal map (_n slot) is read at the model-space XZ,
+        # P at (0.1 gx, 0.116667 gz) and Q at (gx / 12, gz / 12), gx, gz = -x, -z; x, y = 2 (P - Q) rg and
+        # N' = normalize((1 - x^2 - y^2) N + |y| B + |x| T). alpha = sat(attr0.w sat(1 - (1 - a)(1 - S5.R)(1 - S6.R))),
+        # a = sat(rim bias + rim), S5 = cma at UV0, S6 = cma at 1.5 UV0 (the _pick slot); rgb = body D + k specular(F0, N').
+        rim = P.sat(P.m('MULTIPLY', P.m('POWER', om, P.const('glass rim exp', p['rim_exp'])), 4.0))
+        flow, cma = img('_n'), img('_pick')
+        if flow is not None:
+            ox, _oy, oz = P.sep(P.native_position())
+            gx, gz = P.m('MULTIPLY', ox, -1.0), P.m('MULTIPLY', oz, -1.0)
+            map_p = P.tex(flow, P.gl_coord(P.m('MULTIPLY', gx, 0.1), P.m('MULTIPLY', gz, 0.11666667)), 'glass tank flow map P')
+            map_q = P.tex(flow, P.gl_coord(P.m('DIVIDE', gx, 12.0), P.m('DIVIDE', gz, 12.0)), 'glass tank flow map Q')
+            rp, gp, _ = P.sep(map_p.outputs['Color']); rq, gq, _ = P.sep(map_q.outputs['Color'])
+            x, y = P.m('MULTIPLY', P.m('SUBTRACT', rp, rq), 2.0), P.m('MULTIPLY', P.m('SUBTRACT', gp, gq), 2.0)
+            shade = P.v('NORMALIZE', P.tangent_normal(P.m('ABSOLUTE', x), P.m('ABSOLUTE', y),
+                                                      P.m('SUBTRACT', 1.0, P.dot2(x, y)), "glass tank normal N'"))
+        else:
+            limits.append('no flow normal map bound: geometric normal')
+        a0 = P.sat(P.m('ADD', P.const('glass rim bias', p['rim_bias']), rim))
+        if cma is not None:
+            s5 = P.sep(P.tex(cma, P.game_uv(1.0, 1.0, 0.0, 0.0), 'glass tank cma S5').outputs['Color'])[0]
+            s6 = P.sep(P.tex(cma, P.game_uv(1.5, 1.5, 0.0, 0.0), 'glass tank cma S6').outputs['Color'])[0]
+            cover = P.m('MULTIPLY', P.m('MULTIPLY', P.m('SUBTRACT', 1.0, a0), P.m('SUBTRACT', 1.0, s5)), P.m('SUBTRACT', 1.0, s6))
+            alpha = P.sat(P.m('SUBTRACT', 1.0, cover))
+        else:
+            alpha = a0
+            limits.append('no cma texture bound: S5.R = S6.R = 0')
+        alpha = P.m('MULTIPLY', alpha, P.const('glass alpha scale', p['alpha_scale']), clamp=True)   # attr0.w
+        f0 = P.v('SCALE', tint_k(P.const3('glass tint', p['tint'])),
+                 P.m('ADD', P.const('glass f0 base', p['f0_base']), P.m('POWER', rim, 10.0)))
+        lobe, f90 = spec_lobe(f0, P.const('glass gloss', p['gloss']))
+        lit = add(diffuse(P.const3('glass body', p['body'])), scaled(lobe, f90), 'VR glass lit')
+        limits.append('Hydro harvester tank glass 7EB73491 (frozen preview, game_equivalence False): the flow-map time CB0[99] = 0 and the '
+                      'record origin is the model origin; blend %s is the captured draw state, not the flags word, and the dither-kept '
+                      'opaque rim and the equal-depth pass are not drawn; the tint-to-F0 step is inferred from basic_glass, not read from '
+                      'this program; the second program 0xC9E3608C (no flow normal) is not selected per draw; attribute0.w = %g'
+                      % (blend, p['alpha_scale']))
     elif key == 'window_glass':
         # 8DF14766 (docs/material-decoding/novalis-window-glass.md), labelled preview: opaque, rgb = (CB2[16] T11.b + L) Q
         # + k (lights + environment) F with Q = CB2[15] T11 (interior, _n slot) + CB2[12] C 0.5^5 T9 (painted glass _c,

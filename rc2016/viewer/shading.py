@@ -1116,6 +1116,14 @@ void main() {
 #   (t = CB0[99] = 0), x, y = 2 q (S1 - S2) rg, N' = normalize((1 - x^2 - y^2) N + |y| B + |x| T) with B taken as in uKind 11.
 #   rim = sat(4 (1 - N.V)^2), F0 = 1 + rim^10 (grey), gloss alpha = 2^(-5.5 sqrt(gloss)); rgb = K Ld + tint specular (opaque). The alpha
 #   test (attribute0.2), the water_cma waterline mask and the fade are not drawn; the light list, probes, shadows, SSR and fog are the viewer rig.
+# uKind 15, glass_tank 7EB73491 (hydro_water_tank, the hydro harvester tank glass; docs/material-decoding/hydro-water-tank-glass.md):
+#   uA = tint T.rgb, rim bias P3 (CB2[3], graph default 0.25 as captured); uB = body C.rgb, gloss (CB2[8]); uC = f0 base (CB2[7]),
+#   rim exponent (CB2[9]); uD.x = attribute0.w (taken as 1). The flow map (_n slot, API 7) is read at the world XZ relative to the
+#   model origin, P at (0.1 gx, 0.116667 gz) and Q at (gx / 12, gz / 12) with gx, gz = -vTintWorldPos.xz (t = CB0[99] = 0),
+#   x, y = 2 (P - Q) rg, N' = normalize((1 - x^2 - y^2) N + |y| B + |x| T) with B taken as in uKind 13. rim = sat(4 (1 - N.V)^CB2[9])
+#   from the geometry normal, a = sat(P3 + rim), alpha = sat(attr0.w sat(1 - (1 - a)(1 - S5.R)(1 - S6.R))) with S5 = cma(UV0) and
+#   S6 = cma(1.5 UV0) (_pick slot, R); F0 = sat(T / luma(T)) (CB2[7] + rim^10) (inferred from basic_glass), rgb = C Ld + specular.
+#   The blend is the captured alpha-over (not the opaque flags word); the light list, probes, shadows, SSR and fog are the viewer rig.
 # uKind 14, window_glass 8DF14766 (jn_glass_parallax_mask, the Novalis windows; docs/material-decoding/novalis-window-glass.md),
 #   a labelled PREVIEW (game_equivalence False): uA = reflection tint T.rgb (CB2[8..10]), gloss CB2[3]; uB = parallax depth
 #   CB2[11], rim exponent CB2[13], F weight CB2[14], interior weight CB2[15]; uC.x = interior light CB2[16], uC.y = 1 when the
@@ -1372,6 +1380,27 @@ void main() {
         vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
         color = uA.rgb * Ld + uB.rgb * glassSpec(N, V, L1, L2, C1, C2, F0, a, ambient);
         alpha = 1.0;
+    } else if (uKind == 15) { // 7EB73491 hydro harvester tank glass (see the uKind 15 comment)
+        float rim = sat(4.0 * pow(om, uC.y));
+        vec2 g = -vTintWorldPos.xz;
+        vec2 fp = uHasN ? texture2D(uTexN, vec2(0.1 * g.x, 0.11666667 * g.y)).rg : vec2(0.5);
+        vec2 fq = uHasN ? texture2D(uTexN, g / 12.0).rg : vec2(0.5);
+        vec2 xy = 2.0 * (fp - fq);
+        vec3 dp1 = dFdx(vPos), dp2 = dFdy(vPos); vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
+        vec3 p2 = cross(dp2, N), p1 = cross(N, dp1);
+        vec3 T = p2 * du1.x + p1 * du2.x, B = p2 * du1.y + p1 * du2.y;
+        float scale = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-20));
+        N = normalize(T * scale * abs(xy.x) - B * scale * abs(xy.y) + N * (1.0 - dot(xy, xy)));
+        float a0 = sat(uA.w + rim);
+        float s5 = uHasP ? texture2D(uTexP, vUV).r : 0.0;
+        float s6 = uHasP ? texture2D(uTexP, 1.5 * vUV).r : 0.0;
+        alpha = sat(uD.x * sat(1.0 - (1.0 - a0) * (1.0 - s5) * (1.0 - s6)));
+        float luma = max(dot(vec3(0.2126, 0.7152, 0.0722), uA.rgb), 1e-6);
+        vec3 F0 = clamp(uA.rgb / luma, 0.0, 1.0) * (uC.x + pow(rim, 10.0));
+        float a = pow(2.0, -5.5 * sqrt(sat(uB.w)));
+        vec3 ambient = ambientLight(N);
+        vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
+        color = uB.rgb * Ld + glassSpec(N, V, L1, L2, C1, C2, F0, a, ambient);
     } else if (uKind == 14) { // jn_glass_parallax_mask 8DF14766 Novalis window glass PREVIEW (see the uKind 14 comment)
         vec3 n = normalize(vNrm);
         float face = gl_FrontFacing ? 1.0 : -1.0, nv = dot(n, V);
@@ -1671,7 +1700,7 @@ FRAGMENT = FRAGMENT.replace("// @lighting\n", LIGHTING+FOG+_SCENE_OUTPUT)
 GLASS_FRAGMENT = GLASS_FRAGMENT.replace("// @lighting\n", LIGHTING+FOG)
 GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4, "bright_glow": 5,
                "eye_cornea": 6, "number_display": 7, "glass_basic": 8, "glass_cg02": 9, "glass_jn": 10, "glass_thumper": 11,
-               "ion_tubes": 12, "glass_liquid": 13, "window_glass": 14}
+               "ion_tubes": 12, "glass_liquid": 13, "window_glass": 14, "glass_tank": 15}
 
 
 def frame_fade(time, rate):
@@ -1730,6 +1759,9 @@ def glass_uniforms(forward, time=None):
     if forward["kind"] == "glass_liquid":
         return (GLASS_KINDS["glass_liquid"], (*p["body"], p["normal_strength"]), (*p["spec_tint"], p["gloss"]),
                 (p["fill"], 0.0, 0.0, 0.0), (0.0,) * 4, (0.0,) * 4)
+    if forward["kind"] == "glass_tank":
+        return (GLASS_KINDS["glass_tank"], (*p["tint"], p["rim_bias"]), (*p["body"], p["gloss"]),
+                (p["f0_base"], p["rim_exp"], 0.0, 0.0), (p["alpha_scale"], 0.0, 0.0, 0.0), (0.0,) * 4)
     if forward["kind"] == "window_glass":
         return (GLASS_KINDS["window_glass"], (*p["tint"], p["gloss"]),
                 (p["parallax_depth"], p["rim_exp"], p["f0_weight"], p["interior_weight"]),

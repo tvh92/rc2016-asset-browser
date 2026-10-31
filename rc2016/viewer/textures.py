@@ -250,6 +250,26 @@ LIQUID_ORIENTATION_CONSTANTS = dict(
     presentation=True, game_equivalence=False, writer='F0F45D78',
     frozen_inputs=dict(CB0_99=0.0, CB0_95=1.0, instance_fade=0.0, instance_flags=0x2261, geometric_aa=0.0, fog=1.0,
                        ssr=False, alpha_test=False, waterline=False, record_origin='model origin'))
+# Hydro harvester tank glass, forward program 7EB73491 of hydro_water_tank (graph water_tank; docs/material-decoding/
+# hydro-water-tank-glass.md, evidence Research/captures/2026-10-31_hydroharvester-cutscene/ and Research/decodes/
+# 2026-10-31_hydro-water-tank-rule/). The graph is shared by four materials; only hydro_water_tank is evidenced (a
+# cutscene capture draws it), so the rule is bound to that material and the exact graph hash. Material terms: the CB2
+# interface is the one of basic_glass (tint, body, gloss, f0 base, rim exponent); CB2[3] (the rim bias) has no material
+# value, its graph default 0.25 is what the capture binds. Alpha is sat(attr0.w sat(1 - (1 - a)(1 - S5.R)(1 - S6.R))),
+# S5 and S6 both read gbl_prop_water_tank_cma (_pick role, UV and 1.5 UV at t = 0); the normal is the two-read flow
+# normal (_n role, met_amb_water_pool_flow_01_n). The captured draw state is alpha-over although the flags word 0x38 says
+# opaque. game_equivalence stays False: the light list, probes, fog, CB0[99], attribute0.w and the tint-to-F0 step
+# (inferred from basic_glass, not read from this program) are not established.
+HYDRO_WATER_TANK_GRAPH_SHA256 = '544803a389a463926bcbe745dbedda45596dba9004a4fbbf9b814f854ca44ce9'
+HYDRO_WATER_TANK_MATERIAL = 'material/global/water_tank/hydro_water_tank.material'
+HYDRO_WATER_TANK_FLOW_SLOT = 0x49A7866B7AE34E7A
+HYDRO_WATER_TANK_CMA_SLOTS = (0x49A7866B27C84BA9, 0x49A7866B30B35FEA)
+HYDRO_WATER_TANK_CAPTURED_BLEND = 'alpha_over'
+HYDRO_WATER_TANK_CONSTANTS = dict(
+    rim_bias=0.25, rim_bias_source='graph default of key 0x42170E5E, bound as CB2[3] = 0.25 in the capture',
+    alpha_scale=1.0, presentation=True, game_equivalence=False, writer='7EB73491',
+    frozen_inputs=dict(CB0_99=0.0, instance_flags=0x261, attr0_w=1.0, fog=1.0, ssr=False, record_origin='model origin',
+                       program_variant='7EB73491 (the 0xC9E3608C variant has no flow normal)'))
 # Novalis window glass, forward program 8DF14766 of jn_glass_parallax_mask (pass contract 0; docs/material-decoding/
 # novalis-window-glass.md, evidence Research/2026-10-29_novalis-window-glass/WINDOW_GLASS_DECODE.md). Slots in API order
 # (API = 5 + resource index): 5 mask (R), 6 window normal (world UV), 7 glass _g (world UV), 8 detail normal (UV1),
@@ -451,6 +471,14 @@ GRAPH_RULES = (
      dict(forward='glass_liquid', writer='F0F45D78', constants=LIQUID_ORIENTATION_CONSTANTS,
           _graph_sha256=LIQUID_ORIENTATION_GRAPH_SHA256, slots={'_n': LIQUID_ORIENTATION_FLOW_SLOT},
           params=(('gloss', 0x24F4CA4C, 1), ('fill', 0x66583BF6, 1)))),
+    # Hydro harvester tank glass 7EB73491: exact graph + SHA and the hydro_water_tank material only
+    # (docs/material-decoding/hydro-water-tank-glass.md).
+    ('materialgraph/global/water_tank/water_tank.',
+     dict(forward='glass_tank', writer='7EB73491', constants=HYDRO_WATER_TANK_CONSTANTS,
+          _graph_sha256=HYDRO_WATER_TANK_GRAPH_SHA256,
+          slots={'_n': HYDRO_WATER_TANK_FLOW_SLOT, '_pick': HYDRO_WATER_TANK_CMA_SLOTS[0]}, params=(
+         ('tint', 0x4B4DAB19, 3), ('body', 0x7C456482, 3), ('gloss', 0x24F4CA4C, 1), ('f0_base', 0x62835AF9, 1),
+         ('rim_exp', 0xECE213A3, 1)))),
     # Novalis window glass 8DF14766 (pass contract 0): exact graph + SHA only (docs/material-decoding/novalis-window-glass.md).
     # Opaque; diffuse light x albedo plus the reflection term, with the engine lighting replaced by the viewer's.
     ('materialgraph/global/basic_glass/jn_glass_parallax_mask.',
@@ -1394,6 +1422,15 @@ def material_texture_paths(archive, material_path: str) -> dict:
         flow_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
         if not (flow_slots.get(LIQUID_ORIENTATION_FLOW_SLOT) or slots.get(LIQUID_ORIENTATION_FLOW_SLOT)):
             rule = {}
+    if rule.get('forward') == 'glass_tank':
+        # Evidence covers the hydro_water_tank material only; the flow normal must be bound and S5 and S6 must read the
+        # same image (the draw binds one cma texture at both).
+        tank_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
+        tank_bound = lambda slot: tank_slots.get(slot) or slots.get(slot)
+        cma_paths = {tank_bound(slot) for slot in HYDRO_WATER_TANK_CMA_SLOTS}
+        if (str(material_path).replace('\\', '/').lower() != HYDRO_WATER_TANK_MATERIAL
+                or not tank_bound(HYDRO_WATER_TANK_FLOW_SLOT) or len(cma_paths) != 1 or None in cma_paths):
+            rule = {}
     if rule.get('forward') == 'ion_tubes':
         # The program reads both slots as one image and the decoded form has no CB2[4] power term; a material that
         # binds the slots to different images or sets the power is not the decoded program input.
@@ -1469,6 +1506,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
         if rule['forward'] == 'glass_thumper':
             # Captured draw state, not the flags word: mode 0 (opaque) in the material, alpha-over in the game.
             result['forward'].update(blend=THUMPER_GLOVE_GLASS_CAPTURED_BLEND, blend_source='captured draw state')
+        if rule['forward'] == 'glass_tank':
+            result['forward'].update(blend=HYDRO_WATER_TANK_CAPTURED_BLEND, blend_source='captured draw state')
         if window_slots:
             # The viewer reads the interior from the _n unit, which carries no sRGB flag: the native format decides.
             result['forward']['slots'] = window_slots
