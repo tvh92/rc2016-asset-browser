@@ -9,11 +9,13 @@ import hashlib
 import math
 import os
 import random
+import struct
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from rc2016.formats.links import EXACT, rule_coverage
+from rc2016.pipeline.render_state import material_flags
 from rc2016.shaders import validation
 from rc2016.viewer import textures as tp
 from rc2016.viewer.shading import GLASS_FRAGMENT, GLASS_KINDS, glass_uniforms
@@ -26,6 +28,7 @@ CODE_SHA = {'0x5226f404': '97ce23dda2bf338d51c221ebe95014559258bc393b7dbb63833b4
             '0x1d429528': '1743246ac6338dfda0cfd3ae4d19502528dadd357c623259d100c8b3e518b0ac'}
 BASIC_CODE_SHA = '07922b28af5b6d5690a881dca26d0ff1563a27efeb74f8d4b674ce4f3c0b65e4'
 PATTERNS = 'textures/character/shared/patterns_cma.texture'
+CAPTURED_AMPLITUDE = struct.unpack('<f', struct.pack('<I', 0x3D36DB3F))[0]   # CB0[115] of the captured Novalis frame
 NOISE = 'textures/visualeffect/noise/fx_noisetile02.texture'
 
 
@@ -93,6 +96,13 @@ class RuleBindingTests(unittest.TestCase):
                      'pow(2.0, -5.5 * sqrt(sat(uC.z * uB.r * pat.a)))', 'clamp(uA.rgb / luma, 0.0, 1.0)',
                      'glassSpec(N, V, L1, L2, C1, C2, F0, a, ambient)', 'uD.rgb * uD.w * (Ld + vec3(X))'):
             self.assertIn(text, branch)
+
+    def test_captured_draw_state_is_recorded(self):
+        c = tp.THUMPER_GLOVE_GLASS_CONSTANTS
+        self.assertEqual(struct.pack('<f', c['amplitude']), struct.pack('<I', 0x3D36DB3F))
+        self.assertEqual((c['captured_amplitude'], c['amplitude_input'], c['game_equivalence']), (c['amplitude'], 'CB0 dword 115', False))
+        self.assertEqual((c['frozen_inputs']['instance_flags'], c['frozen_inputs']['ssr']), (0x261, False))
+        self.assertEqual(tp.THUMPER_GLOVE_GLASS_CAPTURED_BLEND, 'alpha_over')
 
     def test_blender_front_end_and_validator_agree(self):
         self.assertEqual(validation.GLASS_CONSTANTS['glass_thumper'],
@@ -219,6 +229,24 @@ class ArchiveProgramTests(unittest.TestCase):
         self.assertEqual(len(noise), 1)
         self.assertEqual([noise[0] in reach[c] for c in range(3)], [True, True, False])   # X is added where K is non-zero
 
+    def test_captured_pass_words_and_instance_flags(self):
+        # Captured: CB0[135] = 0x40 (G-buffer and depth-equal passes) and 0x2 (blended pass); instance flags 0x261.
+        from rc2016.research import forward_loops as loops
+        compiler = loops.compile_opaque(self.programs['0x5226f404'])
+        ir = compiler.ir
+        reads = lambda node: {n for n in loops.dependencies(ir, node) if n.startswith('CB0')}
+        alpha = {word: loops.bind_frozen(compiler, flags=0x261, pass_word=word)[0][3] for word in (0, 0x2, 0x40)}
+        alpha['lit'] = loops.bind_frozen(compiler)[0][3]      # flags 0x2261, pass word 0: the closed-form inputs
+        self.assertEqual(len(set(alpha.values())), 1)          # the alpha export depends on neither
+        self.assertEqual(reads(alpha[0x2]), set())
+        # instance bit 0x2000 gates the block that reads the projection rows and CB0[111] (screen-space reflection tail)
+        lit, _ = loops.bind_frozen(compiler, flags=0x2261, pass_word=0x2)
+        captured, _ = loops.bind_frozen(compiler, flags=0x261, pass_word=0x2)
+        for c in range(3):
+            self.assertIn('CB0[111]', reads(lit[c]))
+            self.assertNotIn('CB0[111]', reads(captured[c]))
+        self.assertEqual(['CB0[115]' in reads(captured[c]) for c in range(3)], [True, True, False])   # K.b = 0
+
     def test_second_program_is_the_variant_without_the_pattern_normal(self):
         from rc2016.research import forward_loops as loops
         from rc2016.shaders.bindings import pass_contracts
@@ -239,7 +267,11 @@ class ArchiveProgramTests(unittest.TestCase):
         paths = tp.material_texture_paths(self.archive, MATERIAL)
         forward = paths['forward']
         p = forward['params']
-        self.assertEqual((forward['kind'], forward['writer'], forward['blend'], forward['two_sided']), ('glass_thumper', '5226F404', 'opaque', True))
+        # flags word 0x00200234 says opaque; the captured draw blends (SRC_ALPHA, ONE_MINUS_SRC_ALPHA), so the rule does too
+        from rc2016.levels.scene import asset_bytes
+        self.assertEqual(material_flags(data=asset_bytes(self.archive, MATERIAL)), 0x00200234)
+        self.assertEqual((forward['kind'], forward['writer'], forward['blend'], forward['two_sided'], forward['blend_source']),
+                         ('glass_thumper', '5226F404', 'alpha_over', True, 'captured draw state'))
         self.assertEqual((paths['_n'], paths['_pick']), (PATTERNS, NOISE))
         self.assertEqual([round(x, 6) for x in p['body']], [0.371238, 0.708376, 0.107023])
         self.assertEqual([round(x, 6) for x in p['tint']], [0.502886, 0.768151, 0.138432])
@@ -247,7 +279,8 @@ class ArchiveProgramTests(unittest.TestCase):
                          (0.272, 0.4, 3.0, 0.8, 7.0))
         self.assertEqual(p['normal_strength'], 0.25)                       # no instance record: the graph default
         self.assertFalse(p['game_equivalence'])
-        self.assertEqual((p['amplitude'], p['captured_amplitude']), (0.5, 0.01))
+        self.assertEqual((p['amplitude'], p['captured_amplitude']), (CAPTURED_AMPLITUDE, CAPTURED_AMPLITUDE))
+        self.assertEqual(p['frozen_inputs']['instance_flags'], 0x261)
         # a binding of either slot pair to two different textures is not the decoded input
         with patch.object(tp, 'texture_slots', return_value={0x49A7866B7AE34E7A: 'textures/other.texture'}):
             self.assertNotIn('forward', tp.material_texture_paths(self.archive, MATERIAL))

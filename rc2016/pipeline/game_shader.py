@@ -1565,10 +1565,11 @@ def _viewer_rule_glass(mat, rule, key, img):
         P.L.new(P.v('SCALE', glow, x_noise), em.inputs['Color'])
         lit = add(add(diffuse(glow), em.outputs[0], 'VR glass glow'), scaled(lobe, f90), 'VR glass lit')
         limits.append('Thumper glove glass 5226F404 (frozen preview, game_equivalence False): the sample X of fx_noisetile02 is taken at '
-                      'CB0[99] = 0; the glow colour K is multiplied by the labelled presentation amplitude CB0[115] = %g (a frame '
-                      'constant: %g in the captured Veldin frame, not decoded for this object); the tint multiplies F0 and the Principled F90 is collapsed to its '
-                      'maximum channel; the program variant (5226F404, with the pattern normal, or 1D429528 without it) is not '
-                      'selected per draw' % (p['amplitude'], p['captured_amplitude']))
+                      'CB0[99] = 0; the glow colour K is multiplied by CB0[115] = %g, the value captured in the Novalis frame that '
+                      'draws this glass (a frame constant that varies between frames); blend %s is the captured draw state, not the '
+                      'flags word, and the dither-kept opaque rim of the game is not drawn; the tint multiplies F0 and the Principled '
+                      'F90 is collapsed to its maximum channel; the program variant (5226F404, with the pattern normal, or 1D429528 '
+                      'without it) is not selected per draw' % (p['amplitude'], blend))
     elif key == 'glass_liquid':
         # F0F45D78 (docs/material-decoding/hydrodisplacer-liquid.md): opaque; the flow normal map (_n slot) is read at the model-space
         # XZ of the fragment, (0.4 gx, 0.466667 gz) and (gx / 3, gz / 3) with gx, gz = -x, -z; x, y = 2 q (S1 - S2) rg and
@@ -1686,11 +1687,11 @@ def _viewer_rule_glass(mat, rule, key, img):
     mat.use_backface_culling = not f.get('two_sided')
     if hasattr(mat, 'surface_render_method'):
         mat.surface_render_method = 'DITHERED' if blend == 'opaque' else 'BLENDED'
-    return limits + ['Forward glass writer %s (blend %s from the flags word): the engine light list, shadows, probes, SSR and fog '
+    return limits + ['Forward glass writer %s (blend %s from %s): the engine light list, shadows, probes, SSR and fog '
                      '(t = 1) are replaced by Cycles lighting; Schlick F uses the Principled metallic model with the per-channel '
                      'F90 = sat(60 F0) collapsed to its maximum; instance fade b = 0, attr0.w = 1, geometric AA 0; the instance '
                      'flag word (0x61 captured: diffuse and specular terms on) and the second program of the graph (table 1) are '
-                     'not selected' % (f.get('writer', key), blend)]
+                     'not selected' % (f.get('writer', key), blend, f.get('blend_source', 'the flags word'))]
 
 
 def apply_viewer_graph_rule(mat, source):

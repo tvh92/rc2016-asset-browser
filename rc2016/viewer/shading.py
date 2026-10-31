@@ -1107,7 +1107,8 @@ void main() {
 #   alpha; fx_noisetile02 (_pick slot) at (u/2, v/2) and (u/2, v/2 + 1/2) gives X = sat(0.454545 (n1 + n2) - 0.363636) with
 #   CB0[99] = 0. rim = sat(4 (1 - N.V)^P9) from the geometry normal, alpha = sat(sat(X + sat(P3 + rim)) attr0.w),
 #   F0 = P8 C S + rim^10, gloss = sat(gloss C.r S), tint k = sat(T / luma(T)). rgb = k specular(F0, N') + K amp (L + X):
-#   the light loop is the one of 4FC5703F; amp is CB0[115] (labelled presentation value), fog, SSR and probes are the viewer rig.
+#   the light loop is the one of 4FC5703F; amp is CB0[115] as captured in the Novalis frame that draws this glass, and the
+#   blend is the captured alpha-over (not the opaque flags word); fog, SSR (instance flag 0x2000 clear) and probes are the rig.
 # uKind 13, glass_liquid F0F45D78 (test_liquid_orientation, the Hydrodisplacer liquid; docs/material-decoding/hydrodisplacer-liquid.md):
 #   uA = base colour K.rgb (hard-coded in the program), normal strength q (CB0[95], taken as 1); uB = specular tint.rgb
 #   (0.3126391, 1, 1), gloss (graph default 1); uC.x = fill (CB2[1], not drawn). The flow normal map (_n slot, API 8) is read at the

@@ -220,15 +220,21 @@ SEDIMENT_VOLUME_ROLES = {'gas': ('_sed_slag_n', '_sed_noise', '_sed_gm', '_sed_s
 THUMPER_GLOVE_GLASS_GRAPH_SHA256 = 'ffec1bf59b2567ad404a016412708a6df957f004250cf276d9c13e725743ad98'
 THUMPER_GLOVE_GLASS_NOISE_SLOTS = (0x49A7866B0056CBD0, 0x49A7866B39DBF715)
 THUMPER_GLOVE_GLASS_PATTERN_SLOTS = (0x49A7866B7AE34E7A, 0x49A7866BABDAD780)
-# Constants of the program that are not material keys: the lit-path glow colour K (CB0[115] multiplies it; the
-# amplitude is the labelled presentation value of BRIGHT_GLOW_PRESENTATION; the frame constant is 0.01 in the captured
-# Veldin frame), the noise term and
-# the engine inputs frozen in the rule. game_equivalence stays False: the program variant (5226F404 or the
-# normal-map-free 1D429528), the instance flags, CB0[99], CB0[115], fade and fog are not established per draw.
+# Constants of the program that are not material keys: the lit-path glow colour K, the noise term and the engine
+# inputs frozen in the rule. A shadPS4 capture of a Novalis frame with the Thumper in view (docs/material-decoding/
+# thumper-glove-glass.md, "Captured draws") gives the blend, CB0[115] and the instance flags of the draws: the glass is
+# drawn by 5226F404 with SRC_ALPHA / ONE_MINUS_SRC_ALPHA over 98% of its pixels although its flags word says opaque, the
+# frame's CB0[115] is 0.04464268 (bits 0x3D36DB3F; other frames: 0.01 Veldin, 0.277 another Novalis frame), and the
+# instance flag word is 0x261 (0x2000 clear: no screen-space reflection tail). game_equivalence stays False: the light
+# list, probes, fog, CB0[99], the instance fade words and the dither-kept opaque rim are not reproduced.
+THUMPER_GLOVE_GLASS_CAPTURED_AMPLITUDE = 0.04464268311858177
+THUMPER_GLOVE_GLASS_CAPTURED_BLEND = 'alpha_over'
 THUMPER_GLOVE_GLASS_CONSTANTS = dict(
-    glow_colour=(0.39613863825798035, 2.0, 0.0), amplitude=0.5, amplitude_input='CB0 dword 115', captured_amplitude=0.01,
+    glow_colour=(0.39613863825798035, 2.0, 0.0), amplitude=THUMPER_GLOVE_GLASS_CAPTURED_AMPLITUDE,
+    amplitude_input='CB0 dword 115', captured_amplitude=THUMPER_GLOVE_GLASS_CAPTURED_AMPLITUDE,
+    amplitude_source='captured: CB0[115] of the Novalis frame that draws this glass (frame-varying)',
     presentation=True, game_equivalence=False, writer='5226F404',
-    frozen_inputs=dict(CB0_99=0.0, CB0_95=1.0, instance_fade=0.0, attr0_w=1.0, instance_flags=0x2261,
+    frozen_inputs=dict(CB0_99=0.0, CB0_95=1.0, instance_fade=0.0, attr0_w=1.0, instance_flags=0x261,
                        geometric_aa=0.0, fog=1.0, ssr=False, program_variant='5226F404 (pass contract 0)'))
 # Hydrodisplacer liquid forward program F0F45D78 (test_liquid_orientation pass 0), decoded in
 # docs/material-decoding/hydrodisplacer-liquid.md and checked by tests/test_liquid_orientation_program.py. The flow
@@ -1460,6 +1466,9 @@ def material_texture_paths(archive, material_path: str) -> dict:
                                  **({'graph_path': rule['graph_path'], 'graph_sha256': rule['graph_sha256']}
                                     if rule.get('graph_path') and rule.get('graph_sha256') else {}),
                                  **blend_state(material_flags(data)))
+        if rule['forward'] == 'glass_thumper':
+            # Captured draw state, not the flags word: mode 0 (opaque) in the material, alpha-over in the game.
+            result['forward'].update(blend=THUMPER_GLOVE_GLASS_CAPTURED_BLEND, blend_source='captured draw state')
         if window_slots:
             # The viewer reads the interior from the _n unit, which carries no sRGB flag: the native format decides.
             result['forward']['slots'] = window_slots

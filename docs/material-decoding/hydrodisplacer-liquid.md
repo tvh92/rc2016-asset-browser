@@ -10,7 +10,7 @@ The gadget's five materials map to programs as follows. The shader dumps of the 
 
 ## Method
 
-`rc2016/research/forward_loops.py` compiles the program with each taken backward branch kept opaque, as for the [Thumper glove glass](thumper-glove-glass.md): the loops are the light-list walk, and everything the material decides is outside them. Texture coordinates come from the translator's sample list (`Compiler.samples`), because the samples themselves are unresolved indirect descriptors. The frozen inputs are the debug view `CB0[135]` = 0 and the instance flag word `0x2261` (lit diffuse `0x20`, lit specular `0x40`, fog `0x2000`; `0x80` clear); the exec-masked export is evaluated with those. Fade slope and offset (the record's two other words) are 0 unless stated.
+`rc2016/research/forward_loops.py` compiles the program with each taken backward branch kept opaque, as for the [Thumper glove glass](thumper-glove-glass.md): the loops are the light-list walk, and everything the material decides is outside them. Texture coordinates come from the translator's sample list (`Compiler.samples`), because the samples themselves are unresolved indirect descriptors. The frozen inputs are the pass word `CB0[135]` = 0 (see [frame constants](frame-constants.md)) and the instance flag word `0x2261` (lit diffuse `0x20`, lit specular `0x40`, fog `0x2000`; `0x80` clear); the exec-masked export is evaluated with those. Fade slope and offset (the record's two other words) are 0 unless stated.
 
 ## Verified closed forms
 

@@ -147,12 +147,14 @@ def compile_opaque(program):
     return compiler
 
 
-def bind_frozen(compiler, *, flags=INSTANCE_FLAGS_LIT, time=0.0, normal_scale=1.0, geometric_aa=0.0):
+def bind_frozen(compiler, *, flags=INSTANCE_FLAGS_LIT, time=0.0, normal_scale=1.0, geometric_aa=0.0, pass_word=0):
     """Substitute the named frozen engine inputs; returns (export roots of target 0, substitutions).
 
     The three leading TBUFFER_LOAD_FORMAT_X reads are the instance record: the one the lit-path bit tests read
-    is the flag word, the other two are the fade slope and offset (taken as 0, no fade). CB0[135] is the debug
-    view word (0); CB0[95] the normal-map fade, CB0[99] the time, `attribute1.2` the geometric-AA width.
+    is the flag word, the other two are the fade slope and offset (taken as 0, no fade). CB0[135] is a per-pass word
+    (``pass_word``; captured 0x40 in the G-buffer and depth-equal forward passes, 0x2 in the blended forward pass, see
+    docs/material-decoding/thumper-glove-glass.md); CB0[95] the normal-map fade, CB0[99] the time, `attribute1.2` the
+    geometric-AA width.
     """
     ir = compiler.ir
     loads = sorted((n.get('offset'), i) for i, n in enumerate(ir.nodes)
@@ -163,7 +165,7 @@ def bind_frozen(compiler, *, flags=INSTANCE_FLAGS_LIT, time=0.0, normal_scale=1.
     flag = tested.pop()
     subs = {i: ir.const(0.) for _, i in loads}
     subs[flag] = ir.const(from_bits(flags))
-    named = {'CB0[135]': 0., 'CB0[95]': normal_scale, 'CB0[99]': time, 'attribute1.2': geometric_aa}
+    named = {'CB0[135]': from_bits(pass_word), 'CB0[95]': normal_scale, 'CB0[99]': time, 'attribute1.2': geometric_aa}
     for i, n in enumerate(ir.nodes):
         if n['op'] == 'input' and n['name'] in named:
             subs[i] = ir.const(named[n['name']])

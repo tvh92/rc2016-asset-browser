@@ -268,7 +268,7 @@ Blend and cull come from the `.material` flags word, not from names or guesses (
 - Every `.material` has a 36-byte section `0xE1275683`; the flags word is the u32 at byte 16.
 - Bits 0-1 select blend: 0 opaque, 1 additive alpha (SRC_ALPHA, ONE), 2 alpha over (SRC_ALPHA, ONE_MINUS_SRC_ALPHA), 3 not observed (`decode_flags` returns surface `None`). Bit 2 makes the material two-sided; otherwise back faces are culled.
 - Foliage with an opaque flags word is alpha-tested, not blended: the pixel shader rejects fragments whose `_c` alpha is below the interpolated `attr0.z`, which the engine supplies per instance (the viewer and Blender use an inferred 0.5).
-- Engine special passes override the flag. Decals (`mo_decal_*`) and fur shells (flag bit `0x80000`, which draws extra alpha-over passes) were captured with blends their flag does not predict.
+- Engine special passes override the flag. Decals (`mo_decal_*`) and fur shells (flag bit `0x80000`, which draws extra alpha-over passes) were captured with blends their flag does not predict. The Thumper glove glass (blend mode 0, bit `0x200000`) was captured as a dither-kept opaque rim plus an alpha-over forward pass over the rest; its rule overrides the blend by exact graph hash, and no other `0x200000` material has been captured ([thumper-glove-glass](material-decoding/thumper-glove-glass.md)).
 - `material_flags(material_path=None, data=None)` reads the word from decoded bytes, or by lower-cased archive path from `material_flags.json.gz`, a census of every `.material` in the game archive.
 - The rule was validated against draws in the capture. The captured depth, sampler and full blend state tables are in the research notes.
 
