@@ -113,11 +113,60 @@ class CrcAndNamingTests(unittest.TestCase):
         blob = animset([('shot1_npc_test', clip('shot1_npc_test', ['root', 'spine'], [(0, 0, 0), (0, 1, 0)]))],
                        strings=['shot1_npc_test'])
         archive = FakeArchive([('c1', 'cinematic2', 'cinematic/test/test.cinematic2', blob)])
-        found, errors = S.cinematic_sources(archive, rig([('root', -1, (0, 0, 0)), ('spine', 0, (0, 1, 0))]))
+        path = 'character/npc/npc_test/npc_test.model'
+        found, errors = S.cinematic_sources(archive, rig([('root', -1, (0, 0, 0)), ('spine', 0, (0, 1, 0))]), path)
         self.assertEqual([c['name'] for c in found[0]['clips']], ['shot1_npc_test'])
         self.assertEqual(errors, [])
-        self.assertEqual(S.cinematic_sources(archive, [])[0], [])
-        self.assertEqual(S.cinematic_sources(archive, rig([('root', -1, (0, 0, 0)), ('arm', 0, (1, 0, 0))]))[0], [])
+        self.assertEqual(S.cinematic_sources(archive, [], path)[0], [])
+        self.assertEqual(S.cinematic_sources(archive, rig([('root', -1, (0, 0, 0)), ('arm', 0, (1, 0, 0))]), path)[0], [])
+
+
+class PerformerTests(unittest.TestCase):
+    """A cutscene clip goes to the model it is the performance of, not to every model its joints cover."""
+    harvester = 'character/enemy/enm_hydro_harvester/enm_hydro_harvester.model'
+    tank = 'character/enemy/enm_hydro_harvester_tank/enm_hydro_harvester_tank.model'
+    felton = 'character/npc/npc_felton_razz/npc_felton_razz.model'
+    crate = 'environment/test/prop/test_prop_crate_01/test_prop_crate_01.model'
+    body = [('a_body', -1, (0, 0, 0))]
+    biped = [('root', -1, (0, 0, 0)), ('spine', 0, (0, 1, 0)), ('head', 1, (0, 2, 0))]
+    shots = [('ocean_rt_shot01_enm_Hydro_Harvester_Tank_master6', body), ('ocean_rt_shot01_enm_Hydro_Harvester_master1', body),
+             ('ocean_rt_shot01_Mystery', body), ('ocean_rt_shot01_Grimroth', biped)]
+
+    def archive(self):
+        actors = {'harvester': (r'character\enemy\enm_Hydro_Harvester\enm_Hydro_Harvester.actor', self.harvester),
+                  'tank': (r'character\enemy\enm_Hydro_Harvester_Tank\enm_Hydro_Harvester_Tank.actor', self.tank),
+                  'felton': (r'character\npc\npc_Felton_Razz\npc_Felton_Razz_cine.actor', self.felton)}
+        blob = animset([(name, clip(name, [j[0] for j in joints], [j[2] for j in joints])) for name, joints in self.shots],
+                       strings=[name for name, _joints in self.shots] + [actor for actor, _model in actors.values()])
+        assets = [('c1', 'cinematic2', 'cinematic/ocean_rt/ocean_rt.cinematic2', blob)]
+        for key, (actor, model_path) in actors.items():
+            assets.append((key, 'actor', actor.lower().replace('\\', '/'), model_path.replace('/', '\\').encode() + b'\0'))
+        for path, joints in ((self.harvester, self.body), (self.tank, self.body), (self.felton, self.biped),
+                             (self.crate, self.body)):
+            assets.append(('m:' + path, 'model', path, model(joints)))
+        return FakeArchive(assets)
+
+    def names(self, path, joints):
+        found = S.cinematic_sources(self.archive(), rig(joints), path)[0]
+        return [c['name'] for source in found for c in source['clips']]
+
+    def test_the_performer_is_read_from_the_end_of_the_clip_name(self):
+        words = S.asset_words(self.harvester)
+        self.assertTrue(S.names_asset('pok_ocean_rt_shot01_enm_Hydro_Harvester_master1', words))
+        self.assertTrue(S.names_asset('pok_ocean_rt_shot01_enm_Hydro_Harvester', words))
+        self.assertFalse(S.names_asset('pok_ocean_rt_shot01_enm_Hydro_Harvester_Tank_master6', words))
+        self.assertTrue(S.names_asset('vel_qwark_rt_shot2_npc_Solana_Trooper2', {'npc_solana_trooper'}))
+        self.assertFalse(S.names_asset(None, words))
+        self.assertEqual(S.asset_words('character/hero/hero_ratchet/bangle_set/hero_ratchet_cap/hero_ratchet_cap.model'),
+                         {'hero_ratchet', 'bangle_set', 'hero_ratchet_cap'})
+
+    def test_one_joint_models_get_only_their_own_clips(self):
+        self.assertEqual(self.names(self.harvester, self.body), ['ocean_rt_shot01_enm_Hydro_Harvester_master1'])
+        self.assertEqual(self.names(self.tank, self.body), ['ocean_rt_shot01_enm_Hydro_Harvester_Tank_master6'])
+        self.assertEqual(self.names(self.crate, self.body), [])   # covered by three clips, the performer of none
+
+    def test_a_performer_alias_goes_to_the_cutscene_actor_with_the_matching_rig(self):
+        self.assertEqual(self.names(self.felton, self.biped), ['ocean_rt_shot01_Grimroth'])
 
 
 class ClipVersionTests(unittest.TestCase):
@@ -322,9 +371,9 @@ class CinematicDirectoryMemo(unittest.TestCase):
                                    ('c2', 'cinematic2', 'cinematic/b/b.cinematic2', blob),
                                    ('m', 'model', 'character/m.model', b'')])
         rows = rig([('root', -1, (0, 0, 0)), ('spine', 0, (0, 1, 0))])
-        first = S.cinematic_sources(archive, rows)
+        first = S.cinematic_sources(archive, rows, 'character/npc_test.model')
         self.assertEqual(sorted(archive.reads), ['c1', 'c2'])
-        second = S.cinematic_sources(archive, rows)
+        second = S.cinematic_sources(archive, rows, 'character/npc_test.model')
         self.assertEqual(sorted(archive.reads), ['c1', 'c2'])
         self.assertEqual(first, second)
         self.assertEqual(len(first[0]), 2)

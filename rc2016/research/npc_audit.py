@@ -3,7 +3,7 @@
 python -m rc2016.research.npc_audit <game or asset_archive root> --out <folder> [--prefix character/npc/]
 
 For every model under the prefix it reports the animsets the game pairs with it, the named clips of
-those animsets (with idle candidates), the real-time cutscene shots whose joints cover the model
+those animsets (with idle candidates), the real-time cutscene shots of the model
 (decoded, with a calmness score), other models with the same rest rig and the animsets the game pairs
 with them, and, per material, the Blender front-end the pipeline would build plus a decode category.
 Archive bytes are read in memory; nothing is written outside ``--out``.
@@ -210,7 +210,7 @@ def audit(archive, prefix, log=print):
         row['suggested_idle'] = suggested_idle([c['name'] for a in animsets for c in a['named']])
         if rows:
             inheritance = 'full'
-            sources, errors = cinematic_sources(archive, rows)
+            sources, errors = cinematic_sources(archive, rows, entry['path'])
             shots = []
             for source in sources:
                 shots.extend(shot_rows(archive, source, rows, inheritance)[0])

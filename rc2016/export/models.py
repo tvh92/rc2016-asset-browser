@@ -60,7 +60,7 @@ class ExportOptions:
     look: int = 0
     blender: str = ''
     skip_existing: bool = False      # keep a folder whose export.json matches source and options
-    cinematic: bool = False          # also offer the real-time cutscene shots that cover the whole model
+    cinematic: bool = False          # also offer the model's real-time cutscene shots
     cinematic_only: bool = False     # only those shots (no animset clips, no reference index needed)
     borrowed: bool = False           # also offer the animsets the game pairs with another model of the same rig
     file_suffix: str = ''            # appended to the model stem in file names, e.g. '_cutscenes'
@@ -700,7 +700,7 @@ class ModelExporter:
                          index_root, False, purpose='export', borrowed=borrowed)
         library = self.loader.animation
         if library is not None and library.rows and options.cinematic:
-            library = library.with_cinematic(self.loader.archive)   # the same cutscene shots export() adds
+            library = library.with_cinematic(self.loader.archive, self.loader.current['_archive_path'])   # as export() does
         if library is None or not library.rows:
             return ([], []) if notes else []
         return (library.labels(), library.clip_notes()) if notes else library.labels()
@@ -708,7 +708,7 @@ class ModelExporter:
     def export(self, model_id, source_path, options: ExportOptions, cinematic_sources=None):
         """Export one model; returns a summary dict. Raises on failure, Cancelled on cancel.
 
-        With ``options.cinematic`` or ``cinematic_only`` the real-time cutscene shots covering the whole model
+        With ``options.cinematic`` or ``cinematic_only`` the model's real-time cutscene shots
         are an animation source (``cinematic_sources``: an ``animation_sources.cinematic_sources`` result the
         caller already has, otherwise scanned here). The summary lists every offered ``clips`` entry
         (name, kind, fps, frames, source, asset, offset) and ``skipped_clips`` with reasons.
@@ -749,7 +749,8 @@ class ModelExporter:
             joint_count = len(library.rows) if library.rows else 0
         if cutscenes and library is not None and library.rows:
             self.log('  scanning real-time cutscenes')
-            library = library.with_cinematic(archive, replace=options.cinematic_only, sources=cinematic_sources)
+            library = library.with_cinematic(archive, decoded['_archive_path'], replace=options.cinematic_only,
+                                             sources=cinematic_sources)
             self._check()
         meshes = selected_meshes(decoded, options.lod, options.look)
         if not meshes:

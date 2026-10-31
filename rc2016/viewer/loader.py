@@ -401,9 +401,9 @@ class SourcePreviewLoader:
                 from rc2016.viewer.animation import borrowable_animsets
                 animsets=animsets+borrowable_animsets(self.archive,self._graph(),model_id,cached['data'],exclude=animsets)
             library=AnimationLibrary(self.archive,cached['data'],animsets)
-            # The browser also offers the real-time cutscene shots whose joints cover the whole model (the only
+            # The browser also offers the model's real-time cutscene shots (the only
             # motion some NPCs have); exports opt in through ExportOptions instead.
-            if cached['purpose']=='view':library=library.with_cinematic(self.archive)
+            if cached['purpose']=='view':library=library.with_cinematic(self.archive,decoded['_archive_path'])
             cached['animation']=library
             decoded['animsets']=list(library.animset_data)
             if not library.clips:

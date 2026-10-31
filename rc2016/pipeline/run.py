@@ -589,7 +589,7 @@ def process_model(key,index,args,code_hash,previous,log):
     for borrowed in [] if no_clips else getattr(args,'borrow_animset',None) or ():
         sources.append(borrowed_animset(archive,index.graph,borrowed,model['skeleton'],key))
     if getattr(args,'cinematic_clips',False) and not no_clips:
-        found,errors=cinematic_sources(archive,model['skeleton'])
+        found,errors=cinematic_sources(archive,model['skeleton'],archive.entries[key]['path'])
         animset_errors.extend(dict(animset=e['path'],reason=e['reason'],status='unreadable_cutscene') for e in errors)
         sources.extend(dict(asset_id=f['asset_id'],source_type=CINEMATIC_SOURCE,limitation=CINEMATIC_LIMITATION,
             clip_names={c['offset']:c['name'] for c in f['clips']},
@@ -988,7 +988,7 @@ def main():
     parser.add_argument('--experimental-ambiguous-inheritance',action='store_true',
         help='Include both decoded full and SSC0 experimental Actions for source-related clips blocked by inheritance ambiguity; SSC0 is preferred, runtime accuracy remains unproven')
     parser.add_argument('--cinematic-clips',action='store_true',
-        help='Also offer real-time cutscene (cinematic2) clips whose joints cover the whole model; clips are named only by an exact CRC32 match. Pick one with --clip.')
+        help='Also offer the real-time cutscene (cinematic2) clips the model performs, covering all its joints; clips are named only by an exact CRC32 match. Pick one with --clip.')
     parser.add_argument('--active-clip',default=None,
         help='Exact selector (as --clip) of the one baked clip left as the active Action in the saved file, and framed by the review camera; default: the sequential overview of every clip')
     parser.add_argument('--borrow-animset',action='append',default=[],

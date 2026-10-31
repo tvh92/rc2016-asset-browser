@@ -5,7 +5,9 @@ Both sources are opt-in and bound to exact source data:
 * Real-time cutscenes (``cinematic2``). Their root carries the same anim_clip_lookup /
   anim_clip_data directory as an animset, but the embedded clips have no 'animclip built'
   name string. A clip is named only when its name hash is the game CRC32 of a printable
-  string stored in the same file; unnamed clips are skipped, never guessed.
+  string stored in the same file; unnamed clips are skipped, never guessed. A clip is
+  offered to a model only when it is that model's performance (``performs``), not merely
+  when its joints cover the model's.
 * Borrowed animsets. An animset's clips are offered to a model the game does not pair it with
   only when that model's rest rig matches a model the game does pair it with (through an actor
   that references both): same parent joints and flags, and rest S/Q/T equal within float noise,
@@ -16,11 +18,13 @@ import json
 from pathlib import Path
 import re
 import statistics
+import struct
 import threading
 import zlib
 
 from rc2016.common import unzip_json, zip_json
 from rc2016.formats import container as container_module
+from rc2016.formats.archive import asset_references
 from rc2016.formats.animation_transforms import model_skeleton
 from rc2016.formats.container import MAGIC, PRINTABLE, read_container
 
@@ -99,7 +103,90 @@ def shot_label(clip_name, asset_path):
     return (match.group('cutscene'), int(match.group('shot'))) if match else (stem, None)
 
 
-CINEMATIC_DIRECTORY_VERSION = 1
+def asset_words(path):
+    """Names a performer may call an archive asset by: its file stem and each folder name holding an underscore
+    (``hero_ratchet`` for a part under ``character/hero/hero_ratchet/bangle_set/``; never ``character`` or ``prop``)."""
+    parts = path.lower().rsplit('.', 1)[0].split('/')
+    return {parts[-1]} | {p for p in parts[:-1] if '_' in p}
+
+
+PERFORMER_COPY = re.compile(r'_master\d*$')
+
+
+def names_asset(clip_name, words):
+    """True when a cutscene clip's performer, the end of its name, is one of ``words``.
+
+    The performer may carry a copy suffix: ``_master<N>`` (``pok_ocean_rt_shot01_enm_Hydro_Harvester_Tank_master6``)
+    or a trailing number (``vel_qwark_rt_shot2_npc_Solana_Trooper2``).
+    """
+    name = PERFORMER_COPY.sub('', (clip_name or '').lower())
+    tails = {name, name.rstrip('0123456789')}
+    return any(t == w or t.endswith('_' + w) for t in tails for w in words)
+
+
+def clip_performers(clip, performers):
+    """The cutscene performer references (``cinematic_performers`` keys) a clip is the performance of.
+
+    The references its name calls (``names_asset``) when there are any; otherwise the one whose model rig is most like
+    the clip's joint set (shared over combined joint hashes), or none when two are equally like it.
+    """
+    named = {ref for ref, models in performers.items()
+             if any(names_asset(clip['name'], asset_words(path)) for path in (ref, *models))}
+    if named:
+        return named
+    joints = set(clip['joint_hashes'])
+    fit = {}
+    for ref, models in performers.items():
+        scores = [len(joints & set(rig)) / len(joints | set(rig)) for rig in models.values() if joints & set(rig)]
+        if scores:
+            fit[ref] = max(scores)
+    best = [ref for ref, score in fit.items() if score == max(fit.values())] if fit else []
+    return set(best) if len(best) == 1 else set()
+
+
+def performs(clip, model_path, performers):
+    """True when a cutscene clip whose joints cover model ``model_path`` is that model's performance.
+
+    Joint coverage alone is not enough: most vehicles, props and debris share one joint (``a_body``), so every
+    one-joint clip of every cutscene covers them. The clip must either name the model (``names_asset`` over
+    ``asset_words``; a part under ``hero_ratchet/`` plays Ratchet's shots), or be the performance of a reference of its
+    own cutscene that holds the model (``clip_performers``), as ``vel_qwark_rt_shot20_Shiv`` is for ``npc_shiv.model``.
+    """
+    if names_asset(clip['name'], asset_words(model_path)):
+        return True
+    own = {ref for ref, models in performers.items() if model_path in models}
+    return bool(own and own & clip_performers(clip, performers))
+
+
+def cinematic_performers(archive, refs, rigs):
+    """{actor or model path a cutscene references: {model path: joint hashes}}, the cutscene's possible performers.
+
+    A cutscene's dependency list names one actor per performer (``pok_ocean_rt`` names the Hydro Harvester actor
+    three times, once for each copy); an actor stands for the models it references. ``refs`` are the cutscene's
+    ``index.references``; ``rigs`` memoizes joint hashes per model path across cutscenes; a model without a skeleton
+    has none and is left out.
+    """
+    found = {}
+    for ref in refs:
+        path = ref['path']
+        if path in found or not path.endswith(('.actor', '.model')):
+            continue
+        models = [path] if path.endswith('.model') else [
+            r['path'] for key in archive.resolve(path) for r in asset_references(archive, key) if r['path'].endswith('.model')]
+        found[path] = {}
+        for model in models:
+            if model not in rigs:
+                ids = [k for k in archive.resolve(model) if archive.entries[k]['type'] == 'model']
+                try:
+                    rigs[model] = [r['hash'] for r in model_skeleton(archive.asset_data(ids[0]))] if ids else []
+                except (ValueError, KeyError, struct.error):   # KeyError: a model without a joint section
+                    rigs[model] = []
+            if rigs[model]:
+                found[path][model] = rigs[model]
+    return found
+
+
+CINEMATIC_DIRECTORY_VERSION = 2
 _directories = {}   # archive layout identity -> cinematic_directory result, shared by every Archive of that layout
 _directory_lock = threading.Lock()
 
@@ -119,7 +206,8 @@ def _directory_stamp(archive):
 
 
 def cinematic_directory(archive):
-    """[(asset_id, path, clip_directory rows or None, error or None)] for every available cutscene asset, in archive order.
+    """[(asset_id, path, clip_directory rows or None, error or None, cinematic_performers)] for every available
+    cutscene asset, in archive order.
 
     Reading the 162 cutscenes takes seconds, and every model's cutscene search needs all of them, so the result is
     kept per archive layout for the whole process (the browser, the clip picker and the exporter each open their own
@@ -137,14 +225,17 @@ def cinematic_directory(archive):
         except (OSError, ValueError, TypeError):
             found = None
         if found is None:
-            found = []
+            from rc2016.formats.index import references
+            found, rigs = [], {}
             entries = sorted((e for e in archive.entries.values() if e['type'] == CINEMATIC_SOURCE
                               and any(o.get('available') for o in e['occurrences'])), key=lambda e: e['order'])
             for entry in entries:
                 try:
-                    found.append((entry['id'], entry['path'], clip_directory(archive.asset_data(entry['id'])), None))
+                    data = archive.asset_data(entry['id'])
+                    found.append((entry['id'], entry['path'], clip_directory(data), None,
+                                  cinematic_performers(archive, references(data), rigs)))
                 except Exception as exc:
-                    found.append((entry['id'], entry['path'], None, str(exc)))
+                    found.append((entry['id'], entry['path'], None, str(exc), {}))
             if path:
                 try:
                     for old in path.parent.glob('*.json.gz'):
@@ -159,22 +250,26 @@ def cinematic_directory(archive):
         return found
 
 
-def cinematic_sources(archive, rows, include_unnamed=False):
-    """Cutscene assets holding named clips that cover every joint of ``rows``, in archive order.
+def cinematic_sources(archive, rows, model_path, include_unnamed=False):
+    """Cutscene assets holding named clips of model ``model_path`` (skeleton ``rows``), in archive order.
 
+    A clip qualifies when its joints cover every joint of ``rows`` and it is the model's performance (``performs``).
     Returns (sources, errors): each source is {asset_id, path, clips} with clip_directory rows.
-    A static model (no joints) matches nothing. With ``include_unnamed`` the clips whose name hash matches
-    no string of their file are listed too (name None); the pipeline never uses those.
+    A static model (no joints) matches nothing. With ``include_unnamed`` the covering clips whose name hash matches
+    no string of their file are listed too (name None) from the cutscenes holding a named clip of the model; the
+    pipeline never uses those.
     """
     joints = {r['hash'] for r in rows}
     if not joints:
         return [], []
     found, errors = [], []
-    for asset_id, path, directory, error in cinematic_directory(archive):
+    for asset_id, path, directory, error, performers in cinematic_directory(archive):
         if error is not None:
             errors.append(dict(asset_id=asset_id, path=path, reason=error))
             continue
-        clips = [dict(c) for c in directory if (c['name'] or include_unnamed) and joints <= set(c['joint_hashes'])]
+        covered = [c for c in directory if (c['name'] or include_unnamed) and joints <= set(c['joint_hashes'])]
+        named = [c for c in covered if c['name'] and performs(c, model_path, performers)]
+        clips = [dict(c) for c in covered if any(c is n for n in named) or (named and not c['name'])]
         if clips:
             found.append(dict(asset_id=asset_id, path=path, clips=clips))
     return found, errors

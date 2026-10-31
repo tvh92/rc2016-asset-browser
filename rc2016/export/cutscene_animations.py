@@ -4,7 +4,7 @@ python -m rc2016.export.cutscene_animations <game or asset_archive root> --model
         [--model ...] --out <folder> [--no-textures] [--overwrite]
 
 Characters without an idle animset (the Novalis mayor, Darla Gratch, Shiv) only move in the real-time
-cutscene (``cinematic2``) assets. This command finds every cutscene clip whose joints cover the whole model
+cutscene (``cinematic2``) assets. This command finds every cutscene clip the model performs
 (``animation_sources.cinematic_sources``; clips are named only by an exact game CRC32 match against a string
 of the same file) and writes, per model, ``<out>/<model stem>/``::
 
@@ -131,7 +131,7 @@ def export_model(exporter, archive, selector, out, textures=True, overwrite=Fals
     if not rows:
         raise ValueError(f'{path} has no skeleton; it cannot hold cutscene animation')
     log(f'{path}: scanning cutscenes for clips covering all {len(rows)} joints')
-    sources, errors = cinematic_sources(archive, rows, include_unnamed=True)
+    sources, errors = cinematic_sources(archive, rows, path, include_unnamed=True)
     if not any(c['name'] for s in sources for c in s['clips']):
         raise ValueError(f'No named cutscene clip covers every joint of {path}')
     options = ExportOptions(formats=('glb',), textures=textures, animations='all', cinematic_only=True,

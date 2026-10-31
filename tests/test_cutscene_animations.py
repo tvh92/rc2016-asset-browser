@@ -17,6 +17,7 @@ from rc2016.viewer.animation import AnimationLibrary
 from tests.test_animation_sources import FakeArchive, animset, clip, model, rig
 
 JOINTS = [('root', -1, (0, 0, 0)), ('spine', 0, (0, 1, 0))]
+MODEL = 'character/npc/npc_test/npc_test.model'
 
 
 def cutscene_blob():
@@ -31,7 +32,7 @@ def cutscene_blob():
 
 def archive():
     return FakeArchive([('c1', 'cinematic2', 'cinematic/nov_test/nov_test_rt.cinematic2', cutscene_blob()),
-                        ('m1', 'model', 'character/npc/npc_test/npc_test.model', model(JOINTS))])
+                        ('m1', 'model', MODEL, model(JOINTS))])
 
 
 class ShotLabelTests(unittest.TestCase):
@@ -53,8 +54,8 @@ class DirectoryRowTests(unittest.TestCase):
 
     def test_unnamed_clips_are_listed_only_on_request(self):
         rows = rig(JOINTS)
-        named = S.cinematic_sources(archive(), rows)[0][0]['clips']
-        every = S.cinematic_sources(archive(), rows, include_unnamed=True)[0][0]['clips']
+        named = S.cinematic_sources(archive(), rows, MODEL)[0][0]['clips']
+        every = S.cinematic_sources(archive(), rows, MODEL, include_unnamed=True)[0][0]['clips']
         self.assertEqual(len(named), 3)
         self.assertEqual(sorted(c['name'] or '' for c in every)[0], '')
         self.assertEqual(len(every), 4)
@@ -65,7 +66,7 @@ class LibraryTests(unittest.TestCase):
         self.archive = archive()
         base = AnimationLibrary(self.archive, model(JOINTS), [])
         self.base = base
-        self.library = base.with_cinematic(self.archive, replace=True)
+        self.library = base.with_cinematic(self.archive, MODEL, replace=True)
 
     def test_copy_leaves_the_original_untouched_and_names_clips_plainly(self):
         self.assertEqual(self.base.clips, [])
@@ -76,7 +77,7 @@ class LibraryTests(unittest.TestCase):
     def test_same_shot_name_in_two_cutscenes_gets_the_asset_prefix(self):
         two = FakeArchive([('c1', 'cinematic2', 'a/one.cinematic2', cutscene_blob()),
                            ('c2', 'cinematic2', 'b/two.cinematic2', cutscene_blob())])
-        labels = self.base.with_cinematic(two, replace=True).labels()
+        labels = self.base.with_cinematic(two, MODEL, replace=True).labels()
         self.assertEqual(labels[0], 'one: nov_test_rt_shot1_npc_Test')
         self.assertEqual(len(set(labels)), 6)
 
@@ -91,7 +92,7 @@ class LibraryTests(unittest.TestCase):
 class ManifestTests(unittest.TestCase):
     def setUp(self):
         self.archive = archive()
-        self.sources, self.errors = S.cinematic_sources(self.archive, rig(JOINTS), include_unnamed=True)
+        self.sources, self.errors = S.cinematic_sources(self.archive, rig(JOINTS), MODEL, include_unnamed=True)
         self.asset = self.sources[0]['path']
         offsets = {c['name']: c['offset'] for c in self.sources[0]['clips']}
         self.offsets = offsets
@@ -135,7 +136,7 @@ class ManifestTests(unittest.TestCase):
 
 class GlbAnimationTests(unittest.TestCase):
     def test_exporter_writes_one_glb_animation_per_clip_and_the_summary_reads_it(self):
-        library = AnimationLibrary(archive(), model(JOINTS), []).with_cinematic(archive(), replace=True)
+        library = AnimationLibrary(archive(), model(JOINTS), []).with_cinematic(archive(), MODEL, replace=True)
         library.inverse = [np.eye(4)] * len(library.rows)   # the synthetic model has no inverse binds
         clips = []
         for index, label in enumerate(library.labels()[:2]):

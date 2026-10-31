@@ -192,20 +192,20 @@ class AnimationLibrary:
         except (ValueError, KeyError):   # KeyError: a model without a joint section
             return None
 
-    def with_cinematic(self, archive, replace=False, sources=None):
-        """Copy of this library that also offers the real-time cutscene shots covering the whole model.
+    def with_cinematic(self, archive, model_path, replace=False, sources=None):
+        """Copy of this library that also offers the real-time cutscene shots of model ``model_path``.
 
         The shots come from ``animation_sources.cinematic_sources`` (clips named by an exact CRC32 match,
-        joints covering every model joint); pass its result as ``sources`` to avoid scanning twice. With
-        ``replace`` the copy holds only those shots. The original library is left unchanged. Cutscene
-        clips carry ``source='cinematic2'`` and decode through the same path as animset clips.
+        joints covering every model joint, performed by this model); pass its result as ``sources`` to avoid
+        scanning twice. With ``replace`` the copy holds only those shots. The original library is left unchanged.
+        Cutscene clips carry ``source='cinematic2'`` and decode through the same path as animset clips.
         """
         from rc2016.formats.animation_sources import CINEMATIC_SOURCE, cinematic_sources
         other = copy.copy(self)
         other.clips = [] if replace else list(self.clips)
         other.animset_data = {} if replace else dict(self.animset_data)
         if sources is None:
-            sources, _errors = cinematic_sources(archive, self.rows) if self.rows else ([], [])
+            sources, _errors = cinematic_sources(archive, self.rows, model_path) if self.rows else ([], [])
         for source in sources:
             clips = [c for c in source['clips'] if c['name']]
             if not clips:
