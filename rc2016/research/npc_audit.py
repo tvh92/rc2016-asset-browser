@@ -83,7 +83,7 @@ def shot_rows(archive, source, rows, inheritance):
         row = dict(name=clip['name'], frames=clip['frames'], fps=clip['fps'], cutscene=source['path'])
         try:
             frames = sample_transforms(decode_clip(data, clip['offset'], names))
-            kind, evidence = classify(rows, frames)
+            kind, evidence = classify(rows, frames, cutscene=True)
             root = worlds_batch(rows, frames[:1], inheritance)[0, 0, :3, 3]
             row.update(status='decoded', kind=kind, translation_rest_median_ratio=evidence.get('translation_rest_median_ratio'),
                        motion_score=motion_score(rows, frames, inheritance),

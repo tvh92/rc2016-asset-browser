@@ -168,6 +168,19 @@ class PerformerTests(unittest.TestCase):
     def test_a_performer_alias_goes_to_the_cutscene_actor_with_the_matching_rig(self):
         self.assertEqual(self.names(self.felton, self.biped), ['ocean_rt_shot01_Grimroth'])
 
+    def test_a_one_joint_model_plays_its_cutscene_clip(self):
+        archive = self.archive()
+        library = AnimationLibrary(archive, model(self.body), []).with_cinematic(archive, self.harvester, replace=True)
+        self.assertEqual(library.clip_notes(), [None])
+        self.assertEqual(library.clip_frames(0)[1], 'absolute skeletal')
+
+    def test_only_a_cutscene_clip_without_translation_evidence_is_absolute(self):
+        from rc2016.formats.clips import CUTSCENE_BASIS, classify
+        frames = sample_transforms(decode_clip(clip('x', ['a_body'], [(3, 0, 0)]), 0, {}))
+        self.assertEqual(classify(rig(self.body), frames)[0], 'unsupported')
+        kind, evidence = classify(rig(self.body), frames, cutscene=True)
+        self.assertEqual((kind, evidence['classification_basis']), ('absolute skeletal', CUTSCENE_BASIS))
+
 
 class ClipVersionTests(unittest.TestCase):
     def test_version_21_uses_the_version_15_layout(self):

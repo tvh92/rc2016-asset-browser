@@ -65,7 +65,18 @@ def worlds_batch(rows, frames, inheritance='full'):
     return out
 
 
-def classify(rows, frames):
+# Basis for a cutscene clip without translation evidence (a one-joint rig has no child joint to measure).
+CUTSCENE_BASIS = ('Real-time cutscene clip without translation evidence: cutscene clips are absolute performances in the '
+                  'cutscene scene space (every EUR cutscene clip offered to its performer that has evidence classifies '
+                  'absolute; none additive)')
+
+
+def classify(rows, frames, cutscene=False):
+    """(kind, evidence) of a clip's first-frame source samples on the model skeleton ``rows``.
+
+    With ``cutscene`` a clip that gives no translation evidence (no matched child joint with a rest length) is absolute
+    (``CUTSCENE_BASIS``) instead of unsupported; intermediate evidence stays unsupported.
+    """
     rest = {r['hash']:r for r in rows}
     matched = [r for r in frames[0] if r['hash'] in rest]
     if not matched:
@@ -79,7 +90,9 @@ def classify(rows, frames):
         classification_ambiguous=False)
     if median is not None and median <= .05:
         return 'relative/additive-style layer', evidence
-    if median is not None and median >= .9:
+    if (median is not None and median >= .9) or (median is None and cutscene):
+        if median is None:
+            evidence.update(classification_basis=CUTSCENE_BASIS)
         return ('absolute skeletal' if len(matched)==len(rows) else 'partial absolute skeletal'), evidence
     evidence.update(reason='Insufficient or intermediate translation evidence; hash-bound classification override required',classification_ambiguous=True)
     return 'unsupported', evidence
@@ -202,7 +215,7 @@ def extract_set(path, rows, cache, profile, log, experimental_ambiguous_inherita
                 if crc32(name) != int(c['metadata']['name_hash'],16): raise ValueError('Clip name/hash mismatch')
                 clip['name']=name
             frames=sample_transforms(clip)
-            kind,evidence=classify(rows,frames)
+            kind,evidence=classify(rows,frames,cutscene=clip_names is not None)   # only cutscene sources name clips
             override=profile.get('classification_overrides',{}).get(digest)
             if override:
                 if override not in ('absolute skeletal','partial absolute skeletal','relative/additive-style layer','unrelated'):

@@ -81,8 +81,10 @@ Root-motion paths, runtime subframe interpolation, further joint-flag semantics,
 | --- | --- |
 | `unrelated` | no joint hash of the clip matches the model |
 | `relative/additive-style layer` | median ratio `<= 0.05` |
-| `absolute skeletal` / `partial absolute skeletal` | median ratio `>= 0.9`; partial when the clip does not cover every model joint |
+| `absolute skeletal` / `partial absolute skeletal` | median ratio `>= 0.9`, or a cutscene clip with no evidence; partial when the clip does not cover every model joint |
 | `unsupported` | intermediate or insufficient evidence; a hash-bound `classification_overrides` entry in a profile is required |
+
+A one-joint rig (most vehicles, props and debris) has no child joint to measure, so its clips give no evidence. Cutscene clips are absolute performances: of the cutscene clips offered to their performers that give evidence, 13,074 classify absolute, 30 intermediate and none additive, so a cutscene clip without evidence is absolute (`classify(..., cutscene=True)`, basis recorded in the evidence); animset clips without evidence stay `unsupported`. Many one-joint cutscene clips hold a constant root: all 12 Hydro Harvester shots and the trash and train props play as a still pose, while 12 of the Harvester Tank's 60 turn it by up to 179 degrees. Where such a performer travels through the scene is not in its clip and is not decoded.
 
 This is a heuristic, not a recovered runtime layer flag. A decode that fails with an "unsupported" or "not validated" error marks the clip `unsupported`; any other failure marks it `malformed`. Clip entries keep raw and sample SHA-256, frame count, fps, unsampled model hashes, unmatched clip hashes and collapsed-rotation joints.
 

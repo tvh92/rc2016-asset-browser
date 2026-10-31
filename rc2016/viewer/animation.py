@@ -243,7 +243,7 @@ class AnimationLibrary:
             if key not in self._kinds:
                 try:
                     start = decode_clip(data, clip['offset'], self.names, first_frames=1)
-                    self._kinds[key] = classify(self.rows, sample_transforms(start))[0]
+                    self._kinds[key] = classify(self.rows, sample_transforms(start), clip.get('source') == 'cinematic2')[0]
                 except Exception:   # the full decode in pose() fails the same way
                     self._kinds[key] = 'unsupported'
             kind = self._kinds[key]
@@ -260,7 +260,7 @@ class AnimationLibrary:
         entry = self.clips[index]
         clip = decode_clip(self.animset_data[entry['animset']], entry['offset'], self.names)
         frames = sample_transforms(clip)
-        kind, _evidence = classify(self.rows, frames)
+        kind, _evidence = classify(self.rows, frames, entry.get('source') == 'cinematic2')
         if kind not in PLAYABLE:
             raise NotPlayable(f"'{entry['name']}' is {kind}; it does not drive this model's skeleton")
         if kind == 'relative/additive-style layer':
