@@ -108,6 +108,7 @@ class ViewerRuleTests(unittest.TestCase):
         self.assertEqual(a, (*s['shallow_colour'], 0.4))
         self.assertEqual(b, (*s['body'], 0.25))
         self.assertEqual(c, (0.025, 0.025, 2.0, 0.0))
+        self.assertEqual(glass_uniforms(forward, 48.35)[3], (0.025, 0.025, 2.0, 48.35))   # the level clock replaces CB0[99]
         self.assertEqual(d, (0.25, 0.5, 0.5, 144.0))
         self.assertEqual(e, (0.025, 1.0, 1.0, 0.0))
         w = water_surface_uniforms(forward)
@@ -121,6 +122,28 @@ class ViewerRuleTests(unittest.TestCase):
         self.assertEqual(glass_uniforms(partial)[5][2], 0.0)                          # the partial path keeps uE.z = 0
         self.assertEqual(water_surface_uniforms(partial), [(0.0,) * 4] * 6)
         self.assertEqual(water_surface_uniforms(dict(kind='screen')), [(0.0,) * 4] * 6)
+
+    def test_level_clock_runs_holds_and_wraps(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        from rc2016.levels import viewport as lv
+        view = SimpleNamespace(animate_time=False, _time_held=12.5, _time_origin=None, _time_used=False,
+                               TIME_PERIOD=lv.LevelViewport.TIME_PERIOD, _schedule_draw=lambda: None)
+        clock = lambda: lv.LevelViewport.game_time(view)
+        self.assertEqual(clock(), 12.5)                                   # held: static renders are repeatable
+        self.assertTrue(view._time_used)
+        with mock.patch.object(lv.time, 'perf_counter', return_value=100.0):
+            lv.LevelViewport.set_animate_time(view, True)
+            self.assertEqual(clock(), 12.5)                               # resumes from the held time
+        with mock.patch.object(lv.time, 'perf_counter', return_value=101.5):
+            self.assertAlmostEqual(clock(), 14.0)
+            lv.LevelViewport.set_animate_time(view, False)
+        self.assertAlmostEqual(clock(), 14.0)
+        lv.LevelViewport.set_animate_time(view, True, held=view.TIME_PERIOD - 1.0)
+        with mock.patch.object(lv.time, 'perf_counter', return_value=200.0):
+            clock()
+        with mock.patch.object(lv.time, 'perf_counter', return_value=202.0):
+            self.assertAlmostEqual(clock(), 1.0)                          # wraps at TIME_PERIOD
 
     def test_glsl_branch_carries_the_decoded_equations(self):
         branch = GLASS_FRAGMENT.split('uKind == 4 && uE.z > 0.5')[1].split('} else if (uKind == 4) {')[0]

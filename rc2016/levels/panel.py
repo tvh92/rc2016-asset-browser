@@ -622,7 +622,13 @@ class LevelPanel:
         self.decals_var = kept(remember, tk.BooleanVar(value=True), "level.decals")
         decals_check = ttk.Checkbutton(scene, text="Decals", variable=self.decals_var,
                                        command=lambda: self.view.set_show_decals(self.decals_var.get()))
-        decals_check.grid(row=2, column=0, columnspan=2, sticky="w")
+        decals_check.grid(row=2, column=0, sticky="w")
+        self.animate_var = kept(remember, tk.BooleanVar(value=True), "level.animate")
+        animate_check = ttk.Checkbutton(scene, text="Animate", variable=self.animate_var,
+                                        command=lambda: self.view.set_animate_time(self.animate_var.get()))
+        animate_check.grid(row=2, column=1, sticky="w", padx=(8, 0))
+        _Tooltip(tk, animate_check, "Runs the game clock for the time-driven surfaces with a decoded rule (river and sea "
+                                    "water, light-cone noise). Off holds the current time.")
         experimental = ttk.LabelFrame(side, text="Experimental", padding=(4, 2)); experimental.grid(row=7, column=0, sticky="ew", pady=(3, 0))
         self.experimental_var = kept(remember, tk.BooleanVar(value=bool(spawn_preview or experimental_materials)), "level.experimental")
         enable_check = ttk.Checkbutton(experimental, text="Enable", variable=self.experimental_var,
@@ -713,6 +719,7 @@ class LevelPanel:
         self.view.set_show_sky(self.sky_var.get())
         self.view.set_show_actors(self.actors_var.get())
         self.view.set_show_decals(self.decals_var.get())
+        self.view.set_animate_time(self.animate_var.get())
         self.view.show_spawn_preview = self.spawn_var.get()
         self.view.native_translation = self.native_translation_var.get()
         self.view.set_lighting_enabled(self.lighting_enabled_var.get())

@@ -1170,7 +1170,7 @@ void main() {
 #   fog blend 1, CB2[4] = 0, vertex alpha 1 (opaque, back faces culled).
 # uKind 4 with uE.z = 1, pok_uniq_water F4D47ECE decoded closure (docs/material-decoding/novalis-water.md; water_surface_uniforms):
 #   uA = shallow colour A (CB2[0..2]), opacity (per-instance, labelled 0.4); uB = body colour B (CB2[4..6]), crest colour weight CB2[39];
-#   uC = displacement CB2[36], CB2[12], crest scale CB2[14], time (CB0[99], 0); uD = strengths CB2[15], CB2[17], far factor CB2[47],
+#   uC = displacement CB2[36], CB2[12], crest scale CB2[14], time (CB0[99]: 0 for static renders, the level clock when running); uD = strengths CB2[15], CB2[17], far factor CB2[47],
 #   strength distance CB2[13]; uE = (CB2[36], 1, 1, 0); uW[0] = depth fade CB2[8], grazing power CB2[9], near fade CB2[10], CB2[11];
 #   uW[1] = environment scale CB2[40], luminance mix CB2[43], far reflection CB2[46], reflection distance CB2[21];
 #   uW[2] = foam scale CB2[45], foam power CB2[33], thickness scale CB2[35], thickness power CB2[34];
@@ -1751,9 +1751,9 @@ def frame_fade(time, rate):
 def glass_uniforms(forward, time=None):
     """(uKind, uA, uB, uC, uD) for a texture_preview 'forward' entry.
 
-    ``time`` is the model view's clip clock for the time-driven kinds: it replaces the ion tubes' and the Warmonger sight's
-    static CB0[99], and for the ion tubes and the number displays the static CB0[107] by the per-frame ``frame_fade``; None
-    keeps the static values."""
+    ``time`` is the view's presentation clock for the time-driven kinds: it replaces the ion tubes', the Warmonger sight's
+    and the decoded water closure's static CB0[99], and for the ion tubes and the number displays the static CB0[107] by
+    the per-frame ``frame_fade``; None keeps the static values."""
     p = forward["params"]
     if forward["kind"] == "screen":
         return (3, (*p["colour_a"], p["intensity_a"]), (*p["colour_b"], p["intensity_b"]),
@@ -1776,7 +1776,7 @@ def glass_uniforms(forward, time=None):
     if forward["kind"] == "water" and forward.get("surface"):
         s = forward["surface"]
         return (4, (*s["shallow_colour"], s["opacity"]), (*s["body"], s["crest_colour"]),
-                (s["displacement_a"], s["displacement_b"], s["crest_scale"], s["time"]),
+                (s["displacement_a"], s["displacement_b"], s["crest_scale"], s["time"] if time is None else time),
                 (s["strength_a"], s["strength_b"], s["far_strength"], s["strength_distance"]),
                 (s["displacement_a"], 1.0, 1.0, 0.0))
     if forward["kind"] == "water":

@@ -69,6 +69,8 @@ def main(argv=None):
                         help="only these zones (short names or paths)")
     parser.add_argument("--mode", default="Shaded", choices=LevelViewport.MODES)
     parser.add_argument("--capture")
+    parser.add_argument("--time", type=float, default=None, metavar="SECONDS",
+                        help="hold the level clock (game time CB0[99]) at this value; a capture holds it at 0 by default")
     parser.add_argument("--camera", type=lambda s: tuple(float(x) for x in s.split(",")))
     parser.add_argument("--probe-position", type=lambda s: tuple(float(x) for x in s.split(",")),
                         help="x,y,z (presentation space, as --camera): the Level atmosphere probe is the reflection volume "
@@ -162,6 +164,8 @@ def main(argv=None):
     if args.no_lightgrid:
         panel.lightgrid_var.set(False)
         panel.view.set_lightgrid(False)
+    if args.capture or args.time is not None:
+        panel.view.set_animate_time(False, held=args.time or 0.0)   # a capture is a static, repeatable frame; not saved
     panel.frame.pack(side="top", fill="both", expand=True)
 
     def close():

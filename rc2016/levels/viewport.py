@@ -328,6 +328,8 @@ class LevelViewport(ModelViewport):
         self.on_open = None        # called with a model path after a double click on it
         self.selected = None       # picked model path, outlined
         self.last_draw_ms = 0.0
+        self._time_origin, self._time_held = None, 0.0   # the level clock (game_time)
+        self._time_job, self._time_used = None, False
         self._bounds_native = ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
         self._eye, self._yaw, self._pitch, self._speed = (0.0, -50.0, 20.0), 90.0, -20.0, 20.0
         self._far = 10000.0
@@ -1318,6 +1320,7 @@ class LevelViewport(ModelViewport):
         if not self._make_current():
             return
         started = self._last_draw_at = time.perf_counter()
+        self._time_used = False
         gl = self._gl
         width, height = max(1, self.winfo_width()), max(1, self.winfo_height())
         gl.glViewport(0, 0, width, height)
@@ -1379,6 +1382,47 @@ class LevelViewport(ModelViewport):
         self.last_phase_ms = dict(scene=scene_ms, level=level_ms)   # CPU time issuing each phase
         self._gdi32.SwapBuffers(self._hdc)
         self._emit_stats()
+        self._arm_time_tick()
+
+    # The level clock: CB0[99], the game time in seconds, for the decoded water closure and the light-cone noise. It runs
+    # once the load has finished and holds its value while switched off; it starts at 0, so a static render
+    # (capture_png, headless checks) draws the frozen-time preview unless a held time is set.
+    animate_time = True
+    TIME_PERIOD = 1024.0             # seconds; the water scrolls do not all repeat over it, so the surface jumps once per wrap
+    TIME_FRAME_SECONDS = 1.0 / 30.0  # redraw interval while a time-driven surface is on screen (the game: one frame time)
+
+    def game_time(self):
+        """CB0[99] for the frame being drawn; marks the frame as time-driven so the clock keeps redrawing."""
+        self._time_used = True
+        if not self.animate_time or not self.__dict__.get("_loading_done", True):
+            return self._time_held
+        now = time.perf_counter()
+        if self._time_origin is None:
+            self._time_origin = now - self._time_held
+        return (now - self._time_origin) % self.TIME_PERIOD
+
+    def set_animate_time(self, running, held=None):
+        """Run or hold the level clock; ``held`` (seconds) replaces the time it holds or resumes from."""
+        if not running and self.animate_time and self._time_origin is not None:
+            self._time_held = (time.perf_counter() - self._time_origin) % self.TIME_PERIOD
+        if held is not None:
+            self._time_held = float(held)
+        self.animate_time, self._time_origin = bool(running), None
+        self._schedule_draw()
+
+    def _arm_time_tick(self):
+        if (self._time_used and self.animate_time and self.__dict__.get("_loading_done", True)
+                and self._time_job is None):
+            wait = self.TIME_FRAME_SECONDS - (time.perf_counter() - self._last_draw_at)   # one frame from this draw's start
+            self._time_job = self.after(max(1, int(wait * 1000)), self._time_tick)
+
+    def _time_tick(self):
+        self._time_job = None
+        try:
+            if self.winfo_exists() and self.winfo_viewable():
+                self._schedule_draw()   # the draw re-arms the tick while a time-driven surface is drawn
+        except Exception:   # the widget is being destroyed
+            pass
 
     GL_ONE, GL_NORMAL_ARRAY, GL_COLOR_ARRAY = 1, 0x8075, 0x8076
 
@@ -1521,7 +1565,7 @@ class LevelViewport(ModelViewport):
         sh.glUniform1i(u["uBeamNoise"], 0); sh.glUniform1i(u["uBeamDepth"], 1)
         sh.glUniform2f(u["uBeamViewport"], float(width), float(height))
         sh.glUniform2f(u["uBeamNearFar"], float(self._near), float(self._far))
-        sh.glUniform1f(u["uBeamTime"], 0.0)
+        sh.glUniform1f(u["uBeamTime"], float(self.game_time()))
         gl.glEnable(self.GL_BLEND); gl.glBlendFunc(self.GL_ONE, self.GL_ONE)
         gl.glDepthMask(0); gl.glDisable(self.GL_CULL_FACE)
         ext["glBindVertexArray"](0)
@@ -1779,7 +1823,7 @@ class LevelViewport(ModelViewport):
                 scene_depth = scene_depth or self._scene_depth_copy()
             self._apply_water_surface(u, entry, forward, scene_depth if surface else None)
             self._apply_window_glass(u, entry, forward, bool(model.get("uv1bo")))
-            kind, *vectors = glass_uniforms(forward)
+            kind, *vectors = glass_uniforms(forward, self.game_time() if surface else None)
             sh.glUniform1i(u["uKind"], kind)
             for name, vector in zip(("uA", "uB", "uC", "uD", "uE"), vectors):
                 sh.glUniform4f(u[name], *(float(x) for x in vector))
