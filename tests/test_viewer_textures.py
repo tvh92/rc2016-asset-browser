@@ -1030,6 +1030,10 @@ class GroundPuddlesTests(unittest.TestCase):
         self.assertFalse(tp.fur_shell_grey_reading(skin,['required/materials/basic_normal_gloss.materialgraph'],fur))
         self.assertFalse(tp.fur_shell_grey_reading(skin,[],data_with_flags(0x30)))
         self.assertFalse(tp.fur_shell_grey_reading('material/character/hero/test/other.material',[],fur))
+        # Ratchet's fur shells share the grey-layout head _g; the ear and head shells read grey too.
+        ratchet_fur='material/character/hero/test/test_hero_ratchet_head_fur/test_hero_ratchet_head_fur_ear_1.material'
+        self.assertTrue(tp.fur_shell_grey_reading(ratchet_fur,[],fur))
+        self.assertFalse(tp.fur_shell_grey_reading(ratchet_fur,[],data_with_flags(0x30)))
 
 
     def test_hd_flag_takes_the_stream_mip_unless_previews_are_disabled(self):

@@ -692,10 +692,16 @@ MATERIAL_FLAGS_SECTION = 0xE1275683
 # Fur-shell render-state bit (flags & 0x80000): the engine draws extra alpha-over passes that are not modelled.
 FUR_SHELL_FLAG = 0x80000
 # Fur-shell materials with no material graph in the file, read as 'grey' like their sibling skin material
-# (Skin_Only, same _c/_g/_n textures). An inference from the shared textures, not a decoded rule. Without
-# it the body reads coloured F0 = _g.rgb, which turns the grey-layout _g (B about 1) into a blue specular.
+# (Big Al's Skin_Only, same _c/_g/_n textures) or Ratchet's head (same _c/_n, grey-layout _g). An inference
+# from the shared textures, not a decoded rule. Without it the body reads coloured F0 = _g.rgb, which turns
+# the grey-layout _g (B about 1, mean (103, 28, 244) for ratchet_head_fur_g) into a violet specular on the ears.
 # Lower-case archive paths; the fur-shell bit must also be set.
-FUR_SHELL_GREY_READING = frozenset({'material/character/npc/npc_big_al_tools/npc_big_al_skin_and_fur.material'})
+FUR_SHELL_GREY_READING = frozenset({
+    'material/character/npc/npc_big_al_tools/npc_big_al_skin_and_fur.material',
+    'material/character/hero/test/test_hero_ratchet_head_fur/test_hero_ratchet_head_fur.material',
+    'material/character/hero/test/test_hero_ratchet_head_fur/test_hero_ratchet_head_fur_ear_1.material',
+    'material/character/hero/test/test_hero_ratchet_head_fur/test_hero_ratchet_head_fur_ear_2.material',
+})
 BLEND_MODES = {0: 'opaque', 1: 'additive', 2: 'alpha_over'}   # flags & 3; mode 3 has no captured example
 
 
