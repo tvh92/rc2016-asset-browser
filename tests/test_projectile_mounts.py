@@ -36,7 +36,7 @@ class ProjectileMountTests(unittest.TestCase):
 
 class RackTests(unittest.TestCase):
     def test_v5_rack_reproduces_the_captured_copies(self):
-        rack = rack_placements([WARMONGER, WARMONGER_V5, WARMONGER_ROCKET])[WARMONGER_ROCKET]
+        [rack] = rack_placements([WARMONGER, WARMONGER_V5, WARMONGER_ROCKET])[WARMONGER_ROCKET]
         self.assertEqual((rack['joint'], rack['owner'], len(rack['matrices'])), ('barrel', WARMONGER, 8))
         self.assertTrue(rack['evidence'].startswith('captured'))
         found = {}
@@ -51,7 +51,7 @@ class RackTests(unittest.TestCase):
             self.assertEqual(rows[2], [0.0, 0.0, 1.0, 0.0])
 
     def test_v1_rack_is_four_inferred_copies_in_its_channels(self):
-        rack = rack_placements([WARMONGER_V1, WARMONGER_ROCKET])[WARMONGER_ROCKET]
+        [rack] = rack_placements([WARMONGER_V1, WARMONGER_ROCKET])[WARMONGER_ROCKET]
         self.assertEqual((rack['owner'], len(rack['matrices'])), (WARMONGER_V1, 4))
         self.assertTrue(rack['evidence'].startswith('inferred'))
         for rows in rack['matrices']:
@@ -60,28 +60,31 @@ class RackTests(unittest.TestCase):
             self.assertAlmostEqual(abs(y - 0.21016), 0.166 * 0.5 ** 0.5, places=6)
             self.assertEqual(z, 0.46211)
 
-    def test_rack_needs_its_barrel_and_the_captured_rack_wins(self):
+    def test_rack_needs_its_barrel_and_both_barrels_give_both_racks(self):
         self.assertEqual(rack_placements([WARMONGER, WARMONGER_ROCKET]), {})
         self.assertEqual(rack_placements([WARMONGER_V5]), {})
-        both = rack_placements([WARMONGER_V1, WARMONGER_V5, WARMONGER_ROCKET])[WARMONGER_ROCKET]
-        self.assertEqual((both['owner'], len(both['matrices'])), (WARMONGER_V5, 8))
+        both = rack_placements([WARMONGER, WARMONGER_V1, WARMONGER_V5, WARMONGER_ROCKET])[WARMONGER_ROCKET]
+        self.assertEqual([(r['tag'], r['owner'], len(r['matrices'])) for r in both], [('V5', WARMONGER, 8), ('V1', WARMONGER, 4)])
 
-    def test_group_members_carry_one_mounted_copy_per_slot(self):
+    def _members(self, paths):
         import tempfile
         from pathlib import Path
         from types import SimpleNamespace
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as tmp:
             finals = {}
-            for path in (WARMONGER, WARMONGER_V5, WARMONGER_ROCKET):
+            for path in paths:
                 finals[path] = Path(tmp) / (Path(path).stem + '.blend')
                 finals[path].write_bytes(path.encode())
             manifest = dict(models={k: dict(status=GROUP_STATUSES[0], model=k, final=str(v)) for k, v in finals.items()}, errors=[])
             captured = {}
             with patch('rc2016.pipeline.run.run_group_blend', lambda name, members, *a: captured.update(members=members)):
-                assemble_group_blend(list(finals), manifest, SimpleNamespace(group_blend='peacemaker', group_actors=''),
+                assemble_group_blend(list(finals), manifest, SimpleNamespace(group_blend='warmonger', group_actors=''),
                                      lambda *a, **k: None)
-        members = captured['members']
+        return captured['members'], finals
+
+    def test_group_members_carry_one_mounted_copy_per_slot(self):
+        members, finals = self._members((WARMONGER, WARMONGER_V5, WARMONGER_ROCKET))
         copies = [m for m in members if 'mount' in m]
         self.assertEqual(len(members), 2 + 8)
         self.assertEqual([m['name'] for m in copies], ['proj_warmonger.model #%d' % k for k in range(1, 9)])
@@ -90,6 +93,13 @@ class RackTests(unittest.TestCase):
         barrel = next(m for m in members if 'v5' in m['name'])
         self.assertEqual(barrel.get('rig_of'), 'wpn_warmonger.model')
 
+    def test_one_group_with_both_barrels_tags_each_rack(self):
+        members, _finals = self._members((WARMONGER, WARMONGER_V1, WARMONGER_V5, WARMONGER_ROCKET))
+        copies = [m['name'] for m in members if 'mount' in m]
+        self.assertEqual(len(members), 3 + 12)
+        self.assertEqual(copies, ['proj_warmonger.model V5 #%d' % k for k in range(1, 9)] +
+                         ['proj_warmonger.model V1 #%d' % k for k in range(1, 5)])
+        self.assertEqual({m.get('rig_of') for m in members if 'barrel' in m['name']}, {'wpn_warmonger.model'})
 
 if __name__ == '__main__':
     unittest.main()

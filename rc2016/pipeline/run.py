@@ -952,14 +952,17 @@ def assemble_group_blend(selection,manifest,args,log,archive=None):
     for label,(path,final) in zip(labels,delivered):
         member=dict(name=label,blend=final,sha256=file_hash(final),**({'native_offset':list(mounts[path])} if path in mounts else {}),
             **({'rig_of':label_of[owners[path]]} if path in owners else {}))
-        rack=racks.get(path)
-        if not rack:
+        path_racks=racks.get(path)
+        if not path_racks:
             members.append(member);continue
-        # One member per rack copy, placed by its native matrix and parented to the weapon joint (projectile_mounts.RACKS).
-        for slot,rows in enumerate(rack['matrices'],1):
-            members.append(dict(member,name='%s #%d'%(label,slot),native_matrix=rows,mount=dict(joint=rack['joint'],owner=label_of[rack['owner']]),
-                placement=dict(rack=rack['name'],slot=slot,evidence=rack['evidence'])))
-        log('group_rack',projectile=path,rack=rack['name'],copies=len(rack['matrices']),joint=rack['joint'],owner=rack['owner'])
+        # One member per rack copy, placed by its native matrix and parented to the weapon joint (projectile_mounts.RACKS);
+        # with both barrels selected each rack's copies carry its tag (V5 / V1), one collection per copy.
+        for rack in path_racks:
+            stem='%s %s'%(label,rack['tag']) if len(path_racks)>1 else label
+            for slot,rows in enumerate(rack['matrices'],1):
+                members.append(dict(member,name='%s #%d'%(stem,slot),native_matrix=rows,mount=dict(joint=rack['joint'],owner=label_of[rack['owner']]),
+                    placement=dict(rack=rack['name'],slot=slot,evidence=rack['evidence'])))
+            log('group_rack',projectile=path,rack=rack['name'],copies=len(rack['matrices']),joint=rack['joint'],owner=rack['owner'])
     run_group_blend(name,members,manifest,args,log)
 
 

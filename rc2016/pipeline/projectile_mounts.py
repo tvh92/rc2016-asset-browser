@@ -49,11 +49,11 @@ WARMONGER_ROCKET = 'equipment/projectile/proj_warmonger/proj_warmonger.model'
 # (floor 0.136 against 0.176). An inference, so the rack is labelled as such. The config gives the V1 six rockets
 # (kAmmo 6), which the four channels do not hold; four copies follow the geometry.
 RACKS = (
-    dict(name='Peacemaker (Warmonger V5) rocket rack', barrel=WARMONGER_V5, joint='barrel',
+    dict(name='Peacemaker (Warmonger V5) rocket rack', tag='V5', barrel=WARMONGER_V5, joint='barrel',
          joint_owners=(WARMONGER, WARMONGER_V5), projectile=WARMONGER_ROCKET,
          centre=(0.0, 0.21016, 0.46211), radius=0.20544, rolls=(0.0, -45.0, -90.0, -135.0, 180.0, 135.0, 90.0, 45.0),
          evidence='captured: Research/captures/2026-11-01_peacemaker-v5 (instance records of the instanced rocket draw)'),
-    dict(name='Warmonger V1 rocket rack', barrel=WARMONGER_V1, joint='barrel',
+    dict(name='Warmonger V1 rocket rack', tag='V1', barrel=WARMONGER_V1, joint='barrel',
          joint_owners=(WARMONGER, WARMONGER_V1), projectile=WARMONGER_ROCKET,
          centre=(0.0, 0.21016, 0.46211), radius=0.166, rolls=(-45.0, -135.0, 135.0, 45.0),
          evidence='inferred: V5 centre and roll convention, radius from the V1 channel floor; not captured'),
@@ -86,17 +86,18 @@ def rack_matrix(centre, radius, roll):
 
 
 def rack_placements(paths):
-    """{projectile path: rack} for each projectile in ``paths`` whose rack's barrel model is also in ``paths``.
+    """{projectile path: [rack, ...]} for each projectile in ``paths`` with a rack whose barrel model is also in
+    ``paths``, in ``RACKS`` order (V5, then V1, when both barrels are selected for one weapon group).
 
-    A rack is dict(name, joint, owner (the path whose armature carries the joint), matrices, evidence). With both
-    barrels selected the first rack in ``RACKS`` (the captured V5) wins."""
+    A rack is dict(name, tag, joint, owner (the path whose armature carries the joint), matrices, evidence)."""
     keys = {_key(path): path for path in paths}
     found = {}
     for rack in RACKS:
         projectile = keys.get(rack['projectile'])
-        if projectile is None or rack['barrel'] not in keys or projectile in found:
+        if projectile is None or rack['barrel'] not in keys:
             continue
         owner = next(keys[weapon] for weapon in rack['joint_owners'] if weapon in keys)
-        found[projectile] = dict(name=rack['name'], joint=rack['joint'], owner=owner, evidence=rack['evidence'],
-                                 matrices=[rack_matrix(rack['centre'], rack['radius'], roll) for roll in rack['rolls']])
+        found.setdefault(projectile, []).append(dict(
+            name=rack['name'], tag=rack['tag'], joint=rack['joint'], owner=owner, evidence=rack['evidence'],
+            matrices=[rack_matrix(rack['centre'], rack['radius'], roll) for roll in rack['rolls']]))
     return found
