@@ -47,6 +47,24 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(g.scroll_to_show(4, 100, 300, 100, 3), 100)      # already visible
 
 
+class ChunkBangleFilterTests(unittest.TestCase):
+    def test_chunk_and_bangle_folders_match(self):
+        for path in ('character/enemy/enm_chomper/enm_chomper_chunks_set/enm_chomper_chunks_07.model',
+                     'character/enemy/enm_warbot_v4/enm_warbot_v4_chunks_set/part.model',
+                     'vehicle/veh_victor/veh_victor_ship_engine_chunk_set/part.model',
+                     'character/enemy/enm_peckbot/bangle_set/enm_peckbot_bangle_02_chunk/part.model',
+                     'character/enemy/enm_extermibot/chunk/enm_extermibot_chunk_head.model'):
+            with self.subTest(path=path):
+                self.assertTrue(g.is_chunk_or_bangle(Rec('x', path)))
+
+    def test_other_folders_do_not_match(self):
+        for path in ('character/enemy/enm_warbot_v4/enm_warbot_v4.model',
+                     'character/enemy/enm_chomper/enm_chomper_chunk_death.model',
+                     'character/hero/hero_ratchet/bangle_set_old/part.model'):
+            with self.subTest(path=path):
+                self.assertFalse(g.is_chunk_or_bangle(Rec('x', path)))
+
+
 class CacheTests(unittest.TestCase):
     def test_lru_is_bounded_and_evicts_least_recently_used(self):
         cache = g.ImageCache(3)

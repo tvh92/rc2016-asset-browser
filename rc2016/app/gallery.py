@@ -12,6 +12,7 @@ import math
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import queue
+import re
 
 from rc2016.app.theme import TOOLTIP_COLORS, color, listen, track
 from rc2016.app.thumbnails import (DEFAULT_SIZE, RendererProcess, ThumbnailIndex, cache_dir)
@@ -124,11 +125,17 @@ def display_name(record):
     return actors[0] if actors else Path(record.archive_path).stem
 
 
+CHUNK_BANGLE_FOLDER = re.compile(r'^chunk$|(?:^|_)(?:chunks?|bangles?)_set$')
+
+
 def is_chunk_or_bangle(record):
-    """Whether a model is inside an archive folder reserved for a chunk or bangle."""
+    """Whether a model is inside an archive folder reserved for a chunk or bangle.
+
+    Matches ``chunk``, ``bangle_set`` and the per-enemy ``<name>_chunk_set``, ``<name>_chunks_set`` and
+    ``<name>_bangle_set`` folders."""
     path = getattr(record, 'archive_path', '') or getattr(record, 'relative_model', '')
     folders = str(path).replace('\\', '/').casefold().split('/')[:-1]
-    return any(folder in {'chunk', 'bangle_set'} for folder in folders)
+    return any(CHUNK_BANGLE_FOLDER.search(folder) for folder in folders)
 
 
 def choose_records(selected, filtered, shown_ids, cap=FILTER_CAP):
