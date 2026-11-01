@@ -23,6 +23,29 @@ class SharedLightingFileTests(unittest.TestCase):
         self.assertAlmostEqual(float(environment.rotate_z(image, 22.5)[1, 2, 0]), 0.5)
         self.assertAlmostEqual(float(turned.sum()), 3.0)
 
+    def test_tilt_shows_the_texel_the_mapping_node_looks_up(self):
+        image = np.random.default_rng(1).random((32, 64, 3)).astype(np.float32)
+        np.testing.assert_array_equal(environment.rotate(image, 0.0, 45.0), environment.rotate_z(image, 45.0))
+        tilted = environment.rotate(image, -23.0, 45.0)
+        directions = environment.equirect_directions(64, 32)
+        matrix = environment.mapping_matrix(-23.0, 45.0)
+        # Rows away from the poles: where the bilinear lookup lands on a texel centre it returns that texel.
+        for y, x in ((8, 5), (16, 40), (23, 60)):
+            u, v = environment.direction_uv(matrix @ directions[y, x])
+            column, row = u * 64 - 0.5, (1 - v) * 32 - 0.5
+            c0, r0 = math.floor(column), math.floor(row)
+            fc, fr = column - c0, row - r0
+            expected = ((image[r0, c0 % 64] * (1 - fc) + image[r0, (c0 + 1) % 64] * fc) * (1 - fr) +
+                        (image[r0 + 1, c0 % 64] * (1 - fc) + image[r0 + 1, (c0 + 1) % 64] * fc) * fr)
+            np.testing.assert_allclose(tilted[y, x], expected, rtol=1e-4)
+
+    def test_shared_tilt_puts_the_sun_about_twenty_degrees_above_the_horizon(self):
+        settings = environment.shared_lighting()
+        _residual, direction, _sun = environment.extract_sun(environment.read_exr(settings['hdri_path']))
+        world = environment.mapping_matrix(settings['hdri_rotation_x_degrees'], settings['hdri_rotation_z_degrees']).T @ direction
+        self.assertAlmostEqual(math.degrees(math.asin(world[2])), 20.0, delta=0.5)
+        self.assertLess(world[1], -0.9)   # in front of the build camera (which looks along +Y)
+
     def test_hdri_is_finite_nonnegative_sky_over_ground(self):
         image = environment.read_exr(environment.shared_lighting()['hdri_path'])
         self.assertEqual(image.shape, (512, 1024, 3))

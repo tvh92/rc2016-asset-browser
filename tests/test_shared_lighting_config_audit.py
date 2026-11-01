@@ -51,7 +51,8 @@ class SharedLightingConfigAuditTests(unittest.TestCase):
             'Color': SimpleNamespace(links=[SimpleNamespace(from_node=env)])})
         output = SimpleNamespace(type='OUTPUT_WORLD', is_active_output=True,
             inputs={'Surface': SimpleNamespace(links=[SimpleNamespace(from_node=bg)])})
-        rotation = SimpleNamespace(default_value=(0, 0, math.radians(selected['hdri_rotation_z_degrees'])))
+        rotation = SimpleNamespace(default_value=(math.radians(selected['hdri_rotation_x_degrees']), 0,
+                                                   math.radians(selected['hdri_rotation_z_degrees'])))
         class Nodes(list):
             def get(self, key):
                 return SimpleNamespace(inputs={'Rotation': rotation}) if key == 'PS4 HDRI Rotation' else None

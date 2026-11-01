@@ -287,13 +287,15 @@ Blend and cull come from the `.material` flags word, not from names or guesses (
 | Setting | Value |
 |---|---|
 | HDRI | `golden_gate_hills_1k.exr`, world strength 1.5 |
+| HDRI rotation | tilted −23° about X, then turned 45° about Z: the sun about 20° above the horizon, in front of the build camera |
 | Separate lights | none |
 | View transform | Khronos PBR Neutral, look None |
 | Exposure | −1.0 |
 | Gamma | 1.0 |
 | Compositor | off |
 
-- The 1k file is a 4×4 box-filtered float copy of the 4k original, 6 MB. It is float RGB because the sun reaches about 9e4, beyond half float. Lighting energy is within 0.01% of the original and 25% test renders matched within noise.
+- The 1k file is a 4×4 box-filtered float copy of the 4k original, 6 MB. It has the same pixels as Poly Haven's own 1k EXR (which adds a constant alpha channel); the 1k `.hdr` download is 8-bit RGBE and loses about 0.3% of the energy. It is float RGB because the sun reaches about 9e4, beyond half float. Lighting energy is within 0.01% of the original and 25% test renders matched within noise.
+- The photograph's sun is 43° above its horizon. The X tilt lowers it for frontal review light; it tilts the whole sky with it, so the photographed horizon is 23° low in front of the model and 23° high behind it. With film transparency that shows only in reflections and in a slightly darker fill from above (about 25% less sky irradiance on an upward face).
 - `scene_defaults.load_shared_lighting` fails loudly if a key or the HDRI is missing. `apply_new_scene_defaults` and `apply_shared_lighting` apply it and record it on the scene as `scene["shared_lighting"]`. `check_shared_lighting` and the validators compare against that record, and `audit_scene` reports `lighting.differs_from_current_shared_file` for older scenes. For a pipeline build using `--lighting-config`, `audit_scene(selected_lighting=...)` checks the scene against the selected settings and reloads that config file to detect drift; the default call still compares with this checkout's shared file.
 - The pipeline default is `--lighting-source hdri`; `--lighting-config` selects another lighting file. The pipeline links the HDRI by absolute path; pack it in hand-delivered scenes.
 - This is neutral review lighting. It is not game lighting and must not be called game accurate.

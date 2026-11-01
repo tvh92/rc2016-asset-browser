@@ -16,11 +16,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-# The shared review lighting (HDRI file, world strength, view transform, look, exposure) lives
+# The shared review lighting (HDRI file and rotation, world strength, view transform, look, exposure) lives
 # in assets/lighting/shared_lighting.json, so it can be replaced in one place.  Every scene
 # records the values it was given (scene["shared_lighting"]); checks compare against that.
 SHARED_LIGHTING_FILE = Path(__file__).resolve().parents[2] / "assets" / "lighting" / "shared_lighting.json"
-_LIGHTING_KEYS = ("hdri", "hdri_rotation_z_degrees", "world_strength", "view_transform", "look", "exposure", "gamma",
+_LIGHTING_KEYS = ("hdri", "hdri_rotation_x_degrees", "hdri_rotation_z_degrees", "world_strength", "view_transform", "look", "exposure", "gamma",
                   "use_compositing")
 # Render Region padding (fractions of the model's own screen size): the longer screen axis gets the
 # first value, the shorter axis the second.  The horizontal axis gets at least the side value, so the
@@ -71,10 +71,13 @@ def check_shared_lighting(scene: Any, expected: Optional[Dict[str, Any]] = None)
         path = Path(bpy.path.abspath(image.filepath)).expanduser().resolve() if image else None
         if bg.type != "BACKGROUND" or abs(bg.inputs["Strength"].default_value - float(expected["world_strength"])) > 1e-5:
             problems.append("lighting.world_strength")
-        # Scenes built before the rotation existed have no Mapping node, which is a zero rotation.
+        # Scenes built before the rotation existed have no Mapping node, which is a zero rotation; records
+        # from before the tilt have no X angle, which is a zero tilt.
         mapping = scene.world.node_tree.nodes.get("PS4 HDRI Rotation")
-        turned = mapping.inputs["Rotation"].default_value[2] if mapping is not None else 0.0
-        if abs(turned - math.radians(float(expected.get("hdri_rotation_z_degrees", 0.0)))) > 1e-5:
+        rotation = tuple(mapping.inputs["Rotation"].default_value) if mapping is not None else (0.0, 0.0, 0.0)
+        wanted = (math.radians(float(expected.get("hdri_rotation_x_degrees", 0.0))), 0.0,
+                  math.radians(float(expected.get("hdri_rotation_z_degrees", 0.0))))
+        if any(abs(a - b) > 1e-5 for a, b in zip(rotation, wanted)):
             problems.append("lighting.hdri_rotation")
         if image is None or path is None or str(path) != expected["hdri_path"] or tuple(image.size) == (0, 0):
             problems.append("lighting.hdri_file")
@@ -119,13 +122,15 @@ def _set_cycles_defaults(scene: Any) -> None:
 
 
 def _set_world_hdri(scene: Any, hdri_path: Optional[Path], strength: Optional[float] = None,
-                    rotation_z_degrees: Optional[float] = None) -> None:
+                    rotation_z_degrees: Optional[float] = None, rotation_x_degrees: Optional[float] = None) -> None:
     if hdri_path is None:
         hdri_path = Path(load_shared_lighting()["hdri_path"])
     if strength is None:
         strength = float(load_shared_lighting()["world_strength"])
     if rotation_z_degrees is None:
         rotation_z_degrees = float(load_shared_lighting()["hdri_rotation_z_degrees"])
+    if rotation_x_degrees is None:
+        rotation_x_degrees = float(load_shared_lighting()["hdri_rotation_x_degrees"])
     hdri_path = Path(hdri_path).expanduser().resolve()
     if not hdri_path.is_file():
         raise FileNotFoundError("Shared HDRI not found: %s" % hdri_path)
@@ -143,14 +148,15 @@ def _set_world_hdri(scene: Any, hdri_path: Optional[Path], strength: Optional[fl
     if environment is None:
         environment = nodes.new("ShaderNodeTexEnvironment")
         environment.name = "PS4 Golden Gate HDRI"
-    # Texture Coordinate -> Mapping -> Environment. The Mapping rotates the lookup direction, so a
-    # positive Z value makes the light appear turned by the opposite angle in world space: the same
-    # relative light as turning the model by +N degrees, without rotating the model.
+    # Texture Coordinate -> Mapping -> Environment. The Mapping rotates the lookup direction (image
+    # direction = Rz(z) . Rx(x) . world direction), so a positive Z value makes the light appear turned by
+    # the opposite angle in world space: the same relative light as turning the model by +N degrees,
+    # without rotating the model. The X angle tilts the whole sky (sun and horizon together) about world X.
     coords = nodes.get("PS4 HDRI Coordinates") or nodes.new("ShaderNodeTexCoord")
     coords.name = "PS4 HDRI Coordinates"
     mapping = nodes.get("PS4 HDRI Rotation") or nodes.new("ShaderNodeMapping")
     mapping.name = "PS4 HDRI Rotation"
-    mapping.inputs["Rotation"].default_value = (0.0, 0.0, math.radians(rotation_z_degrees))
+    mapping.inputs["Rotation"].default_value = (math.radians(rotation_x_degrees), 0.0, math.radians(rotation_z_degrees))
     try:
         image = bpy.data.images.load(str(hdri_path), check_existing=True)
         environment.image = image
@@ -269,7 +275,7 @@ def apply_shared_lighting(scene: Any, lighting: Optional[Any] = None, hdri_path:
     if hdri_path:
         settings["hdri_path"] = str(Path(hdri_path).expanduser().resolve())
     _set_world_hdri(scene, Path(settings["hdri_path"]), float(settings["world_strength"]),
-                    float(settings["hdri_rotation_z_degrees"]))
+                    float(settings["hdri_rotation_z_degrees"]), float(settings["hdri_rotation_x_degrees"]))
     view = scene.view_settings
     view.view_transform = settings["view_transform"]
     view.look = settings["look"]

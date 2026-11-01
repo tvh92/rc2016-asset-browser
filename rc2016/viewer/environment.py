@@ -20,9 +20,9 @@ this predicts the Blender review render; it is not the render and not game light
 Directions are Blender world space (Z up). Blender's environment lookup maps a direction d to
 u = 0.5 - atan2(d.y, d.x) / (2 pi), v = atan2(d.z, hypot(d.x, d.y)) / pi + 0.5 (v = 0 is the image's
 bottom row; +X is the image centre). Checked against Cycles renders of the shared HDRI: six
-directions each returned exactly the texel this mapping selects. The pipeline turns the lookup by
-``hdri_rotation_z_degrees`` (a Mapping node: image direction = Rz(angle) . world direction), so the maps
-are built from the image turned the same way (``rotate_z``).
+directions each returned exactly the texel this mapping selects. The pipeline tilts and turns the lookup by
+``hdri_rotation_x_degrees`` and ``hdri_rotation_z_degrees`` (a Mapping node: image direction =
+Rz(z) . Rx(x) . world direction), so the maps are built from the image rotated the same way (``rotate``).
 """
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ CACHE_DIR = ROOT / '.cache' / 'environment'
 ROUGHNESS_LEVELS = (0.15, 0.3, 0.45, 0.6, 0.8, 1.0)
 BAND_SIZE = (128, 64)
 SUN_THRESHOLD = 20.0   # luminance above which radiance moves into the directional sun
-ENVIRONMENT_VERSION = 3   # bump when the maps' computation changes; it names the cache files
+ENVIRONMENT_VERSION = 4   # bump when the maps' computation changes; it names the cache files
 
 # Tonemaps the viewers offer (the GLSL lives in rc2016/viewer/shading.py).
 TONEMAPS = ('ACES fit', 'Khronos PBR Neutral')
@@ -186,6 +186,38 @@ def rotate_z(image, degrees):
     return turned.astype(np.float32)
 
 
+def mapping_matrix(x_degrees, z_degrees):
+    """The pipeline Mapping node's rotation (Euler XYZ (x, 0, z)): image direction = M . world direction."""
+    import numpy as np
+    x, z = math.radians(x_degrees), math.radians(z_degrees)
+    rx = np.array([[1, 0, 0], [0, math.cos(x), -math.sin(x)], [0, math.sin(x), math.cos(x)]])
+    rz = np.array([[math.cos(z), -math.sin(z), 0], [math.sin(z), math.cos(z), 0], [0, 0, 1]])
+    return rz @ rx
+
+
+def rotate(image, x_degrees, z_degrees):
+    """The equirectangular ``image`` as Blender's world shows it under a Mapping rotation of (x, 0, z) degrees.
+
+    A turn about Z alone is ``rotate_z``. A tilt about X resamples: each world texel shows the image at
+    M . d (``mapping_matrix``), bilinear between texels, wrapping in azimuth. Resampling blurs a texel-sized
+    sun, so take the sun out first (``extract_sun``) and turn its direction with M transposed."""
+    import numpy as np
+    if not x_degrees:
+        return rotate_z(image, z_degrees)
+    h, w, _c = image.shape
+    d = equirect_directions(w, h) @ mapping_matrix(x_degrees, z_degrees).T.astype(np.float32)
+    u = 0.5 - np.arctan2(d[..., 1], d[..., 0]) / (2.0 * math.pi)
+    v = np.arctan2(d[..., 2], np.hypot(d[..., 0], d[..., 1])) / math.pi + 0.5
+    col = u * w - 0.5
+    row = np.clip((1.0 - v) * h - 0.5, 0.0, h - 1.0)       # top row first
+    c0, r0 = np.floor(col).astype(int), np.minimum(np.floor(row).astype(int), h - 2)
+    fc, fr = (col - c0)[..., None], (row - r0)[..., None]
+    c0, c1 = c0 % w, (c0 + 1) % w
+    top = image[r0, c0] * (1.0 - fc) + image[r0, c1] * fc
+    bottom = image[r0 + 1, c0] * (1.0 - fc) + image[r0 + 1, c1] * fc
+    return (top * (1.0 - fr) + bottom * fr).astype(np.float32)
+
+
 def sh_irradiance(image):
     """9 x RGB coefficients c such that irradiance E(n) = sum c_i Y_i(n), including the cosine lobe
     (Ramamoorthi and Hanrahan's A_l: pi, 2pi/3, pi/4)."""
@@ -261,14 +293,16 @@ def prefiltered_bands(image):
 
 def environment_maps(settings=None):
     """{'sh': (9, 3), 'bands': (levels * h, w, 3), 'sun_direction', 'sun': RGB irradiance, 'strength',
-    'exposure', 'hdri', 'sha256'} for the shared lighting (world strength not applied, the HDRI turned by
-    ``hdri_rotation_z_degrees``), cached under .cache/environment by the HDRI's hash and the turn."""
+    'exposure', 'hdri', 'sha256'} for the shared lighting (world strength not applied, the HDRI tilted by
+    ``hdri_rotation_x_degrees`` and turned by ``hdri_rotation_z_degrees``), cached under .cache/environment by
+    the HDRI's hash and the rotation."""
     import numpy as np
     settings = settings or shared_lighting()
     hdri = Path(settings['hdri_path'])
     digest = hashlib.sha256(hdri.read_bytes()).hexdigest()
+    tilt = float(settings.get('hdri_rotation_x_degrees', 0.0))
     turn = float(settings.get('hdri_rotation_z_degrees', 0.0))
-    cache = CACHE_DIR / f'{digest[:16]}_z{turn:g}_v{ENVIRONMENT_VERSION}.npz'
+    cache = CACHE_DIR / f'{digest[:16]}_x{tilt:g}_z{turn:g}_v{ENVIRONMENT_VERSION}.npz'
     maps = None
     if cache.is_file():
         try:
@@ -277,7 +311,9 @@ def environment_maps(settings=None):
         except (OSError, ValueError, KeyError):
             maps = None
     if maps is None:
-        image, direction, sun = extract_sun(rotate_z(read_exr(hdri), turn))
+        residual, direction, sun = extract_sun(read_exr(hdri))
+        image = rotate(residual, tilt, turn)
+        direction = (mapping_matrix(tilt, turn).T @ direction).astype(np.float32)
         maps = dict(sh=sh_irradiance(image), bands=prefiltered_bands(image), sun_direction=direction, sun=sun)
         try:
             CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -292,4 +328,4 @@ def environment_maps(settings=None):
 
 
 __all__ = ['LIGHTINGS', 'ROUGHNESS_LEVELS', 'TONEMAPS', 'direction_uv', 'environment_maps', 'equirect_directions', 'extract_sun',
-           'prefiltered_bands', 'read_exr', 'rotate_z', 'sh_irradiance', 'shared_lighting']
+           'mapping_matrix', 'prefiltered_bands', 'read_exr', 'rotate', 'rotate_z', 'sh_irradiance', 'shared_lighting']
