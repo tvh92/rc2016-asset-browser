@@ -22,7 +22,7 @@ from rc2016.formats.animation_transforms import model_skeleton
 from rc2016.pipeline.clip_selection import ClipSelectionError, resolve_clip_selection
 from rc2016.common import dump,ensure_separate,extended,file_hash,load,read,safe_name,sha,unzip_json,write,promote
 from rc2016.formats.index import AssetIndex
-from rc2016.pipeline.projectile_mounts import idle_offsets
+from rc2016.pipeline.projectile_mounts import idle_offsets,rack_placements
 from rc2016.pipeline.lighting import NOVALIS_REGION,inventory_lighting,prepare_game_lighting
 from rc2016.formats.skeleton import inspect_model,rest_inheritance_rule
 from rc2016.formats.native_model import UnsupportedModelError,inspect_native_model
@@ -945,11 +945,21 @@ def assemble_group_blend(selection,manifest,args,log,archive=None):
         run_group_blend(name,members,manifest,args,log);return
     labels=group_member_labels([path for path,_ in delivered])
     mounts=idle_offsets([path for path,_ in delivered])
+    racks=rack_placements([path for path,_ in delivered])
     owners=attach_owners([path for path,_ in delivered])
     label_of={path:label for label,(path,_) in zip(labels,delivered)}
-    members=[dict(name=label,blend=final,sha256=file_hash(final),**({'native_offset':list(mounts[path])} if path in mounts else {}),
-        **({'rig_of':label_of[owners[path]]} if path in owners else {}))
-        for label,(path,final) in zip(labels,delivered)]
+    members=[]
+    for label,(path,final) in zip(labels,delivered):
+        member=dict(name=label,blend=final,sha256=file_hash(final),**({'native_offset':list(mounts[path])} if path in mounts else {}),
+            **({'rig_of':label_of[owners[path]]} if path in owners else {}))
+        rack=racks.get(path)
+        if not rack:
+            members.append(member);continue
+        # One member per rack copy, placed by its native matrix and parented to the weapon joint (projectile_mounts.RACKS).
+        for slot,rows in enumerate(rack['matrices'],1):
+            members.append(dict(member,name='%s #%d'%(label,slot),native_matrix=rows,mount=dict(joint=rack['joint'],owner=label_of[rack['owner']]),
+                placement=dict(rack=rack['name'],slot=slot,evidence=rack['evidence'])))
+        log('group_rack',projectile=path,rack=rack['name'],copies=len(rack['matrices']),joint=rack['joint'],owner=rack['owner'])
     run_group_blend(name,members,manifest,args,log)
 
 

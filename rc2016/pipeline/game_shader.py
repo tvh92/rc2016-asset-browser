@@ -1446,13 +1446,14 @@ def _viewer_skin_spec(P, skin, gR, gG, f, tinted):
     rgb = P.comb(*(P.sat(P.m('MULTIPLY', grey, ch)) for ch in P.sep(tinted))) if qwark else None
     return grey, gloss_in, rgb
 
-GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_patterned', 'glass_liquid', 'glass_tank', 'window_glass')
+GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_patterned', 'glass_liquid', 'glass_tank', 'warmonger_reticle', 'window_glass')
 
 
 def _viewer_rule_glass(mat, rule, key, img):
     """Forward glass writers basic_glass 4FC5703F, character_glass_02 4DF1D438, jn_glass E7118623,
-    wpn_thumper_glove_glass 5226F404, blarg_saucer_glass FEEC00CE, the Hydrodisplacer liquid F0F45D78 and the hydro harvester
-    tank glass 7EB73491 (gl_shading.GLASS_FRAGMENT uKind 8, 9, 10, 11, 2, 13, 15). alpha comes from the rim,
+    wpn_thumper_glove_glass 5226F404, blarg_saucer_glass FEEC00CE, the Hydrodisplacer liquid F0F45D78, the hydro harvester
+    tank glass 7EB73491 and the Warmonger sight 4C184DCC (gl_shading.GLASS_FRAGMENT uKind 8, 9, 10, 11, 2, 13, 15, 16).
+    alpha comes from the rim (the sight: its self-lit screen term),
     the lit part is a diffuse term plus the writers' specular lobe (F0, F90 = sat(60 F0), Schlick), the blend
     from the flags word.
     """
@@ -1655,6 +1656,57 @@ def _viewer_rule_glass(mat, rule, key, img):
                       'opaque rim and the equal-depth pass are not drawn; the tint-to-F0 step is inferred from basic_glass, not read from '
                       'this program; the second program 0xC9E3608C (no flow normal) is not selected per draw; attribute0.w = %g'
                       % (blend, p['alpha_scale']))
+    elif key == 'warmonger_reticle':
+        # 4C184DCC (docs/material-decoding/warmonger-reticle.md): cma (_pick slot) S5 at UV0 and S6 at UV0 turned about
+        # (0.5, 0.5) by th = -t/4 + 0.411765 cos 3t; cmb (_n slot) S7.R at (0.625 (u - f) - 0.465, 5 (v - f)), f =
+        # floor(-8 fract(rate t)), S8.B / S9.B at (u/8, v + 0.285 t / 0.508 t), S10.G at (u/8, v); fres = sat(4 (1 - N.V)^CB2[3]);
+        # E = sat(0.874 + fres) (1 - 0.6436 (1 - S7 S5.a)(1 - S5.r)(1 - S5.b S6.g)) (1 - (1 - S10)(1 - S8)(1 - S9));
+        # alpha = sat(attr0.w sat(E)), cut at attr0.z; rgb = (1, 0.473531, 0) (D + E) + k specular(F), F = CB2[4] + fres^10.
+        cma, cmb = img('_pick'), img('_n')
+        u, vb, _ = P.uv_split(); v = P.m('SUBTRACT', 1.0, vb)   # game v counts from the top row
+        t = P.const('glass time', p['time'])   # CB0[99]; key or drive this node to run the screen
+        inv = lambda x: P.m('SUBTRACT', 1.0, x)
+        fres = P.sat(P.m('MULTIPLY', P.m('POWER', om, P.const('glass fresnel exp', p['fresnel_exp'])), 4.0))
+        frame = P.m('FLOOR', P.m('MULTIPLY', P.m('FRACT', P.m('MULTIPLY', t, P.const('glass frame rate', p['frame_rate']))), -8.0))
+        s5r = s5b = s5a = s6 = s7 = s8 = s9 = s10 = 0.0
+        if cma is not None:
+            s5 = P.tex(cma, P.gl_coord(u, v), 'glass reticle cma S5')
+            s5r, _s5g, s5b = P.sep(s5.outputs['Color']); s5a = s5.outputs['Alpha']
+            th = P.m('MULTIPLY_ADD', t, -0.25, P.m('MULTIPLY', P.m('COSINE', P.m('MULTIPLY', t, 3.0)), 0.41176471))
+            cu, cv, c, s = P.m('SUBTRACT', u, 0.5), P.m('SUBTRACT', v, 0.5), P.m('COSINE', th), P.m('SINE', th)
+            ru = P.m('ADD', P.m('SUBTRACT', P.m('MULTIPLY', c, cu), P.m('MULTIPLY', s, cv)), 0.5)
+            rv = P.m('ADD', P.m('ADD', P.m('MULTIPLY', s, cu), P.m('MULTIPLY', c, cv)), 0.5)
+            s6 = P.sep(P.tex(cma, P.gl_coord(ru, rv), 'glass reticle cma S6 ring').outputs['Color'])[1]
+        else:
+            limits.append('no cma texture bound: S5 = S6 = 0')
+        if cmb is not None:
+            fu, fv = P.m('SUBTRACT', u, frame), P.m('SUBTRACT', v, frame)
+            s7 = P.sep(P.tex(cmb, P.gl_coord(P.m('MULTIPLY_ADD', fu, 0.625, -0.465), P.m('MULTIPLY', fv, 5.0)),
+                             'glass reticle cmb S7 flipbook').outputs['Color'])[0]
+            u8 = P.m('MULTIPLY', u, 0.125)
+            s8 = P.sep(P.tex(cmb, P.gl_coord(u8, P.m('MULTIPLY_ADD', t, 0.285, v)), 'glass reticle cmb S8 scanline').outputs['Color'])[2]
+            s9 = P.sep(P.tex(cmb, P.gl_coord(u8, P.m('MULTIPLY_ADD', t, 0.508, v)), 'glass reticle cmb S9 scanline').outputs['Color'])[2]
+            s10 = P.sep(P.tex(cmb, P.gl_coord(u8, v), 'glass reticle cmb S10 mask').outputs['Color'])[1]
+        else:
+            limits.append('no cmb texture bound: S7 = S8 = S9 = S10 = 0')
+        dark = P.m('MULTIPLY', P.m('MULTIPLY', P.m('MULTIPLY', inv(P.m('MULTIPLY', s7, s5a)), inv(s5r)),
+                                   inv(P.m('MULTIPLY', s5b, s6))), 0.64359987)
+        screen = inv(P.m('MULTIPLY', P.m('MULTIPLY', inv(s10), inv(s8)), inv(s9)))
+        E = P.m('MULTIPLY', P.m('MULTIPLY', P.sat(P.m('ADD', fres, 0.874)), inv(dark)), screen, label='glass reticle E')
+        cover = P.sat(E)
+        keep = inv(P.m('LESS_THAN', cover, P.const('glass alpha cut', p['alpha_cut'])))   # attr0.z: the program discards below it
+        alpha = P.m('MULTIPLY', P.m('MULTIPLY', cover, P.const('glass alpha scale', p['alpha_scale'])), keep, clamp=True)
+        albedo = P.comb(1.0, 0.47353148, 0.0)   # compiled into the program, not a material value
+        em = P.N.new('ShaderNodeEmission'); em.name = 'VR glass emission'
+        P.L.new(P.v('SCALE', albedo, E), em.inputs['Color'])
+        F = P.m('ADD', P.const('glass f0 base', p['f0_base']), P.m('POWER', fres, 10.0))
+        lobe, f90 = spec_lobe(P.v('SCALE', tint_k(P.const3('glass colour', p['colour'])), F), P.const('glass gloss', p['gloss']))
+        lit = add(add(diffuse(albedo), em.outputs[0], 'VR glass self-lit'), scaled(lobe, f90), 'VR glass lit')
+        limits.append('Warmonger sight 4C184DCC (frozen preview, game_equivalence False): t = CB0[99] = %g (drive "VR glass time" to run '
+                      'the ring, flipbook and scanlines); the instance fade is 0, as captured at arm\'s length; the alpha cut-off %g is '
+                      'a step on alpha; the colour ratio k multiplies F0 and the Principled F90 is collapsed to its maximum channel; '
+                      'the program\'s extra RGBA8 MAX pass and the engine light list, probes, shadows and fog are not reproduced'
+                      % (p['time'], p['alpha_cut']))
     elif key == 'window_glass':
         # 8DF14766 (docs/material-decoding/novalis-window-glass.md), labelled preview: opaque, rgb = (CB2[16] T11.b + L) Q
         # + k (lights + environment) F with Q = CB2[15] T11 (interior, _n slot) + CB2[12] C 0.5^5 T9 (painted glass _c,

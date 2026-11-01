@@ -1124,6 +1124,15 @@ void main() {
 #   from the geometry normal, a = sat(P3 + rim), alpha = sat(attr0.w sat(1 - (1 - a)(1 - S5.R)(1 - S6.R))) with S5 = cma(UV0) and
 #   S6 = cma(1.5 UV0) (_pick slot, R); F0 = sat(T / luma(T)) (CB2[7] + rim^10) (inferred from basic_glass), rgb = C Ld + specular.
 #   The blend is the captured alpha-over (not the opaque flags word); the light list, probes, shadows, SSR and fog are the viewer rig.
+# uKind 16, warmonger_reticle 4C184DCC (wpn_warmonger_reticle, the Warmonger / Peacemaker sight; docs/material-decoding/
+#   warmonger-reticle.md): uA = C.rgb (CB2[0..2]), fresnel exponent (CB2[3]); uB = F0 base (CB2[4]), gloss (CB2[5]), flipbook rate
+#   (CB2[6]), t (CB0[99]: 0, or the effect clock); uC = alpha cut-off (attribute0.z), attribute0.w. cma (_pick slot) at UV0 is S5 and,
+#   at UV0 turned about (0.5, 0.5) by th = -t/4 + 0.411765 cos 3t, S6; cmb (_n slot) gives S7.R at (0.625 (u - f) - 0.465, 5 (v - f)),
+#   f = floor(-8 fract(CB2[6] t)), the scanlines S8.B and S9.B at (u/8, v + 0.285 t) and (u/8, v + 0.508 t), and the mask S10.G at (u/8, v).
+#   fres = sat(4 (1 - N.V)^CB2[3]) from the geometry normal; E = sat(0.874 + fres) (1 - 0.6436 (1 - S7 S5.a)(1 - S5.r)(1 - S5.b S6.g))
+#   (1 - (1 - S10)(1 - S8)(1 - S9)), discard when sat(E) < cut-off, alpha = sat(attr0.w sat(E)); rgb = (1, 0.473531, 0) (Ld + E)
+#   + k specular(F), F = CB2[4] + fres^10, F90 = sat(60 F), k = sat(C / luma(C)). The instance fade is frozen at 0 (as captured at
+#   arm's length); the light list, probes, shadows and fog are the viewer rig; the program's RGBA8 MAX pass is not drawn.
 # uKind 14, window_glass 8DF14766 (jn_glass_parallax_mask, the Novalis windows; docs/material-decoding/novalis-window-glass.md),
 #   a labelled PREVIEW (game_equivalence False): uA = reflection tint T.rgb (CB2[8..10]), gloss CB2[3]; uB = parallax depth
 #   CB2[11], rim exponent CB2[13], F weight CB2[14], interior weight CB2[15]; uC.x = interior light CB2[16], uC.y = 1 when the
@@ -1401,6 +1410,32 @@ void main() {
         vec3 ambient = ambientLight(N);
         vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
         color = uB.rgb * Ld + glassSpec(N, V, L1, L2, C1, C2, F0, a, ambient);
+    } else if (uKind == 16) { // 4C184DCC Warmonger sight screen (see the uKind 16 comment)
+        float t = uB.w;
+        float th = -0.25 * t + 0.41176471 * cos(3.0 * t);
+        vec2 r = vUV - 0.5;
+        vec2 ringUV = 0.5 + vec2(cos(th) * r.x - sin(th) * r.y, sin(th) * r.x + cos(th) * r.y);
+        vec4 s5 = uHasP ? texture2D(uTexP, vUV) : vec4(0.0);
+        float s6 = uHasP ? texture2D(uTexP, ringUV).g : 0.0;
+        float f = floor(-8.0 * fract(uB.z * t));
+        float s7 = uHasN ? texture2D(uTexN, vec2(0.625 * (vUV.x - f) - 0.465, 5.0 * (vUV.y - f))).r : 0.0;
+        float s8 = uHasN ? texture2D(uTexN, vec2(0.125 * vUV.x, vUV.y + 0.285 * t)).b : 0.0;
+        float s9 = uHasN ? texture2D(uTexN, vec2(0.125 * vUV.x, vUV.y + 0.508 * t)).b : 0.0;
+        float s10 = uHasN ? texture2D(uTexN, vec2(0.125 * vUV.x, vUV.y)).g : 0.0;
+        float fres = sat(4.0 * pow(om, uA.w));
+        float art = 1.0 - (1.0 - s5.b * s6) * (1.0 - s5.r);
+        float E = sat(0.874 + fres) * (1.0 - 0.64359987 * (1.0 - s7 * s5.a) * (1.0 - art))
+                * (1.0 - (1.0 - s10) * (1.0 - s8) * (1.0 - s9));
+        if (sat(E) < uC.x) discard;   // attribute0.z, the material alpha cut-off
+        alpha = sat(uC.y * sat(E));
+        float F = uB.x + pow(fres, 10.0);
+        vec3 F0 = vec3(F), F90 = vec3(sat(60.0 * F));
+        float a = pow(2.0, -5.5 * sqrt(sat(uB.y)));
+        vec3 k = clamp(uA.rgb / max(dot(vec3(0.2126, 0.7152, 0.0722), uA.rgb), 1e-6), 0.0, 1.0);
+        vec3 ambient = ambientLight(N);
+        vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
+        vec3 spec = k * (ggxGlass(N, V, L1, F0, F90, a) * C1 + ggxGlass(N, V, L2, F0, F90, a) * C2 + envSpecular(N, V, F0, F90, a, ambient));
+        color = vec3(1.0, 0.47353148, 0.0) * (Ld + E) + spec;
     } else if (uKind == 14) { // jn_glass_parallax_mask 8DF14766 Novalis window glass PREVIEW (see the uKind 14 comment)
         vec3 n = normalize(vNrm);
         float face = gl_FrontFacing ? 1.0 : -1.0, nv = dot(n, V);
@@ -1700,7 +1735,7 @@ FRAGMENT = FRAGMENT.replace("// @lighting\n", LIGHTING+FOG+_SCENE_OUTPUT)
 GLASS_FRAGMENT = GLASS_FRAGMENT.replace("// @lighting\n", LIGHTING+FOG)
 GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4, "bright_glow": 5,
                "eye_cornea": 6, "number_display": 7, "glass_basic": 8, "glass_cg02": 9, "glass_jn": 10, "glass_thumper": 11,
-               "ion_tubes": 12, "glass_liquid": 13, "window_glass": 14, "glass_tank": 15}
+               "ion_tubes": 12, "glass_liquid": 13, "window_glass": 14, "glass_tank": 15, "warmonger_reticle": 16}
 
 
 def frame_fade(time, rate):
@@ -1716,8 +1751,9 @@ def frame_fade(time, rate):
 def glass_uniforms(forward, time=None):
     """(uKind, uA, uB, uC, uD) for a texture_preview 'forward' entry.
 
-    ``time`` is the model view's clip clock for the time-driven kinds: it replaces the ion tubes' static CB0[99], and for
-    the ion tubes and the number displays the static CB0[107] by the per-frame ``frame_fade``; None keeps the static values."""
+    ``time`` is the model view's clip clock for the time-driven kinds: it replaces the ion tubes' and the Warmonger sight's
+    static CB0[99], and for the ion tubes and the number displays the static CB0[107] by the per-frame ``frame_fade``; None
+    keeps the static values."""
     p = forward["params"]
     if forward["kind"] == "screen":
         return (3, (*p["colour_a"], p["intensity_a"]), (*p["colour_b"], p["intensity_b"]),
@@ -1762,6 +1798,10 @@ def glass_uniforms(forward, time=None):
     if forward["kind"] == "glass_tank":
         return (GLASS_KINDS["glass_tank"], (*p["tint"], p["rim_bias"]), (*p["body"], p["gloss"]),
                 (p["f0_base"], p["rim_exp"], 0.0, 0.0), (p["alpha_scale"], 0.0, 0.0, 0.0), (0.0,) * 4)
+    if forward["kind"] == "warmonger_reticle":
+        return (GLASS_KINDS["warmonger_reticle"], (*p["colour"], p["fresnel_exp"]),
+                (p["f0_base"], p["gloss"], p["frame_rate"], p["time"] if time is None else time),
+                (p["alpha_cut"], p["alpha_scale"], 0.0, 0.0), (0.0,) * 4, (0.0,) * 4)
     if forward["kind"] == "window_glass":
         return (GLASS_KINDS["window_glass"], (*p["tint"], p["gloss"]),
                 (p["parallax_depth"], p["rim_exp"], p["f0_weight"], p["interior_weight"]),

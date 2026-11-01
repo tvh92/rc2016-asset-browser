@@ -5,8 +5,9 @@ Run by ``run.py --group-blend NAME`` inside Blender (``blender --background --py
 appended at the position they have in that .blend, so a part built as part of a larger model (a glove of a suit)
 overlaps the model it belongs to exactly.  Each member keeps the animation it was built with (its NLA strips and their
 Actions), so the timeline plays every member's clips; ``bind_pose`` on a member clears it instead.  A member with a
-``native_matrix`` (``run.py --group-actors``) is placed by that zone matrix, and the same .blend may then appear in
-several members.  The scene then uses the shared review lighting, one camera dollied to fit the whole group and one
+``native_matrix`` (``run.py --group-actors``, or a rack copy of ``projectile_mounts.RACKS``) is placed by that matrix,
+and the same .blend may then appear in several members; a ``mount`` parents a member to a joint of another member's
+armature.  The scene then uses the shared review lighting, one camera dollied to fit the whole group and one
 Render Region around it, exactly as a single-model build does.
 """
 import argparse
@@ -75,6 +76,19 @@ def _native_placement(rows):
     """Presentation-space matrix for a native row-vector placement ``rows`` (``p_world = p_local @ M``)."""
     column = Matrix([list(row) for row in rows]).transposed()
     return PRESENTATION @ column @ PRESENTATION.inverted()
+
+
+def _mount_on_joint(objects, rig, joint):
+    """Parent a placed member's root objects to bone ``joint`` of ``rig``, so they follow its clips; at the rest pose
+    they keep the matrix they were placed at (the parent inverse is the bone's rest tail frame)."""
+    bone = rig.data.bones[joint]
+    rest = rig.matrix_basis @ bone.matrix_local @ Matrix.Translation((0.0, bone.length, 0.0))
+    for obj in objects:
+        if obj.parent is None:
+            placed = obj.matrix_basis.copy()
+            obj.parent, obj.parent_type, obj.parent_bone = rig, "BONE", joint
+            obj.matrix_parent_inverse = rest.inverted()
+            obj.matrix_basis = placed
 
 
 def _bake_track(obj, base, matrices):
@@ -351,6 +365,17 @@ def assemble(job):
                     obj.matrix_basis = place @ obj.matrix_basis
         members.append(objects)
         print("GROUP member", index + 1, len(job["members"]), job["members"][index]["name"], flush=True)
+    # ``mount`` (projectile_mounts.RACKS): a rack copy rides on a joint of another member's armature.
+    labels = [m["name"] for m in job["members"]]
+    for index, member in enumerate(job["members"]):
+        mount = member.get("mount")
+        if not mount:
+            continue
+        rig = next((obj for obj in loaded[labels.index(mount["owner"])]
+                    if obj.type == "ARMATURE" and mount["joint"] in obj.data.bones), None)
+        if rig is None:
+            raise RuntimeError("Rack joint %s not found on %s" % (mount["joint"], mount["owner"]))
+        _mount_on_joint(loaded[index], rig, mount["joint"])
     _timeline(scene, members)
     tracked = [m for m in job["members"] if m.get("native_track")]
     if tracked:
@@ -381,10 +406,12 @@ def assemble(job):
     _embed("Camera zoom.json", camera_receipt)
     _embed("Render region.json", region_receipt)
     placed = any("native_matrix" in m for m in job["members"])
+    racked = any("mount" in m for m in job["members"])
     _embed("Group members.json", dict(members=[dict(name=m["name"], sha256=m["sha256"],
-                                                    **{k: m[k] for k in ("native_matrix", "placement") if k in m})
+                                                    **{k: m[k] for k in ("native_matrix", "placement", "mount") if k in m})
                                                for m in job["members"]],
-                                      layout=layout, placement="zone actors" if placed else "original",
+                                      layout=layout,
+                                      placement="weapon rack" if racked else "zone actors" if placed else "original",
                                       camera_right_axis=list(right)))
     bpy.data.orphans_purge(do_local_ids=True, do_linked_ids=False, do_recursive=True)
     bpy.ops.wm.save_as_mainfile(filepath=job["candidate"], compress=True)
@@ -405,7 +432,14 @@ def validate(job):
         if not meshes:
             problems.append("member missing: " + member["name"])
     problems.extend("lighting." + item for item in check_shared_lighting(scene))
+    if any(m.get("mount") for m in job["members"]):
+        # Rack copies ride on a posed joint, which turns their world matrices with it: compare them at the rest pose
+        # (the reopened file is never saved).
+        for armature in bpy.data.armatures:
+            armature.pose_position = "REST"
+        bpy.context.view_layer.update()
     problems.extend(_placement_problems(scene, job["members"]))
+    problems.extend(_mount_problems(scene, job["members"]))
     for member in job["members"]:
         track = member.get("native_track")
         if not track:
@@ -427,14 +461,37 @@ def validate(job):
     print("GROUP validation passed:", len(job["members"]), "members", flush=True)
 
 
-def _placement_problems(scene, members, tolerance=1e-4):
-    """Placed members built from one .blend must sit relative to each other as their zone matrices say: the root
-    armature (or root mesh) world matrices relate exactly as the converted native placements do."""
+def _member_roots(scene):
+    """{member label: root object}: its armature, else a mesh, whose parent is not in the same member (a rack copy's
+    root is parented to another member's joint)."""
     roots = {}
     for obj in scene.objects:
         label = obj.get(MEMBER_KEY)
-        if label and obj.parent is None and (label not in roots or obj.type == "ARMATURE"):
+        if label and (obj.parent is None or obj.parent.get(MEMBER_KEY) != label) and (
+                label not in roots or obj.type == "ARMATURE"):
             roots[label] = obj
+    return roots
+
+
+def _mount_problems(scene, members):
+    """Every rack copy's root rides on its joint (bone parent) of the owner member's armature."""
+    roots = _member_roots(scene)
+    problems = []
+    for member in members:
+        mount = member.get("mount")
+        if not mount:
+            continue
+        root = roots.get(member["name"])
+        if (root is None or root.parent is None or root.parent_type != "BONE" or root.parent_bone != mount["joint"]
+                or root.parent.get(MEMBER_KEY) != mount["owner"]):
+            problems.append("rack mount: " + member["name"])
+    return problems
+
+
+def _placement_problems(scene, members, tolerance=1e-4):
+    """Placed members built from one .blend must sit relative to each other as their zone matrices say: the root
+    armature (or root mesh) world matrices relate exactly as the converted native placements do."""
+    roots = _member_roots(scene)
     problems = []
     by_blend = {}
     for member in members:

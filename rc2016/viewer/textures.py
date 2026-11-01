@@ -270,6 +270,20 @@ HYDRO_WATER_TANK_CONSTANTS = dict(
     alpha_scale=1.0, presentation=True, game_equivalence=False, writer='7EB73491',
     frozen_inputs=dict(CB0_99=0.0, instance_flags=0x261, attr0_w=1.0, fog=1.0, ssr=False, record_origin='model origin',
                        program_variant='7EB73491 (the 0xC9E3608C variant has no flow normal)'))
+# Warmonger / Peacemaker sight screen, forward program 4C184DCC of wpn_warmonger_reticle (docs/material-decoding/
+# warmonger-reticle.md, evidence Research/captures/2026-11-01_peacemaker-v5/). The capture draws the sight mesh (mesh 1
+# of wpn_warmonger, 336 indices) with this program SRC_ALPHA / ONE_MINUS_SRC_ALPHA into the scene, no cull, as the flags
+# word 0x200236 says; CB2 is the material block (C, fresnel exponent, F0 base, gloss, flipbook rate) and the six slots
+# bind wpn_warmonger_reticle_cma (API 5, 6) and _cmb (API 7..10), both matched by top-mip hash. The graph is used by
+# this material only. game_equivalence stays False: the light list, probes, shadows, fog, the instance fade (0 at the
+# captured distance) and the extra RGBA8 MAX pass of the same program are not reproduced; t = CB0[99] is the frozen 0
+# or the viewer's effect clock.
+WARMONGER_RETICLE_GRAPH_SHA256 = '78182cb38b81b861b1117bb9c4f36bbb0dc8f57e1d4593bae6a25e633d935ced'
+WARMONGER_RETICLE_CMA_SLOTS = (0x49A7866B0056CBD0, 0x49A7866B39DBF715)   # the graph's cma slots (API 5, 6)
+WARMONGER_RETICLE_CMB_SLOTS = (0x49A7866B2EA0E356, 0x49A7866B6437A619, 0x49A7866B5DBA9ADC, 0x49A7866B4AC18E9F)   # cmb (API 7..10)
+WARMONGER_RETICLE_CONSTANTS = dict(
+    time=0.0, time_input='CB0 dword 99', presentation=True, game_equivalence=False, writer='4C184DCC',
+    frozen_inputs=dict(instance_flags=0x261, instance_fade=0.0, pass_word=0x0, fog=1.0, geometric_aa=0.0))
 # Novalis window glass, forward program 8DF14766 of jn_glass_parallax_mask (pass contract 0; docs/material-decoding/
 # novalis-window-glass.md, evidence Research/2026-10-29_novalis-window-glass/WINDOW_GLASS_DECODE.md). Slots in API order
 # (API = 5 + resource index): 5 mask (R), 6 window normal (world UV), 7 glass _g (world UV), 8 detail normal (UV1),
@@ -479,6 +493,13 @@ GRAPH_RULES = (
           slots={'_n': HYDRO_WATER_TANK_FLOW_SLOT, '_pick': HYDRO_WATER_TANK_CMA_SLOTS[0]}, params=(
          ('tint', 0x4B4DAB19, 3), ('body', 0x7C456482, 3), ('gloss', 0x24F4CA4C, 1), ('f0_base', 0x62835AF9, 1),
          ('rim_exp', 0xECE213A3, 1)))),
+    # Warmonger sight screen 4C184DCC: exact graph + SHA (docs/material-decoding/warmonger-reticle.md).
+    ('materialgraph/equipment/weapon/wpn_warmonger_reticle/wpn_warmonger_reticle.',
+     dict(forward='warmonger_reticle', writer='4C184DCC', constants=WARMONGER_RETICLE_CONSTANTS,
+          _graph_sha256=WARMONGER_RETICLE_GRAPH_SHA256,
+          slots={'_pick': WARMONGER_RETICLE_CMA_SLOTS[0], '_n': WARMONGER_RETICLE_CMB_SLOTS[0]}, params=(
+         ('colour', 0x4B4DAB19, 3), ('fresnel_exp', 0xECE213A3, 1), ('f0_base', 0x62835AF9, 1), ('gloss', 0x24F4CA4C, 1),
+         ('frame_rate', 0x28E7096A, 1)))),
     # Novalis window glass 8DF14766 (pass contract 0): exact graph + SHA only (docs/material-decoding/novalis-window-glass.md).
     # Opaque; diffuse light x albedo plus the reflection term, with the engine lighting replaced by the viewer's.
     ('materialgraph/global/basic_glass/jn_glass_parallax_mask.',
@@ -1431,6 +1452,14 @@ def material_texture_paths(archive, material_path: str) -> dict:
         if (str(material_path).replace('\\', '/').lower() != HYDRO_WATER_TANK_MATERIAL
                 or not tank_bound(HYDRO_WATER_TANK_FLOW_SLOT) or len(cma_paths) != 1 or None in cma_paths):
             rule = {}
+    if rule.get('forward') == 'warmonger_reticle':
+        # The capture binds one cma image at API 5 and 6 and one cmb image at API 7..10; the viewer reads each from one
+        # unit, so a material that splits either group is not the decoded program input.
+        sight_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
+        groups = [{sight_slots.get(slot) or slots.get(slot) for slot in group}
+                  for group in (WARMONGER_RETICLE_CMA_SLOTS, WARMONGER_RETICLE_CMB_SLOTS)]
+        if any(len(paths) != 1 or None in paths for paths in groups):
+            rule = {}
     if rule.get('forward') == 'ion_tubes':
         # The program reads both slots as one image and the decoded form has no CB2[4] power term; a material that
         # binds the slots to different images or sets the power is not the decoded program input.
@@ -1475,6 +1504,13 @@ def material_texture_paths(archive, material_path: str) -> dict:
             # per-draw opacity (1 here). The 4FC5703F captured draw has byte 22 = 255 and attr0.w = 1.0.
             flags_offset, flags_size = _sections(data).get(MATERIAL_FLAGS_SECTION, (0, 0))
             params['alpha_scale'] = data[flags_offset + 22] / 255.0 if flags_size >= 23 else 1.0
+        if rule['forward'] == 'warmonger_reticle':
+            # attr0.w (opacity, byte 22 / 255) and attr0.z (the alpha cut-off, 4/255 in the capture) come from the flags block.
+            flags_offset, flags_size = _sections(data).get(MATERIAL_FLAGS_SECTION, (0, 0))
+            params['alpha_scale'] = data[flags_offset + 22] / 255.0 if flags_size >= 23 else 1.0
+            params['alpha_cut'] = _foliage_alpha_cutoff(data)
+            for role in ('_c', '_g', '_h'):   # the program samples only the cma and cmb images
+                result.pop(role, None)
         if rule['forward'] == 'water':
             params.update(WATER_PRESENTATION)
         if rule.get('water_sampling'):
