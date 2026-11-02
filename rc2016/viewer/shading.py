@@ -685,8 +685,8 @@ void main() {
         vec3 p2 = cross(dp2, N), p1 = cross(N, dp1);
         vec3 T = p2 * du1.x + p1 * du2.x, B = p2 * du1.y + p1 * du2.y;
         float scale = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-20));
-        if (uBngKind == 8 && dot(vTangent, vTangent) > 0.0) {
-            // 76C79AA4 reads the vertex tangent and its stored bitangent sign h (position w, as in bindings.py):
+        if ((uBngKind == 8 || uBngKind == 12) && dot(vTangent, vTangent) > 0.0) {
+            // 76C79AA4 and 67F6CCC3 read the vertex tangent and its stored bitangent sign h (position w, as in bindings.py):
             // h * cross(N, T) points along -grad v, and B here is +grad v.
             vec3 Tv = vTangent - N * dot(N, vTangent);
             if (dot(Tv, Tv) > 1e-12) {
@@ -723,15 +723,15 @@ void main() {
         // Image "up" is decreasing t (top row first), so the bitangent is -B.
         if (uRockBlend || uGrassBlend || uMudBlend || uCoralBlend || uSedKind != 0) z = 1.0 - dot(rg, rg);
         vec3 baseN = normalize(T * scale * rg.x - B * scale * rg.y + N * z);
-        if (uBngKind == 3 || uBngKind == 6 || uBngKind == 8 || uBngKind == 9) {
+        if (uBngKind == 3 || uBngKind == 6 || uBngKind == 8 || uBngKind == 9 || uBngKind == 12) {
             float rim = 1.00100004673 - clamp(dot(baseN, V), 0.0, 1.0);
             bngRimA = pow(abs(rim), uBngP.x);
             bngRimB = pow(abs(rim), uBngP.y);
         }
-        if ((uBngKind == 2 || uBngKind == 3 || uBngKind == 6 || uBngKind == 8 || uBngKind == 9 || uBngKind == 10 || uBngKind == 11) && uHasBngDetail) {
+        if ((uBngKind == 2 || uBngKind == 3 || uBngKind == 6 || uBngKind == 8 || uBngKind == 9 || uBngKind == 10 || uBngKind == 11 || uBngKind == 12) && uHasBngDetail) {
             // F3DCD431/F087BE8D/F8161C61: detail xy masked by _g.a^2 (emissive/specfresnel), _g.B (fresnel).
-            // 14B1CC68 / E680AA40: _m.R; 76C79AA4: _c.a. The close-range fade CB0[95] (1 - s) is taken as 1.
-            float mask = (uBngKind == 3 || uBngKind == 11) ? bngGl.b : (uBngKind == 9 || uBngKind == 10) ? bngM.r : uBngKind == 8 ? c.a : bngG.a * bngG.a;
+            // 14B1CC68 / E680AA40: _m.R; 76C79AA4 and 67F6CCC3: _c.a. The close-range fade CB0[95] (1 - s) is taken as 1.
+            float mask = (uBngKind == 3 || uBngKind == 11) ? bngGl.b : (uBngKind == 9 || uBngKind == 10) ? bngM.r : (uBngKind == 8 || uBngKind == 12) ? c.a : bngG.a * bngG.a;
             vec2 drg = (texture2D(uTexBngDetail, vUV * uBngDetail.xy).rg * 2.0 - 1.0) * mask;
             float dz = 1.0 - dot(drg, drg);
             rg = rg * dz + drg * z * uBngDetail.z;
@@ -951,7 +951,7 @@ void main() {
     }
     if (uBngKind == 3) albedo *= 1.0 + uBngP.x * bngGl.b * bngRimB;
     if (uBngKind == 6) albedo *= 1.0 - bngRimB;
-    if (uBngKind == 7) albedo *= 1.0 + uBngP.x * bngRimB;
+    if (uBngKind == 7 || uBngKind == 12) albedo *= 1.0 + uBngP.x * bngRimB;
     if (uBngKind == 8) albedo *= 1.0 + uBngP.x * c.a * bngRimB;
     if (uBngKind == 9) albedo *= 1.0 + uBngP.x * bngM.r * bngRimB;
     float brightSelfLit = 0.0;

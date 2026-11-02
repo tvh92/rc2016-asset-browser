@@ -2325,15 +2325,15 @@ def apply_viewer_graph_rule(mat, source):
                 x, y = P.m('MULTIPLY_ADD', x, dz, P.m('MULTIPLY', hz, dx)), P.m('MULTIPLY_ADD', y, dz, P.m('MULTIPLY', hz, dy))
                 z = P.m('MULTIPLY', z, dz)
             normal = base_normal = P.tangent_normal(x, y, z, 'Tangent normal (_n, no green flip)')
-            if kind_terms and kind in (3, 6, 8, 9):
+            if kind_terms and kind in (3, 6, 8, 9, 12):
                 rim = P.m('SUBTRACT', 1.00100004673, P.sat(P.v('DOT_PRODUCT', base_normal, V)))
                 bng_p = lambda i: P.const('bng P%d' % i, bng['params'][i])
                 rim_a = P.m('POWER', P.m('ABSOLUTE', rim), bng_p(0)); rim_b = P.m('POWER', P.m('ABSOLUTE', rim), bng_p(1))
                 view_terms.append('bng rims')
-            if 'bng_detail' in ported and kind in (2, 3, 6, 8, 9, 10, 11):   # F3DCD431/F087BE8D/F8161C61 detail xy; 14B1CC68/E680AA40 mask with _m.R, 76C79AA4 with _c.a
+            if 'bng_detail' in ported and kind in (2, 3, 6, 8, 9, 10, 11, 12):   # F3DCD431/F087BE8D/F8161C61 detail xy; 14B1CC68/E680AA40 mask with _m.R, 76C79AA4/67F6CCC3 with _c.a
                 det = bng['detail']
                 dmask = P.sep(img('_h').outputs['Color'])[0] if kind in (9, 10) and img('_h') else \
-                    (c.outputs['Alpha'] if c is not None else 0.0) if kind == 8 else gB if kind in (3, 11) else \
+                    (c.outputs['Alpha'] if c is not None else 0.0) if kind in (8, 12) else gB if kind in (3, 11) else \
                     (P.m('MULTIPLY', g.outputs['Alpha'], g.outputs['Alpha']) if g is not None else 0.0)
                 vec = P.game_uv(P.const('bng detail scale u', det[0]), P.const('bng detail scale v', det[1]))
                 dx, dy = P.rg(P.tex(img('_bng_detail'), vec, 'bng detail normal').outputs['Color'], dmask)
@@ -2556,8 +2556,8 @@ def apply_viewer_graph_rule(mat, source):
             albedo = P.v('SCALE', albedo, P.m('ADD', 1.0, P.m('MULTIPLY', P.m('MULTIPLY', bng_p(0), gB), rim_b)))
         if kind_terms and kind == 6 and rim_b is not None:
             albedo = P.v('SCALE', albedo, P.m('SUBTRACT', 1.0, rim_b))
-        if kind_terms and kind in (7, 8, 9) and rim_b is not None:
-            rim_mask = (1.0 if kind == 7 else
+        if kind_terms and kind in (7, 8, 9, 12) and rim_b is not None:
+            rim_mask = (1.0 if kind in (7, 12) else
                         (c.outputs['Alpha'] if c is not None else 0.0) if kind == 8 else
                         (P.sep(img('_h').outputs['Color'])[0] if img('_h') else 0.0))
             albedo = P.v('SCALE', albedo, P.m('ADD', 1.0, P.m('MULTIPLY', P.m('MULTIPLY', bng_p(0), rim_mask), rim_b)))

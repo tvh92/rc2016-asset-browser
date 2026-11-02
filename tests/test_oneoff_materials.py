@@ -193,7 +193,7 @@ class DetailEmissiveTests(unittest.TestCase):
     def test_glsl_uses_m_channels(self):
         self.assertIn('uBngKind == 9 || uBngKind == 10) bngSelfLit = bngM.g * uK', FRAGMENT)
         self.assertIn('(uBngKind == 9 || uBngKind == 10) ? bngM.r', FRAGMENT)
-        self.assertIn('uBngKind == 8 ? c.a', FRAGMENT)   # 76C79AA4 masks its detail normal with _c.a
+        self.assertIn('(uBngKind == 8 || uBngKind == 12) ? c.a', FRAGMENT)   # 76C79AA4 and 67F6CCC3 mask their detail normal with _c.a
 
     def test_fresnel_detail_kinds_compose_the_detail_normal(self):
         defaults = {tp.SPECULAR_SCALE_KEY: 1.0, tp.GLOSS_SCALE_KEY: 1.0, 0x49AFC3A0: 0.75, 0x34493800: 1.0, 0xAD4069BA: 1.0,
@@ -221,6 +221,60 @@ class DetailEmissiveTests(unittest.TestCase):
         names, roles = validation._viewer_required(rule, True)
         self.assertEqual(sorted(names), ['VR bng detail scale u', 'VR bng detail scale v', 'VR bng detail strength'])
         self.assertIn('_h', roles)
+
+
+class AmoeboidBodyTests(unittest.TestCase):
+    """Amoeboid body graph, deferred writer 67F6CCC3 (bng kind 12), exact graph and SHA."""
+    GRAPH = 'required/materials/amoeboid.materialgraph'
+    DEFAULTS = {tp.SPECULAR_SCALE_KEY: 1.0, tp.GLOSS_SCALE_KEY: 1.0, 0x66EFA55B: 1.0, 0x6B591974: (0.0, 1.0, 0.0331),
+                0xAAC47D17: 1.0, 0xB7BAC19F: 1.0, 0x51805FAF: 1.0, 0x4F0D32BD: 1.0, 0xD6046307: 1.5, 0x92CC1844: -0.1}
+    ROWS = [row(0x6B591974, (0.63076, 1.0, 0.46208)), row(tp.GLOSS_SCALE_KEY, 2.0), row(0x51805FAF, 2.5),
+            row(0xB7BAC19F, 4.0), row(0x66EFA55B, 20.0), row(0x4F0D32BD, 1.75), row(0xD6046307, 1.25)]
+
+    def extract(self, digest=None):
+        graph_blob = dat1([], lambda at: [])
+        mat = dat1([self.GRAPH], lambda at: [(tp.MATERIAL_FLAGS_SECTION, flags(0x230))])
+        archive = FakeArchive({'m/x.material': ('material', mat), self.GRAPH: ('materialgraph', graph_blob)})
+        digest = digest or hashlib.sha256(b'1TAD' + graph_blob).hexdigest()
+        rules = tuple((p, dict(r, graph_sha256=digest) if r.get('bng') == 12 else r) for p, r in tp.GRAPH_RULES)
+        params = dict(parameters=[], unsupported_parameters=self.ROWS)
+        with (patch.object(tp, 'GRAPH_RULES', rules),
+              patch('rc2016.shaders.families.graph_parameter_tables',
+                    return_value=([[dict(key_hash=k) for k in self.DEFAULTS]], self.DEFAULTS)),
+              patch('rc2016.formats.materials.extract_material_parameters', return_value=params)):
+            return archive, tp.material_texture_paths(archive, 'm/x.material')
+
+    def test_captured_cb2_values(self):
+        # CB2 of the Rilgar capture's amoeboid draw: tint, spec, gloss, scroll, strength, A, P, K, V and U scales.
+        _, got = self.extract()
+        self.assertEqual((got['bng']['kind'], got['g_mode'], got['self_lit']), (12, 'grey', 'g_blue'))
+        self.assertEqual((got['spec'], got['gloss'], got['k']), (1.0, 2.0, 20.0))
+        self.assertEqual(got['bng']['params'], (1.0, 4.0, 0.0, 0.0))
+        self.assertEqual(got['bng']['detail'], (1.25, 1.75, 2.5))
+        self.assertEqual(got['spec_tint'], list(struct.unpack('<3f', struct.pack('<3f', 0.63076, 1.0, 0.46208))))
+
+    def test_rule_needs_the_exact_graph_hash(self):
+        self.assertEqual(tp._graph_rule([self.GRAPH]), {})
+        rule = next(r for p, r in tp.GRAPH_RULES if p == 'required/materials/amoeboid.')
+        self.assertEqual(tp._graph_rule([self.GRAPH], {self.GRAPH: rule['graph_sha256']})['bng'], 12)
+        _, got = self.extract('0' * 64)
+        self.assertNotIn('bng', got)
+
+    def test_glsl_and_blender_terms(self):
+        self.assertIn('if (uBngKind == 7 || uBngKind == 12) albedo *= 1.0 + uBngP.x * bngRimB;', FRAGMENT)
+        self.assertIn('(uBngKind == 8 || uBngKind == 12) && dot(vTangent, vTangent) > 0.0', FRAGMENT)
+        archive, _ = self.extract()
+        rules = tuple((p, dict(r, graph_sha256=hashlib.sha256(b'1TAD' + dat1([], lambda at: [])).hexdigest())
+                       if r.get('bng') == 12 else r) for p, r in tp.GRAPH_RULES)
+        params = dict(parameters=[], unsupported_parameters=self.ROWS)
+        with (patch.object(tp, 'GRAPH_RULES', rules),
+              patch('rc2016.shaders.families.graph_parameter_tables',
+                    return_value=([[dict(key_hash=k) for k in self.DEFAULTS]], self.DEFAULTS)),
+              patch('rc2016.formats.materials.extract_material_parameters', return_value=params)):
+            rule = viewer_graph_rule(archive, 'm/x.material', set())
+        self.assertIn('bng', rule.get('ported', []))
+        self.assertIn('spec_tint', rule.get('ported', []))
+        self.assertEqual(rule.get('normal_z'), '1-x*x-y*y')
 
 
 class ProjectileGraphTests(unittest.TestCase):

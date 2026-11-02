@@ -413,6 +413,13 @@ GRAPH_RULES = (
                        'time': 0.0, 'time_input': 'CB0[99]', 'f0': [0.0, 0.0999755859375, 0.0999755859375],
                        'gloss': 0.0, 'frozen_inputs': {'fog_fade': 1.0, 'vertex_alpha': 1.0}})),
     ('required/materials/basic_normla_gloss_fresnel_detail_emissive.', dict(self_lit='h_green', self_lit_key=0x66EFA55B, bng=9)),
+    # Amoeboid body, exact graph: deferred writer 67F6CCC3, the program the Rilgar capture draws (API 5 _n, 6 flow normal
+    # 59497353, 7 _c, 8 _g, by mip-0 hash). albedo = _c * (1 + A rim^P) with rim = 1.001 - sat(N.V) on the mapped _n before
+    # detail; F0 = tint 6B591974 * spec * _g.G; gloss = sqrt(sat(Q _g.R)); self-lit K _g.B (not _c.a, which masks the
+    # detail normal); detail at (U 0xD6046307, V 0x4F0D32BD + 0x92CC1844 * CB0[99]), strength 0x51805FAF, vertex TBN as 76C79AA4.
+    ('required/materials/amoeboid.',
+     dict(graph_sha256='47c3d31e20e10c5e1fed9dcbe28c42b3eff753803044cb001eeeb1c7648077df',
+          g_mode='grey', self_lit='g_blue', self_lit_key=0x66EFA55B, bng=12)),
     ('materialgraph/global/basic_incandescence/', dict(g_mode='grey', self_lit='g_blue', self_lit_key=0x5FD56522)),
     # Other models/enm_blarg_saucer/evidence/COLORPICK_DECODE.md (writer 66744D01)
     ('materialgraph/global/basic_colored_spec_emmisive_in_c_alpha/blarg_saucer_colorpick.',
@@ -1152,6 +1159,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
             bindings['_h'] = 0x49A7866B6A016FF9
         if kind == 9:   # _m mask: R gates the rim, G is the self-lit mask
             bindings['_h'] = 0x49A7866BA6C3B1D5
+        if kind == 12:   # 67F6CCC3: the scrolling flow normal is API 6
+            bindings['_bng_detail'] = 0x49A7866B59497353
         for role, slot in bindings.items():
             path = material_slots.get(slot) or slots.get(slot)
             if path:
@@ -1177,6 +1186,10 @@ def material_texture_paths(archive, material_path: str) -> dict:
             detail = (value(0x34493800, 1.0), value(0xAD4069BA, 1.0), value(0x49AFC3A0, 0.75))
         if kind == 10:   # E680AA40: uv scale E3BD962E on both axes, strength 49AFC3A0 (graph default 0.75)
             detail = (value(0xE3BD962E, 1.0), value(0xE3BD962E, 1.0), value(0x49AFC3A0, 0.75))
+        if kind == 12:   # 67F6CCC3: rim A, P; detail u, v scales and strength; the V scroll 0x92CC1844 * CB0[99] is at t = 0
+            params = (value(0xAAC47D17, 1.0), value(0xB7BAC19F, 1.0), 0.0, 0.0)
+            detail = (value(0xD6046307, 1.5), value(0x4F0D32BD, 1.0), value(0x51805FAF, 1.0))
+            result['spec_tint'] = vec3(0x6B591974, (1.0, 1.0, 1.0))
         result['bng'] = dict(kind=kind, colour=colour, params=params, detail=detail)
     if rule.get('pick') and result.get('_pick'):
         scale, blend, u = rule['pick']
