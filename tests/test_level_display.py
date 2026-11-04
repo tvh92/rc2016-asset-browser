@@ -98,10 +98,19 @@ class ShaderContractTests(unittest.TestCase):
 
 
 class ViewportTests(unittest.TestCase):
-    def test_only_the_level_viewer_offers_the_game_tonemap(self):
-        self.assertEqual(LevelViewport.TONEMAPS[ModelViewport.GAME_TONEMAP], 'Game (captured)')
-        self.assertNotIn('Game (captured)', ModelViewport.TONEMAPS)
-        self.assertEqual(ModelViewport.TONEMAPS, LevelViewport.TONEMAPS[:2])    # the other indices are unchanged
+    def test_both_viewers_offer_the_game_tonemap(self):
+        self.assertEqual(ModelViewport.TONEMAPS[ModelViewport.GAME_TONEMAP], 'Game (captured)')
+        self.assertEqual(ModelViewport.TONEMAPS, LevelViewport.TONEMAPS)
+        # only the level viewer keeps it to its environment lighting (Level atmosphere, with the level's grade)
+        self.assertFalse(ModelViewport.GAME_TONEMAP_NEEDS_ENVIRONMENT)
+        self.assertTrue(LevelViewport.GAME_TONEMAP_NEEDS_ENVIRONMENT)
+
+    def test_model_viewer_display_table_is_the_curve_without_a_grade(self):
+        view = ModelViewport.__new__(ModelViewport)
+        self.assertIsNotNone(view._display_table_key())
+        table = view._display_table_build()
+        self.assertEqual(table.shape[:2], (display.TABLE_HEIGHT, display.TABLE_WIDTH))
+        np.testing.assert_array_equal(table, display.display_table(display.identity_grade()))
 
     def test_display_table_key_follows_the_level_grade(self):
         from tests.test_level_atmosphere_lighting import level_view
@@ -110,7 +119,6 @@ class ViewportTests(unittest.TestCase):
         view = level_view(dict(grade=raw_grade(display.identity_grade())))
         self.assertIsNotNone(view._display_table_key())
         self.assertEqual(view._display_table_build().shape, (display.TABLE_HEIGHT, display.TABLE_WIDTH, 3))
-        self.assertIsNone(ModelViewport._display_table_key(None))
 
 
 if __name__ == '__main__':

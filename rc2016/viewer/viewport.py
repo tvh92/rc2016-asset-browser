@@ -370,7 +370,10 @@ class ModelViewport(_TkFrame):
     """Interactive fixed-pipeline preview for decoded source triangles."""
     LIGHTINGS = ("Viewer rig", "Shared HDRI")   # rc2016.viewer.environment.LIGHTINGS
     ENVIRONMENT_LIGHTINGS = ("Shared HDRI",)    # the lightings that draw from lighting maps (SH, bands, sun)
-    TONEMAPS = ("ACES fit", "Khronos PBR Neutral")
+    # "Game (captured)": the game's exposure and tone curve (rc2016.levels.display) without a level colour grade; the level
+    # viewer adds its atmosphere's grade and keeps it to the Level atmosphere lighting (GAME_TONEMAP_NEEDS_ENVIRONMENT).
+    TONEMAPS = ("ACES fit", "Khronos PBR Neutral", "Game (captured)")
+    GAME_TONEMAP_NEEDS_ENVIRONMENT = False
     # Object space -> Blender world (None: identity); the level viewer's objects are native Y-up.
     OBJECT_TO_WORLD = None
     RIG_FIXED_TO_WORLD = False   # the model viewer's rig turns with the camera
@@ -636,9 +639,10 @@ class ModelViewport(_TkFrame):
             gl.glGetFloatv(self.GL_MODELVIEW_MATRIX, modelview)
             view_to_world, rig = light_frames(list(modelview), self.OBJECT_TO_WORLD, self.RIG_FIXED_TO_WORLD)
             tonemap = self.TONEMAPS.index(self.tonemap)
-            grade_texture = self._display_texture_name() if tonemap == self.GAME_TONEMAP and hdri else 0
+            wanted = tonemap == self.GAME_TONEMAP and (hdri or not self.GAME_TONEMAP_NEEDS_ENVIRONMENT)
+            grade_texture = self._display_texture_name() if wanted else 0
             if tonemap == self.GAME_TONEMAP and not grade_texture:
-                tonemap = 0   # the captured display transform belongs to the Level atmosphere lighting only
+                tonemap = 0   # the level viewer keeps the captured display transform to the Level atmosphere lighting
             state = dict(hdri=hdri, tonemap=tonemap, grade_unit=GRADE_TEXTURE_UNIT, grade_texture=grade_texture,
                          exposure=2.0 ** self._environment["exposure"] if hdri else 1.0,
                          view_to_world=(ctypes.c_float * 9)(*column_major3(view_to_world)),
@@ -654,15 +658,16 @@ class ModelViewport(_TkFrame):
             self._frame_lighting = state
         return state
 
-    GAME_TONEMAP = 2   # tonemap index of the captured game display (uTonemap 2); only the level viewer offers it
+    GAME_TONEMAP = 2   # tonemap index of the captured game display (uTonemap 2)
 
     def _display_table_key(self):
         """Hashable identity of the captured display table (rc2016.levels.display.display_table) in use, or None."""
-        return None
+        return 'identity grade'
 
     def _display_table_build(self):
-        """The float32 (rows, columns, 3) display table for ``_display_table_key``."""
-        raise NotImplementedError
+        """The float32 (rows, columns, 3) display table for ``_display_table_key``: a model has no level, so no grade."""
+        from rc2016.levels.display import display_table, identity_grade
+        return display_table(identity_grade())
 
     def _display_texture_name(self):
         """GL texture (RGB16F) of the captured display table, or 0 when there is none; rebuilt when its key changes."""

@@ -264,9 +264,9 @@ class LevelViewport(ModelViewport):
     # (rc2016.levels.probe_lighting); opt-in, review preview.
     LIGHTINGS = ModelViewport.LIGHTINGS + ("Level atmosphere",)
     ENVIRONMENT_LIGHTINGS = ModelViewport.ENVIRONMENT_LIGHTINGS + ("Level atmosphere",)
-    # The game's captured display chain (rc2016.levels.display), offered for the Level atmosphere lighting only: another
-    # lighting falls back to the ACES fit.
-    TONEMAPS = ModelViewport.TONEMAPS + ("Game (captured)",)
+    # The game's captured display chain (rc2016.levels.display) with the atmosphere's grade, for the Level atmosphere
+    # lighting only: another lighting falls back to the ACES fit.
+    GAME_TONEMAP_NEEDS_ENVIRONMENT = True
     EXT = {
         "glGenBuffers": (None, [ctypes.c_int, ctypes.c_void_p]),
         "glDeleteBuffers": (None, [ctypes.c_int, ctypes.c_void_p]),

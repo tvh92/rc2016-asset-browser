@@ -43,7 +43,7 @@ SUN_THRESHOLD = 20.0   # luminance above which radiance moves into the direction
 ENVIRONMENT_VERSION = 4   # bump when the maps' computation changes; it names the cache files
 
 # Tonemaps the viewers offer (the GLSL lives in rc2016/viewer/shading.py).
-TONEMAPS = ('ACES fit', 'Khronos PBR Neutral')
+TONEMAPS = ('ACES fit', 'Khronos PBR Neutral', 'Game (captured)')
 LIGHTINGS = ('Viewer rig', 'Shared HDRI')
 
 
