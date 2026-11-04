@@ -2,7 +2,8 @@
 
 Reproduces rc_game_view/ocio/config.ocio's view chain inside the .blend:
     exposure 2^E -> lg2 allocation [-8, +5] -> rc_tonemap.spi1d (linear)
-    -> clamp 0..1 -> sRGB encode -> rc_grade.cube
+    -> clamp 0..1 -> sRGB encode -> rc_grade.cube (or, with grade "identity", no grade: the model viewer's
+       "Game (captured)" tonemap, used by run.py --tonemap game)
 The 1D and 3D tables are packed float images sampled with Map UV (bilinear at texel
 centres = linear / trilinear interpolation).  The game samples its grade as a 3D
 texture, i.e. trilinearly; the OCIO config uses tetrahedral.  The scene view is
@@ -71,9 +72,16 @@ def _float_image(name, width, height, rgb):
     return img
 
 
-def build_lut_images(view_dir=VIEW_DIR):
+def identity_cube(n=32):
+    """An identity 3D LUT in .cube order (red fastest, then green, then blue)."""
+    axis = np.arange(n, dtype=np.float32) / (n - 1)
+    b, g, r = np.meshgrid(axis, axis, axis, indexing="ij")
+    return n, np.stack([r, g, b], -1).reshape(-1, 3)
+
+
+def build_lut_images(view_dir=VIEW_DIR, grade="captured"):
     lut1 = read_spi1d(os.path.join(view_dir, "rc_tonemap.spi1d"))
-    n, lut3 = read_cube(os.path.join(view_dir, "rc_grade.cube"))
+    n, lut3 = identity_cube() if grade == "identity" else read_cube(os.path.join(view_dir, "rc_grade.cube"))
     img1 = _float_image(LUT1D_NAME, len(lut1), 1, lut1[None, :, :])
     # Tile blue slices left to right: pixel (x = b*n + r, y = g).
     cube = lut3.reshape(n, n, n, 3)                     # [b][g][r]
@@ -108,13 +116,14 @@ def _map_uv(nodes, links, image, u, v):
     return sep.outputs
 
 
-def build_group(view_dir=VIEW_DIR):
-    img1, img3, n1, n3 = build_lut_images(view_dir)
+def build_group(view_dir=VIEW_DIR, grade="captured"):
+    img1, img3, n1, n3 = build_lut_images(view_dir, grade)
     g = bpy.data.node_groups.get(GROUP_NAME)
     if g is not None:
         bpy.data.node_groups.remove(g)
     g = bpy.data.node_groups.new(GROUP_NAME, "CompositorNodeTree")
     g["rc_version"] = VERSION
+    g["rc_grade"] = grade
     g.interface.new_socket("Image", in_out="INPUT", socket_type="NodeSocketColor")
     e = g.interface.new_socket("Exposure (stops)", in_out="INPUT", socket_type="NodeSocketFloat")
     g.interface.new_socket("Image", in_out="OUTPUT", socket_type="NodeSocketColor")
@@ -170,12 +179,13 @@ def build_group(view_dir=VIEW_DIR):
     return g
 
 
-def apply(scene=None, view_dir=VIEW_DIR, exposure_stops=None):
-    """Install the compositor game view on a scene; returns an evidence dict."""
+def apply(scene=None, view_dir=VIEW_DIR, exposure_stops=None, grade="captured"):
+    """Install the compositor game view on a scene; returns an evidence dict. grade: "captured" (rc_grade.cube,
+    Veldin's) or "identity"."""
     scene = scene or bpy.context.scene
     if exposure_stops is None:
         exposure_stops = json.load(open(os.path.join(view_dir, "rc_game_view.json")))["blender_exposure_stops"]
-    group = build_group(view_dir)
+    group = build_group(view_dir, grade)
     tree = bpy.data.node_groups.get(TREE_NAME) or bpy.data.node_groups.new(TREE_NAME, "CompositorNodeTree")
     tree.nodes.clear(); tree.interface.clear()
     tree.interface.new_socket("Image", in_out="OUTPUT", socket_type="NodeSocketColor")
@@ -193,6 +203,6 @@ def apply(scene=None, view_dir=VIEW_DIR, exposure_stops=None):
         for area in screen.areas:
             if area.type == "VIEW_3D":
                 area.spaces.active.shading.use_compositor = "ALWAYS"
-    scene["rc_view"] = "RC PS4 Game view as compositor nodes; exposure %.4f stops" % exposure_stops
+    scene["rc_view"] = "RC PS4 Game view as compositor nodes; exposure %.4f stops; %s grade" % (exposure_stops, grade)
     return dict(view="RC PS4 Game (compositor)", view_transform="Raw", exposure=float(exposure_stops),
-                compositor_group=GROUP_NAME, version=VERSION)
+                compositor_group=GROUP_NAME, version=VERSION, grade=grade)

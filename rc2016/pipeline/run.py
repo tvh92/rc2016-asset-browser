@@ -1070,6 +1070,8 @@ def main():
     parser.add_argument('--blend-only',action='store_true',help='After a fully successful run, keep only the delivered .blend files and the viewer animation index: delete reports, meshes, textures, caches and validation')
     parser.add_argument('--lighting-source',choices=('veldin','novalis','hdri'),default='hdri',
         help='hdri (default): the shared review lighting from --lighting-config; veldin: opt-in captured Veldin key light, ambient, exposure and RC PS4 Game tonemap; novalis: decoded probe')
+    parser.add_argument('--tonemap',choices=('shared','game'),default='shared',
+        help="shared (default): the --lighting-config view transform; game: the game's captured exposure and tone curve as compositor nodes, no colour grade (the model viewer's Game (captured) tonemap). Shared HDRI lighting only")
     parser.add_argument('--novalis-atmosphere-sun',action='store_true',help='Add the source-valued Novalis RGB96 Sun candidate; runtime field names remain pending')
     parser.add_argument('--no-skeleton',action='store_true',help='Export static meshes only: no joints, skin weights, rig or animation. Mirrors the viewer export option Skeleton off.')
     parser.add_argument('--no-animations',action='store_true',help='Keep the joints and skin weights but write no animation clips. Mirrors the viewer export option Include animations off.')
@@ -1105,6 +1107,9 @@ def main():
         args.shared_lighting['hdri_path']=str(args.hdri)
     if args.lighting_source=='hdri':
         args.hdri=Path(args.shared_lighting['hdri_path'])
+    if args.tonemap=='game':
+        if args.lighting_source!='hdri':parser.error('--tonemap game needs --lighting-source hdri')
+        args.shared_lighting['game_tonemap']=True   # rc2016/pipeline/scene_defaults.py applies and checks it
     args.veldin_look=None
     if args.lighting_source=='veldin':
         # The tonemap is built as compositor nodes from these tables: no OCIO setup is needed.

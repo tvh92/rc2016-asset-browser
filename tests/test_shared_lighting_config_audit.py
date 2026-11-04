@@ -36,8 +36,9 @@ class SharedLightingConfigAuditTests(unittest.TestCase):
         record = dict(selected, config_sha256='wrong')
         self.assertTrue(scene_defaults._lighting_file_differs(record, selected))
 
-    def test_selected_config_checks_actual_scene_values_not_only_record(self):
-        selected = self.selected
+    @staticmethod
+    def fake_scene(selected, view=None, compositing=None, compositor=None):
+        """(scene, world strength socket) with the selected lighting's world; ``view`` overrides the view settings."""
         class Image:
             filepath = selected['hdri_path']
             size = (4, 2)
@@ -57,14 +58,50 @@ class SharedLightingConfigAuditTests(unittest.TestCase):
             def get(self, key):
                 return SimpleNamespace(inputs={'Rotation': rotation}) if key == 'PS4 HDRI Rotation' else None
         scene = SimpleNamespace(world=SimpleNamespace(node_tree=SimpleNamespace(nodes=Nodes([output]))),
-            view_settings=SimpleNamespace(view_transform=selected['view_transform'], look=selected['look'],
-                exposure=float(selected['exposure']), gamma=float(selected['gamma'])),
-            render=SimpleNamespace(use_compositing=selected['use_compositing']), objects=[])
+            view_settings=SimpleNamespace(**(view or dict(view_transform=selected['view_transform'], look=selected['look'],
+                exposure=float(selected['exposure']), gamma=float(selected['gamma'])))),
+            render=SimpleNamespace(use_compositing=selected['use_compositing'] if compositing is None else compositing),
+            objects=[], compositing_node_group=compositor)
+        return scene, strength
+
+    def test_selected_config_checks_actual_scene_values_not_only_record(self):
+        selected = self.selected
+        scene, strength = self.fake_scene(selected)
         fake_bpy = SimpleNamespace(path=SimpleNamespace(abspath=lambda path: path))
         with patch.dict(sys.modules, {'bpy': fake_bpy}):
             self.assertEqual(scene_defaults.check_shared_lighting(scene, selected), [])
             strength.default_value += 0.5
             self.assertIn('lighting.world_strength', scene_defaults.check_shared_lighting(scene, selected))
+
+    def test_game_tonemap_checks_the_compositor_in_place_of_the_view_transform(self):
+        selected = dict(self.selected, game_tonemap=True)
+        stops = scene_defaults.game_tonemap_stops(selected)
+        self.assertAlmostEqual(stops, math.log2(4.553783893585205) + float(self.selected['exposure']), places=6)
+
+        def compositor(grade='identity', exposure=stops):
+            node = SimpleNamespace(node_tree={'rc_grade': grade},
+                                   inputs={'Exposure (stops)': SimpleNamespace(default_value=exposure)})
+            return SimpleNamespace(nodes={scene_defaults.GAME_TONEMAP_GROUP: node})
+        raw = dict(view_transform='Raw', look='None', exposure=0.0, gamma=1.0)
+        fake_bpy = SimpleNamespace(path=SimpleNamespace(abspath=lambda path: path))
+        with patch.dict(sys.modules, {'bpy': fake_bpy}):
+            scene, _ = self.fake_scene(selected, raw, True, compositor())
+            self.assertEqual(scene_defaults.check_shared_lighting(scene, selected), [])
+            for scene in (self.fake_scene(selected)[0],                                   # Khronos PBR Neutral
+                          self.fake_scene(selected, raw, True, compositor('captured'))[0],  # Veldin's grade
+                          self.fake_scene(selected, raw, True, compositor(exposure=stops + 1))[0],
+                          self.fake_scene(selected, raw, False, compositor())[0]):
+                self.assertIn('colour_management.game_tonemap', scene_defaults.check_shared_lighting(scene, selected))
+            # a scene with the game tonemap fails the plain shared view
+            scene, _ = self.fake_scene(self.selected, raw, True, compositor())
+            self.assertIn('colour_management.shared_view', scene_defaults.check_shared_lighting(scene, self.selected))
+
+    def test_game_tonemap_choice_is_part_of_the_selection_not_of_the_file(self):
+        record = dict(self.selected, game_tonemap=True)
+        self.assertTrue(scene_defaults._lighting_file_differs(record, self.selected))
+        self.assertFalse(scene_defaults._lighting_file_differs(record, dict(record)))
+        with patch.object(scene_defaults, 'SHARED_LIGHTING_FILE', self.config):
+            self.assertFalse(scene_defaults._lighting_file_differs(dict(scene_defaults.load_shared_lighting(), game_tonemap=True)))
 
     def test_selected_config_edit_and_default_file_edit_both_report_drift(self):
         record = dict(self.selected)

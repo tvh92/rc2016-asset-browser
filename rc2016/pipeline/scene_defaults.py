@@ -25,6 +25,18 @@ _LIGHTING_KEYS = ("hdri", "hdri_rotation_x_degrees", "hdri_rotation_z_degrees", 
 # Render Region padding (fractions of the model's own screen size): the longer screen axis gets the
 # first value, the shorter axis the second.  The horizontal axis gets at least the side value, so the
 # crop leaves breathing space beside the model (the hand-widened npc_ryno_dealer.blend crop).
+# Optional "game_tonemap" setting (run.py --tonemap game): in place of the file's view transform, the game's display
+# chain as compositor nodes (rc2016/pipeline/game_view_compositor.py) with an identity grade, as the model viewer's
+# "Game (captured)" tonemap: the captured exposure on top of the file's, then the tone curve. The lighting is unchanged.
+GAME_TONEMAP_GROUP = "RC PS4 Game View (compositor)"
+
+
+def game_tonemap_stops(settings: Dict[str, Any]) -> float:
+    """Compositor exposure (stops) of the game tonemap: the captured frame's multiplier plus the file's exposure."""
+    view = json.loads((Path(__file__).resolve().parents[2] / "assets" / "game_view" / "rc_game_view.json").read_text(encoding="utf-8"))
+    return math.log2(float(view["exposure_multiplier"])) + float(settings["exposure"])
+
+
 REGION_PADDING_LONG = 0.10
 REGION_PADDING_SHORT = 0.07
 REGION_PADDING_SIDE = 0.25
@@ -86,7 +98,15 @@ def check_shared_lighting(scene: Any, expected: Optional[Dict[str, Any]] = None)
     except (AttributeError, IndexError, KeyError, StopIteration):
         problems.append("lighting.hdri")
     view = scene.view_settings
-    if (view.view_transform != expected["view_transform"] or view.look != expected["look"] or
+    if expected.get("game_tonemap"):
+        tree = getattr(scene, "compositing_node_group", None)
+        node = tree.nodes.get(GAME_TONEMAP_GROUP) if tree is not None else None
+        if (view.view_transform != "Raw" or view.look != "None" or abs(view.exposure) > 1e-5 or abs(view.gamma - 1.0) > 1e-5 or
+                not scene.render.use_compositing or node is None or node.node_tree is None or
+                node.node_tree.get("rc_grade") != "identity" or
+                abs(node.inputs["Exposure (stops)"].default_value - game_tonemap_stops(expected)) > 1e-4):
+            problems.append("colour_management.game_tonemap")
+    elif (view.view_transform != expected["view_transform"] or view.look != expected["look"] or
             abs(view.exposure - float(expected["exposure"])) > 1e-5 or abs(view.gamma - float(expected["gamma"])) > 1e-5 or
             bool(scene.render.use_compositing) != bool(expected["use_compositing"])):
         problems.append("colour_management.shared_view")
@@ -282,6 +302,9 @@ def apply_shared_lighting(scene: Any, lighting: Optional[Any] = None, hdri_path:
     view.exposure = float(settings["exposure"])
     view.gamma = float(settings["gamma"])
     scene.render.use_compositing = bool(settings["use_compositing"])
+    if settings.get("game_tonemap"):
+        from rc2016.pipeline import game_view_compositor
+        game_view_compositor.apply(scene, exposure_stops=game_tonemap_stops(settings), grade="identity")
     scene["shared_lighting"] = json.dumps(settings, sort_keys=True)
     return settings
 
@@ -540,11 +563,11 @@ def _lighting_file_differs(recorded: Dict[str, Any], selected: Optional[Dict[str
     """Compare a scene record with the current selected file; an explicit HDRI override is part of the selection."""
     current = load_shared_lighting(selected.get("config_path") if selected else None)
     keys = _LIGHTING_KEYS + ("hdri_path",)
-    if selected is None:
+    if selected is None:   # the file alone: the run's game_tonemap choice is not part of it
         return any(recorded.get(key) != current.get(key) for key in keys)
     return (not selected.get("config_path") or selected.get("config_path") != current.get("config_path") or
             selected.get("config_sha256") != current.get("config_sha256") or
-            any(recorded.get(key) != selected.get(key) for key in keys + ("config_path", "config_sha256")))
+            any(recorded.get(key) != selected.get(key) for key in keys + ("game_tonemap", "config_path", "config_sha256")))
 
 
 def audit_scene(scene: Any = None, check_gpu: bool = True,

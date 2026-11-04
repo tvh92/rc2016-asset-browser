@@ -57,6 +57,10 @@ HELP = {
     "group": ("Blender Scene only. After the selected models are built, they are also placed side by side "
               "in one .blend under groups/, with one camera and one Render Region framing them all. Each model keeps "
               "its own .blend as well."),
+    "game_tonemap": ("Blender Scene only. Shows the render through the game's own exposure and tone curve (from a "
+                     "captured frame, without a level's colour grade) instead of Khronos PBR Neutral, as the viewer's "
+                     "Game (captured) tonemap. Bright glowing colours keep the game's hue: the Amoeboid's red eyes stay "
+                     "red where Khronos PBR Neutral turns them pink. The lighting is still the shared review HDRI."),
     "picker": ("Before an export with animations, the clips of the selected models are read. When a model has more clips "
                "than this number, a list opens to choose which ones to export; 0 opens it for any model with clips.\n\n"
                "Unticked, the list never opens and every clip is exported."),
@@ -227,6 +231,7 @@ class AssetBrowserApp:
         self.blend_scene_var = remember_var(tk.BooleanVar(value=False), "export.blend_scene")
         self.group_blend_var = remember_var(tk.BooleanVar(value=False), "export.group_blend")
         self.group_name_var = remember_var(tk.StringVar(value="Selected models"), "export.group_name")
+        self.game_tonemap_var = remember_var(tk.BooleanVar(value=False), "export.game_tonemap")
         # Animation picker: opens when a model has more clips than the threshold; switched off, every clip is exported.
         self.picker_var = remember_var(tk.BooleanVar(value=True), "export.picker")
         self.picker_threshold_var = remember_var(tk.StringVar(value=str(CLIP_PICKER_THRESHOLD)), "export.picker_threshold")
@@ -462,11 +467,15 @@ class AssetBrowserApp:
         self.group_name_entry.grid(row=2, column=1, sticky="w", padx=6, pady=4)
         ttk.Label(formats, text="saved under groups/", style="Muted.TLabel").grid(row=2, column=2, sticky="w")
         self._tip(HELP["group"], self.group_name_label, self.group_name_entry)
+        self.game_tonemap_check = ttk.Checkbutton(formats, text="Game tone curve instead of Khronos PBR Neutral",
+                                                  variable=self.game_tonemap_var)
+        self.game_tonemap_check.grid(row=3, column=0, columnspan=3, sticky="w", padx=(22, 0), pady=(2, 4))
+        self._tip(HELP["game_tonemap"], self.game_tonemap_check)
         self.format_checks = []
         for number, (key, (label, _suffix, needs_blender)) in enumerate(FORMATS.items()):
             box = ttk.Checkbutton(formats, text=label + ("  (needs Blender)" if needs_blender else ""),
                                   variable=self.export_format_vars[key])
-            box.grid(row=3 + number % 3, column=number // 3, sticky="w", padx=(0, 18), pady=2)
+            box.grid(row=4 + number % 3, column=number // 3, sticky="w", padx=(0, 18), pady=2)
             self._tip(HELP["formats"], box)
             self.format_checks.append(box)
 
@@ -597,6 +606,7 @@ class AssetBrowserApp:
         group_state = "normal" if blend else "disabled"
         self.group_check.configure(state=group_state)
         self.group_name_entry.configure(state=group_state)
+        self.game_tonemap_check.configure(state=group_state)
         self.group_name_label.configure(style="Disabled.TLabel" if blend else "TLabel")
         # Without a skeleton there is nothing to animate, so the animation choice is switched off.
         self.skeleton_check.configure(state="normal" if pipeline else "disabled")
@@ -1175,6 +1185,7 @@ class AssetBrowserApp:
                 [record.archive_path for record in models], Path(self.source_var.get()), output, interpreter, blender,
                 event=lambda kind, **values: self.events.put((kind, values)),
                 group_blend=group_name, blend_only=True, skeleton=self.export_skeleton_var.get(),
+                game_tonemap=self.game_tonemap_var.get(),
                 animations=self.export_animations_var.get(),
                 clip_choices={r.archive_path: clip_choices[r.model_id] for r in models if r.model_id in clip_choices})
         else:
