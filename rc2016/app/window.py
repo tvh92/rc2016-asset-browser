@@ -1209,7 +1209,8 @@ class AssetBrowserApp:
     def _choose_clips(self, records, output: Path, options) -> dict[str, tuple[str, ...]] | None:
         """Read each model's animation clips, then let the user untick the ones to leave out. Returns the clips
         for each model whose choice is not every clip (a model left fully ticked, or with no clips, is absent),
-        or None when cancelled. When no model has clips, the user is told why and asked whether to export without them.
+        or None when cancelled. When no model has clips because they are static, the export goes ahead without asking; an unusable index or
+        an unreadable model asks whether to export without them.
         The picker opens only above the threshold of Options…; switched off, the clips are not read at all. It shows
         the ticks of an export that did not finish (``retained_clips``) for the models it lists again."""
         from rc2016.export.models import ModelExporter
@@ -1274,8 +1275,9 @@ class AssetBrowserApp:
                 reason = no_index
             elif errors:
                 reason = f"{errors[0][0].display_name} could not be read: {errors[0][1]}"
-            else:
-                reason = "None of the selected models has animation clips (static models have none)."
+            else:   # nothing is wrong, the models are simply static: nothing to ask
+                self._append_log("None of the selected models has animation clips; exporting without animations.")
+                return {}
             if not self.messagebox.askokcancel("No animations found", f"{reason}\n\nExport without animations?",
                                                icon="warning", parent=self.root):
                 return None
