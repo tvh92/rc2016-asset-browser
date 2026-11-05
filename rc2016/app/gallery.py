@@ -266,6 +266,7 @@ class Gallery:
         self.canvas.bind('<Configure>', lambda _e: self._relayout())
         self.canvas.bind('<ButtonPress-1>', self._click)
         self.canvas.bind('<Double-Button-1>', self._double_click)
+        self.canvas.bind('<Button-3>', self._right_click)
         self.canvas.bind('<Motion>', self._motion)
         self.canvas.bind('<Leave>', lambda _e: self._hide_tip())
         for key, step in (('Left', -1), ('Right', 1)):
@@ -602,6 +603,11 @@ class Gallery:
         else:
             self._pick([index], index)
             self.anchor = index
+
+    def _right_click(self, event):
+        index = self._event_index(event)
+        if index is not None:
+            self.app._model_context_menu(event, self.records[index])
 
     def _double_click(self, event):
         index = self._event_index(event)

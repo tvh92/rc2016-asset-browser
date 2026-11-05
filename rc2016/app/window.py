@@ -410,6 +410,7 @@ class AssetBrowserApp:
         self.table.bind("<<TreeviewSelect>>", lambda _event: self.update_selection_label())
         self.table.bind("<Button-1>", self._table_click)
         self.table.bind("<Double-1>", self._table_double_click)
+        self.table.bind("<Button-3>", self._table_context_menu)
 
         from rc2016.app.browser import AssetBrowser
         self.browser = AssetBrowser(self, browser_split, type_host=top, model_view=model_view)
@@ -1040,6 +1041,29 @@ class AssetBrowserApp:
             return "break"
         return None
 
+
+    def _table_context_menu(self, event) -> None:
+        """Right-click on a model row opens the copy menu for that row only."""
+        record = self.item_by_record.get(self.table.identify_row(event.y))
+        if record is not None:
+            self._model_context_menu(event, record)
+
+    def _model_context_menu(self, event, record) -> None:
+        """Right-click menu for one model entry, in the list or the grid: copy its name or its archive path."""
+        if getattr(self, "_model_menu", None) is None:
+            self._model_menu = menu = self.tk.Menu(self.root, tearoff=False)
+            menu.add_command(label="Copy model name", command=lambda: self._copy_model_text(stem=True))
+            menu.add_command(label="Copy model path", command=lambda: self._copy_model_text(stem=False))
+        self._menu_record = record
+        try:
+            self._model_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._model_menu.grab_release()
+
+    def _copy_model_text(self, stem: bool) -> None:
+        path = self._record_path(self._menu_record)
+        self.table.clipboard_clear()
+        self.table.clipboard_append(Path(path).stem if stem else path)
 
     def select_visible(self) -> None:
         self.table.selection_set(list(self.item_by_record))
