@@ -1888,6 +1888,9 @@ def glass_uniforms(forward, time=None):
     if forward["kind"] == "glass_thumper":
         return (GLASS_KINDS["glass_thumper"], (*p["tint"], p["rim_bias"]), (*p["body"], p["normal_strength"]),
                 (p["tiling"], p["f0_base"], p["gloss"], p["rim_exp"]), (*p["glow_colour"], p["amplitude"]), (0.0,) * 4)
+    if forward["kind"] == "glass_patterned_add":   # uKind 11 without the noise texture (X = 0) and glow
+        return (GLASS_KINDS["glass_thumper"], (*p["tint"], p["rim_bias"]), (*p["body"], p["normal_strength"]),
+                (p["tiling"], p["f0_base"], p["gloss"], p["rim_exp"]), (0.0,) * 4, (0.0,) * 4)
     if forward["kind"] == "glass_liquid":
         return (GLASS_KINDS["glass_liquid"], (*p["body"], p["normal_strength"]), (*p["spec_tint"], p["gloss"]),
                 (p["fill"], 0.0, 0.0, 0.0), (0.0,) * 4, (0.0,) * 4)

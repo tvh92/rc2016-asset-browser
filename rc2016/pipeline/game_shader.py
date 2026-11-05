@@ -1187,7 +1187,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 25
+VIEWER_RULE_FRONTEND_VERSION = 26
 
 
 def _viewer_rule_images(nt):
@@ -1517,7 +1517,7 @@ def _viewer_skin_spec(P, skin, gR, gG, f, tinted):
     rgb = P.comb(*(P.sat(P.m('MULTIPLY', grey, ch)) for ch in P.sep(tinted))) if qwark else None
     return grey, gloss_in, rgb
 
-GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_patterned', 'glass_liquid', 'glass_tank', 'glass_taxi', 'warmonger_reticle', 'window_glass')
+GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_patterned_add', 'glass_patterned', 'glass_liquid', 'glass_tank', 'glass_taxi', 'warmonger_reticle', 'window_glass')
 
 
 def _viewer_rule_glass(mat, rule, key, img):
@@ -1603,7 +1603,7 @@ def _viewer_rule_glass(mat, rule, key, img):
             em = P.N.new('ShaderNodeEmission'); em.name = 'VR glass emission'
             P.L.new(P.const3('glass colour', p['colour']), em.inputs['Color'])
             lit = add(em.outputs[0], scaled(lobe, P.m('MULTIPLY', f90, P.const('glass weight', p['weight']))), 'VR glass lit')
-    elif key == 'glass_thumper':
+    elif key in ('glass_thumper', 'glass_patterned_add'):
         # 5226F404: rim from the geometry normal; Patterns_cma (_n slot) at uv * tiling gives the normal and S (its alpha);
         # fx_noisetile02 (_pick slot) at (u/2, v/2) and (u/2, v/2 + 1/2) gives X; rgb = k specular(F0, N') + K amp (L + X).
         rim = P.sat(P.m('MULTIPLY', P.m('POWER', om, P.const('glass rim exp', p['rim_exp'])), 4.0))
@@ -1636,12 +1636,19 @@ def _viewer_rule_glass(mat, rule, key, img):
         em = P.N.new('ShaderNodeEmission'); em.name = 'VR glass emission'
         P.L.new(P.v('SCALE', glow, x_noise), em.inputs['Color'])
         lit = add(add(diffuse(glow), em.outputs[0], 'VR glass glow'), scaled(lobe, f90), 'VR glass lit')
-        limits.append('Thumper glove glass 5226F404 (frozen preview, game_equivalence False): the sample X of fx_noisetile02 is taken at '
-                      'CB0[99] = 0; the glow colour K is multiplied by CB0[115] = %g, the value captured in the Novalis frame that '
-                      'draws this glass (a frame constant that varies between frames); blend %s is the captured draw state, not the '
-                      'flags word, and the dither-kept opaque rim of the game is not drawn; the tint multiplies F0 and the Principled '
-                      'F90 is collapsed to its maximum channel; the program variant (5226F404, with the pattern normal, or 1D429528 '
-                      'without it) is not selected per draw' % (p['amplitude'], blend))
+        if key == 'glass_patterned_add':
+            limits.append('Additive patterned glass, forward program 90542658 (pass inferred, no glass draw in the capture; '
+                          'game_equivalence False): the Thumper terms with X = 0 and no glow; the light list, probes, SSR '
+                          '(instance flag 0x2000 clear), fog, the specular occlusion and the instance fade are the viewer rig, '
+                          'instance flag 0x40 is taken as set, the tint multiplies F0 and the Principled F90 is collapsed to '
+                          'its maximum channel')
+        else:
+            limits.append('Thumper glove glass 5226F404 (frozen preview, game_equivalence False): the sample X of fx_noisetile02 is taken at '
+                          'CB0[99] = 0; the glow colour K is multiplied by CB0[115] = %g, the value captured in the Novalis frame that '
+                          'draws this glass (a frame constant that varies between frames); blend %s is the captured draw state, not the '
+                          'flags word, and the dither-kept opaque rim of the game is not drawn; the tint multiplies F0 and the Principled '
+                          'F90 is collapsed to its maximum channel; the program variant (5226F404, with the pattern normal, or 1D429528 '
+                          'without it) is not selected per draw' % (p['amplitude'], blend))
     elif key == 'glass_patterned':
         # FEEC00CE (Blarg saucer dome): rim from the geometry normal, Patterns_cma (_n slot) at uv * tiling perturbs the
         # shading normal; P = the colour-pick palette at u; F0 = sat(inf P) (P2 + rim^10); rgb = specular + 0.400295 P Ld.
@@ -1948,23 +1955,6 @@ def apply_viewer_graph_rule(mat, source):
 
     ported = list(rule.get('ported') or ())
     terms = rule.get('terms') or {}
-    if 'not_drawn' in ported and 'not_drawn' in terms:
-        # Additive material of a forward-only graph (textures.GLASS_PATTERNED_GRAPH): the viewer draws nothing, so this is a
-        # fully transparent surface. Source images stay as nodes for provenance.
-        for node in list(nt.nodes):
-            if node.type != 'TEX_IMAGE':
-                nt.nodes.remove(node)
-        for node in images.values():
-            node.image.alpha_mode = 'CHANNEL_PACKED'
-        clear = nt.nodes.new('ShaderNodeBsdfTransparent'); clear.name = clear.label = 'VR not drawn transparent'
-        out = nt.nodes.new('ShaderNodeOutputMaterial'); out.is_active_output = True
-        L.new(clear.outputs[0], out.inputs['Surface'])
-        mat.use_backface_culling = True
-        if hasattr(mat, 'surface_render_method'): mat.surface_render_method = 'BLENDED'
-        elif hasattr(mat, 'blend_method'): mat.blend_method = 'BLEND'
-        _finish_viewer_rule(mat, rule, 'not drawn (additive forward-only glass)',
-                            ['not_drawn: ' + terms['not_drawn']['reason']])
-        return True
     c, g, n = img('_c'), img('_g'), img('_n')
     arch = terms.get('arch_sequence') if 'arch_sequence' in ported else None
     screen = 'screen' in ported

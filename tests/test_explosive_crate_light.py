@@ -77,21 +77,36 @@ class ExplosiveCrateArchiveTests(unittest.TestCase):
         context_free = prepare_translation([graph_data], material_data, extract_material_parameters(material_data))
         self.assertNotIn('source_preview_inputs', context_free)
 
-    def test_additive_glass_is_not_drawn(self):
+    def test_additive_glass_is_the_decoded_forward_program(self):
         from rc2016.viewer.textures import material_texture_paths
         glass = material_texture_paths(self.archive, 'material/equipment/pickup/pup_rcps4_explosive_crate_glass/pup_rcps4_explosive_crate_glass.material')
-        self.assertIn('not_drawn', glass)
-        self.assertEqual(glass['not_drawn']['writer'], '98B54ECA')
-        light = material_texture_paths(self.archive, RULE['material_path'])
-        self.assertNotIn('not_drawn', light)
+        forward = glass['forward']
+        self.assertEqual((forward['kind'], forward['writer'], forward['blend']), ('glass_patterned_add', '90542658', 'additive'))
+        self.assertFalse(forward['two_sided'])
+        p = forward['params']
+        self.assertEqual(tuple(round(x, 6) for x in p['tint']), (1.0, 0.099899, 0.0))
+        self.assertEqual(tuple(round(x, 6) for x in p['body']), (1.0, 0.184475, 0.0))
+        for name, expected in (('rim_bias', 1.0), ('tiling', 0.5), ('normal_strength', 0.2), ('gloss', 0.8),
+                               ('rim_exp', 5.0), ('f0_base', 0.5)):
+            self.assertAlmostEqual(p[name], expected, places=6, msg=name)
+        self.assertEqual((p['amplitude'], tuple(p['glow_colour'])), (0.0, (0.0, 0.0, 0.0)))
+        self.assertTrue(glass.get('_n', '').endswith('patterns_cma.texture'))
+        self.assertNotIn('_pick', glass)
+        self.assertNotIn('forward', material_texture_paths(self.archive, RULE['material_path']))
 
-    def test_split_forward_skips_not_drawn_batches(self):
-        from rc2016.viewer.viewport import split_forward
-        batches = [('a',), ('b',), ('c',)]
-        textures = {'a': {'not_drawn': {'writer': 'x'}}, 'b': {}, 'c': {'forward': {'kind': 'screen'}}}
-        opaque, forward = split_forward(batches, textures)
-        self.assertEqual(opaque, [('b',)])
-        self.assertEqual(forward, [('c',)])
+    def test_glass_uniforms_are_the_thumper_packing_without_noise_or_glow(self):
+        from rc2016.viewer.shading import GLASS_KINDS, glass_uniforms
+        from rc2016.viewer.textures import material_texture_paths
+        forward = material_texture_paths(self.archive, 'material/equipment/pickup/pup_rcps4_explosive_crate_glass/pup_rcps4_explosive_crate_glass.material')['forward']
+        kind, a, b, c, d, e = glass_uniforms(forward, 0.0)
+        self.assertEqual(kind, GLASS_KINDS['glass_thumper'])
+        self.assertEqual(len(a), 4); self.assertEqual(d, (0.0,) * 4)
+        self.assertAlmostEqual(c[0], 0.5); self.assertAlmostEqual(c[3], 5.0)
+
+    def test_opaque_material_of_the_same_graph_keeps_its_translation(self):
+        from rc2016.viewer.textures import material_texture_paths
+        paths = material_texture_paths(self.archive, 'material/character/enemy/enm_extermitank_glass/enm_extermitank_glass.material')
+        self.assertNotEqual((paths.get('forward') or {}).get('kind'), 'glass_patterned_add')
 
 
 if __name__ == '__main__':

@@ -72,14 +72,13 @@ MUSHROOM_FRESNEL_PRESENTATION = dict(colour=(0.38132601976394653, 0.686685323715
 CRATE_CHUNKS_DAMAGE_GRAPH_SHA256 = 'cddfc855b072e2202954470cf5c4cfe43230fad9cb5c2fc758c392ff3e1399c0'
 CRATE_INTACT_TINT = (0.672443151473999, 0.533276379108429, 0.3967552185058594)
 CRATE_SELF_LIT_KEY = 0x5FD56522
-# basic_glass_patterned materials whose flags word is additive (the explosive crate's window glass, the Blarg bomb glass):
-# additive materials never write the G-buffer, so the graph's deferred writer 98B54ECA, which the viewer's native translation
-# would draw as an opaque red mirror, is not what the game draws (the game compiled only the forward programs 881BA6D3 and
-# 90542658, whose colour is not decoded). Their batches are not drawn until the forward program is decoded; the
-# opaque-flagged material of the same graph (the Extermitank glass) is unaffected.
-# Research/captures/2026-11-05_gaspar-crates/explosive/README.md (local).
-GLASS_PATTERNED_GRAPH = 'materialgraph/global/basic_glass_patterned/basic_glass_patterned.materialgraph'
+# basic_glass_patterned additive glass (the explosive crate window glass, the Blarg bomb glass): the game draws the pass 0 forward
+# program 90542658, term for term the Thumper glove glass without its noise and glow (the glass_patterned_add rule in GRAPH_RULES).
+# The opaque-flagged material of the same graph (the Extermitank glass) keeps its native translation.
+# Research/captures/2026-11-05_gaspar-crates/explosive_glass/README.md (local).
 GLASS_PATTERNED_GRAPH_SHA256 = '0c2dacac4e75df1d9491d9e4341ab6e1a5c2800abf593544b42db8f48c0bdf23'
+GLASS_PATTERNED_ADD_CONSTANTS = dict(glow_colour=(0.0, 0.0, 0.0), amplitude=0.0, writer='90542658',
+    frozen_inputs=dict(CB0_95=1.0, instance_fade=0.0, attr0_w=1.0, instance_flags=0x40), game_equivalence=False)
 # Health (nanotech) crate window panes: the alpha_over material of required/materials/health_crate.materialgraph is the body
 # surface (deferred writer E5F05839) drawn see-through. The game's forward programs BCE8624F / EC04A1EB (pass 0 / pass 1) output
 # alpha = sat(sat(_c.a) * attribute0.w) and discard below attribute0.z; attribute0.w = 1 from render-state byte 22 = 0xFF, and the
@@ -536,6 +535,15 @@ GRAPH_RULES = (
      dict(forward='glass_thumper', writer='5226F404', constants=THUMPER_GLOVE_GLASS_CONSTANTS,
           _graph_sha256=THUMPER_GLOVE_GLASS_GRAPH_SHA256,
           slots={'_n': THUMPER_GLOVE_GLASS_PATTERN_SLOTS[0], '_pick': THUMPER_GLOVE_GLASS_NOISE_SLOTS[0]}, params=(
+         ('body', 0x79120089, 3), ('tint', 0x4B4DAB19, 3), ('rim_bias', 0x42170E5E, 1), ('tiling', 0x375AF9AC, 1),
+         ('f0_base', 0x62835AF9, 1), ('gloss', 0x24F4CA4C, 1), ('normal_strength', 0xCC7457CD, 1),
+         ('rim_exp', 0xECE213A3, 1)))),
+    # Additive basic_glass_patterned glass (explosive crate, Blarg bomb): forward 90542658 (pass 0), decoded from the IR and
+    # checked numerically; the draw's pass is inferred (no glass draw is in the capture). Same terms as the Thumper glass above
+    # with X = 0 and no glow; additive blend from the flags word. Gated to additive flags below.
+    ('materialgraph/global/basic_glass_patterned/basic_glass_patterned.',
+     dict(forward='glass_patterned_add', writer='90542658', constants=GLASS_PATTERNED_ADD_CONSTANTS,
+          _graph_sha256=GLASS_PATTERNED_GRAPH_SHA256, slots={'_n': 0x49A7866BABDAD780}, params=(
          ('body', 0x79120089, 3), ('tint', 0x4B4DAB19, 3), ('rim_bias', 0x42170E5E, 1), ('tiling', 0x375AF9AC, 1),
          ('f0_base', 0x62835AF9, 1), ('gloss', 0x24F4CA4C, 1), ('normal_strength', 0xCC7457CD, 1),
          ('rim_exp', 0xECE213A3, 1)))),
@@ -1529,6 +1537,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
         if any(not bound(a) or bound(a) != bound(b)
                for a, b in (THUMPER_GLOVE_GLASS_NOISE_SLOTS, THUMPER_GLOVE_GLASS_PATTERN_SLOTS)):
             rule = {}
+    if rule.get('forward') == 'glass_patterned_add' and blend_state(material_flags(data))['blend'] != 'additive':
+        rule = {}   # the opaque material of this graph (Extermitank glass) is a deferred surface, not this forward program
     if rule.get('forward') == 'glass_liquid':
         # The normal map is the decoded program input only when the flow slot is bound.
         flow_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
@@ -1783,12 +1793,6 @@ def material_texture_paths(archive, material_path: str) -> dict:
                        '; the dissolve term (key 0x6424A3B7 = %g) is not drawn' % dissolve if dissolve else ''))
         result['k'] = 1.0   # self-lit = albedo x _c.a (rel 13508-13552)
         result['spec'] = result['gloss'] = 1.0   # F0 and gloss come from the term
-    if (graph_hashes.get(GLASS_PATTERNED_GRAPH) == GLASS_PATTERNED_GRAPH_SHA256
-            and blend_state(material_flags(data))['blend'] == 'additive'):
-        result['not_drawn'] = dict(
-            graph_path=GLASS_PATTERNED_GRAPH, graph_sha256=GLASS_PATTERNED_GRAPH_SHA256, writer='98B54ECA',
-            reason='additive material of a forward-only graph: the deferred writer is never compiled by the game and the '
-                   'forward programs 881BA6D3 and 90542658 are not decoded')
     if (graph_hashes.get(HEALTH_CRATE_GRAPH) == HEALTH_CRATE_GRAPH_SHA256
             and blend_state(material_flags(data))['blend'] == 'alpha_over'):
         result['alpha_pane'] = dict(
@@ -2297,7 +2301,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             paths = {}
         entry.update(k=paths.get('k', 0.0), g_mode=paths.get('g_mode', 'colored'), self_lit=paths.get('self_lit', 'c_alpha'),
                      spec=paths.get('spec', 1.0), gloss=paths.get('gloss', 1.0))
-        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'bright_center', 'flat_surface', 'parallax', 'parallax_normal', 'hair', 'skin', 'skin_detail', 'fresnel_tint', 'crate_tint', 'not_drawn', 'alpha_pane', 'liquid_flow', 'lava_surface', 'zurkon'):
+        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'bright_center', 'flat_surface', 'parallax', 'parallax_normal', 'hair', 'skin', 'skin_detail', 'fresnel_tint', 'crate_tint', 'alpha_pane', 'liquid_flow', 'lava_surface', 'zurkon'):
             if paths.get(key):
                 entry[key] = paths[key]
         if paths.get('foliage'):

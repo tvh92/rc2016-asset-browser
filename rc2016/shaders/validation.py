@@ -394,6 +394,8 @@ GLASS_CONSTANTS = {
                    "alpha floor", "env exp", "alpha exp"),
     "glass_thumper": ("tint", "rim bias", "body", "tiling", "f0 base", "gloss", "normal strength", "rim exp", "glow colour",
                       "amplitude"),
+    "glass_patterned_add": ("tint", "rim bias", "body", "tiling", "f0 base", "gloss", "normal strength", "rim exp", "glow colour",
+                            "amplitude"),
     "glass_patterned": ("tiling", "normal strength", "f0", "gloss", "pick rgb", "rim bias", "rim exp"),
     "glass_liquid": ("body", "spec tint", "gloss", "normal strength"),
     "glass_tank": ("tint", "rim bias", "body", "gloss", "f0 base", "rim exp", "alpha scale"),
@@ -584,7 +586,7 @@ def _viewer_expected_constants(rule):
                   "cornea fresnel bias": p["fresnel_bias"], "cornea fresnel power": p["fresnel_power"],
                   "cornea reflect base": p["reflect_base"], "cornea alpha bias": p["alpha_bias"],
                   "cornea reflect weight": p["reflect_weight"]})
-    for key in ("glass_basic", "glass_cg02", "glass_jn", "glass_thumper", "glass_patterned", "glass_liquid", "glass_tank", "glass_taxi", "warmonger_reticle", "window_glass"):
+    for key in ("glass_basic", "glass_cg02", "glass_jn", "glass_thumper", "glass_patterned_add", "glass_patterned", "glass_liquid", "glass_tank", "glass_taxi", "warmonger_reticle", "window_glass"):
         if key in ported:
             p = terms[key]["params"]
             e.update({"glass " + name: p[name.replace(" ", "_")] for name in GLASS_CONSTANTS[key]})
@@ -768,7 +770,7 @@ def _viewer_required(rule, has_n):
         names += ["cornea fresnel normal scale", "cornea env normal scale", "cornea fresnel bias", "cornea fresnel power",
                   "cornea reflect base", "cornea alpha bias", "cornea reflect weight"]
         req("_n")
-    for key in ("glass_basic", "glass_cg02", "glass_jn", "glass_thumper", "glass_patterned", "glass_liquid", "glass_tank", "glass_taxi", "warmonger_reticle", "window_glass"):
+    for key in ("glass_basic", "glass_cg02", "glass_jn", "glass_thumper", "glass_patterned_add", "glass_patterned", "glass_liquid", "glass_tank", "glass_taxi", "warmonger_reticle", "window_glass"):
         if key in ported:
             glass = terms[key]
             names += ["glass " + name for name in GLASS_CONSTANTS[key]
@@ -1038,13 +1040,6 @@ def _validate_viewer_rule_material(source, material):
     assert output and output.inputs["Surface"].is_linked, "Viewer-rule material has no active surface output"
     sources = {row.get("path", "").lower() for row in source.get("textures", [])}
     has_n = bool(rule["textures"].get("_n")) and rule["textures"]["_n"].lower() in sources
-    if "not_drawn" in ported:
-        surface = output.inputs["Surface"].links[0].from_node
-        assert surface.name == "VR not drawn transparent" and surface.type == "BSDF_TRANSPARENT", "Not-drawn material is not transparent"
-        assert "not_drawn" in str(material.get("rc_shader_frontend_limitation", "")), "Not-drawn limitation missing"
-        assert material.get("game_equivalence") is False, "Not-drawn material claims game equivalence"
-        return dict(status="passed_viewer_graph_rule_frontend", terms=ported, blend="transparent",
-                    limitation=material.get("rc_shader_frontend_limitation"))
     if "lava_surface" in ported:
         from rc2016.shaders.lava_surface import valid_contract
         from rc2016.shaders.nodes import tree_signature
@@ -1117,7 +1112,7 @@ def _validate_viewer_rule_material(source, material):
         constants = _viewer_check_constants_and_images(source, material, rule, upstream, has_n)
         return dict(status="passed_viewer_graph_rule_frontend", terms=ported, blend="opaque", constants=constants,
                     limitation=material.get("rc_shader_frontend_limitation"))
-    glass = next((key for key in ("glass_basic", "glass_cg02", "glass_jn", "glass_thumper", "glass_patterned", "glass_liquid", "glass_tank", "glass_taxi", "warmonger_reticle", "window_glass")
+    glass = next((key for key in ("glass_basic", "glass_cg02", "glass_jn", "glass_thumper", "glass_patterned_add", "glass_patterned", "glass_liquid", "glass_tank", "glass_taxi", "warmonger_reticle", "window_glass")
                   if key in ported), None)
     if glass:   # Surface = Cull(blend(alpha; lit = diffuse/emission + F90 * Schlick-GGX))
         upstream = _viewer_upstream(output.inputs["Surface"])
