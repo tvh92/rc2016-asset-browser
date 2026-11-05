@@ -1187,7 +1187,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 23
+VIEWER_RULE_FRONTEND_VERSION = 24
 
 
 def _viewer_rule_images(nt):
@@ -2119,6 +2119,13 @@ def apply_viewer_graph_rule(mat, source):
         view_terms.append('glow mushroom Fresnel tint')
         limits.append('fresnel_tint: writer F(N.V) uses the geometry normal for both of its Fresnel terms (the second is '
                       'sign-folded and unnormalised in the game); MRT2 gloss alpha is the generic grey-gloss reading')
+    crate = terms.get('crate_tint') if on('crate_tint') else None
+    if crate:
+        # crate_chunks_damage writers 32615317 / CB9B3AC2: albedo = _c * tint for the intact-crate branch m = min(1, |attribute3.w|) >= 0.874.
+        albedo = P.v('MULTIPLY', albedo, P.const3('crate intact tint', crate['colour']))
+        view_terms.append('crate intact tint')
+        limits.append('crate_tint: m = |attribute3.w| is taken as 1 (vertex handedness; the two per-draw words are not read), the damage '
+                      'branches (0.45079, 0.31855, 0.27468 below m 0.874; u mirrored below 0.174) and the back-face overlay blend are not built')
     hair = terms.get('hair') if on('hair') else None
     if hair:
         # Hair_NewSpec_01 forward pass 94CE8CCE: _c is sampled for alpha only; the albedo is the material vec3 A (CB2 dw0-2).

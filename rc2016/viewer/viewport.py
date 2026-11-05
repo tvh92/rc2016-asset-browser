@@ -898,6 +898,8 @@ class ModelViewport(_TkFrame):
             uploaded["leaf_colour"] = dict(entry["leaf_colour"])
         if "fresnel_tint" in entry:
             uploaded["fresnel_tint"] = dict(entry["fresnel_tint"])
+        if "crate_tint" in entry:
+            uploaded["crate_tint"] = dict(entry["crate_tint"])
         if "hair" in entry:
             uploaded["hair"] = dict(entry["hair"])
         for key in ("skin", "skin_detail"):
@@ -1484,6 +1486,9 @@ class ModelViewport(_TkFrame):
         sh.glUniform1i(u["uFresnelTint"], 1 if fresnel else 0)
         sh.glUniform3f(u["uFresnelC"], *(float(x) for x in fresnel.get("colour", (1.0, 1.0, 1.0))))
         sh.glUniform1f(u["uFresnelE"], float(fresnel.get("exponent", 1.0)))
+        crate = entry.get("crate_tint") or {}   # constant colour only: model and level viewers both apply it
+        sh.glUniform1i(u["uCrateTint"], 1 if crate else 0)
+        sh.glUniform3f(u["uCrateC"], *(float(x) for x in crate.get("colour", (1.0, 1.0, 1.0))))
         hair = entry.get("hair") or {}   # constant colours and keys only: model and level viewers both apply it
         sh.glUniform1i(u["uHair"], 1 if hair else 0)
         sh.glUniform3f(u["uHairA"], *(float(x) for x in hair.get("albedo", (1.0, 1.0, 1.0))))

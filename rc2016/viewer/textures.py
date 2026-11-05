@@ -63,6 +63,15 @@ LEAF_PALETTE_U_PLACEHOLDER = 0.5
 # (0.381, 0.687, 1), E 0.25, K 2. The writer's second Fresnel (sign-folded, unnormalised) is taken as the same F.
 MUSHROOM_FRESNEL_COLOUR_KEY, MUSHROOM_FRESNEL_EXPONENT_KEY, MUSHROOM_SELF_LIT_KEY = 0x3DA84DFD, 0x764792E8, 0xA71C1591
 MUSHROOM_FRESNEL_PRESENTATION = dict(colour=(0.38132601976394653, 0.68668532371521, 1.0), exponent=0.25, self_lit=2.0)
+# crate_chunks_damage (bolt, ammo and explosive crates), deferred writers 0x32615317 (four textures) and 0xCB9B3AC2 (three),
+# which share every term below. F0 = _g.G, gloss = sqrt(sat(_g.R)) (no scale keys), self-lit = CB2[1] _g.B (CB2[0] is the pulse
+# rate, key 0x41E7FE54, both defaults 0 and 10), albedo = _c x tint where m = min(1, |attribute3.w|): m >= 0.874 gives the tint
+# below, 0.174 < m < 0.874 gives (0.45079, 0.31855, 0.27468), and m < 0.174 gives 1 with u mirrored. attribute3.w is the vertex
+# handedness (clamp(float(int16 position w), -1, 1) times two per-draw words), so an intact crate is taken as m = 1.
+# Research/captures/2026-11-05_gaspar-crates/README.md (local).
+CRATE_CHUNKS_DAMAGE_GRAPH_SHA256 = 'cddfc855b072e2202954470cf5c4cfe43230fad9cb5c2fc758c392ff3e1399c0'
+CRATE_INTACT_TINT = (0.672443151473999, 0.533276379108429, 0.3967552185058594)
+CRATE_SELF_LIT_KEY = 0x5FD56522
 # hair_newspec_01 forward colour pass (pass 0, pixel program 94CE8CCE; serialized resources api5/6/7 = _c/_g/_n).
 # _c is sampled for alpha only (coverage, dmask 8); the albedo is the material vec3 A (CB2 dw0-2), F0 = B (dw4-6) * _g.G
 # and the gloss argument is 0.71 * _g.R, both scaled by w = 1 - sat((1.001 - |N.V|)^E) (E = dw9, geometry normal);
@@ -628,6 +637,10 @@ GRAPH_RULES = (
     # self-lit mask _g.B. The second MRT2 gloss channel is not decoded; grey F0 (MRT2 RGB = _g.G) is shared.
     ('materialgraph/environment/novalis/plant/nov_plant_mushroom_glow_fresnel_01/rp_nov_plant_mushroom_glow_fresnel_01.',
      dict(g_mode='grey', self_lit='g_blue', self_lit_key=MUSHROOM_SELF_LIT_KEY, fresnel_tint=True)),
+    # Gameplay crates (bolt, ammo, explosive; the exact graph only): grey _g, self-lit _g.B, albedo _c x the intact-crate tint.
+    ('materialgraph/global/crate_chunks_damage/crate_chunks_damage.',
+     dict(graph_sha256=CRATE_CHUNKS_DAMAGE_GRAPH_SHA256, g_mode='grey', self_lit='g_blue', self_lit_key=CRATE_SELF_LIT_KEY,
+          crate_tint=True)),
     # Forward colour pass 94CE8CCE of Hair_NewSpec_01 (Skidd's agent, mayor, Gadgetron CEO, plumber beard): constant
     # albedo/specular colours, _c alpha cut-out, ZA-style rim weight. See docs/viewer.md (Hair).
     ('required/materials/hair_newspec_01.',
@@ -1150,6 +1163,9 @@ def material_texture_paths(archive, material_path: str) -> dict:
         result['fresnel_tint'] = dict(colour=vec3(MUSHROOM_FRESNEL_COLOUR_KEY, fallback['colour']),
             exponent=value(MUSHROOM_FRESNEL_EXPONENT_KEY, fallback['exponent']), writer='F69ADC40',
             keys=dict(colour=MUSHROOM_FRESNEL_COLOUR_KEY, exponent=MUSHROOM_FRESNEL_EXPONENT_KEY, self_lit=MUSHROOM_SELF_LIT_KEY))
+    if rule.get('crate_tint'):
+        # Constant literals of the writers (no material key); the intact-crate branch m = 1, see CRATE_INTACT_TINT.
+        result['crate_tint'] = dict(colour=list(CRATE_INTACT_TINT), writer='32615317/CB9B3AC2', keys=dict(self_lit=CRATE_SELF_LIT_KEY))
     if rule.get('skin'):
         skin_kind = rule['skin']
         skin = {name: value(key, SKIN_DEFAULTS[name]) for name, key in SKIN_KEYS.items()}
@@ -2252,7 +2268,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             paths = {}
         entry.update(k=paths.get('k', 0.0), g_mode=paths.get('g_mode', 'colored'), self_lit=paths.get('self_lit', 'c_alpha'),
                      spec=paths.get('spec', 1.0), gloss=paths.get('gloss', 1.0))
-        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'bright_center', 'flat_surface', 'parallax', 'parallax_normal', 'hair', 'skin', 'skin_detail', 'fresnel_tint', 'liquid_flow', 'lava_surface', 'zurkon'):
+        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'bright_center', 'flat_surface', 'parallax', 'parallax_normal', 'hair', 'skin', 'skin_detail', 'fresnel_tint', 'crate_tint', 'liquid_flow', 'lava_surface', 'zurkon'):
             if paths.get(key):
                 entry[key] = paths[key]
         if paths.get('foliage'):

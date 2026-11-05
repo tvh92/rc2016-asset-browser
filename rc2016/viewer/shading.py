@@ -304,6 +304,7 @@ uniform bool uFlatSurface; uniform vec3 uFlatColour; uniform vec4 uFlatSpec; uni
 uniform bool uBasicFlatColor; uniform float uBasicFlatEmissionScale; // D169A814: independent CB2 colour * scale additive output
 uniform bool uVictorReticle; uniform sampler2D uTexReticle; uniform bool uHasReticle; uniform vec4 uReticleP; uniform vec3 uReticleF0;
 uniform bool uFresnelTint; uniform vec3 uFresnelC; uniform float uFresnelE; // Novalis glow mushroom F69ADC40 albedo tint
+uniform bool uCrateTint; uniform vec3 uCrateC; // crate_chunks_damage writers 32615317 / CB9B3AC2: intact-crate albedo multiplier
 // Hair_NewSpec_01 forward pass 94CE8CCE: uHairA = constant albedo, uHairB = F0 colour (x _g.G), uHairP = (rim exponent E,
 // gloss scale, diffuse sigma (unused by the Lambert viewer diffuse), normal strength).
 uniform bool uHair; uniform vec3 uHairA; uniform vec3 uHairB; uniform vec4 uHairP;
@@ -968,6 +969,10 @@ void main() {
         float ndv = clamp(dot(normalize(vNrm), V), 0.0, 1.0);
         float fresnel = pow(1.00100004673 - ndv, uFresnelE);
         albedo = vec3(mix(uFresnelC.r, albedo.r, fresnel), mix(uFresnelC.g, albedo.g, fresnel), uFresnelC.b);
+    }
+    if (uMode == 2 && uCrateTint) {
+        // crate_chunks_damage, writers 32615317 / CB9B3AC2: albedo = _c * tint for m = min(1, |attribute3.w|) >= 0.874 (an intact crate).
+        albedo *= uCrateC;
     }
     float skinF = 0.0;
     vec3 skinTinted = vec3(1.0);
@@ -1958,7 +1963,7 @@ OPAQUE_UNIFORMS = (
     "uTwoColorMetal", "uMetalDiffuseA", "uMetalDiffuseB", "uMetalSpecA", "uMetalSpecB", "uMetalP",
     "uParallax", "uParallaxNormal", "uHasParallaxHeight", "uTexParallaxHeight", "uParallaxP",
     "uFoliage", "uAlphaCut", "uAlphaOut", "uLeafColour", "uLeafP", "uLeafPalette", "uTexCma", "uHasCma", "uSrgbCma",
-    "uFresnelTint", "uFresnelC", "uFresnelE", "uLiquidFlow", "uLiquidUV", "uFlatSurface", "uFlatColour", "uFlatSpec", "uFlatF0", "uBasicFlatColor", "uBasicFlatEmissionScale", "uVictorReticle", "uTexReticle", "uHasReticle", "uReticleP", "uReticleF0",
+    "uFresnelTint", "uFresnelC", "uFresnelE", "uCrateTint", "uCrateC", "uLiquidFlow", "uLiquidUV", "uFlatSurface", "uFlatColour", "uFlatSpec", "uFlatF0", "uBasicFlatColor", "uBasicFlatEmissionScale", "uVictorReticle", "uTexReticle", "uHasReticle", "uReticleP", "uReticleF0",
     "uHair", "uHairA", "uHairB", "uHairP",
     "uSkinKind", "uSkinA", "uSkinB", "uSkinC",
     "uLinearZ", "uZaFresnel", "uZaFresnelPower",

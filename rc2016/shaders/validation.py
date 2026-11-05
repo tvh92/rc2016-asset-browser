@@ -451,6 +451,8 @@ def _viewer_expected_constants(rule):
         l = terms["leaf_colour"]; e.update({"leaf exponent":l["exponent"], "leaf scale":l["scale"], "leaf palette":l["palette_rgb"]})
     if "fresnel_tint" in ported:
         f = terms["fresnel_tint"]; e.update({"mushroom fresnel exponent": f["exponent"], "mushroom fresnel colour": f["colour"]})
+    if "crate_tint" in ported:
+        e.update({"crate intact tint": terms["crate_tint"]["colour"]})
     if "zurkon" in ported:
         z = terms["zurkon"]
         e.update({"zurkon rim exponent": z["rim_exponent"], "zurkon facing exponent": z["facing_exponent"],
@@ -649,6 +651,8 @@ def _viewer_required(rule, has_n):
         names += ["leaf exponent", "leaf scale", "leaf palette"]; req("_cma")
     if "fresnel_tint" in ported:
         names += ["mushroom fresnel exponent", "mushroom fresnel colour"]; req("_c")
+    if "crate_tint" in ported:
+        names += ["crate intact tint"]; req("_c")
     if "zurkon" in ported:
         names += ["zurkon rim exponent", "zurkon facing exponent", "zurkon glow gain", "zurkon glow colour"]; req("_c")
         if tex.get("_g"):
