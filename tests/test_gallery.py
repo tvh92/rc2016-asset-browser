@@ -53,7 +53,8 @@ class ChunkBangleFilterTests(unittest.TestCase):
                      'character/enemy/enm_warbot_v4/enm_warbot_v4_chunks_set/part.model',
                      'vehicle/veh_victor/veh_victor_ship_engine_chunk_set/part.model',
                      'character/enemy/enm_peckbot/bangle_set/enm_peckbot_bangle_02_chunk/part.model',
-                     'character/enemy/enm_extermibot/chunk/enm_extermibot_chunk_head.model'):
+                     'character/enemy/enm_extermibot/chunk/enm_extermibot_chunk_head.model',
+                     'environment/global/gameplay/gbl_gp_crate_bolt_chunks_set_01/gbl_gp_crate_bolt_chunk08/gbl_gp_crate_bolt_chunk08.model'):
             with self.subTest(path=path):
                 self.assertTrue(g.is_chunk_or_bangle(Rec('x', path)))
 

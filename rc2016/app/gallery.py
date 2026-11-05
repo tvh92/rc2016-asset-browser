@@ -125,14 +125,14 @@ def display_name(record):
     return actors[0] if actors else Path(record.archive_path).stem
 
 
-CHUNK_BANGLE_FOLDER = re.compile(r'^chunk$|(?:^|_)(?:chunks?|bangles?)_set$')
+CHUNK_BANGLE_FOLDER = re.compile(r'(?:^|_)(?:chunks?|bangles?)(?:_set)?(?:_?\d+)?$')
 
 
 def is_chunk_or_bangle(record):
     """Whether a model is inside an archive folder reserved for a chunk or bangle.
 
     Matches ``chunk``, ``bangle_set`` and the per-enemy ``<name>_chunk_set``, ``<name>_chunks_set`` and
-    ``<name>_bangle_set`` folders."""
+    ``<name>_bangle_set`` folders, with an optional numbered suffix (``<name>_chunks_set_01``, ``<name>_chunk08``)."""
     path = getattr(record, 'archive_path', '') or getattr(record, 'relative_model', '')
     folders = str(path).replace('\\', '/').casefold().split('/')[:-1]
     return any(CHUNK_BANGLE_FOLDER.search(folder) for folder in folders)
