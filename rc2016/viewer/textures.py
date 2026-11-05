@@ -72,6 +72,14 @@ MUSHROOM_FRESNEL_PRESENTATION = dict(colour=(0.38132601976394653, 0.686685323715
 CRATE_CHUNKS_DAMAGE_GRAPH_SHA256 = 'cddfc855b072e2202954470cf5c4cfe43230fad9cb5c2fc758c392ff3e1399c0'
 CRATE_INTACT_TINT = (0.672443151473999, 0.533276379108429, 0.3967552185058594)
 CRATE_SELF_LIT_KEY = 0x5FD56522
+# basic_glass_patterned materials whose flags word is additive (the explosive crate's window glass, the Blarg bomb glass):
+# additive materials never write the G-buffer, so the graph's deferred writer 98B54ECA, which the viewer's native translation
+# would draw as an opaque red mirror, is not what the game draws (the game compiled only the forward programs 881BA6D3 and
+# 90542658, whose colour is not decoded). Their batches are not drawn until the forward program is decoded; the
+# opaque-flagged material of the same graph (the Extermitank glass) is unaffected.
+# Research/captures/2026-11-05_gaspar-crates/explosive/README.md (local).
+GLASS_PATTERNED_GRAPH = 'materialgraph/global/basic_glass_patterned/basic_glass_patterned.materialgraph'
+GLASS_PATTERNED_GRAPH_SHA256 = '0c2dacac4e75df1d9491d9e4341ab6e1a5c2800abf593544b42db8f48c0bdf23'
 # hair_newspec_01 forward colour pass (pass 0, pixel program 94CE8CCE; serialized resources api5/6/7 = _c/_g/_n).
 # _c is sampled for alpha only (coverage, dmask 8); the albedo is the material vec3 A (CB2 dw0-2), F0 = B (dw4-6) * _g.G
 # and the gloss argument is 0.71 * _g.R, both scaled by w = 1 - sat((1.001 - |N.V|)^E) (E = dw9, geometry normal);
@@ -1767,6 +1775,12 @@ def material_texture_paths(archive, material_path: str) -> dict:
                        '; the dissolve term (key 0x6424A3B7 = %g) is not drawn' % dissolve if dissolve else ''))
         result['k'] = 1.0   # self-lit = albedo x _c.a (rel 13508-13552)
         result['spec'] = result['gloss'] = 1.0   # F0 and gloss come from the term
+    if (graph_hashes.get(GLASS_PATTERNED_GRAPH) == GLASS_PATTERNED_GRAPH_SHA256
+            and blend_state(material_flags(data))['blend'] == 'additive'):
+        result['not_drawn'] = dict(
+            graph_path=GLASS_PATTERNED_GRAPH, graph_sha256=GLASS_PATTERNED_GRAPH_SHA256, writer='98B54ECA',
+            reason='additive material of a forward-only graph: the deferred writer is never compiled by the game and the '
+                   'forward programs 881BA6D3 and 90542658 are not decoded')
     return result
 
 
@@ -2268,7 +2282,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             paths = {}
         entry.update(k=paths.get('k', 0.0), g_mode=paths.get('g_mode', 'colored'), self_lit=paths.get('self_lit', 'c_alpha'),
                      spec=paths.get('spec', 1.0), gloss=paths.get('gloss', 1.0))
-        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'bright_center', 'flat_surface', 'parallax', 'parallax_normal', 'hair', 'skin', 'skin_detail', 'fresnel_tint', 'crate_tint', 'liquid_flow', 'lava_surface', 'zurkon'):
+        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'bright_center', 'flat_surface', 'parallax', 'parallax_normal', 'hair', 'skin', 'skin_detail', 'fresnel_tint', 'crate_tint', 'not_drawn', 'liquid_flow', 'lava_surface', 'zurkon'):
             if paths.get(key):
                 entry[key] = paths[key]
         if paths.get('foliage'):

@@ -1038,6 +1038,13 @@ def _validate_viewer_rule_material(source, material):
     assert output and output.inputs["Surface"].is_linked, "Viewer-rule material has no active surface output"
     sources = {row.get("path", "").lower() for row in source.get("textures", [])}
     has_n = bool(rule["textures"].get("_n")) and rule["textures"]["_n"].lower() in sources
+    if "not_drawn" in ported:
+        surface = output.inputs["Surface"].links[0].from_node
+        assert surface.name == "VR not drawn transparent" and surface.type == "BSDF_TRANSPARENT", "Not-drawn material is not transparent"
+        assert "not_drawn" in str(material.get("rc_shader_frontend_limitation", "")), "Not-drawn limitation missing"
+        assert material.get("game_equivalence") is False, "Not-drawn material claims game equivalence"
+        return dict(status="passed_viewer_graph_rule_frontend", terms=ported, blend="transparent",
+                    limitation=material.get("rc_shader_frontend_limitation"))
     if "lava_surface" in ported:
         from rc2016.shaders.lava_surface import valid_contract
         from rc2016.shaders.nodes import tree_signature

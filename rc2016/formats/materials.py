@@ -432,7 +432,7 @@ def classify_absent_texture(path, refs, material_data, graph_datas):
 # Viewer reading keys that change the result beyond the generic _g/self-lit front-end
 # ('screen' is the viewer's forward 'screen' entry; 'bng'/'bng_detail' the basic_normal_gloss variants).
 VIEWER_RULE_EXTRAS=('pick','tint','spec_tint','arch_sequence','vehicle','glow','two_color_metal','puddles',
-    'foliage','za_fresnel_power','screen','rock_blend','grass_blend','mud_blend','crater_blend','coral_blend','sediment_blend','bng','bng_detail','facing_glow','bright_center','parallax','alpha_cut','leaf_colour','bright_glow','fresnel_tint','crate_tint','number_display','victor_reticle','flat_surface','eye_cornea','hair','skin','skin_detail','glass_basic','glass_cg02','glass_jn','glass_thumper','glass_patterned','glass_liquid','glass_tank','glass_taxi','warmonger_reticle','window_glass','ion_tubes','liquid_flow','water','lava_surface','zurkon','swap')
+    'foliage','za_fresnel_power','screen','rock_blend','grass_blend','mud_blend','crater_blend','coral_blend','sediment_blend','bng','bng_detail','facing_glow','bright_center','parallax','alpha_cut','leaf_colour','bright_glow','fresnel_tint','crate_tint','not_drawn','number_display','victor_reticle','flat_surface','eye_cornea','hair','skin','skin_detail','glass_basic','glass_cg02','glass_jn','glass_thumper','glass_patterned','glass_liquid','glass_tank','glass_taxi','warmonger_reticle','window_glass','ion_tubes','liquid_flow','water','lava_surface','zurkon','swap')
 # Terms rc_game_shader.apply_viewer_graph_rule builds (same GLSL math as gl_shading.FRAGMENT/GLASS_FRAGMENT).
 VIEWER_RULE_BUILT=frozenset(VIEWER_RULE_EXTRAS)-{'parallax','swap'}
 # Extra source images each term samples (texture_preview.material_texture_paths roles).
@@ -465,6 +465,8 @@ def final_shader_status(build_status, rule, bound_paths, shader_translation, pro
                    reticle_term.get('graph_sha256')=='e4bcaf552be55cbc14b5081b6695a600084ae162889455b87eadc6c0103d79ea' and
                    reticle_term.get('graph_path') in graph_paths and bool(rule.get('textures',{}).get('_reticle')) and
                    bool(bound_paths) and rule.get('textures',{}).get('_reticle') in bound_paths)
+    if rule.get('applies') and 'not_drawn' in rule.get('ported',()) and 'not_drawn' in rule.get('terms',{}):
+        return 'viewer_graph_rule_frontend'   # additive forward-only glass: the viewer draws nothing, so Blender draws nothing
     anchor=rule.get('textures',{}).get('_reticle' if reticle_ready else '_g' if 'arch_sequence' in rule.get('ported',()) else '_c')
     # The facing-glow writer (Qwark bulb) and the glow shell (93695188) sample no texture at all.
     glass_ready=rule.get('applies') and any(key in rule.get('ported',()) for key in ('water','glass_basic','glass_cg02','glass_jn','glass_thumper','glass_patterned','glass_liquid','glass_tank','glass_taxi','warmonger_reticle','window_glass','ion_tubes','lava_surface'))
@@ -565,7 +567,7 @@ def viewer_graph_rule(archive, material_path, bound_paths=None):
         else:ported.append(key);continue
         unported.append(key)
     terms={key:paths[key] for key in ('pick','tint','spec_tint','arch_sequence','vehicle','glow','two_color_metal',
-        'puddles','za_fresnel_power','rock_blend','grass_blend','mud_blend','crater_blend','coral_blend','sediment_blend','bng','facing_glow','bright_center','parallax','alpha_cut','leaf_colour','fresnel_tint','crate_tint','flat_surface','hair','skin','skin_detail','liquid_flow','lava_surface','zurkon') if key in paths and key in present+['bng']}
+        'puddles','za_fresnel_power','rock_blend','grass_blend','mud_blend','crater_blend','coral_blend','sediment_blend','bng','facing_glow','bright_center','parallax','alpha_cut','leaf_colour','fresnel_tint','crate_tint','not_drawn','flat_surface','hair','skin','skin_detail','liquid_flow','lava_surface','zurkon') if key in paths and key in present+['bng']}
     if forward.get('kind')=='water' and forward.get('sampling'):terms['water']=forward
     if forward.get('kind')=='screen':terms['screen']=forward
     if forward.get('kind')=='bright_glow':terms['bright_glow']=forward

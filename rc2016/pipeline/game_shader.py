@@ -1187,7 +1187,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 24
+VIEWER_RULE_FRONTEND_VERSION = 25
 
 
 def _viewer_rule_images(nt):
@@ -1948,6 +1948,23 @@ def apply_viewer_graph_rule(mat, source):
 
     ported = list(rule.get('ported') or ())
     terms = rule.get('terms') or {}
+    if 'not_drawn' in ported and 'not_drawn' in terms:
+        # Additive material of a forward-only graph (textures.GLASS_PATTERNED_GRAPH): the viewer draws nothing, so this is a
+        # fully transparent surface. Source images stay as nodes for provenance.
+        for node in list(nt.nodes):
+            if node.type != 'TEX_IMAGE':
+                nt.nodes.remove(node)
+        for node in images.values():
+            node.image.alpha_mode = 'CHANNEL_PACKED'
+        clear = nt.nodes.new('ShaderNodeBsdfTransparent'); clear.name = clear.label = 'VR not drawn transparent'
+        out = nt.nodes.new('ShaderNodeOutputMaterial'); out.is_active_output = True
+        L.new(clear.outputs[0], out.inputs['Surface'])
+        mat.use_backface_culling = True
+        if hasattr(mat, 'surface_render_method'): mat.surface_render_method = 'BLENDED'
+        elif hasattr(mat, 'blend_method'): mat.blend_method = 'BLEND'
+        _finish_viewer_rule(mat, rule, 'not drawn (additive forward-only glass)',
+                            ['not_drawn: ' + terms['not_drawn']['reason']])
+        return True
     c, g, n = img('_c'), img('_g'), img('_n')
     arch = terms.get('arch_sequence') if 'arch_sequence' in ported else None
     screen = 'screen' in ported

@@ -201,6 +201,8 @@ def split_forward(batches, textures):
     opaque, forward = [], []
     for batch in batches:
         entry = (textures or {}).get(batch[0]) or {}
+        if entry.get("not_drawn"):
+            continue   # a material the viewer cannot draw yet (textures.GLASS_PATTERNED_GRAPH): neither pass takes it
         rule = entry.get("forward") or {}
         (forward if rule and not rule.get('deferred_material') else opaque).append(batch)
     return opaque, forward
@@ -900,6 +902,8 @@ class ModelViewport(_TkFrame):
             uploaded["fresnel_tint"] = dict(entry["fresnel_tint"])
         if "crate_tint" in entry:
             uploaded["crate_tint"] = dict(entry["crate_tint"])
+        if "not_drawn" in entry:
+            uploaded["not_drawn"] = dict(entry["not_drawn"])
         if "hair" in entry:
             uploaded["hair"] = dict(entry["hair"])
         for key in ("skin", "skin_detail"):

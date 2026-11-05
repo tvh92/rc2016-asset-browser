@@ -419,6 +419,12 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
     if normal and bound.get(normal['api'],{}).get('path') is None:
         lowered['limitations'].append('Explicitly unset normal texture uses geometry normal.')
         normal=None
+    if normal and source_preview_policy and source_preview_policy.get('normal')=='geometry':
+        lowered['limitations'].append(
+            "The writer's tangent-normal slice needs CB0[95], POS_W and TBUFFER reads that are not bound; this exact "
+            'source preview uses the geometry normal instead.')
+        lowered['limitations']=[l for l in lowered['limitations'] if not l.startswith('Native tangent-normal slice is used')]
+        normal=None
     roots=[*outputs['albedo'],*outputs['F0'],outputs['gloss'],outputs['emission']]
     if normal:roots+=normal['xyz']
     substitutions={i:ir.const(values[n['dword']]) for i,n in enumerate(list(ir.nodes))
@@ -884,10 +890,28 @@ MAP_O_MATIC_SCREEN_SOURCE_PREVIEW=dict(
                 'gloss, width 1); the engine value and the vertex input attribute1.2 it multiplies are unverified and not read.')],
     label='Map-o-matic screen')
 
+# Explosive crate window light: only the emissive writer 0x83da578c (pass contract 0) is bound. It is the one the game
+# compiled with the glass forward programs and the only one that samples _g.A, the emblem. Its tangent-normal slice needs
+# CB0[95], POS_W and two TBUFFER reads, so 'normal': 'geometry' drops it (a labelled limitation); the sibling 0x03319265
+# (contract 1, no emission, no _g.A) binds on its own and differs, so 'preferred' selects the gated writer over it.
+# CB0[99] = 0 makes the emission pulse sat(cos(1.5 CB0[99])) its peak 1. Graph defaults CB2[0] = 1 and CB2[1] = 0 turn the
+# second (countdown) emission branch off. Research/captures/2026-11-05_gaspar-crates/explosive/README.md (local).
+EXPLOSIVE_CRATE_LIGHT_SOURCE_PREVIEW=dict(
+    graph_path='materialgraph/equipment/pickup/pup_rcps4_explosive_crate_light/pup_rcps4_explosive_crate_light.materialgraph',
+    graph_sha256='7642be354c1112622b64d8666a9ed160a882c359b61fcfb95b295a03e48e1a7a',
+    material_path='material/equipment/pickup/pup_rcps4_explosive_crate_light/pup_rcps4_explosive_crate_light.material',
+    material_sha256='5e144ca4b187df6cf10fd8af69450706d6b20b662d79f4ed6dbc0327b55d0666',
+    shader_id='0x83da578c',
+    code_sha256='7e21ade4923be3ecaa6020bd1871ef2f7a1efaee8ed543cfa028cb1ad2febc36',
+    input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
+    normal='geometry',preferred=True,
+    label='Explosive crate light')
+
 SOURCE_PREVIEW_POLICIES={rule['graph_path']:rule for rule in
     (CONSTRUCTO_BUTTON_SOURCE_PREVIEW,WARBOT_V3_EYE_SOURCE_PREVIEW,EXTERMITANK_HOSES_SOURCE_PREVIEW,
      TRESPASSER_SCREEN_SOURCE_PREVIEW,PIXELIZER_BARREL_SOURCE_PREVIEW,PLASMA_STRIKER_SCOPE_SOURCE_PREVIEW,
-     MAG_BOOT_FAN_SOURCE_PREVIEW,GAUGE_NEEDLE_SOURCE_PREVIEW,MAP_O_MATIC_SCREEN_SOURCE_PREVIEW)}
+     MAG_BOOT_FAN_SOURCE_PREVIEW,GAUGE_NEEDLE_SOURCE_PREVIEW,MAP_O_MATIC_SCREEN_SOURCE_PREVIEW,
+     EXPLOSIVE_CRATE_LIGHT_SOURCE_PREVIEW)}
 
 
 def _source_preview_policy(graph_paths, graph_sha256, material_path, material_sha256, program):
@@ -995,6 +1019,15 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False,
                 surface_signature=surface_signature(bound),source_preview_policy=preview_policy))
     if not candidates:
         result['diagnostics'].append('No portable deferred writer with a bounded source pass contract');return result
+    preferred=[c for c in candidates if (c['source_preview_policy'] or {}).get('preferred')]
+    if preferred and len(preferred)<len(candidates):
+        # An exact source-preview policy marked 'preferred' selects its writer over the sibling variants of the same graph.
+        result['diagnostics'].append(dict(reason='Exact source preview policy selects its writer over other portable variants',
+            selected=[dict(shader_id=c['program']['shader_id'],code_sha256=c['program']['code_sha256']) for c in preferred],
+            excluded=[dict(shader_id=c['program']['shader_id'],code_sha256=c['program']['code_sha256'],
+                           pass_contract_index=c['bound']['pass_contract_index'])
+                      for c in candidates if c not in preferred]))
+        candidates=preferred
     signatures={c['surface_signature'] for c in candidates}
     numeric=numeric_equivalence([c['bound'] for c in candidates]) if len(signatures)!=1 else None
     if len(signatures)!=1 and not numeric:
