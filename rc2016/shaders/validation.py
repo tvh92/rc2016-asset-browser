@@ -396,7 +396,7 @@ GLASS_CONSTANTS = {
     "glass_patterned": ("tiling", "normal strength", "f0", "gloss", "pick rgb", "rim bias", "rim exp"),
     "glass_liquid": ("body", "spec tint", "gloss", "normal strength"),
     "glass_tank": ("tint", "rim bias", "body", "gloss", "f0 base", "rim exp", "alpha scale"),
-    "glass_taxi": ("tint", "height weight", "alpha scale", "alpha test", "dielectric f0", "gloss"),
+    "glass_taxi": ("tint", "tint dense", "height weight", "gloss scale", "f0 scale", "alpha scale", "alpha test"),
     "warmonger_reticle": ("colour", "fresnel exp", "f0 base", "gloss", "frame rate", "time", "alpha cut", "alpha scale"),
     "window_glass": ("tint", "gloss", "rim exp", "f0 weight", "interior weight", "interior light"),
 }
@@ -786,8 +786,8 @@ def _viewer_required(rule, has_n):
                 req("_n")
             if key == "glass_tank":   # _n = flow normal (API 7), _pick = cma (API 5 and 6)
                 req("_n", "_pick")
-            if key == "glass_taxi":   # _pick = alpha_H (API 2 and 3, one image)
-                req("_pick")
+            if key == "glass_taxi":   # _pick = alpha_H (API 6 and 7, one image); _n, _window_c, _window_g = window _n, _c, _g
+                req("_n", "_pick", "_window_c", "_window_g")
             if key == "warmonger_reticle":   # _n = cmb (API 7..10), _pick = cma (API 5, 6)
                 req("_n", "_pick")
             if key == "window_glass":   # _n = interior _c (API 10/11), _pick = glass _g (API 7); _window_c is optional

@@ -27,14 +27,14 @@ RIG_TO_WORLD = ((1.0, 0.0, 0.0), (0.0, 0.0, -1.0), (0.0, 1.0, 0.0))
 # in an entry (tint palette, screen timeline, puddle and RockBlend sources) are only sampled on the CPU.
 GL_TEXTURE_ROLES = ("_water_height_a", "_water_height_b", "_water_foam_a", "_water_foam_b", "_c", "_g", "_n", "_pick", "_h", "_sequence", "_tint_detail", "_bng_detail", "_vehicle_p2",
                     "_glow_parallax", "_puddle_atlas", "_parallax_height", "_cma", "_reticle",
-                    "_window_mask", "_window_n1", "_window_n2", "_window_c")
+                    "_window_mask", "_window_n1", "_window_n2", "_window_c", "_window_g")
 
 
 # GL_TEXTURE_ROLES sampled as ordinary surface textures by UV. Palettes and sequences (_pick,
 # _vehicle_p2, _sequence) are lookup tables, and the puddle atlas is sampled through fract(), so those
 # keep their top mip only.
 MIPMAP_ROLES = frozenset(("_water_height_a", "_water_height_b", "_water_foam_a", "_water_foam_b", "_c", "_g", "_n", "_h", "_tint_detail", "_bng_detail", "_glow_parallax",
-                          "_parallax_height", "_cma", "_window_mask", "_window_n1", "_window_n2", "_window_c"))
+                          "_parallax_height", "_cma", "_window_mask", "_window_n1", "_window_n2", "_window_c", "_window_g"))
 
 
 def _mat3_mul(a, b):
@@ -825,7 +825,7 @@ class ModelViewport(_TkFrame):
         if self._gl_textures and self._make_current():
             ids = list({entry[role][0] for entry in self._gl_textures.values()
                         for role in ("_c", "_g", "_n", "_pick", "_h", "_bng_detail", "_vehicle_p2", "_tint_detail",
-                                     "_window_mask", "_window_n1", "_window_n2", "_window_c") if entry.get(role)})
+                                     "_window_mask", "_window_n1", "_window_n2", "_window_c", "_window_g") if entry.get(role)})
             ids.extend({texture[0] for entry in self._gl_textures.values() for texture in entry.get('native_textures', {}).values()})
             ids.extend({texture[0] for entry in self._gl_textures.values() for texture in entry.get('graph_rule_textures', {}).values()})
             ids = list(set(ids))
@@ -1833,20 +1833,24 @@ class ModelViewport(_TkFrame):
 
     def _apply_window_glass(self, u, entry, forward, has_uv1):
         """The window glass rule's extra images (shading.WINDOW_GLASS_TEXTURES: mask, window normal, detail normal,
-        painted glass _c), the UV1 flag and uWindowP (GLASS_FRAGMENT uKind 14). Every other forward kind gets the
-        flags cleared and no textures bound."""
-        from rc2016.viewer.shading import WINDOW_GLASS_TEXTURES, window_glass_uniform
+        painted glass _c), the UV1 flag and uWindowP (GLASS_FRAGMENT uKind 14); the taxi glass (uKind 17) binds its window
+        _g and _c on two of those units (shading.TAXI_GLASS_TEXTURES). Every other forward kind gets the flags cleared and
+        no textures bound."""
+        from rc2016.viewer.shading import TAXI_GLASS_TEXTURES, WINDOW_GLASS_TEXTURES, window_glass_uniform
         gl, sh = self._gl, self._shading
         window = forward.get("kind") == "window_glass"
+        taxi = {unit: role for unit, role, *_ in TAXI_GLASS_TEXTURES} if forward.get("kind") == "glass_taxi" else None
         sh.glUniform1i(u["uHasUV1"], 1 if window and has_uv1 else 0)
         sh.glUniform4f(u["uWindowP"], *window_glass_uniform(forward))
         for unit, role, sampler, has, srgb in WINDOW_GLASS_TEXTURES:
-            texture = entry.get(role) if window else None
+            if taxi is not None:
+                role = taxi.get(unit)
+            texture = entry.get(role) if (window or taxi is not None) and role else None
             sh.glUniform1i(u[sampler], unit)
             sh.glUniform1i(u[has], 1 if texture else 0)
             if srgb:
                 sh.glUniform1i(u[srgb], 1 if texture and texture[1] else 0)
-            if window:
+            if window or taxi is not None:
                 sh.glActiveTexture(self.GL_TEXTURE0 + unit)
                 gl.glBindTexture(self.GL_TEXTURE_2D, texture[0] if texture else 0)
         sh.glActiveTexture(self.GL_TEXTURE0)

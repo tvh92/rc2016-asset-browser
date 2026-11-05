@@ -278,14 +278,20 @@ HYDRO_WATER_TANK_CONSTANTS = dict(
 # W = CB2[7] and the discard threshold attribute0.z = 4/255; fade = sat(w CB-record[63] + CB-record[62]) with the captured
 # record words. The offset needs rotation 0 (CB2[9] = CB2[11] = 0). The game's tangent is -dP/du and its bitangent
 # +dP/dv (checked on the captured vertices), which is what the viewer's screen-derivative frame gives. The captured draw
-# state is alpha-over, depth test GREATER_EQUAL without writes, no culling, although the flags word says opaque. The
-# colour terms (light list, probes) are not decoded: the viewer draws the specular lobe only, F0 = tint k x 0.04.
+# state is alpha-over, depth test GREATER_EQUAL without writes, no culling, although the flags word says opaque.
+# Colour (decoded from the IR, checked with the research interpreter on 95 captured pixels): X = A (lerp(C, D, H) T5 + w E)
+# + S with C = CB2[0..2], D = CB2[4..6], w = CB2[15], H = alpha_H at UV0, T5 = the window _c (API 5) at UV0, A the
+# diffuse light, E the reflection along R and S the specular light with F0 = CB2[10] _g.g, gloss sat(CB2[8] _g.r) at the
+# shaded normal N' of the window _n (API 9). A, E and S are the engine's light list and probes: the viewer lights them.
 TAXI_GLASS_GRAPH_SHA256 = '8c2b13e3394d8aaeacede412ab62736e7b7ea672d70689eee59f802f19e0653a'
 TAXI_GLASS_MATERIAL = 'material/environment/global/gameplay/gbl_gp_taxi_glass_01/gbl_gp_taxi_glass_01.material'
 TAXI_GLASS_ALPHA_SLOTS = (0x49A7866BA1D220DE, 0x49A7866BE0B8D722)
 TAXI_GLASS_CAPTURED_BLEND = 'alpha_over'
+# Graph slots of the window glass images (matched to the captured draw's bindings by top-mip hash): _c (API 5), _g (API 8),
+# _n (API 9). The viewer reads _c and _g on the window-glass texture units (roles _window_c, _window_g), _n on the _n unit.
+TAXI_GLASS_SLOTS = dict(_window_c=0x49A7866BABDAD780, _window_g=0x49A7866B1576D848, _n=0x49A7866B7AE34E7A)
 TAXI_GLASS_CONSTANTS = dict(
-    fade_scale=0.071561, fade_bias=-2.33333, alpha_test=0.0156863, dielectric_f0=0.04, gloss=1.0,
+    fade_scale=0.071561, fade_bias=-2.33333, alpha_test=0.0156863, normal_scale=1.0,
     presentation=True, game_equivalence=False, writer='4E9B2CB3',
     frozen_inputs=dict(CB0_95=1.0, attr0_w=1.0, attr4_w=0.0, instance_flags=0x2061, rotation=0.0,
                        record_fade='captured instance record words 62 and 63', fog=1.0, ssr=False))
@@ -522,9 +528,10 @@ GRAPH_RULES = (
     # Taxi glass 4E9B2CB3: exact graph + SHA and the gbl_gp_taxi_glass_01 material only (docs/material-decoding/taxi-glass.md).
     ('materialgraph/environment/global/architecture/mo_gbl_arch_glass_01/mo_gbl_arch_glass_01.',
      dict(forward='glass_taxi', writer='4E9B2CB3', constants=TAXI_GLASS_CONSTANTS, _graph_sha256=TAXI_GLASS_GRAPH_SHA256,
-          slots={'_pick': TAXI_GLASS_ALPHA_SLOTS[0]}, params=(
+          slots={'_pick': TAXI_GLASS_ALPHA_SLOTS[0], **TAXI_GLASS_SLOTS}, params=(
          ('tint', 0x7F058428, 3), ('height_weight', 0x6DF7A4EA, 1), ('parallax_depth', 0x5DB5EFC7, 1),
-         ('rotation_phase', 0xB0E357F2, 1), ('rotation_rate', 0xBF44EC0D, 1)))),
+         ('rotation_phase', 0xB0E357F2, 1), ('rotation_rate', 0xBF44EC0D, 1), ('tint_dense', 0x7A4FEDBD, 3),
+         ('env_weight', 0x8A43287F, 1), ('gloss_scale', 0x6BA9C99C, 1), ('f0_scale', 0x6F0C6E9C, 1)))),
     # Warmonger sight screen 4C184DCC: exact graph + SHA (docs/material-decoding/warmonger-reticle.md).
     ('materialgraph/equipment/weapon/wpn_warmonger_reticle/wpn_warmonger_reticle.',
      dict(forward='warmonger_reticle', writer='4C184DCC', constants=WARMONGER_RETICLE_CONSTANTS,

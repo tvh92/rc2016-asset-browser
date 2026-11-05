@@ -1135,11 +1135,16 @@ void main() {
 #   arm's length); the light list, probes, shadows and fog are the viewer rig; the program's RGBA8 MAX pass is not drawn.
 # uKind 17, glass_taxi 4E9B2CB3 (gbl_gp_taxi_glass_01, mo_gbl_arch_glass_01; docs/material-decoding/taxi-glass.md), a labelled PREVIEW:
 #   uA = tint C.rgb (CB2[0..2]), height weight W (CB2[7]); uB = parallax depth (CB2[14]), fade scale, fade bias (the captured instance
-#   record words 63 and 62), alpha cut-off (attribute0.z, 4/255); uC = dielectric F0, gloss; uD.x = attribute0.w. With attribute4.w = 0
+#   record words 63 and 62), alpha cut-off (attribute0.z, 4/255); uC = dense tint D.rgb (CB2[4..6]), reflection weight w (CB2[15]);
+#   uD = attribute0.w, gloss scale (CB2[8]), F0 scale (CB2[10]), normal strength CB0[95] (1 as captured). With attribute4.w = 0
 #   (captured) alpha = sat(attr0.w sat(W (A + B))), A = H(UV0), B = H(UV0 + off), H = alpha_H.R (_pick slot), off = depth f (1 - fade)
 #   (-V.Pu, -V.Pv), f = +1 front / -1 back face, Pu, Pv the unit dP/du and dP/dv from screen derivatives (the game's tangent is
-#   -dP/du and its bitangent +dP/dv), fade = sat(view depth uB.y + uB.z); discard when sat(W (A + B)) < uB.w. The colour is not decoded
-#   (light list, probes): rgb = the specular lobe with F0 = sat(C / luma(C)) 0.04 (dielectric), as a viewer-lit preview.
+#   -dP/du and its bitangent +dP/dv), fade = sat(view depth uB.y + uB.z); discard when sat(W (A + B)) < uB.w.
+#   Colour (decoded; the engine terms are the viewer rig): N' = f normalize(T x + B y + n z) with T = -Pu, B = normalize(n x T)
+#   on the +Pv side, (x, y) = 2 CB0[95] (1 - fade) (_n.rg - 0.5) (_n unit), z = 1 - x^2 - y^2; rgb = Ld(N') (lerp(C, D, A) T5 +
+#   w E(R)) + specular(N', F0 = CB2[10] _g.g, gloss sat(CB2[8] _g.r)), T5 = the window _c (unit 13), _g on unit 10, R = reflect(-V, N').
+#   Ld stands in for the probe ambient, sun and light-list diffuse, E for the local box-projected cubes and probe reflection
+#   (windowEnvironment), the lobe for the probe reflection and sun / light specular; no SSR, fog t = 1.
 # uKind 14, window_glass 8DF14766 (jn_glass_parallax_mask, the Novalis windows; docs/material-decoding/novalis-window-glass.md),
 #   a labelled PREVIEW (game_equivalence False): uA = reflection tint T.rgb (CB2[8..10]), gloss CB2[3]; uB = parallax depth
 #   CB2[11], rim exponent CB2[13], F weight CB2[14], interior weight CB2[15]; uC.x = interior light CB2[16], uC.y = 1 when the
@@ -1431,10 +1436,21 @@ void main() {
         float inner = sat(uA.w * (hA + hB));
         if (inner < uB.w) discard;   // attribute0.z = 4/255
         alpha = sat(uD.x * inner);
-        float luma = max(dot(vec3(0.2126, 0.7152, 0.0722), uA.rgb), 1e-6);
-        vec3 F0 = clamp(uA.rgb / luma, 0.0, 1.0) * uC.x;
-        float a = pow(2.0, -5.5 * sqrt(sat(uC.y)));
-        color = glassSpec(N, V, L1, L2, C1, C2, F0, a, ambientLight(N));
+        // Shaded normal N' (API 9, linear z), the program's frame: T = -dP/du, B = sign normalize(n x T) on the +dP/dv side.
+        vec3 n = normalize(vNrm), T = -Pu, B = cross(n, T);
+        B *= (dot(B, Pv) < 0.0 ? -1.0 : 1.0) * inversesqrt(max(dot(B, B), 1e-20));
+        vec2 xy = uHasN ? 2.0 * uD.w * (1.0 - fade) * (texture2D(uTexN, vUV).rg - 0.5) : vec2(0.0);
+        vec3 Ns = face * normalize(T * xy.x + B * xy.y + n * (1.0 - dot(xy, xy)));
+        vec3 c5 = uHasWindowC ? texture2D(uTexWindowC, vUV).rgb : vec3(0.0);   // window _c (API 5)
+        if (uSrgbWindowC) c5 = linear(c5);
+        vec2 g8 = uHasWindowMask ? texture2D(uTexWindowMask, vUV).rg : vec2(0.0);   // window _g (API 8) on the mask unit
+        if (uSrgbWindowMask) g8 = linear(vec3(g8, 0.0)).rg;
+        float a = pow(2.0, -5.5 * sqrt(sat(uD.y * g8.r)));
+        vec3 F0 = vec3(uD.z * g8.g);
+        vec3 ambient = ambientLight(Ns);
+        vec3 Ld = (max(dot(Ns, L1), 0.0) * C1 + max(dot(Ns, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
+        vec3 body = mix(uA.rgb, uC.rgb, hA) * c5 + uC.w * windowEnvironment(reflect(-V, Ns), a);
+        color = Ld * body + glassSpec(Ns, V, L1, L2, C1, C2, F0, a, ambient);
     } else if (uKind == 16) { // 4C184DCC Warmonger sight screen (see the uKind 16 comment)
         float t = uB.w;
         float th = -0.25 * t + 0.41176471 * cos(3.0 * t);
@@ -1826,7 +1842,8 @@ def glass_uniforms(forward, time=None):
     if forward["kind"] == "glass_taxi":
         return (GLASS_KINDS["glass_taxi"], (*p["tint"], p["height_weight"]),
                 (p["parallax_depth"], p["fade_scale"], p["fade_bias"], p["alpha_test"]),
-                (p["dielectric_f0"], p["gloss"], 0.0, 0.0), (p["alpha_scale"], 0.0, 0.0, 0.0), (0.0,) * 4)
+                (*p["tint_dense"], p["env_weight"]), (p["alpha_scale"], p["gloss_scale"], p["f0_scale"], p["normal_scale"]),
+                (0.0,) * 4)
     if forward["kind"] == "warmonger_reticle":
         return (GLASS_KINDS["warmonger_reticle"], (*p["colour"], p["fresnel_exp"]),
                 (p["f0_base"], p["gloss"], p["frame_rate"], p["time"] if time is None else time),
@@ -1857,6 +1874,9 @@ WINDOW_GLASS_TEXTURES = ((10, "_window_mask", "uTexWindowMask", "uHasWindowMask"
                          (12, "_window_n2", "uTexWindowN2", "uHasWindowN2", None),
                          (13, "_window_c", "uTexWindowC", "uHasWindowC", "uSrgbWindowC"))
 WINDOW_GLASS_TEXTURE_UNITS = tuple(row[0] for row in WINDOW_GLASS_TEXTURES)
+# The taxi glass (uKind 17) reads its window _g and _c on two of those units: the _g as uTexWindowMask, the _c as uTexWindowC.
+TAXI_GLASS_TEXTURES = ((10, "_window_g", "uTexWindowMask", "uHasWindowMask", "uSrgbWindowMask"),
+                       (13, "_window_c", "uTexWindowC", "uHasWindowC", "uSrgbWindowC"))
 
 
 def window_glass_uniform(forward):

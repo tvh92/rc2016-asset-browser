@@ -1709,25 +1709,44 @@ def _viewer_rule_glass(mat, rule, key, img):
                       % (p['time'], p['alpha_cut']))
     elif key == 'glass_taxi':
         # 4E9B2CB3 (docs/material-decoding/taxi-glass.md), labelled preview: with attribute4.w = 0, alpha = sat(attr0.w sat(W (A + B)))
-        # with A = H(UV0), B = H(UV0 + view-dependent offset) and H = alpha_H.R (_pick slot), cut at attr0.z; rgb = specular lobe,
-        # F0 = tint k x 0.04. B is sampled at UV0 here (the offset needs the vertex tangent frame), so B = A.
-        alpha_h = img('_pick')
+        # with A = H(UV0), B = H(UV0 + view-dependent offset) and H = alpha_H.R (_pick slot), cut at attr0.z. Colour: rgb = Ld(N')
+        # lerp(C, D, A) T5 + specular(N', F0 = CB2[10] _g.g, gloss sat(CB2[8] _g.r)), T5 = window _c, N' from the window _n
+        # (x, y = CB0[95] (2 rg - 1), linear z). B is sampled at UV0 here (the offset needs the vertex tangent frame), so B = A.
+        alpha_h, n_img, c_img, g_img = img('_pick'), img('_n'), img('_window_c'), img('_window_g')
         if alpha_h is not None:
             h = P.sep(P.tex(alpha_h, P.game_uv(), 'glass taxi alpha_H').outputs['Color'])[0]
             cover = P.sat(P.m('MULTIPLY', P.const('glass height weight', p['height_weight']), P.m('ADD', h, h)))
         else:
-            cover = 0.0
+            h, cover = 0.0, 0.0
             limits.append('no alpha_H texture bound: H = 0')
         keep = P.m('SUBTRACT', 1.0, P.m('LESS_THAN', cover, P.const('glass alpha test', p['alpha_test'])))   # attr0.z: discard below it
         alpha = P.m('MULTIPLY', P.m('MULTIPLY', cover, P.const('glass alpha scale', p['alpha_scale'])), keep, clamp=True)
-        f0 = P.v('SCALE', tint_k(P.const3('glass tint', p['tint'])), P.const('glass dielectric f0', p['dielectric_f0']))
-        lobe, f90 = spec_lobe(f0, P.const('glass gloss', p['gloss']))
-        lit = add(zero(), scaled(lobe, f90), 'VR glass lit')   # no diffuse body: the captured output is far below a lit C
+        if n_img is not None:   # N' = normalize(T x + B y + n z), z = 1 - x^2 - y^2 (instance fade 0)
+            x, y = P.rg(P.tex(n_img, P.game_uv(), 'glass taxi normal map').outputs['Color'], p['normal_scale'])
+            shade = P.v('NORMALIZE', P.tangent_normal(x, y, P.m('SUBTRACT', 1.0, P.dot2(x, y)), "glass taxi normal N'"))
+        else:
+            limits.append('no window _n texture bound: geometric normal')
+        c_tint, d_tint = P.const3('glass tint', p['tint']), P.const3('glass tint dense', p['tint_dense'])
+        tint = P.v('ADD', c_tint, P.v('SCALE', P.v('SUBTRACT', d_tint, c_tint), h), label='glass taxi lerp(C, D, H)')
+        if c_img is not None:
+            body = P.v('MULTIPLY', tint, P.tex(c_img, P.game_uv(), 'glass taxi window _c').outputs['Color'], label='glass taxi body')
+        else:
+            body = (0.0, 0.0, 0.0)
+            limits.append('no window _c texture bound: T5 = 0')
+        g_r, g_g = 0.0, 0.0
+        if g_img is not None:
+            g_r, g_g, _ = P.sep(P.tex(g_img, P.game_uv(), 'glass taxi window _g').outputs['Color'])
+        else:
+            limits.append('no window _g texture bound: F0 = 0, gloss 0')
+        f0 = P.m('MULTIPLY', P.const('glass f0 scale', p['f0_scale']), g_g)
+        lobe, f90 = spec_lobe(P.comb(f0, f0, f0), P.m('MULTIPLY', P.const('glass gloss scale', p['gloss_scale']), g_r))
+        lit = add(diffuse(body), scaled(lobe, f90), 'VR glass lit')
         limits.append('Taxi glass 4E9B2CB3 (frozen preview, game_equivalence False): the second alpha_H read B is taken at the unshifted '
-                      'UV0 (its view-dependent offset %g needs the vertex tangent frame), the colour terms (light list, probes) are '
-                      'not decoded, so the colour is a dielectric specular lobe (F0 = tint k x %g, gloss %g); blend %s is the captured '
-                      'draw state, not the flags word; attribute0.w = %g, attribute4.w = 0 as captured'
-                      % (p['parallax_depth'], p['dielectric_f0'], p['gloss'], blend, p['alpha_scale']))
+                      'UV0 (its view-dependent offset %g needs the vertex tangent frame); the colour is the decoded A lerp(C, D, H) T5 + '
+                      'specular with Cycles lighting for A and the specular light; the reflection term w A E (w = %g, about 3 %% of the '
+                      'captured output) is not built; the normal map uses the Blender UV tangent and no distance fade; blend %s is the '
+                      'captured draw state, not the flags word; attribute0.w = %g, attribute4.w = 0 as captured'
+                      % (p['parallax_depth'], p['env_weight'], blend, p['alpha_scale']))
     elif key == 'window_glass':
         # 8DF14766 (docs/material-decoding/novalis-window-glass.md), labelled preview: opaque, rgb = (CB2[16] T11.b + L) Q
         # + k (lights + environment) F with Q = CB2[15] T11 (interior, _n slot) + CB2[12] C 0.5^5 T9 (painted glass _c,
