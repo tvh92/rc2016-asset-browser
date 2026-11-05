@@ -389,6 +389,8 @@ GRAPH_RULES = (
      dict(g_mode='grey', self_lit_key=None, bng=3)),
     ('required/materials/basic_normal_gloss_emissive_colored_spec.',
      dict(g_mode='grey', self_lit_key=0x66EFA55B, bng=4)),
+    # aniso_incan: drawn by the forward program 33C21955 (anisotropic specular, bng kind 5; the wings and jetpack of a
+    # gameplay capture) and by the deferred writer F9719EF2 (isotropic, custom gloss 0x9856BA09; a level prop).
     ('required/materials/basic_normal_gloss_aniso_incan.',
      dict(g_mode='grey', self_lit_key=0x06F19114, bng=5)),
     ('required/materials/basic_normal_gloss_specfresnel_emissive.',
@@ -1207,7 +1209,13 @@ def material_texture_paths(archive, material_path: str) -> dict:
         if kind == 4:
             result['spec_tint'] = vec3(0x43C53ECA, (1.0, 1.0, 1.0))
         if kind == 5:
+            # Forward light-list program 33C21955, the only program that draws hero_clank's wingpack and jetpack in a
+            # gameplay capture: anisotropic GGX with g_T = sqrt(sat(P0 _g.R)) along the vertex tangent and g_B =
+            # sqrt(sat(P1 _g.R)) along the bitangent, alpha = 2^(-5.5 g) per axis (P0 = 0x015FEBB3, P1 = 0x9856BA09).
+            # 'gloss' keeps the deferred writer F9719EF2's isotropic reading (custom gloss 0x9856BA09) for consumers
+            # without the anisotropic lobe (portable export); the stale 0x24F4CA4C row some materials carry is unread.
             result['gloss'] = value(0x9856BA09, 1.0)
+            params = (value(0x015FEBB3, 1.0), value(0x9856BA09, 1.0), 0.0, 0.0)
         if kind == 6:
             params = (value(0x9ACE7120, 3.0), value(0x07CC3BD9, 1.0), value(0xD94E1303, 10.0), 0.0)
         if kind in (7, 8, 9):

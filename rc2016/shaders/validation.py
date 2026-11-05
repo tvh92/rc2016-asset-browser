@@ -7,6 +7,7 @@ from rc2016.shaders.families import FAMILY_REGISTRY
 
 
 DEFERRED_GROUP = "RC PS4 Deferred BRDF"
+ANISO_GROUP = "RC PS4 Deferred BRDF (aniso 33C21955)"   # game_shader.build_aniso_group (bng kind 5)
 SKIN_GROUP = "RC PS4 skin_emissive G-buffer"
 # Per family: front-end group name and deferred-writer table-1 dword -> parameter.
 SKIN_FAMILY_CHECKS = {
@@ -741,7 +742,7 @@ def _viewer_required(rule, has_n):
             req("_sed_wall_g", "_sed_wall_n", "_sed_noise", "_sed_wall_c", "_sed_sediment")
     if "bng" in ported:
         kind = int(terms["bng"]["kind"])
-        names += ["bng colour"] if kind == 1 or (kind == 4 and lit) else [] if kind in (4, 10) else ["bng P0", "bng P1"] if kind == 7 else (["bng P0", "bng P1"] + (["bng P2"] if kind == 6 else []) if has_n else [])
+        names += ["bng colour"] if kind == 1 or (kind == 4 and lit) else [] if kind in (4, 5, 10) else ["bng P0", "bng P1"] if kind == 7 else (["bng P0", "bng P1"] + (["bng P2"] if kind == 6 else []) if has_n else [])
         if kind in (9, 10):
             req("_h")
     if "bng_detail" in ported and has_n:
@@ -997,6 +998,26 @@ def _viewer_uv_value(socket, uv, texture_values=None, position=None):
     raise AssertionError('Unexpected node in source-rule UV transform: ' + node.type)
 
 
+def _check_aniso_group(brdf, params, material):
+    """33C21955 anisotropic lobe: per-axis gloss scales on the group inputs, the Principled anisotropy wired from the
+    two axis roughnesses and the UV0 tangent, and its preview limitation recorded."""
+    gloss_b = brdf.inputs.get("Gloss scale B (0x9856BA09)")
+    assert gloss_b is not None and not gloss_b.is_linked and abs(float(gloss_b.default_value) - float(params[1])) < 1e-5, \
+        "Aniso bitangent gloss scale (0x9856BA09) differs from the source rule"
+    nodes = brdf.node_tree.nodes
+    spec = nodes.get("Game GGX specular (_g)")
+    assert spec and spec.type == "BSDF_PRINCIPLED" and spec.distribution == "GGX", "Aniso specular lobe missing"
+    for socket in ("Roughness", "Anisotropic", "Anisotropic Rotation", "Tangent"):
+        assert spec.inputs[socket].is_linked, "Aniso specular %s is not wired" % socket
+    tangent = _from_node(spec.inputs["Tangent"])
+    assert tangent and tangent.type == "TANGENT" and tangent.direction_type == "UV_MAP" and tangent.uv_map == "UV0", \
+        "Aniso tangent is not the UV0 tangent"
+    labels = {node.label for node in _viewer_upstream(spec.inputs["Roughness"], spec.inputs["Anisotropic"])}
+    assert {"r_B = 2^(-2.75 g_B)", "roughness = 2^(-2.75 g)", "r = sqrt(r_T r_B): alpha_x alpha_y = alpha_T alpha_B"} <= labels, \
+        "Aniso roughness does not combine both axes"
+    assert "aniso 33C21955: PREVIEW" in str(material.get("rc_shader_frontend_limitation", "")), "Aniso preview limitation missing"
+
+
 def _validate_viewer_rule_material(source, material):
     """rc_game_shader.apply_viewer_graph_rule: the asset viewer's per-graph reading on the deferred BRDF."""
     rule = source.get("viewer_graph_rule") or {}
@@ -1225,8 +1246,12 @@ def _validate_viewer_rule_material(source, material):
         assert emission and emission.type == "EMISSION" and emission.name == "VR facing glow emission" and \
             abs(emission.inputs["Strength"].default_value - 1.0) < 1e-6, "Facing glow emission is not the second Add input"
         brdf, extra = _from_node(add.inputs[0]), (*extra, *emission.inputs)
-    assert brdf and brdf.type == "GROUP" and brdf.node_tree and brdf.node_tree.name == DEFERRED_GROUP, \
+    aniso = "bng" in ported and int(rule["terms"]["bng"]["kind"]) == 5 and rule.get("g_mode") == "grey" and \
+        bool(rule["textures"].get("_g")) and brdf is not None and brdf.inputs[2].is_linked
+    assert brdf and brdf.type == "GROUP" and brdf.node_tree and brdf.node_tree.name == (ANISO_GROUP if aniso else DEFERRED_GROUP), \
         "Deferred BRDF is not the active Material Output surface"
+    if aniso:
+        _check_aniso_group(brdf, rule["terms"]["bng"]["params"], material)
     upstream = _viewer_upstream(*brdf.inputs, *extra)
 
     def reaches(socket, role):
@@ -1275,7 +1300,7 @@ def _validate_viewer_rule_material(source, material):
     if has_g and rule["g_mode"] != "vehicle":
         assert reaches(brdf.inputs[2], "_g") or reaches(brdf.inputs[3], "_g"), "Viewer-rule _g image does not feed F0/gloss"
     unit = rule["g_mode"] in ("grey_skin", "vehicle") or "za_fresnel_power" in ported or "puddles" in ported
-    spec, gloss = (1.0, 1.0) if unit else (rule["spec"], rule["gloss"])
+    spec, gloss = (1.0, 1.0) if unit else (rule["spec"], rule["terms"]["bng"]["params"][0] if aniso else rule["gloss"])
     assert abs(brdf.inputs[5].default_value - spec) < 1e-5 and abs(brdf.inputs[6].default_value - gloss) < 1e-5, \
         "Viewer-rule specular/gloss scale differs from the source rule"
     k = float(brdf.inputs[7].default_value)

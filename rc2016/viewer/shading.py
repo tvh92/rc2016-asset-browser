@@ -460,6 +460,41 @@ vec3 deferredSpecular(vec3 N, vec3 V, vec3 F0, float gloss) {
     return S;
 #endif
 }
+// Forward light-list lobe of 33C21955 (basic_normal_gloss_aniso_incan, bng kind 5): anisotropic GGX
+// D = 1 / (pi aT aB ((T.H / aT)^2 + (B.H / aB)^2 + (N.H)^2)^2) with T the interpolated vertex tangent and B across it,
+// Smith-Schlick k = (0.353553 (av + 1))^2 with av = 0.75 min(aT, aB) + 0.25 max(aT, aB), F = F0 + (sat(60 F0) - F0)(1 - V.H)^5.
+float anisoVisAlpha(float aT, float aB) { return 0.75 * min(aT, aB) + 0.25 * max(aT, aB); }
+vec3 ggxAniso(vec3 N, vec3 V, vec3 L, vec3 T, vec3 B, vec3 F0, vec3 F90, float aT, float aB) {
+    vec3 H = normalize(L + V);
+    float NdL = max(dot(N, L), 0.0), NdV = max(dot(N, V), 1e-4), NdH = max(dot(N, H), 0.0);
+    float th = dot(T, H) / aT, bh = dot(B, H) / aB, d = th * th + bh * bh + NdH * NdH;
+    float q = 0.3535533 * (anisoVisAlpha(aT, aB) + 1.0), k = q * q;
+    float DV = 1.0 / (PI * aT * aB * d * d * (NdV * (1.0 - k) + k) * (NdL * (1.0 - k) + k));
+    vec3 F = F0 + (F90 - F0) * pow(1.0 - max(dot(V, H), 0.0), 5.0);
+    return F * (0.25 * DV * NdL);
+}
+// The viewer rig replaces the light list as in deferredSpecular. PREVIEW: the environment term's roughness is not
+// decoded; it takes the visibility alpha av.
+vec3 anisoSpecular(vec3 N, vec3 V, vec3 T, vec3 B, vec3 F0, float aT, float aB) {
+    if (!uLightingEnabled) return vec3(0.0);
+    vec3 F90 = clamp(60.0 * F0, 0.0, 1.0);
+    float av = anisoVisAlpha(aT, aB);
+#ifndef RC_SCENE_EFFECTS
+    return ggxAniso(N,V,rigKey(),T,B,F0,F90,aT,aB)*keyColour()
+        + ggxAniso(N,V,rigFill(),T,B,F0,F90,aT,aB)*fillColour()
+        + envSpecular(N,V,F0,F90,av,ambientLight(N));
+#else
+    vec3 S=ggxAniso(N,V,rigKey(),T,B,F0,F90,aT,aB)*keyColour()*sceneShadow(vPos,N)
+        + ggxAniso(N,V,rigFill(),T,B,F0,F90,aT,aB)*fillColour()
+        + envSpecular(N,V,F0,F90,av,ambientLight(N))*sceneSpecularOcclusion(N,V,av);
+    if(uSceneEnabled)for(int i=0;i<32;i++)if(i<uSceneLightCount){
+        vec3 delta=uSceneLightPos[i].xyz-vPos;float d=length(delta);
+        float w=pow(clamp(1.0-d*uSceneLightPos[i].w,0.0,1.0),4.0);
+        S+=ggxAniso(N,V,delta/max(d,0.0001),T,B,F0,F90,aT,aB)*uSceneLightColour[i]*w*sceneSpot(i,delta/max(d,0.0001));
+    }
+    return S;
+#endif
+}
 // 8A581B9D blend weight: m = 1 - sat((1 - a)(6 - 5 H)), w = a + CB2[1] (m^CB2[6] - a) with a the squared vertex alpha and H the mask at UV0.
 float mudWeight() {
     float mh = texture3D(uRockTex, vec3(fract(vUV) * uRockScale0.xy, 0.1)).r;
@@ -680,13 +715,25 @@ void main() {
     if (uBngKind == 7) bngRimB = pow(abs(1.00100004673 - clamp(dot(N, V), 0.0, 1.0)), uBngP.y);
     vec4 bngM = uHasH ? texture2D(uTexH, vUV) : vec4(0.0);
     if (uBngKind == 9 || uBngKind == 10) bngSelfLit = bngM.g * uK;
+    vec3 anisoT = vec3(0.0), anisoB = vec3(0.0);
+    if (uBngKind == 5) {
+        // 33C21955 lobe axes: T is the interpolated vertex tangent, normalised but not re-orthogonalised; B = N x T on the
+        // geometry normal (its sign does not reach the lobe). Without a decoded tangent the UV-derivative tangent stands in.
+        vec3 t = vTangent;
+        if (dot(t, t) <= 0.0) {
+            vec3 dp1 = dFdx(vPos), dp2 = dFdy(vPos); vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
+            t = cross(dp2, N) * du1.x + cross(N, dp1) * du2.x;
+        }
+        if (dot(t, t) < 1e-20 || dot(cross(N, t), cross(N, t)) < 1e-20) t = abs(N.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+        anisoT = normalize(t); anisoB = normalize(cross(N, anisoT));
+    }
     if (uMode == 2 && uHasN && !uArchSequence && !uVehicle) {
         vec3 dp1 = dFdx(vPos), dp2 = dFdy(vPos); vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
         vec3 p2 = cross(dp2, N), p1 = cross(N, dp1);
         vec3 T = p2 * du1.x + p1 * du2.x, B = p2 * du1.y + p1 * du2.y;
         float scale = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-20));
-        if ((uBngKind == 8 || uBngKind == 12) && dot(vTangent, vTangent) > 0.0) {
-            // 76C79AA4 and 67F6CCC3 read the vertex tangent and its stored bitangent sign h (position w, as in bindings.py):
+        if ((uBngKind == 5 || uBngKind == 8 || uBngKind == 12) && dot(vTangent, vTangent) > 0.0) {
+            // 33C21955, 76C79AA4 and 67F6CCC3 read the vertex tangent and its stored bitangent sign h (position w, as in bindings.py):
             // h * cross(N, T) points along -grad v, and B here is +grad v.
             vec3 Tv = vTangent - N * dot(N, vTangent);
             if (dot(Tv, Tv) > 1e-12) {
@@ -1029,7 +1076,10 @@ void main() {
             vec3 F90 = clamp(60.0 * F0, 0.0, 1.0);
             float a = pow(2.0, -5.5 * gloss);
             // Two-color T multiplies the accumulated specular lighting after GGX/F90.
-            color += metalSpecTint * deferredSpecular(N, V, F0, gloss);
+            if (uBngKind == 5) { // 33C21955: per-axis gloss g = sqrt(sat(scale _g.R)), alpha = 2^(-5.5 g); P0 tangent, P1 bitangent
+                float gT = sqrt(clamp(uBngP.x * gl.r, 0.0, 1.0)), gB = sqrt(clamp(uBngP.y * gl.r, 0.0, 1.0));
+                color += metalSpecTint * anisoSpecular(N, V, anisoT, anisoB, F0, exp2(-5.5 * gT), exp2(-5.5 * gB));
+            } else color += metalSpecTint * deferredSpecular(N, V, F0, gloss);
         }
         if (uVictorReticle) {
             float sampleR = uHasReticle ? texture2D(uTexReticle, vec2(1.0, 8.0 - 8.0 * uReticleP.x)).r : 0.0;

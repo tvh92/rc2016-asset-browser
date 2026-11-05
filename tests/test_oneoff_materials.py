@@ -262,7 +262,7 @@ class AmoeboidBodyTests(unittest.TestCase):
 
     def test_glsl_and_blender_terms(self):
         self.assertIn('if (uBngKind == 7 || uBngKind == 12) albedo *= 1.0 + uBngP.x * bngRimB;', FRAGMENT)
-        self.assertIn('(uBngKind == 8 || uBngKind == 12) && dot(vTangent, vTangent) > 0.0', FRAGMENT)
+        self.assertIn('(uBngKind == 5 || uBngKind == 8 || uBngKind == 12) && dot(vTangent, vTangent) > 0.0', FRAGMENT)
         archive, _ = self.extract()
         rules = tuple((p, dict(r, graph_sha256=hashlib.sha256(b'1TAD' + dat1([], lambda at: [])).hexdigest())
                        if r.get('bng') == 12 else r) for p, r in tp.GRAPH_RULES)

@@ -68,6 +68,12 @@ def build_group(force=False):
         return g
     if g is None:
         g = bpy.data.node_groups.new(GROUP_NAME, "ShaderNodeTree")
+    _fill_brdf(g)
+    return g
+
+
+def _fill_brdf(g):
+    """(Re)build the deferred BRDF nodes in group g; returns its key nodes by name."""
     g.nodes.clear()
     g.interface.clear()
     g["rc_version"] = GROUP_VERSION
@@ -145,6 +151,71 @@ def build_group(force=False):
     x = -900
     for n in (sq, gs, ge, ex, rough, f0, sep, m1, m2, f90, inv, rec, f0n, diff, spec, add, gate, es, em, out):
         n.location = (x, n.location[1]); x += 110
+    return dict(gi=gi, go=go, sq=sq, rough=rough, spec=spec)
+
+
+ANISO_GROUP_NAME = "RC PS4 Deferred BRDF (aniso 33C21955)"
+ANISO_GROUP_VERSION = 1
+ANISO_GLOSS_B = "Gloss scale B (0x9856BA09)"
+ANISO_TANGENT = "Game tangent T (UV0)"
+ANISO_LIMITATION = ("aniso 33C21955: PREVIEW Principled mapping of the decoded anisotropic GGX lobe: roughness sqrt(r_T r_B) "
+                    "keeps alpha_x alpha_y = alpha_T alpha_B, anisotropy from the axis ratio (Blender caps it at about 10), rotation "
+                    "0.25 when B is the rough axis, tangent = Blender UV0 tangent for the decoded vertex tangent; Cycles visibility "
+                    "instead of k = (0.353553 (av + 1))^2; diffuse stays Lambert where the program uses Oren-Nayar")
+
+
+def build_aniso_group(force=False):
+    """The deferred BRDF group with the anisotropic specular lobe of forward program 33C21955.
+
+    basic_normal_gloss_aniso_incan (viewer bng kind 5): alpha_T = 2^(-5.5 sqrt(sat(P0 _g.R))) along the vertex
+    tangent, alpha_B the same with P1 = 0x9856BA09 along the bitangent. "Gloss scale" carries P0 = 0x015FEBB3,
+    the extra input P1. Principled's lobe is a preview: r = sqrt(r_T r_B) (alpha_x alpha_y = alpha_T alpha_B),
+    anisotropy A from the aspect sqrt(1 - 0.9 A) = sqrt(alpha_min / alpha_max) capped at 1, rotation 0.25 (90 deg)
+    when B is the rough axis (Blender's lobe is rough along its tangent), tangent from UV0.
+    """
+    version = "%d.%d" % (GROUP_VERSION, ANISO_GROUP_VERSION)
+    g = bpy.data.node_groups.get(ANISO_GROUP_NAME)
+    if g is not None and not force and g.get("rc_aniso_version") == version:
+        return g
+    if g is None:
+        g = bpy.data.node_groups.new(ANISO_GROUP_NAME, "ShaderNodeTree")
+    k = _fill_brdf(g)
+    g["rc_aniso_version"] = version
+    g["rc_source"] = ("Forward program 33C21955 (captured wingpack / jetpack draws): anisotropic GGX, alpha_T = "
+                      "2^(-5.5 sqrt(sat(0x015FEBB3 _g.R))) along the vertex tangent, alpha_B the same with 0x9856BA09; "
+                      "F0 and F90 as the deferred BRDF")
+    _sock(g, ANISO_GLOSS_B, "NodeSocketFloat", "INPUT", 1.0, 0.0, 10.0)
+    N, L = g.nodes, g.links
+    gi, spec = k["gi"], k["spec"]
+    r_t = k["rough"].outputs[0]
+    gs_b = _math(N, "MULTIPLY", label="_g.R * gloss scale B", clamp=True)
+    L.new(k["sq"].outputs[0], gs_b.inputs[0]); L.new(gi.outputs[ANISO_GLOSS_B], gs_b.inputs[1])
+    ge_b = _math(N, "SQRT", label="gloss_B"); L.new(gs_b.outputs[0], ge_b.inputs[0])
+    ex_b = _math(N, "MULTIPLY", None, -2.75, "-2.75 * gloss_B"); L.new(ge_b.outputs[0], ex_b.inputs[0])
+    r_b = _math(N, "POWER", 2.0, None, "r_B = 2^(-2.75 g_B)"); L.new(ex_b.outputs[0], r_b.inputs[1])
+    prod = _math(N, "MULTIPLY"); L.new(r_t, prod.inputs[0]); L.new(r_b.outputs[0], prod.inputs[1])
+    rough = _math(N, "SQRT", label="r = sqrt(r_T r_B): alpha_x alpha_y = alpha_T alpha_B"); L.new(prod.outputs[0], rough.inputs[0])
+    lo = _math(N, "MINIMUM"); L.new(r_t, lo.inputs[0]); L.new(r_b.outputs[0], lo.inputs[1])
+    hi = _math(N, "MAXIMUM"); L.new(r_t, hi.inputs[0]); L.new(r_b.outputs[0], hi.inputs[1])
+    q = _math(N, "DIVIDE"); L.new(lo.outputs[0], q.inputs[0]); L.new(hi.outputs[0], q.inputs[1])
+    ratio = _math(N, "POWER", None, 2.0, "alpha_min / alpha_max"); L.new(q.outputs[0], ratio.inputs[0])
+    one = _math(N, "SUBTRACT", 1.0, None); L.new(ratio.outputs[0], one.inputs[1])
+    aniso = _math(N, "DIVIDE", None, 0.9, "PREVIEW anisotropy: aspect sqrt(1 - 0.9 A), capped at 1", clamp=True)
+    L.new(one.outputs[0], aniso.inputs[0])
+    rough_b = _math(N, "GREATER_THAN"); L.new(r_b.outputs[0], rough_b.inputs[0]); L.new(r_t, rough_b.inputs[1])
+    rot = _math(N, "MULTIPLY", None, 0.25, "rough axis B: turn the tangent 90 deg"); L.new(rough_b.outputs[0], rot.inputs[0])
+    for link in list(spec.inputs["Roughness"].links):
+        L.remove(link)
+    L.new(rough.outputs[0], spec.inputs["Roughness"])
+    L.new(aniso.outputs[0], spec.inputs["Anisotropic"]); L.new(rot.outputs[0], spec.inputs["Anisotropic Rotation"])
+    t = N.new("ShaderNodeTangent"); t.direction_type = "UV_MAP"; t.uv_map = "UV0"; t.name = t.label = ANISO_TANGENT
+    L.new(t.outputs[0], spec.inputs["Tangent"])
+    for link in list(k["go"].inputs[1].links):
+        L.remove(link)
+    L.new(rough.outputs[0], k["go"].inputs[1])
+    x = -900
+    for n in (gs_b, ge_b, ex_b, r_b, prod, rough, lo, hi, q, ratio, one, aniso, rough_b, rot, t):
+        n.location = (x, -500); x += 110
     return g
 
 
@@ -1116,7 +1187,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 22
+VIEWER_RULE_FRONTEND_VERSION = 23
 
 
 def _viewer_rule_images(nt):
@@ -1964,8 +2035,10 @@ def apply_viewer_graph_rule(mat, source):
         _finish_viewer_rule(mat, rule, 'forward water %s (alpha-over, back faces culled)' % terms['water'].get('writer'), water_limits)
         return True
     P = _ViewerNodes(nt)
-    grp = nt.nodes.new('ShaderNodeGroup'); grp.node_tree = build_group()
-    grp.name = grp.label = GROUP_NAME; grp.location = (500, 0)
+    # basic_normal_gloss_aniso_incan (bng kind 5): forward 33C21955's anisotropic lobe on a copy of the BRDF group.
+    aniso = 'bng' in ported and int((terms.get('bng') or {}).get('kind', 0)) == 5 and rule.get('g_mode') == 'grey' and g is not None
+    grp = nt.nodes.new('ShaderNodeGroup'); grp.node_tree = build_aniso_group() if aniso else build_group()
+    grp.name = grp.label = ANISO_GROUP_NAME if aniso else GROUP_NAME; grp.location = (500, 0)
     out = nt.nodes.new('ShaderNodeOutputMaterial'); out.location = (800, 0); out.is_active_output = True
     L.new(grp.outputs[0], out.inputs['Surface'])
     on = lambda key: key in ported and key in terms
@@ -2741,6 +2814,10 @@ def apply_viewer_graph_rule(mat, source):
         L.new(gloss_in, grp.inputs[3]) if isinstance(gloss_in, bpy.types.NodeSocket) else setattr(grp.inputs[3], 'default_value', float(gloss_in))
     L.new(spec, grp.inputs[5]) if isinstance(spec, bpy.types.NodeSocket) else setattr(grp.inputs[5], 'default_value', spec)
     grp.inputs[6].default_value = gloss_scale
+    if aniso:   # 33C21955: "Gloss scale" is the tangent axis P0, the extra input the bitangent axis P1
+        grp.inputs[6].default_value = float(bng['params'][0])
+        grp.inputs[ANISO_GLOSS_B].default_value = float(bng['params'][1])
+        limits.append(ANISO_LIMITATION)
     if self_mask is not None and k > 0.0:
         L.new(self_mask, grp.inputs[1]) if isinstance(self_mask, bpy.types.NodeSocket) else setattr(grp.inputs[1], 'default_value', float(self_mask))
         how = 'term'
@@ -2804,7 +2881,8 @@ def apply_viewer_graph_rule(mat, source):
         mat['blend_state'] = 'additive (source material flags 0x9); bounded deferred BRDF composite'
         if hasattr(mat, 'surface_render_method'): mat.surface_render_method = 'BLENDED'
         elif hasattr(mat, 'blend_method'): mat.blend_method = 'BLEND'
-    _finish_viewer_rule(mat, rule, ('asset viewer per-graph reading (%s _g, self-lit %s, K %.6g)' % (mode, how, k)) + ('; Victor reticle shared deferred BRDF' if reticle else ''), limits)
+    _finish_viewer_rule(mat, rule, ('asset viewer per-graph reading (%s _g, self-lit %s, K %.6g)' % (mode, how, k)) + ('; Victor reticle shared deferred BRDF' if reticle else '')
+                        + ('; anisotropic lobe of forward 33C21955 (%s)' % ANISO_GROUP_NAME if aniso else ''), limits)
     return True
 
 
