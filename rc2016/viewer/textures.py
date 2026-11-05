@@ -270,6 +270,25 @@ HYDRO_WATER_TANK_CONSTANTS = dict(
     alpha_scale=1.0, presentation=True, game_equivalence=False, writer='7EB73491',
     frozen_inputs=dict(CB0_99=0.0, instance_flags=0x261, attr0_w=1.0, fog=1.0, ssr=False, record_origin='model origin',
                        program_variant='7EB73491 (the 0xC9E3608C variant has no flow normal)'))
+# Taxi glass, forward program 4E9B2CB3 of mo_gbl_arch_glass_01 (docs/material-decoding/taxi-glass.md, evidence
+# Research/captures/2026-11-05_taxi-glass/). The graph is architecture glass; only gbl_gp_taxi_glass_01 is evidenced (a
+# capture draws it, with post-vertex-shader data), so the rule is bound to that material and the exact graph hash. For
+# that mesh attribute4.w is 0, so the program reduces to alpha = sat(attr0.w W (A + B)) with A = H(UV0), B = H(UV0 +
+# 0.05 f (1 - fade) (V.T, -V.Bt)) and H = gbl_gp_Taxi_glass_alpha_H.R (_pick role, both graph slots bound to one image),
+# W = CB2[7] and the discard threshold attribute0.z = 4/255; fade = sat(w CB-record[63] + CB-record[62]) with the captured
+# record words. The offset needs rotation 0 (CB2[9] = CB2[11] = 0). The game's tangent is -dP/du and its bitangent
+# +dP/dv (checked on the captured vertices), which is what the viewer's screen-derivative frame gives. The captured draw
+# state is alpha-over, depth test GREATER_EQUAL without writes, no culling, although the flags word says opaque. The
+# colour terms (light list, probes) are not decoded: the viewer draws the specular lobe only, F0 = tint k x 0.04.
+TAXI_GLASS_GRAPH_SHA256 = '8c2b13e3394d8aaeacede412ab62736e7b7ea672d70689eee59f802f19e0653a'
+TAXI_GLASS_MATERIAL = 'material/environment/global/gameplay/gbl_gp_taxi_glass_01/gbl_gp_taxi_glass_01.material'
+TAXI_GLASS_ALPHA_SLOTS = (0x49A7866BA1D220DE, 0x49A7866BE0B8D722)
+TAXI_GLASS_CAPTURED_BLEND = 'alpha_over'
+TAXI_GLASS_CONSTANTS = dict(
+    fade_scale=0.071561, fade_bias=-2.33333, alpha_test=0.0156863, dielectric_f0=0.04, gloss=1.0,
+    presentation=True, game_equivalence=False, writer='4E9B2CB3',
+    frozen_inputs=dict(CB0_95=1.0, attr0_w=1.0, attr4_w=0.0, instance_flags=0x2061, rotation=0.0,
+                       record_fade='captured instance record words 62 and 63', fog=1.0, ssr=False))
 # Warmonger / Peacemaker sight screen, forward program 4C184DCC of wpn_warmonger_reticle (docs/material-decoding/
 # warmonger-reticle.md, evidence Research/captures/2026-11-01_peacemaker-v5/). The capture draws the sight mesh (mesh 1
 # of wpn_warmonger, 336 indices) with this program SRC_ALPHA / ONE_MINUS_SRC_ALPHA into the scene, no cull, as the flags
@@ -500,6 +519,12 @@ GRAPH_RULES = (
           slots={'_n': HYDRO_WATER_TANK_FLOW_SLOT, '_pick': HYDRO_WATER_TANK_CMA_SLOTS[0]}, params=(
          ('tint', 0x4B4DAB19, 3), ('body', 0x7C456482, 3), ('gloss', 0x24F4CA4C, 1), ('f0_base', 0x62835AF9, 1),
          ('rim_exp', 0xECE213A3, 1)))),
+    # Taxi glass 4E9B2CB3: exact graph + SHA and the gbl_gp_taxi_glass_01 material only (docs/material-decoding/taxi-glass.md).
+    ('materialgraph/environment/global/architecture/mo_gbl_arch_glass_01/mo_gbl_arch_glass_01.',
+     dict(forward='glass_taxi', writer='4E9B2CB3', constants=TAXI_GLASS_CONSTANTS, _graph_sha256=TAXI_GLASS_GRAPH_SHA256,
+          slots={'_pick': TAXI_GLASS_ALPHA_SLOTS[0]}, params=(
+         ('tint', 0x7F058428, 3), ('height_weight', 0x6DF7A4EA, 1), ('parallax_depth', 0x5DB5EFC7, 1),
+         ('rotation_phase', 0xB0E357F2, 1), ('rotation_rate', 0xBF44EC0D, 1)))),
     # Warmonger sight screen 4C184DCC: exact graph + SHA (docs/material-decoding/warmonger-reticle.md).
     ('materialgraph/equipment/weapon/wpn_warmonger_reticle/wpn_warmonger_reticle.',
      dict(forward='warmonger_reticle', writer='4C184DCC', constants=WARMONGER_RETICLE_CONSTANTS,
@@ -1471,6 +1496,13 @@ def material_texture_paths(archive, material_path: str) -> dict:
         if (str(material_path).replace('\\', '/').lower() != HYDRO_WATER_TANK_MATERIAL
                 or not tank_bound(HYDRO_WATER_TANK_FLOW_SLOT) or len(cma_paths) != 1 or None in cma_paths):
             rule = {}
+    if rule.get('forward') == 'glass_taxi':
+        # Evidence covers gbl_gp_taxi_glass_01 only; both alpha_H slots must read one image (the draw binds it twice).
+        taxi_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
+        taxi_bound = lambda slot: taxi_slots.get(slot) or slots.get(slot)
+        alpha_paths = {taxi_bound(slot) for slot in TAXI_GLASS_ALPHA_SLOTS}
+        if (str(material_path).replace('\\', '/').lower() != TAXI_GLASS_MATERIAL or len(alpha_paths) != 1 or None in alpha_paths):
+            rule = {}
     if rule.get('forward') == 'warmonger_reticle':
         # The capture binds one cma image at API 5 and 6 and one cmb image at API 7..10; the viewer reads each from one
         # unit, so a material that splits either group is not the decoded program input.
@@ -1518,7 +1550,9 @@ def material_texture_paths(archive, material_path: str) -> dict:
                     raise ValueError('Victor reticle parameter %s is non-finite' % name)
         params = {name: vec3(key, (0.0, 0.0, 0.0)) if size == 3 else value(key, 0.0) for name, key, size in rule['params']}
         params.update(rule.get('constants', {}))  # graph constants, not read from the material
-        if rule['forward'] in ('glass_basic', 'glass_jn'):
+        if rule['forward'] == 'glass_taxi' and (params['rotation_phase'] or params['rotation_rate']):
+            raise ValueError('Taxi glass rotation words must be 0: the decoded offset formula assumes no rotation')
+        if rule['forward'] in ('glass_basic', 'glass_jn', 'glass_taxi'):
             # attr0.w is the per-instance record's opacity product: material render-state byte 22 / 255 times the
             # per-draw opacity (1 here). The 4FC5703F captured draw has byte 22 = 255 and attr0.w = 1.0.
             flags_offset, flags_size = _sections(data).get(MATERIAL_FLAGS_SECTION, (0, 0))
@@ -1563,6 +1597,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
             result['forward'].update(blend=THUMPER_GLOVE_GLASS_CAPTURED_BLEND, blend_source='captured draw state')
         if rule['forward'] == 'glass_tank':
             result['forward'].update(blend=HYDRO_WATER_TANK_CAPTURED_BLEND, blend_source='captured draw state')
+        if rule['forward'] == 'glass_taxi':
+            result['forward'].update(blend=TAXI_GLASS_CAPTURED_BLEND, blend_source='captured draw state')
         if window_slots:
             # The viewer reads the interior from the _n unit, which carries no sRGB flag: the native format decides.
             result['forward']['slots'] = window_slots

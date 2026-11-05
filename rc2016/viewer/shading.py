@@ -1133,6 +1133,13 @@ void main() {
 #   (1 - (1 - S10)(1 - S8)(1 - S9)), discard when sat(E) < cut-off, alpha = sat(attr0.w sat(E)); rgb = (1, 0.473531, 0) (Ld + E)
 #   + k specular(F), F = CB2[4] + fres^10, F90 = sat(60 F), k = sat(C / luma(C)). The instance fade is frozen at 0 (as captured at
 #   arm's length); the light list, probes, shadows and fog are the viewer rig; the program's RGBA8 MAX pass is not drawn.
+# uKind 17, glass_taxi 4E9B2CB3 (gbl_gp_taxi_glass_01, mo_gbl_arch_glass_01; docs/material-decoding/taxi-glass.md), a labelled PREVIEW:
+#   uA = tint C.rgb (CB2[0..2]), height weight W (CB2[7]); uB = parallax depth (CB2[14]), fade scale, fade bias (the captured instance
+#   record words 63 and 62), alpha cut-off (attribute0.z, 4/255); uC = dielectric F0, gloss; uD.x = attribute0.w. With attribute4.w = 0
+#   (captured) alpha = sat(attr0.w sat(W (A + B))), A = H(UV0), B = H(UV0 + off), H = alpha_H.R (_pick slot), off = depth f (1 - fade)
+#   (-V.Pu, -V.Pv), f = +1 front / -1 back face, Pu, Pv the unit dP/du and dP/dv from screen derivatives (the game's tangent is
+#   -dP/du and its bitangent +dP/dv), fade = sat(view depth uB.y + uB.z); discard when sat(W (A + B)) < uB.w. The colour is not decoded
+#   (light list, probes): rgb = the specular lobe with F0 = sat(C / luma(C)) 0.04 (dielectric), as a viewer-lit preview.
 # uKind 14, window_glass 8DF14766 (jn_glass_parallax_mask, the Novalis windows; docs/material-decoding/novalis-window-glass.md),
 #   a labelled PREVIEW (game_equivalence False): uA = reflection tint T.rgb (CB2[8..10]), gloss CB2[3]; uB = parallax depth
 #   CB2[11], rim exponent CB2[13], F weight CB2[14], interior weight CB2[15]; uC.x = interior light CB2[16], uC.y = 1 when the
@@ -1410,6 +1417,24 @@ void main() {
         vec3 ambient = ambientLight(N);
         vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
         color = uB.rgb * Ld + glassSpec(N, V, L1, L2, C1, C2, F0, a, ambient);
+    } else if (uKind == 17) { // 4E9B2CB3 taxi glass (see the uKind 17 comment)
+        vec3 dp1 = dFdx(vPos), dp2 = dFdy(vPos); vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
+        float det = du1.x * du2.y - du1.y * du2.x;
+        float idet = abs(det) > 1e-20 ? 1.0 / det : 0.0;
+        vec3 Pu = (dp1 * du2.y - dp2 * du1.y) * idet, Pv = (dp2 * du1.x - dp1 * du2.x) * idet;
+        Pu *= inversesqrt(max(dot(Pu, Pu), 1e-20)); Pv *= inversesqrt(max(dot(Pv, Pv), 1e-20));
+        float face = gl_FrontFacing ? 1.0 : -1.0;
+        float fade = sat(abs(vPos.z) * uB.y + uB.z);
+        vec2 off = uB.x * face * (1.0 - fade) * vec2(-dot(V, Pu), -dot(V, Pv));
+        float hA = uHasP ? texture2D(uTexP, vUV).r : 0.0;
+        float hB = uHasP ? texture2D(uTexP, vUV + off).r : 0.0;
+        float inner = sat(uA.w * (hA + hB));
+        if (inner < uB.w) discard;   // attribute0.z = 4/255
+        alpha = sat(uD.x * inner);
+        float luma = max(dot(vec3(0.2126, 0.7152, 0.0722), uA.rgb), 1e-6);
+        vec3 F0 = clamp(uA.rgb / luma, 0.0, 1.0) * uC.x;
+        float a = pow(2.0, -5.5 * sqrt(sat(uC.y)));
+        color = glassSpec(N, V, L1, L2, C1, C2, F0, a, ambientLight(N));
     } else if (uKind == 16) { // 4C184DCC Warmonger sight screen (see the uKind 16 comment)
         float t = uB.w;
         float th = -0.25 * t + 0.41176471 * cos(3.0 * t);
@@ -1735,7 +1760,7 @@ FRAGMENT = FRAGMENT.replace("// @lighting\n", LIGHTING+FOG+_SCENE_OUTPUT)
 GLASS_FRAGMENT = GLASS_FRAGMENT.replace("// @lighting\n", LIGHTING+FOG)
 GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4, "bright_glow": 5,
                "eye_cornea": 6, "number_display": 7, "glass_basic": 8, "glass_cg02": 9, "glass_jn": 10, "glass_thumper": 11,
-               "ion_tubes": 12, "glass_liquid": 13, "window_glass": 14, "glass_tank": 15, "warmonger_reticle": 16}
+               "ion_tubes": 12, "glass_liquid": 13, "window_glass": 14, "glass_tank": 15, "warmonger_reticle": 16, "glass_taxi": 17}
 
 
 def frame_fade(time, rate):
@@ -1798,6 +1823,10 @@ def glass_uniforms(forward, time=None):
     if forward["kind"] == "glass_tank":
         return (GLASS_KINDS["glass_tank"], (*p["tint"], p["rim_bias"]), (*p["body"], p["gloss"]),
                 (p["f0_base"], p["rim_exp"], 0.0, 0.0), (p["alpha_scale"], 0.0, 0.0, 0.0), (0.0,) * 4)
+    if forward["kind"] == "glass_taxi":
+        return (GLASS_KINDS["glass_taxi"], (*p["tint"], p["height_weight"]),
+                (p["parallax_depth"], p["fade_scale"], p["fade_bias"], p["alpha_test"]),
+                (p["dielectric_f0"], p["gloss"], 0.0, 0.0), (p["alpha_scale"], 0.0, 0.0, 0.0), (0.0,) * 4)
     if forward["kind"] == "warmonger_reticle":
         return (GLASS_KINDS["warmonger_reticle"], (*p["colour"], p["fresnel_exp"]),
                 (p["f0_base"], p["gloss"], p["frame_rate"], p["time"] if time is None else time),

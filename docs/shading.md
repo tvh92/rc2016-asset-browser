@@ -261,6 +261,8 @@ The Hydrodisplacer's liquid (`test_liquid_orientation`, `F0F45D78`, `uKind` 13) 
 
 The hydro harvester's tank glass (`hydro_water_tank`, graph `water_tank`, `7EB73491`, `uKind` 15) is an exact-graph, exact-material preview rule drawn alpha-over as in a captured cutscene frame (the flags word says opaque); see [hydro harvester tank glass](material-decoding/hydro-water-tank-glass.md).
 
+The taxi's glass (`gbl_gp_taxi_glass_01`, graph `mo_gbl_arch_glass_01`, `4E9B2CB3`, `uKind` 17) is an exact-graph, exact-material preview rule drawn alpha-over as in a captured frame (the flags word says opaque): alpha is decoded, the colour is not; see [taxi glass](material-decoding/taxi-glass.md).
+
 The Warmonger and Peacemaker sight (`wpn_Warmonger_Reticle`, graph `wpn_warmonger_reticle`, `4C184DCC`, `uKind` 16) is an exact-graph preview rule: an amber self-lit screen drawn alpha-over and two-sided, as the flags word and a captured draw agree, with the rotating ring, flipbook and scanlines of its `_cma` and `_cmb` images; see [Warmonger sight](material-decoding/warmonger-reticle.md).
 
 The Novalis windows (`jn_glass_parallax_mask`, `8DF14766`, `uKind` 14, `window_glass`) are opaque: diffuse light times a parallax-shifted interior plus a tinted reflection term. The rule is a labelled preview (`game_equivalence = False`) that reads the decoded probe-volume reflection and ambient and the viewer's sun cascades in the level viewer (Level atmosphere), replaces them with the viewer lighting elsewhere, takes ambient occlusion as 1, has no screen-space reflection or light list, and draws all seven texture slots (mask and detail normal at the second UV pair); see [Novalis window glass](material-decoding/novalis-window-glass.md).

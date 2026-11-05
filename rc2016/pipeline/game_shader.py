@@ -1446,13 +1446,13 @@ def _viewer_skin_spec(P, skin, gR, gG, f, tinted):
     rgb = P.comb(*(P.sat(P.m('MULTIPLY', grey, ch)) for ch in P.sep(tinted))) if qwark else None
     return grey, gloss_in, rgb
 
-GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_patterned', 'glass_liquid', 'glass_tank', 'warmonger_reticle', 'window_glass')
+GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_patterned', 'glass_liquid', 'glass_tank', 'glass_taxi', 'warmonger_reticle', 'window_glass')
 
 
 def _viewer_rule_glass(mat, rule, key, img):
     """Forward glass writers basic_glass 4FC5703F, character_glass_02 4DF1D438, jn_glass E7118623,
     wpn_thumper_glove_glass 5226F404, blarg_saucer_glass FEEC00CE, the Hydrodisplacer liquid F0F45D78, the hydro harvester
-    tank glass 7EB73491 and the Warmonger sight 4C184DCC (gl_shading.GLASS_FRAGMENT uKind 8, 9, 10, 11, 2, 13, 15, 16).
+    tank glass 7EB73491, the Warmonger sight 4C184DCC and the taxi glass 4E9B2CB3 (gl_shading.GLASS_FRAGMENT uKind 8, 9, 10, 11, 2, 13, 15, 16, 17).
     alpha comes from the rim (the sight: its self-lit screen term),
     the lit part is a diffuse term plus the writers' specular lobe (F0, F90 = sat(60 F0), Schlick), the blend
     from the flags word.
@@ -1707,6 +1707,27 @@ def _viewer_rule_glass(mat, rule, key, img):
                       'a step on alpha; the colour ratio k multiplies F0 and the Principled F90 is collapsed to its maximum channel; '
                       'the program\'s extra RGBA8 MAX pass and the engine light list, probes, shadows and fog are not reproduced'
                       % (p['time'], p['alpha_cut']))
+    elif key == 'glass_taxi':
+        # 4E9B2CB3 (docs/material-decoding/taxi-glass.md), labelled preview: with attribute4.w = 0, alpha = sat(attr0.w sat(W (A + B)))
+        # with A = H(UV0), B = H(UV0 + view-dependent offset) and H = alpha_H.R (_pick slot), cut at attr0.z; rgb = specular lobe,
+        # F0 = tint k x 0.04. B is sampled at UV0 here (the offset needs the vertex tangent frame), so B = A.
+        alpha_h = img('_pick')
+        if alpha_h is not None:
+            h = P.sep(P.tex(alpha_h, P.game_uv(), 'glass taxi alpha_H').outputs['Color'])[0]
+            cover = P.sat(P.m('MULTIPLY', P.const('glass height weight', p['height_weight']), P.m('ADD', h, h)))
+        else:
+            cover = 0.0
+            limits.append('no alpha_H texture bound: H = 0')
+        keep = P.m('SUBTRACT', 1.0, P.m('LESS_THAN', cover, P.const('glass alpha test', p['alpha_test'])))   # attr0.z: discard below it
+        alpha = P.m('MULTIPLY', P.m('MULTIPLY', cover, P.const('glass alpha scale', p['alpha_scale'])), keep, clamp=True)
+        f0 = P.v('SCALE', tint_k(P.const3('glass tint', p['tint'])), P.const('glass dielectric f0', p['dielectric_f0']))
+        lobe, f90 = spec_lobe(f0, P.const('glass gloss', p['gloss']))
+        lit = add(zero(), scaled(lobe, f90), 'VR glass lit')   # no diffuse body: the captured output is far below a lit C
+        limits.append('Taxi glass 4E9B2CB3 (frozen preview, game_equivalence False): the second alpha_H read B is taken at the unshifted '
+                      'UV0 (its view-dependent offset %g needs the vertex tangent frame), the colour terms (light list, probes) are '
+                      'not decoded, so the colour is a dielectric specular lobe (F0 = tint k x %g, gloss %g); blend %s is the captured '
+                      'draw state, not the flags word; attribute0.w = %g, attribute4.w = 0 as captured'
+                      % (p['parallax_depth'], p['dielectric_f0'], p['gloss'], blend, p['alpha_scale']))
     elif key == 'window_glass':
         # 8DF14766 (docs/material-decoding/novalis-window-glass.md), labelled preview: opaque, rgb = (CB2[16] T11.b + L) Q
         # + k (lights + environment) F with Q = CB2[15] T11 (interior, _n slot) + CB2[12] C 0.5^5 T9 (painted glass _c,
