@@ -51,18 +51,21 @@ NATIVE = 'native translation'
 COVERAGE_KINDS = (EXACT, NATIVE, FAMILY, GENERIC, NO_GRAPH)
 
 
-def rule_coverage(graphs, native_translation=None):
+def rule_coverage(graphs, native_translation=None, forward=False):
     """(kind, matched GRAPH_RULES prefix or None) for a material's graph paths.
 
     Pass a receipt selected by native_glsl.selected_translation to include the native route
     after fully ported rule precedence. Otherwise mirrors textures._graph_rule: a prefix ending
-    in a dot names an exact graph, other prefixes are family fallbacks, and no match is generic."""
+    in a dot names an exact graph, other prefixes are family fallbacks, and no match is generic. A 'gated' rule
+    (one that applies to some materials of its graph only, such as the additive glass) counts only with forward=True."""
     from rc2016.viewer.textures import GRAPH_RULES
     if native_translation and native_translation.get('status') == 'ready':
         return NATIVE, native_translation.get('translation_sha256')
     if not graphs:
         return NO_GRAPH, None
-    for prefix, _rule in GRAPH_RULES:
+    for prefix, rule in GRAPH_RULES:
+        if rule.get('gated') and not forward:
+            continue
         if any(g.startswith(prefix) for g in graphs):
             return (EXACT if prefix.endswith('.') else FAMILY), prefix
     return GENERIC, None

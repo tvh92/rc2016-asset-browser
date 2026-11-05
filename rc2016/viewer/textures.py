@@ -542,7 +542,7 @@ GRAPH_RULES = (
     # checked numerically; the draw's pass is inferred (no glass draw is in the capture). Same terms as the Thumper glass above
     # with X = 0 and no glow; additive blend from the flags word. Gated to additive flags below.
     ('materialgraph/global/basic_glass_patterned/basic_glass_patterned.',
-     dict(forward='glass_patterned_add', writer='90542658', constants=GLASS_PATTERNED_ADD_CONSTANTS,
+     dict(forward='glass_patterned_add', writer='90542658', constants=GLASS_PATTERNED_ADD_CONSTANTS, gated=True,
           _graph_sha256=GLASS_PATTERNED_GRAPH_SHA256, slots={'_n': 0x49A7866BABDAD780}, params=(
          ('body', 0x79120089, 3), ('tint', 0x4B4DAB19, 3), ('rim_bias', 0x42170E5E, 1), ('tiling', 0x375AF9AC, 1),
          ('f0_base', 0x62835AF9, 1), ('gloss', 0x24F4CA4C, 1), ('normal_strength', 0xCC7457CD, 1),
@@ -844,7 +844,7 @@ def _graph_rule(graphs, graph_hashes=None):
             required = rule.get('_graph_sha256') or rule.get('graph_sha256')
             if required and hashes.get(normalized) != required:
                 continue
-            selected = {key: value for key, value in rule.items() if key not in ('_graph_sha256', 'graph_sha256')}
+            selected = {key: value for key, value in rule.items() if key not in ('_graph_sha256', 'graph_sha256', 'gated')}
             if required:
                 selected['graph_path'] = normalized
                 selected['graph_sha256'] = required

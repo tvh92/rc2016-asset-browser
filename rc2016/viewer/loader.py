@@ -176,7 +176,14 @@ def material_rules(archive, materials, translations=None):
         else:
             try: native = selected_translation(archive, path)
             except (ValueError, KeyError, IndexError, OSError): native = None
-        kind,rule=rule_coverage(graphs, native)
+        forward=False
+        if native is None:   # a gated forward rule counts as the exact reading only for the materials it applies to
+            try:
+                from rc2016.viewer.textures import material_texture_paths
+                forward=bool(material_texture_paths(archive,path).get('forward'))
+            except (ValueError,KeyError,IndexError,OSError):
+                forward=False
+        kind,rule=rule_coverage(graphs, native, forward)
         rules[path]=dict(graphs=graphs,rule_kind=kind,rule=rule,
                          native_limitations=native.get('limitations', []) if native else [])
     return rules

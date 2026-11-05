@@ -104,9 +104,17 @@ class ExplosiveCrateArchiveTests(unittest.TestCase):
         self.assertAlmostEqual(c[0], 0.5); self.assertAlmostEqual(c[3], 5.0)
 
     def test_opaque_material_of_the_same_graph_keeps_its_translation(self):
+        from rc2016.formats.links import GENERIC, NATIVE, rule_coverage
+        from rc2016.viewer.native_glsl import selected_translation
+        path = 'material/character/enemy/enm_extermitank_glass/enm_extermitank_glass.material'
         from rc2016.viewer.textures import material_texture_paths
-        paths = material_texture_paths(self.archive, 'material/character/enemy/enm_extermitank_glass/enm_extermitank_glass.material')
-        self.assertNotEqual((paths.get('forward') or {}).get('kind'), 'glass_patterned_add')
+        self.assertNotEqual((material_texture_paths(self.archive, path).get('forward') or {}).get('kind'), 'glass_patterned_add')
+        translation = selected_translation(self.archive, path)
+        self.assertIsNotNone(translation)   # the gated rule must not make the graph an exact match that beats it
+        self.assertEqual(rule_coverage(['materialgraph/global/basic_glass_patterned/basic_glass_patterned.materialgraph'],
+                                       translation)[0], NATIVE)
+        self.assertEqual(rule_coverage(['materialgraph/global/basic_glass_patterned/basic_glass_patterned.materialgraph'])[0],
+                         GENERIC)
 
 
 if __name__ == '__main__':
