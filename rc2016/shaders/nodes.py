@@ -261,6 +261,23 @@ def apply_translated_material(material,source, *, experimental=False):
         links.new(front.outputs[name],brdf.inputs[index])
     for index in (5,6,7):brdf.inputs[index].default_value=1
     out=nodes.new('ShaderNodeOutputMaterial');links.new(brdf.outputs['Shader'],out.inputs['Surface'])
+    pane=((source.get('viewer_graph_rule') or {}).get('terms') or {}).get('alpha_pane')
+    if pane and not experimental:
+        # Health crate window panes: the body surface drawn see-through, alpha = sat(_c.a) (viewer textures 'alpha_pane').
+        # Light loop, fog and the discard threshold are viewer/engine details not built here.
+        binding=next((r for r in translation['texture_bindings'] if r['api']==pane['alpha_api']),None)
+        image=next((n for n in nodes if n.type=='TEX_IMAGE' and binding and n.get('source_texture_path')==binding['path']),None)
+        if image is None:raise ValueError('Alpha pane source image missing')
+        clamp=nodes.new('ShaderNodeMath');clamp.operation='ADD';clamp.use_clamp=True;clamp.name='VR pane alpha'
+        links.new(image.outputs['Alpha'],clamp.inputs[0]);clamp.inputs[1].default_value=0.0
+        clear=nodes.new('ShaderNodeBsdfTransparent');clear.name='VR pane transparent'
+        mix=nodes.new('ShaderNodeMixShader');mix.name='VR pane blend alpha_over'
+        links.new(clamp.outputs[0],mix.inputs[0]);links.new(clear.outputs[0],mix.inputs[1]);links.new(brdf.outputs['Shader'],mix.inputs[2])
+        for link in list(out.inputs['Surface'].links):links.remove(link)
+        links.new(mix.outputs[0],out.inputs['Surface'])
+        material.use_backface_culling=True
+        if hasattr(material,'surface_render_method'):material.surface_render_method='BLENDED'
+        material['rc_alpha_pane']=json.dumps(pane,sort_keys=True)
     material['rc_shader_translation']=json.dumps(translation,sort_keys=True)
     material['rc_game_shader']=True;material['game_equivalence']=False
     material['rc_shader']='RC PS4 Deferred BRDF with experimental frontend' if experimental else 'RC PS4 Deferred BRDF with native translated frontend'
@@ -288,6 +305,12 @@ def validate_translated_material(source,material, *, experimental=False):
                n.attribute_name==STATIC_VECTOR_ATTRIBUTE]
         assert len(attrs)==1 and attrs[0].outputs.get('Vector'), \
             'Static-vector preview must read the dedicated mesh Vector attribute directly'
+    if material.get('rc_alpha_pane'):
+        pane=json.loads(material['rc_alpha_pane'])
+        mix=material.node_tree.nodes.get('VR pane blend alpha_over');alpha=material.node_tree.nodes.get('VR pane alpha')
+        assert mix and alpha and alpha.use_clamp and alpha.inputs[0].links,'Alpha pane blend is not built'
+        assert alpha.inputs[0].links[0].from_socket.name=='Alpha' and alpha.inputs[0].links[0].from_node.get('source_texture_path') in {r['path'] for r in expected['texture_bindings'] if r['api']==pane['alpha_api']},'Alpha pane is not fed by the _c alpha'
+        assert material.use_backface_culling,'Alpha pane must cull back faces'
     actual=[n for n in front.node_tree.nodes if n.type=='TEX_IMAGE']
     for binding in expected['texture_bindings']:
         textures=[b for b in source['textures'] if b['path']==binding['path']]

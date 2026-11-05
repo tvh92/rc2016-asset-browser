@@ -2437,18 +2437,19 @@ class Shading:
             self.programs[size] = (*self._link(VERTEX, FRAGMENT, dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE, aGroundBlend=GROUND_BLEND_ATTRIBUTE, aStaticPackedVector=STATIC_VECTOR_ATTRIBUTE, aTangent=TANGENT_ATTRIBUTE, aUV1=UV1_ATTRIBUTE), OPAQUE_UNIFORMS), size)
         return self.programs[size]
 
-    def native_program_key(self, translation, srgb, instanced=False, scene=False, experimental=False, rule_preview=False):
+    def native_program_key(self, translation, srgb, instanced=False, scene=False, experimental=False, rule_preview=False, alpha_api=None):
         """The ``programs`` key native_program links under; present once that program is linked."""
         from rc2016.viewer.native_glsl import EMITTER_VERSION
-        return ('native', EMITTER_VERSION, instanced, scene, experimental, rule_preview, translation['translation_sha256'],
+        return ('native', EMITTER_VERSION, instanced, scene, experimental, rule_preview, alpha_api, translation['translation_sha256'],
                 tuple(sorted(srgb.items())), FRAGMENT, INSTANCED_VERTEX if instanced else VERTEX)
 
-    def native_program(self, translation, srgb, instanced=False, scene=False, experimental=False, rule_preview=False):
+    def native_program(self, translation, srgb, instanced=False, scene=False, experimental=False, rule_preview=False, alpha_api=None, alpha_discard=0.0):
         from rc2016.viewer.native_glsl import fragment_source
         vertex = INSTANCED_VERTEX if instanced else VERTEX
-        key = self.native_program_key(translation, srgb, instanced, scene, experimental, rule_preview)
+        key = self.native_program_key(translation, srgb, instanced, scene, experimental, rule_preview, alpha_api)
         if key not in self.programs:
-            surface = fragment_source(translation, srgb, experimental=experimental, rule_preview=rule_preview)
+            surface = fragment_source(translation, srgb, experimental=experimental, rule_preview=rule_preview,
+                                      alpha_api=alpha_api, alpha_discard=alpha_discard)
             names = (*OPAQUE_UNIFORMS, *(s['uniform'] for s in surface['samplers']))
             attributes = INSTANCE_ATTRIBUTES if instanced else dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE, aGroundBlend=GROUND_BLEND_ATTRIBUTE, aStaticPackedVector=STATIC_VECTOR_ATTRIBUTE, aTangent=TANGENT_ATTRIBUTE, aUV1=UV1_ATTRIBUTE)
             source=surface['source'].replace('#version 120', '#version 120\n#define RC_SCENE_EFFECTS 1',1) if scene else surface['source']

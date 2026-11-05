@@ -12,7 +12,7 @@ from rc2016.shaders.bindings import PORTABLE_OPS
 from rc2016.shaders.ir import DAG, compute
 from rc2016.viewer.textures import TextureDiskCache
 
-EMITTER_VERSION = 7
+EMITTER_VERSION = 8
 # Reserve vertex bone matrices (3) and shared environment lighting (6).
 TEXTURE_UNITS = (0, 1, 2, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15)
 
@@ -198,7 +198,7 @@ float nativeFrameHandedness(vec3 T) {
 """
 
 
-def fragment_source(translation, srgb=None, *, experimental=False, rule_preview=False):
+def fragment_source(translation, srgb=None, *, experimental=False, rule_preview=False, alpha_api=None, alpha_discard=0.0):
     from rc2016.viewer.shading import FRAGMENT
     surface = emit_surface(translation, srgb, experimental=experimental, rule_preview=rule_preview)
     # Reuse all shared lighting, tonemap and BRDF helpers. Unused hand-rule code
@@ -208,7 +208,16 @@ def fragment_source(translation, srgb=None, *, experimental=False, rule_preview=
     source += '    vec3 N = normalize(vNrm) * (gl_FrontFacing ? 1.0 : -1.0); sceneCaptureNormal=N;\n'
     source += '    vec3 V = normalize(-vPos);\n' + surface['body'] + '\n'
     source += '    vec3 color = deferredDiffuse(N, albedo) + deferredSpecular(N, V, F0, gloss);\n'
-    source += '    sceneOutput(vec4(displayFog(color + albedo * emission), 1.0));\n}\n'
+    if alpha_api is None:
+        source += '    sceneOutput(vec4(displayFog(color + albedo * emission), 1.0));\n}\n'
+    else:
+        # Alpha pane (textures.material_texture_paths 'alpha_pane'): alpha = sat(_c.a) of the sampler bound at this API slot.
+        sampler = next((s['uniform'] for s in surface['samplers'] if s['api'] == alpha_api), None)
+        if sampler is None:
+            raise ValueError('Alpha pane texture is not bound to the translation')
+        source += f'    float paneAlpha = clamp(texture2D({sampler}, vUV).a, 0.0, 1.0);\n'
+        source += f'    if (paneAlpha < {_literal(float(alpha_discard))}) discard;\n'
+        source += '    sceneOutput(vec4(displayFog(color + albedo * emission), paneAlpha));\n}\n'
     surface['source'] = source
     # Includes current shared shader helpers, so lighting edits invalidate programs.
     surface['key'] += (hashlib.sha256(source.encode()).hexdigest(),)

@@ -80,6 +80,14 @@ CRATE_SELF_LIT_KEY = 0x5FD56522
 # Research/captures/2026-11-05_gaspar-crates/explosive/README.md (local).
 GLASS_PATTERNED_GRAPH = 'materialgraph/global/basic_glass_patterned/basic_glass_patterned.materialgraph'
 GLASS_PATTERNED_GRAPH_SHA256 = '0c2dacac4e75df1d9491d9e4341ab6e1a5c2800abf593544b42db8f48c0bdf23'
+# Health (nanotech) crate window panes: the alpha_over material of required/materials/health_crate.materialgraph is the body
+# surface (deferred writer E5F05839) drawn see-through. The game's forward programs BCE8624F / EC04A1EB (pass 0 / pass 1) output
+# alpha = sat(sat(_c.a) * attribute0.w) and discard below attribute0.z; attribute0.w = 1 from render-state byte 22 = 0xFF, and the
+# 4/255 discard threshold is the taxi-glass capture's value (not captured for this crate). The pane draw is in neither Gaspar
+# capture, so nothing is checked against captured pixels. Research/captures/2026-11-05_gaspar-crates/health/README.md (local).
+HEALTH_CRATE_GRAPH = 'required/materials/health_crate.materialgraph'
+HEALTH_CRATE_GRAPH_SHA256 = '40d111aa045c9d5c0fdb3ace0278c996a85e97996d277ca3c58470cb0e5df9f1'
+HEALTH_PANE_DISCARD = 4.0 / 255.0
 # hair_newspec_01 forward colour pass (pass 0, pixel program 94CE8CCE; serialized resources api5/6/7 = _c/_g/_n).
 # _c is sampled for alpha only (coverage, dmask 8); the albedo is the material vec3 A (CB2 dw0-2), F0 = B (dw4-6) * _g.G
 # and the gloss argument is 0.71 * _g.R, both scaled by w = 1 - sat((1.001 - |N.V|)^E) (E = dw9, geometry normal);
@@ -1781,6 +1789,13 @@ def material_texture_paths(archive, material_path: str) -> dict:
             graph_path=GLASS_PATTERNED_GRAPH, graph_sha256=GLASS_PATTERNED_GRAPH_SHA256, writer='98B54ECA',
             reason='additive material of a forward-only graph: the deferred writer is never compiled by the game and the '
                    'forward programs 881BA6D3 and 90542658 are not decoded')
+    if (graph_hashes.get(HEALTH_CRATE_GRAPH) == HEALTH_CRATE_GRAPH_SHA256
+            and blend_state(material_flags(data))['blend'] == 'alpha_over'):
+        result['alpha_pane'] = dict(
+            graph_path=HEALTH_CRATE_GRAPH, graph_sha256=HEALTH_CRATE_GRAPH_SHA256, writers=['BCE8624F', 'EC04A1EB'],
+            alpha_api=5, discard=HEALTH_PANE_DISCARD,
+            reason='alpha_over material of the health crate graph: the body surface with alpha = sat(_c.a) (forward programs '
+                   'BCE8624F/EC04A1EB); light loop, fog and the exact discard threshold are not applied')
     return result
 
 
@@ -2282,7 +2297,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             paths = {}
         entry.update(k=paths.get('k', 0.0), g_mode=paths.get('g_mode', 'colored'), self_lit=paths.get('self_lit', 'c_alpha'),
                      spec=paths.get('spec', 1.0), gloss=paths.get('gloss', 1.0))
-        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'bright_center', 'flat_surface', 'parallax', 'parallax_normal', 'hair', 'skin', 'skin_detail', 'fresnel_tint', 'crate_tint', 'not_drawn', 'liquid_flow', 'lava_surface', 'zurkon'):
+        for key in ('pick', 'tint', 'spec_tint', 'forward', 'arch_sequence', 'bng', 'vehicle', 'glow', 'two_color_metal', 'puddles', 'facing_glow', 'bright_center', 'flat_surface', 'parallax', 'parallax_normal', 'hair', 'skin', 'skin_detail', 'fresnel_tint', 'crate_tint', 'not_drawn', 'alpha_pane', 'liquid_flow', 'lava_surface', 'zurkon'):
             if paths.get(key):
                 entry[key] = paths[key]
         if paths.get('foliage'):

@@ -809,6 +809,10 @@ class ModelViewport(_TkFrame):
                 return self._shading.native_program(translation, srgb, instanced, scene=scene, rule_preview=True)
             if experimental:
                 return self._shading.native_program(translation, srgb, instanced, scene=scene, experimental=True)
+            pane = entry.get('alpha_pane')
+            if pane:
+                return self._shading.native_program(translation, srgb, instanced, scene=scene,
+                                                    alpha_api=pane['alpha_api'], alpha_discard=pane['discard'])
             if scene:
                 return self._shading.native_program(translation, srgb, instanced, scene=True)
             return self._shading.native_program(translation, srgb, instanced)
@@ -904,6 +908,8 @@ class ModelViewport(_TkFrame):
             uploaded["crate_tint"] = dict(entry["crate_tint"])
         if "not_drawn" in entry:
             uploaded["not_drawn"] = dict(entry["not_drawn"])
+        if "alpha_pane" in entry:
+            uploaded["alpha_pane"] = dict(entry["alpha_pane"])
         if "hair" in entry:
             uploaded["hair"] = dict(entry["hair"])
         for key in ("skin", "skin_detail"):
@@ -1399,6 +1405,16 @@ class ModelViewport(_TkFrame):
             # Shaded: forward (glass) batches are drawn after every opaque one, see _draw_glass.
             opaque, glass = split_forward(batches, self._gl_textures) if level == 2 else (batches, [])
             base_program, base_u = program, u
+            panes = [b for b in opaque if ((self._gl_textures or {}).get(b[0]) or {}).get('alpha_pane')]
+            if panes:   # alpha panes (textures 'alpha_pane') blend over every opaque batch, farthest first
+                opaque = [b for b in opaque if b not in panes]
+                cached = getattr(self, '_glass_centres', None)
+                if not cached or cached[0] is not self._mesh:
+                    cached = self._glass_centres = (self._mesh, batch_centres(self._mesh[0], self._mesh[1], batches))
+                modelview = (ctypes.c_float * 16)()
+                gl.glGetFloatv.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+                gl.glGetFloatv(self.GL_MODELVIEW_MATRIX, modelview)
+                opaque = opaque + list(forward_order(panes, cached[1], list(modelview), lambda slot: False))
             for slot, first, count in opaque:
                 entry = (self._gl_textures or {}).get(slot) or {}
                 next_program, next_u = self._surface_program(entry, level)
@@ -1420,7 +1436,14 @@ class ModelViewport(_TkFrame):
                 if reticle and reticle.get('blend') == 'additive':
                     gl.glEnable(self.GL_BLEND); gl.glBlendFunc(self.GL_SRC_ALPHA, self.GL_ONE)
                     gl.glDepthMask(0); gl.glEnable(self.GL_CULL_FACE)
+                pane = entry.get('alpha_pane')
+                if pane:
+                    gl.glBlendFunc.argtypes = [ctypes.c_uint, ctypes.c_uint]; gl.glDepthMask.argtypes = [ctypes.c_ubyte]
+                    gl.glEnable(self.GL_BLEND); gl.glBlendFunc(self.GL_SRC_ALPHA, self.GL_ONE_MINUS_SRC_ALPHA)
+                    gl.glDepthMask(0); gl.glEnable(self.GL_CULL_FACE)
                 self._draw_range(index_array, first, count)
+                if pane:
+                    gl.glDepthMask(1); gl.glDisable(self.GL_BLEND); gl.glDisable(self.GL_CULL_FACE)
                 if reticle and reticle.get('blend') == 'additive':
                     gl.glDepthMask(1); gl.glDisable(self.GL_BLEND); gl.glDisable(self.GL_CULL_FACE)
             program, u = base_program, base_u
