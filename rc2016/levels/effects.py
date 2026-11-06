@@ -26,9 +26,14 @@ A `.visualeffect` is a particle system. Its components are the 272-byte records 
                                top bit is clear
     +0x108        u8[7]        indices into the parameter table, one per property slot
 
-Parameters are the 16-byte entries of 0xB1F4C248 (four s16 values at +0, +2, +4, +6, 0x7FFF being 1.0 before the scale,
-then a four-value spread at +8 that the spawn adds at random) paired entry for entry with 0xD78E007C (u32 hash, u32 index,
-u32 1, float32 scale at +12 that the values multiply: 1/32767 for a plain value, 3/32767 for a value up to 3). The hash is
+A component's slot byte selects an entry of 0xD78E007C (u32 hash, u32 value index, u32 key count, float32 scale at +12
+that the values multiply: 1/32767 for a plain value, 3/32767 for a value up to 3); its keys are the 16-byte entries
+[index, index + count) of 0xB1F4C248 (four s16 values at +0, +2, +4, +6, 0x7FFF being 1.0 before the scale, then a
+four-value spread at +8 that the spawn adds at random, its raw w choosing the random vector). With more than one key the
+value's raw w over 32767 is the key's time over the particle's normalised age, and the keys are interpolated linearly
+(``parameters`` keeps them as ``keys``; ``parameter_at`` evaluates them). The index differs from the entry number once an
+earlier entry has several keys (the health crate's idle effect from entry 10 on); every light-cone effect has single keys
+at their own index, so their readings are unchanged. The hash is
 not a name that can be reproduced. The evaluator is eboot function 0x170A3D0, the function that packs a particle for the
 GPU 0x170D940: it evaluates slots 0, 1, 3, 4 and 5 of the component at spawn (slots 2 and 6 are left to the per-frame
 evaluator 0x170A750). Slot 1 times slot 4 is the particle's tint, stored as three s16 words (x 1024) at +0x18 of the 48-byte
@@ -41,6 +46,14 @@ the sense of the names: on the colour-named flare effects of the game its RGB fo
 and in the warm and blue wide light cones it is the one entry in which the two effects differ. How its hue reaches the cone's
 colour, which the code above does not show (the tint carries no hue: Med (0.75, 0.75, 1.0), Small (0.375, 0.375, 0.5), both
 wide cones white), is not decoded.
+
+Slot numbering: the numbers above count the packer's evaluated descriptors, not the slot bytes. In slot-byte numbering
+(b0 at +0x108, as ``slots`` lists them and ``spawn_terms`` reads them) the packer evaluates b1, b2, b4, b5 and b6, and the
+particle colour at +0x18 is b2 x b5 with b4 the full quad size; this is captured on the health crate's idle-effect sprites.
+``mesh_colour`` indexes ``slots`` with the numbers above, so its ``tint`` is b1 x b4 (on the cones velocity 1 x the size
+term) and its ``hue`` is b5. That the cone colour is b2 x b5 is inferred and not checked against a captured cone draw, and it
+would change every cone's brightness (Med x0.44, Small x6, the wide cones x2.2 to x3), so the cone colour keeps its
+reading until a cone capture settles it.
 
 The light cones are the `gbl_amb_Light_Cone_*` effects. Each draws one cone model through a component with the model's
 id, with the additive two-sided material `gbl_amb_Light_Cone_Circular_Med` (flags 0x20D, a captured draw state,
@@ -131,12 +144,55 @@ def decode_effect(data):
                                    slots=list(struct.unpack_from('<7B', data, start + SLOT_LIST))))
     if PARAMETER_VALUES in table and PARAMETER_SCALES in table:
         values, scales = table[PARAMETER_VALUES], table[PARAMETER_SCALES]
-        for n in range(min(values[1], scales[1]) // 16):
-            raw = struct.unpack_from('<8h', data, values[0] + n * 16)
-            parameter_hash, scale = struct.unpack_from('<I', data, scales[0] + n * 16)[0], struct.unpack_from('<f', data, scales[0] + n * 16 + 12)[0]
-            parameters.append(dict(hash=parameter_hash, value=[v * scale for v in raw[:4]], spread=[v * scale for v in raw[4:]],
-                                   scale=scale))
+        for n in range(scales[1] // 16):
+            # Entry n of 0xD78E007C: (hash, value index, key count, scale); its keys are 0xB1F4C248 entries
+            # [index, index + count) (eboot 0x170A3D0 / 0x170A450).
+            parameter_hash, index, count = struct.unpack_from('<3I', data, scales[0] + n * 16)
+            scale = struct.unpack_from('<f', data, scales[0] + n * 16 + 12)[0]
+            if count < 1 or (index + count) * 16 > values[1]:
+                break
+            keys = [struct.unpack_from('<8h', data, values[0] + (index + k) * 16) for k in range(count)]
+            raw = keys[0]
+            parameters.append(dict(hash=parameter_hash, index=index, count=count, scale=scale,
+                                   value=[v * scale for v in raw[:4]], spread=[v * scale for v in raw[4:]],
+                                   keys=[dict(time=key[3] / 32767.0 if count > 1 else 0.0, value=[v * scale for v in key[:3]],
+                                              spread=[v * scale for v in key[4:7]], random=key[7]) for key in keys]))
     return dict(components=components, parameters=parameters)
+
+
+# Slot bytes b0..b6 (+0x108 + k) as the particle packer 0x170D940 evaluates them (descriptors at runtime +0x100, +0x140,
+# +0x1C0, +0x200, +0x240 are b1, b2, b4, b5, b6): b1 velocity term, b2 x b5 the particle colour P2 stored at particle +0x18,
+# b4 the full quad width and height, b6.x the alpha and b6.y the discard threshold (bytes over 255); b0 and b3 are evaluated
+# per frame. Captured on the health crate's idle-effect sprites (sizes and colours exactly).
+# Research/captures/2026-11-05_gaspar-crates/nanotech_verify/README.md (local).
+SLOT_VELOCITY, SLOT_COLOUR_A, SLOT_SIZE, SLOT_COLOUR_B, SLOT_ALPHA = 1, 2, 4, 5, 6
+
+
+def parameter_at(parameter, t=0.0):
+    """A parameter's xyz at the particle's normalised age t: its single key, or the keys interpolated linearly by their
+    times (the curve evaluator 0x170A450). The random spread is not applied."""
+    keys = parameter['keys']
+    if len(keys) == 1 or t <= keys[0]['time']:
+        return list(keys[0]['value'])
+    for a, b in zip(keys, keys[1:]):
+        if t <= b['time']:
+            f = (t - a['time']) / (b['time'] - a['time']) if b['time'] > a['time'] else 1.0
+            return [x + (y - x) * f for x, y in zip(a['value'], b['value'])]
+    return list(keys[-1]['value'])
+
+
+def spawn_terms(effect, component, t=0.0):
+    """The decoded spawn terms of one component at normalised age t, or None when a slot lists no parameter: ``colour``
+    (b2 x b5, the particle colour P2), ``size`` (b4 xy, full quad width and height), ``alpha`` and ``discard`` (b6 x, y)
+    and ``velocity`` (b1). The light cones' colour (mesh_colour) still reads its own slots; see that function."""
+    slots = effect['components'][component]['slots']
+    parameters = effect['parameters']
+    if max(slots[k] for k in (SLOT_VELOCITY, SLOT_COLOUR_A, SLOT_SIZE, SLOT_COLOUR_B, SLOT_ALPHA)) >= len(parameters):
+        return None
+    a, b = parameter_at(parameters[slots[SLOT_COLOUR_A]], t), parameter_at(parameters[slots[SLOT_COLOUR_B]], t)
+    size, alpha = parameter_at(parameters[slots[SLOT_SIZE]], t), parameter_at(parameters[slots[SLOT_ALPHA]], t)
+    return dict(colour=[x * y for x, y in zip(a, b)], size=size[:2], alpha=alpha[0], discard=alpha[1],
+                velocity=parameter_at(parameters[slots[SLOT_VELOCITY]], t))
 
 
 def effect_model_path(archive, effect_path):
@@ -260,4 +316,4 @@ def load_light_cones(archive, zone_paths):
 
 
 __all__ = ['cone_colour', 'decode_effect', 'decode_zone_effects', 'effect_model_path', 'is_light_cone', 'load_light_cones',
-           'material_opacity', 'mesh_colour', 'mesh_scale']
+           'material_opacity', 'mesh_colour', 'mesh_scale', 'parameter_at', 'spawn_terms']

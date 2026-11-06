@@ -74,7 +74,8 @@ def _times(scale, rgb):
 
 
 # One row per sprite component, in the captured draw order: kind, size (full w x h), P2, alpha a, discard threshold, and
-# whether the quad is a flare (centre pulled toward the camera, depth test off). Values: vfx_params_idle.log (decoded).
+# whether the quad is a flare (centre pulled toward the camera, depth test off). Values: vfx_params_idle.log (decoded);
+# rc2016.levels.effects.spawn_terms reads the same sizes, colours and alphas from the effect file.
 SPRITES = (
     dict(component=9, kind=GLOW_SPIN, size=(0.50166, 0.50166), colour=_times(20.0, _TEAL_GLOW), alpha=_byte(1.0),
          discard=_byte(0.00497), flare=False),
