@@ -408,6 +408,18 @@ Limitations:
 - The key-light direction `L` is read as `CB0` dwords 128-130 (direction to the light); that role follows from the half-vector form and is not confirmed against a capture. The viewer uses its rig or sun direction for it.
 - Roughness of the reflection, and the exact mix of probe and screen-space samples, are not decoded.
 
+### Health crate idle effect
+
+A model with the locator `igLoc_health_FX` (the health/nanotech crate; locator table section `0x9F614FAB`, read by `native_model.decode_locators`) shows a labelled preview of its idle effect `pup_health_crate_idle.visualeffect` in Shaded mode (`rc2016/viewer/idle_effect.py`, `shading.EFFECT_FRAGMENT`). The crate's actor conduit starts the effect at that joint; the wiring is read from the conduit's strings, not parsed. `game_equivalence` is false.
+
+**Decoded, and captured on the crate's own draws:** the origin (0, 0.5003, 0) in native model space; per sprite component the colour P2 = slot b2 x b5, the full quad size b4 and the alpha and discard bytes b6 (component 5 captured as 3.959 x 0.2189 units, alpha 18/255); the five sprite pixel programs (`EBC94A93` soft glow, `5FE9EF08` round flare, `B1310A54` square flare, `41E80E53` spinning glow, `094D0CAE` shockwave ring) with their masks and colour forms; alpha-over blending (SRC_ALPHA / ONE_MINUS_SRC_ALPHA) with depth test and no depth write, depth test off for the flares, whose centre moves 2.5 units toward the camera; the draw order spinning glow, soft glow, rings, orb glows, flares; the camera-distance fade sat((100 - d) / 25) on every alpha and on the light, and no effect beyond 100 units; the emitter curves (orb size 0.3906 to 0.0842, ring size 0.25 to 0, alpha 1 - t, ring discard t, colour 10 x (0.1505, 0.6939, 1.0)). A point light at the origin has the decoded hue (0.447, 0.786, 1.0) and the captured colour (0.100125, 0.176066, 0.224) in the game's light-record units; it lights the native and hand-rule surfaces of the model (`uPreviewLightPos` / `uPreviewLightColour` in the shared opaque lighting, zero for every other model).
+
+**Presentation values:** CB0[115] = 0.277088, captured in the Novalis frame (the Gaspar value is unknown); fog transmittance 1; unlit particles (L = 1); the soft-particle and shockwave depth terms 1, since the model viewer has no scene depth; shockwave instance colour 1; frame time CB0[99] = 0. The spinning glow's angle term is read as atan2 of the centred UV.
+
+**Inferred stand-ins, not decoded:** the emitters' spawn rate (10 per second), orb life (0.75 to 1.0 s), ring life (1.0 to 2.0 s) and drift speed (0.35 to 0.5 units per second), fitted to the captured particle counts and ages; the spin rate (360 degrees per second); a still frame at effect age 4 s with seeded spawn directions; the light radius (1 unit), its falloff (1 - d / R)^4 and a light-unit scale of 1.
+
+Not reproduced: what gates the round flares (components 1 to 4: decoded values, never captured), the per-frame slots b0 and b3 beyond the spin, bloom, the break effect and animation. Within 2.5 units of the camera the flares lie behind it, as in the game, so a close-up shows no flares. The soft glow core is HDR and tonemaps to near white over the crate's bright interior, as the Gaspar image shows.
+
 ## Animation playback
 
 `rc2016/viewer/animation.py` builds the clip library:

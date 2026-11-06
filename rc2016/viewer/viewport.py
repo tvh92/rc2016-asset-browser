@@ -729,6 +729,11 @@ class ModelViewport(_TkFrame):
             sh.glUniform3fv(u["uSH"], 9, state["sh"])
             sh.glUniform3f(u["uSunDir"], *state["sun_direction"])
             sh.glUniform3f(u["uSunColour"], *state["sun_colour"])
+        # Idle-effect light (idle_effect.billboards): view-space position, w = 1 / radius; off (zero colour) otherwise.
+        light = getattr(self, '_preview_light', None)
+        if u.get("uPreviewLightPos", -1) != -1:
+            sh.glUniform4f(u["uPreviewLightPos"], *((*light[0], 1.0 / light[2]) if light else (0.0, 0.0, 0.0, 0.0)))
+            sh.glUniform3f(u["uPreviewLightColour"], *(light[1] if light else (0.0, 0.0, 0.0)))
 
     def set_native_translation(self, enabled):
         self.native_translation = bool(enabled)
@@ -826,6 +831,8 @@ class ModelViewport(_TkFrame):
         self._draw()
 
     def _release_textures(self):
+        if getattr(self, '_effect_textures', None) and self._make_current():
+            self._release_effect_textures()
         if self._gl_textures and self._make_current():
             ids = list({entry[role][0] for entry in self._gl_textures.values()
                         for role in ("_c", "_g", "_n", "_pick", "_h", "_bng_detail", "_vehicle_p2", "_tint_detail",
@@ -1337,6 +1344,7 @@ class ModelViewport(_TkFrame):
         from rc2016.viewer.shading import TINT_DETAIL_TEXTURE_UNIT, ATTRIBUTES, STATIC_VECTOR_ATTRIBUTE, TANGENT_ATTRIBUTE, BONE_TEXTURE_UNIT, PICK_TEXTURE_UNIT, TINT_MASK_TEXTURE_UNIT, ARCH_SEQUENCE_TEXTURE_UNIT, BNG_DETAIL_TEXTURE_UNIT, VEHICLE_PALETTE_TEXTURE_UNIT, GLOW_PARALLAX_TEXTURE_UNIT, PARALLAX_HEIGHT_TEXTURE_UNIT
         gl, sh = self._gl, self._shading
         self.shading_warning = None
+        effect_quads = self._effect_frame()
         program, u, size = sh.program(self._bone_count or 1)
         sh.glUseProgram(program)
         self._apply_lighting(u)
@@ -1448,6 +1456,9 @@ class ModelViewport(_TkFrame):
                 self._draw_glass(index_array, glass, skin)
                 sh.glUseProgram(program)
             gl.glDisable(self.GL_POLYGON_OFFSET_FILL)
+            if level == 2 and effect_quads:
+                self._draw_effect_preview(effect_quads)
+                sh.glUseProgram(program)
         if mode in ("Wireframe", "Solid + wireframe"):
             sh.glUniform1i(u["uMode"], 3)
             sh.glUniform3f(u["uColor"], *((0.62, 0.78, 0.95) if mode == "Wireframe" else (0.12, 0.13, 0.15)))
@@ -1461,6 +1472,86 @@ class ModelViewport(_TkFrame):
         for location in ATTRIBUTES.values():
             sh.glDisableVertexAttribArray(location)
         sh.glUseProgram(0)
+
+    def _effect_frame(self):
+        """This frame's idle-effect quads (rc2016/viewer/idle_effect.py) in Shaded mode, and the effect light for
+        _apply_lighting; none for models without the igLoc_health_FX locator or beyond the 100-unit fade."""
+        self._preview_light = None
+        preview = (self._payload or {}).get('effect_preview')
+        if not preview or self._mode != 'Shaded':
+            return []
+        from rc2016.viewer.idle_effect import billboards
+        modelview = (ctypes.c_float * 16)()
+        self._gl.glGetFloatv.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+        self._gl.glGetFloatv(self.GL_MODELVIEW_MATRIX, modelview)
+        quads, self._preview_light = billboards(preview, list(modelview))
+        return quads
+
+    def _effect_textures_for(self, preview):
+        """GL textures of the effect's sprite images (noise, spin, ring), uploaded once per payload."""
+        cached = getattr(self, '_effect_textures', None)
+        if cached is None or cached[0] is not preview:
+            self._release_effect_textures()
+            uploaded = {}
+            for role, texture in (preview.get('textures') or {}).items():
+                try:
+                    uploaded[role] = self._upload_texture(texture, mipmaps=False)
+                except Exception:   # a refused format draws that sprite kind without its image
+                    uploaded[role] = 0
+            cached = self._effect_textures = (preview, uploaded)
+        return cached[1]
+
+    def _release_effect_textures(self):
+        cached = getattr(self, '_effect_textures', None)
+        self._effect_textures = None
+        ids = [name for name in (cached[1].values() if cached else ()) if name]
+        if ids:
+            self._gl.glDeleteTextures.argtypes = [ctypes.c_int, ctypes.c_void_p]
+            self._gl.glDeleteTextures(len(ids), (ctypes.c_uint * len(ids))(*ids))
+
+    def _draw_effect_preview(self, quads):
+        """The health crate's idle effect: view-space quads with the decoded sprite programs (EFFECT_FRAGMENT), alpha-over,
+        depth-tested without depth write (the flares with depth test off), after the panes and glass. A labelled preview:
+        idle_effect.PREVIEW_LIMITATIONS names the presentation values and inferred stand-ins."""
+        from rc2016.viewer.idle_effect import MASK_WEIGHT
+        gl, sh = self._gl, self._shading
+        preview = self._payload['effect_preview']
+        textures = self._effect_textures_for(preview)
+        program, u = sh.effect_program()
+        sh.glUseProgram(program)
+        self._apply_lighting(u)
+        for unit, role, name in ((0, 'noise', 'uEffectNoise'), (1, 'spin', 'uEffectSpin'), (2, 'ring', 'uEffectRing')):
+            sh.glActiveTexture(self.GL_TEXTURE0 + unit)
+            gl.glBindTexture(self.GL_TEXTURE_2D, textures.get(role, 0))
+            sh.glUniform1i(u[name], unit)
+        sh.glActiveTexture(self.GL_TEXTURE0)
+        sh.glUniform1f(u['uEffectAmplitude'], float(preview['amplitude']))
+        gl.glBlendFunc.argtypes = [ctypes.c_uint, ctypes.c_uint]; gl.glDepthMask.argtypes = [ctypes.c_ubyte]
+        gl.glVertex3f.argtypes = [ctypes.c_float] * 3; gl.glTexCoord2f.argtypes = [ctypes.c_float] * 2
+        gl.glEnable(self.GL_BLEND); gl.glBlendFunc(self.GL_SRC_ALPHA, self.GL_ONE_MINUS_SRC_ALPHA)
+        gl.glDepthMask(0); gl.glDisable(self.GL_CULL_FACE)
+        gl.glMatrixMode(self.GL_MODELVIEW); gl.glPushMatrix(); gl.glLoadIdentity()   # quads are in view space
+        try:
+            for quad in quads:
+                if quad['depth_test']:
+                    gl.glEnable(self.GL_DEPTH_TEST)
+                else:
+                    gl.glDisable(self.GL_DEPTH_TEST)
+                sh.glUniform1i(u['uEffectKind'], quad['kind'])
+                sh.glUniform3f(u['uEffectColour'], *quad['colour'])
+                sh.glUniform1f(u['uEffectAlpha'], quad['alpha'])
+                sh.glUniform1f(u['uEffectDiscard'], quad['discard'])
+                sh.glUniform1f(u['uEffectMaskWeight'], MASK_WEIGHT.get(quad['kind'], 0.0))
+                gl.glBegin(0x0007)   # GL_QUADS
+                for (x, y, z), (s, t) in quad['corners']:
+                    gl.glTexCoord2f(s, t); gl.glVertex3f(x, y, z)
+                gl.glEnd()
+        finally:
+            gl.glPopMatrix()
+            gl.glEnable(self.GL_DEPTH_TEST); gl.glDepthMask(1); gl.glDisable(self.GL_BLEND)
+            for unit in (2, 1, 0):
+                sh.glActiveTexture(self.GL_TEXTURE0 + unit)
+                gl.glBindTexture(self.GL_TEXTURE_2D, 0)
 
     def _unbind_material_units(self):
         self._shading.glActiveTexture(self.GL_TEXTURE0+14);self._gl.glBindTexture(self.GL_TEXTURE_2D,0)

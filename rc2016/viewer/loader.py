@@ -99,6 +99,21 @@ def _mesh_payload_arrays(decoded, meshes, selected):
                 source_exact_geometry=True,game_equivalence=False,material_preview='neutral geometry inspection')
 
 
+def _effect_preview(archive, data):
+    """The labelled idle-effect preview (rc2016.viewer.idle_effect) of a model with the igLoc_health_FX locator, with
+    its sprite textures loaded; None for other models or when the locator table or a texture cannot be read."""
+    try:
+        from rc2016.formats.native_model import decode_locators
+        from rc2016.viewer.idle_effect import effect_preview
+        from rc2016.viewer.textures import load_texture
+        preview=effect_preview(decode_locators(data))
+        if preview:
+            preview['textures']={role:load_texture(archive,path) for role,path in preview['texture_paths'].items()}
+        return preview
+    except (ValueError,KeyError,IndexError,OSError):
+        return None
+
+
 def mesh_payload(decoded, lod='Highest', look=0):
     from rc2016.formats.native_model import _selected_meshes
     selected=set(_selected_meshes(decoded['looks'],decoded['mesh_record_count'],lod,look))
@@ -450,8 +465,9 @@ class SourcePreviewLoader:
                 except (ValueError,KeyError,OSError) as error:
                     row.update(format_name='unreadable',error=str(error))
             decoded['material_rules']=material_rules(archive,decoded['materials'],translations)
+            decoded['effect_preview']=_effect_preview(archive,data)
         else:
-            decoded.update(textures={},texture_list=[],material_rules={})
+            decoded.update(textures={},texture_list=[],material_rules={},effect_preview=None)
         decoded['_archive_path']=source_path;decoded['animation_note']='';decoded['animsets']=[]
         return dict(decoded=decoded,data=data,purpose=purpose,animation=None,animation_built=None,build_lock=threading.Lock(),
                     vertices=sum(len(m['positions']) for m in decoded['meshes']))
@@ -500,6 +516,7 @@ class SourcePreviewLoader:
             return info
         result=mesh_payload(current,lod,look)
         result.update(info,textures=current['textures'],texture_list=current['texture_list'],
+            effect_preview=current.get('effect_preview'),
             materials=[dict(index=m.get('index',i),name=m.get('name'),path=m.get('path'),**current['material_rules'].get(m.get('path'),{}))
                        for i,m in enumerate(current['materials'])],
             limitation='Native bind/rest geometry only. Neutral viewer shading; no runtime material, animation, attachment or game-equivalence claim.')

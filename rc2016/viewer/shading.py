@@ -419,12 +419,23 @@ vec3 ggx(vec3 N, vec3 V, vec3 L, vec3 F0, vec3 F90, float a) {
     vec3 F = F0 + (F90 - F0) * pow(1.0 - max(dot(V, H), 0.0), 5.0);
     return D * G * F / max(4.0 * NdL * NdV, 1e-4) * NdL;
 }
+// Model-viewer effect light (rc2016/viewer/idle_effect.py, the health crate's idle-effect light): view-space position,
+// w = 1 / radius, and colour; zero colour (the default) is off. Radius, falloff (1 - d/R)^4 and the unit scale are
+// inferred stand-ins; only the hue and the captured colour are game values.
+uniform vec4 uPreviewLightPos; uniform vec3 uPreviewLightColour;
+float previewLightWeight(out vec3 L) {
+    vec3 delta = uPreviewLightPos.xyz - vPos; float d = length(delta);
+    L = delta / max(d, 0.0001);
+    return pow(clamp(1.0 - d * uPreviewLightPos.w, 0.0, 1.0), 4.0);
+}
 // Shared surface lighting: hand rules and native DAGs use identical closures.
 vec3 deferredDiffuse(vec3 N, vec3 albedo) {
     if (!uLightingEnabled) return albedo;
 #ifndef RC_SCENE_EFFECTS
-    return albedo * (max(dot(N, rigKey()), 0.0) * keyColour()
-        + max(dot(N, rigFill()), 0.0) * fillColour() + ambientLight(N)) / PI * diffuseScale();
+    vec3 previewL; float previewW = previewLightWeight(previewL);
+    return albedo * ((max(dot(N, rigKey()), 0.0) * keyColour()
+        + max(dot(N, rigFill()), 0.0) * fillColour() + ambientLight(N)) / PI * diffuseScale()
+        + uPreviewLightColour * previewW * max(dot(N, previewL), 0.0));
 #else
     sceneCaptureNormal=N;float A=sceneAO();float NdK=max(dot(N,rigKey()),0.0),Sh=sceneShadow(vPos,N);
     vec3 D=(NdK*keyColour()*Sh
@@ -444,9 +455,11 @@ vec3 deferredSpecular(vec3 N, vec3 V, vec3 F0, float gloss) {
     vec3 F90 = clamp(60.0 * F0, 0.0, 1.0);
     float a = pow(2.0, -5.5 * gloss);
 #ifndef RC_SCENE_EFFECTS
+    vec3 previewL; float previewW = previewLightWeight(previewL);
     return ggx(N,V,rigKey(),F0,F90,a)*keyColour()
         + ggx(N,V,rigFill(),F0,F90,a)*fillColour()
-        + envSpecular(N,V,F0,F90,a,ambientLight(N));
+        + envSpecular(N,V,F0,F90,a,ambientLight(N))
+        + ggx(N,V,previewL,F0,F90,a)*uPreviewLightColour*previewW;
 #else
     vec3 S=ggx(N,V,rigKey(),F0,F90,a)*keyColour()*sceneShadow(vPos,N)
         + ggx(N,V,rigFill(),F0,F90,a)*fillColour()
@@ -1977,7 +1990,7 @@ OPAQUE_UNIFORMS = (
     "uTintVariant", "uTintPalette", "uTintPaletteBlend", "uTintDetailP", "uTintWorldOrigin",
     "uTexTintDetail", "uHasTintDetail", "uSrgbTintDetail", "uTexH", "uHasH", "uArchSequence", "uTexSequence", "uHasSequence", "uArchColour", "uArchP", "uArchPhase",
     "uFacingGlow", "uFacingGlowP", "uFacingGlowQ", "uZurkon", "uZurkonP", "uZurkonQ", "uZurkonGlow", "uZurkonTint", "uSrgbZurkonTint", "uBrightCentre", "uBrightWhite", "uBrightEdge", "uBrightColour", "uBrightP",
-    "uSceneGeometry", *LIGHTING_UNIFORMS)
+    "uSceneGeometry", "uPreviewLightPos", "uPreviewLightColour", *LIGHTING_UNIFORMS)
 GLASS_UNIFORMS = ("uSkin", "uBoneTex", "uBoneWidth", "uKind", "uA", "uB", "uC", "uD", "uE",
                   "uWaterHeightA", "uWaterHeightB", "uHasWaterHeights", "uTexN", "uHasN", "uTexP", "uHasP", "uSrgbP",
                   "uW", "uWaterFoamA", "uWaterFoamB", "uHasWaterFoam", "uWaterFoamSrgbA", "uWaterFoamSrgbB",
@@ -2207,6 +2220,62 @@ void main() {
 }
 """.replace("// @lighting\n", LIGHTING + FOG)
 BEAM_UNIFORMS = (*LIGHTING_UNIFORMS, "uBeamNoise", "uBeamDepth", "uBeamViewport", "uBeamNearFar", "uBeamTime")
+
+
+# Model-viewer idle-effect sprites (rc2016/viewer/idle_effect.py): the decoded pixel programs of the health crate's
+# pup_health_crate_idle effect, drawn as view-space quads alpha-over (SRC_ALPHA / ONE_MINUS_SRC_ALPHA), tonemapped per
+# fragment as the glass is. uEffectKind: 0 glow_simp_soft EBC94A93, 1 flare_round 5FE9EF08, 2 flare_square B1310A54,
+# 3 glow_spin 41E80E53, 4 shockwave 094D0CAE. P2 = uEffectColour, a = uEffectAlpha (with the distance fade),
+# attribute0.z = uEffectDiscard, A = uEffectAmplitude (CB0[115], a presentation value). Taken as 1 (labelled): fog
+# transmittance Tf, the lit-path factor L (unlit particles), the soft-depth term and the shockwave depth term (no scene
+# depth here) and the shockwave instance colour rec[44..46]; the frame time CB0[99] is 0.
+EFFECT_VERTEX = """
+#version 120
+varying vec2 vUV;
+void main() { vUV = gl_MultiTexCoord0.xy; gl_Position = gl_ProjectionMatrix * gl_Vertex; }
+"""
+EFFECT_FRAGMENT = """
+#version 120
+const float PI = 3.14159265;
+varying vec2 vUV;
+// @lighting
+uniform int uEffectKind; uniform vec3 uEffectColour; uniform float uEffectAlpha; uniform float uEffectDiscard;
+uniform float uEffectAmplitude; uniform float uEffectMaskWeight;
+uniform sampler2D uEffectNoise; uniform sampler2D uEffectSpin; uniform sampler2D uEffectRing;
+void main() {
+    vec2 c = vUV - 0.5; float r = length(c);
+    float A = uEffectAmplitude, L = 1.0, soft = 1.0;
+    float g = clamp(1.001001 * pow(abs(1.0 - r), 10.0) - 0.0010010011, 0.0, 1.0);
+    vec3 rgb; float alpha;
+    if (uEffectKind == 0) {          // EBC94A93: discard g < 1e-5; rgb = 2A P2 (0.45 g + L)
+        if (g < 1e-5) discard;
+        rgb = 2.0 * A * uEffectColour * (uEffectMaskWeight * g + L); alpha = clamp(uEffectAlpha * clamp(g * soft, 0.0, 1.0), 0.0, 1.0);
+    } else if (uEffectKind == 1) {   // 5FE9EF08: discard g < 1e-3; rgb = 2A P2 L
+        if (g < 0.001) discard;
+        rgb = 2.0 * A * uEffectColour * L; alpha = clamp(uEffectAlpha * g, 0.0, 1.0);
+    } else if (uEffectKind == 2) {   // B1310A54: g = sat(4 sat(0.4 u(1-u)) sat(v(1-v))); rgb = 2A P2 (1.0 g + L)
+        float q = clamp(4.0 * clamp(0.4 * (vUV.x - vUV.x * vUV.x), 0.0, 1.0) * clamp(vUV.y - vUV.y * vUV.y, 0.0, 1.0), 0.0, 1.0);
+        if (q < 0.001) discard;
+        float s = q * soft;
+        rgb = 2.0 * A * uEffectColour * (uEffectMaskWeight * s + L); alpha = clamp(uEffectAlpha * s, 0.0, 1.0);
+    } else if (uEffectKind == 3) {   // 41E80E53: noise-warped spin texture, radial falloff; rgb = P2 (L + 1), no A
+        float n = texture2D(uEffectNoise, vec2(0.15913431 * atan(c.y, c.x), 4.95 * r)).r;
+        float m = texture2D(uEffectSpin, vUV + 0.1 * n).r;
+        m = clamp(m - m * clamp(1.5384616 * sqrt(r), 0.0, 1.0), 0.0, 1.0);
+        if (m < uEffectDiscard) discard;
+        rgb = uEffectColour * (L + 1.0); alpha = clamp(uEffectAlpha * m, 0.0, 1.0);
+    } else {                         // 094D0CAE: ring texture; k = A C.r P2.r, R = 2k (2k + L), G/B = 2A P2 (2k + L)
+        float m = clamp(texture2D(uEffectRing, vUV).r, 0.0, 1.0);
+        if (m < uEffectDiscard) discard;
+        float k = A * uEffectColour.r;
+        rgb = vec3(2.0 * k, 2.0 * A * uEffectColour.g, 2.0 * A * uEffectColour.b) * (2.0 * k + L);
+        alpha = clamp(uEffectAlpha * m, 0.0, 1.0);
+    }
+    gl_FragColor = vec4(display(rgb), alpha);
+}
+""".replace("// @lighting\n", LIGHTING)
+EFFECT_UNIFORMS = (*LIGHTING_UNIFORMS, "uEffectKind", "uEffectColour", "uEffectAlpha", "uEffectDiscard", "uEffectAmplitude",
+                   "uEffectMaskWeight", "uEffectNoise", "uEffectSpin", "uEffectRing")
 
 
 # Level viewer scorch-mark decals (rc2016.levels.decals): the zone's pre-clipped `wpn_explosion_scorchmark` meshes, drawn after the
@@ -2490,6 +2559,12 @@ class Shading:
         if "beam" not in self.programs:
             self.programs["beam"] = self._link(BEAM_VERTEX, BEAM_FRAGMENT, {}, BEAM_UNIFORMS)
         return self.programs["beam"]
+
+    def effect_program(self):
+        """Model-viewer idle-effect sprites (EFFECT_FRAGMENT, rc2016/viewer/idle_effect.py)."""
+        if "effect" not in self.programs:
+            self.programs["effect"] = self._link(EFFECT_VERTEX, EFFECT_FRAGMENT, {}, EFFECT_UNIFORMS)
+        return self.programs["effect"]
 
     def scorch_program(self):
         """Level viewer scorch-mark decals (SCORCH_FRAGMENT)."""

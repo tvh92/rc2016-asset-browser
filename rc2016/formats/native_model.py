@@ -179,6 +179,31 @@ def _chunk(data, sections, tag, required=False):
     return data[start:end]
 
 
+LOCATOR_SECTION = 0x9F614FAB
+LOCATOR_RECORD = 64
+
+
+def decode_locators(data):
+    """The model's locators (section 0x9F614FAB, 64-byte records): ``name`` (the string the u32 at +4 points to in the
+    model's string pool), ``hash`` (u32 +0), ``joint`` (u32 +8), ``rotation`` (3x3 floats, words 4..12, row major as
+    stored) and ``position`` (floats 13..15, native Y-up model space). The health crate's 21 records read this way
+    (igLoc_chunk00..19, igLoc_health_FX at (0, 0.5003, 0) with an identity rotation); word 3 is 0 there and not
+    interpreted. A model without the section has none."""
+    sections = _sections(data)
+    raw = _chunk(data, sections, LOCATOR_SECTION)
+    if len(raw) % LOCATOR_RECORD:
+        raise ValueError('Locator table is not a multiple of 64 bytes')
+    start, end = sections['_string_bounds']
+    result = []
+    for offset in range(0, len(raw), LOCATOR_RECORD):
+        name_hash, name_ptr, joint = struct.unpack_from('<3I', raw, offset)
+        words = struct.unpack_from('<16f', raw, offset)
+        result.append(dict(name=_cstring(data, name_ptr, start, end), hash=name_hash, joint=joint,
+                           rotation=[list(words[4:7]), list(words[7:10]), list(words[10:13])],
+                           position=list(words[13:16])))
+    return result
+
+
 def _materials(data, section, string_bounds):
     if len(section) % 32:
         raise ValueError('Material table is not a multiple of 32 bytes')
