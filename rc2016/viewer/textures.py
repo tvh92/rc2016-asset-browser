@@ -80,13 +80,19 @@ GLASS_PATTERNED_GRAPH_SHA256 = '0c2dacac4e75df1d9491d9e4341ab6e1a5c2800abf593544
 GLASS_PATTERNED_ADD_CONSTANTS = dict(glow_colour=(0.0, 0.0, 0.0), amplitude=0.0, writer='90542658',
     frozen_inputs=dict(CB0_95=1.0, instance_fade=0.0, attr0_w=1.0, instance_flags=0x40), game_equivalence=False)
 # Health (nanotech) crate window panes: the alpha_over material of required/materials/health_crate.materialgraph is the body
-# surface (deferred writer E5F05839) drawn see-through. The game's forward programs BCE8624F / EC04A1EB (pass 0 / pass 1) output
-# alpha = sat(sat(_c.a) * attribute0.w) and discard below attribute0.z; attribute0.w = 1 from render-state byte 22 = 0xFF, and the
-# 4/255 discard threshold is the taxi-glass capture's value (not captured for this crate). The pane draw is in neither Gaspar
-# capture, so nothing is checked against captured pixels. Research/captures/2026-11-05_gaspar-crates/health/README.md (local).
+# surface drawn see-through. At viewing distance that surface is the pass-0 writer 5C03EF34 with its tangent normal
+# (bindings.HEALTH_CRATE_PASS0_SOURCE_PREVIEW; the pass choice is inferred from the distance fade words). The forward pane
+# programs BCE8624F (pass 0, near) / EC04A1EB (pass 1, far) output alpha = sat(sat(_c.a) * attribute0.w) and discard below
+# attribute0.z, with attribute0.z = rec[67] and attribute0.w = rec[66] of the instance record. Captured on all 7 crate pane
+# records (pass 1, crates at 60..143 u in three captures): flags 0x61 (lit, no SSR, no dissolve), rec[66] = 1.0,
+# rec[67] = 4/255; SRC_ALPHA / ONE_MINUS_SRC_ALPHA, depth test, no depth write, back faces culled, no pre-pass.
+# Research/captures/2026-11-05_gaspar-crates/nanotech_verify/README.md (local).
 HEALTH_CRATE_GRAPH = 'required/materials/health_crate.materialgraph'
 HEALTH_CRATE_GRAPH_SHA256 = '40d111aa045c9d5c0fdb3ace0278c996a85e97996d277ca3c58470cb0e5df9f1'
 HEALTH_PANE_DISCARD = 4.0 / 255.0
+HEALTH_PANE_OPACITY = 1.0
+HEALTH_PANE_CAPTURED = dict(program='EC04A1EB', pass_index=1, records=7, instance_flags=0x61, rec66=1.0, rec67=4.0 / 255.0,
+                            blend='SRC_ALPHA/ONE_MINUS_SRC_ALPHA', depth_write=False, cull='back', view_depth=[60.0, 143.4])
 # hair_newspec_01 forward colour pass (pass 0, pixel program 94CE8CCE; serialized resources api5/6/7 = _c/_g/_n).
 # _c is sampled for alpha only (coverage, dmask 8); the albedo is the material vec3 A (CB2 dw0-2), F0 = B (dw4-6) * _g.G
 # and the gloss argument is 0.71 * _g.R, both scaled by w = 1 - sat((1.001 - |N.V|)^E) (E = dw9, geometry normal);
@@ -1796,10 +1802,12 @@ def material_texture_paths(archive, material_path: str) -> dict:
     if (graph_hashes.get(HEALTH_CRATE_GRAPH) == HEALTH_CRATE_GRAPH_SHA256
             and blend_state(material_flags(data))['blend'] == 'alpha_over'):
         result['alpha_pane'] = dict(
-            graph_path=HEALTH_CRATE_GRAPH, graph_sha256=HEALTH_CRATE_GRAPH_SHA256, writers=['BCE8624F', 'EC04A1EB'],
-            alpha_api=5, discard=HEALTH_PANE_DISCARD,
-            reason='alpha_over material of the health crate graph: the body surface with alpha = sat(_c.a) (forward programs '
-                   'BCE8624F/EC04A1EB); light loop, fog and the exact discard threshold are not applied')
+            graph_path=HEALTH_CRATE_GRAPH, graph_sha256=HEALTH_CRATE_GRAPH_SHA256, writers=['BCE8624F'],
+            surface_writer='5C03EF34', alpha_api=5, discard=HEALTH_PANE_DISCARD, opacity=HEALTH_PANE_OPACITY,
+            captured=dict(HEALTH_PANE_CAPTURED),
+            reason='alpha_over material of the health crate graph: the pass-0 body surface (5C03EF34, tangent normal) with '
+                   'alpha = sat(_c.a) (close-range forward program BCE8624F); discard 4/255, opacity 1 and flags 0x61 are '
+                   'captured on the crate panes (pass 1, EC04A1EB, at 60..143 u); light loop and fog are not applied')
     return result
 
 

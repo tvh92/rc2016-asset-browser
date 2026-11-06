@@ -366,6 +366,20 @@ def _lowered(program):
 
 
 VERTEX_FRAME_KINDS=('vertex_normal','vertex_tangent','vertex_handedness')
+# Normal-slice transport named by an exact source preview ('normal': 'tangent'): the decoded vertex tangent (+12 word) with
+# the stored bitangent sign (int16 position w) instead of the UV-derivative frame (viewer) / UV0 tangent (Blender).
+VERTEX_TANGENT_FRAME='vertex_tangent_position_w_sign'
+
+
+def _preview_input_nodes(ir,preview_input):
+    """Nodes an exact source-preview input freezes: a constant-buffer word (kind 'cb', api, dword) or one typed-buffer
+    load of the matched writer (kind 'tbuffer': TBUFFER_LOAD_FORMAT_X at its code offset through descriptor api)."""
+    if preview_input['kind']=='tbuffer':
+        return [i for i,n in enumerate(list(ir.nodes)) if n['op']=='unsupported'
+                and n.get('reason')=='TBUFFER_LOAD_FORMAT_X' and n.get('offset')==preview_input['code_offset']
+                and ((n.get('buffer_access') or {}).get('descriptor_proof') or {}).get('api')==preview_input['api']]
+    return [i for i,n in enumerate(list(ir.nodes)) if n['op']=='input' and n.get('kind')==preview_input['kind']
+            and n.get('api')==preview_input['api'] and n.get('dword')==preview_input['dword']]
 
 
 def _handedness_sign(ir,i,attribute=3):
@@ -425,6 +439,12 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
             'source preview uses the geometry normal instead.')
         lowered['limitations']=[l for l in lowered['limitations'] if not l.startswith('Native tangent-normal slice is used')]
         normal=None
+    if source_preview_policy and source_preview_policy.get('normal')=='tangent':
+        # Keep the recovered slice and transport it with the decoded vertex tangent and stored bitangent sign.
+        if not normal:raise ValueError('Exact source preview expects a tangent-normal slice the writer does not have')
+        normal=dict(normal,frame=VERTEX_TANGENT_FRAME)
+        lowered['limitations']=[l for l in lowered['limitations'] if not l.startswith('Native tangent-normal slice is used')]
+        lowered['limitations'].append(source_preview_policy['normal_limitation'])
     roots=[*outputs['albedo'],*outputs['F0'],outputs['gloss'],outputs['emission']]
     if normal:roots+=normal['xyz']
     substitutions={i:ir.const(values[n['dword']]) for i,n in enumerate(list(ir.nodes))
@@ -432,13 +452,10 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
     if source_preview_policy:
         # The primary input plus any further frozen engine words the exact policy names (extra_inputs).
         for preview_input in (source_preview_policy['input'],*source_preview_policy.get('extra_inputs',())):
-            substitutions.update({i:ir.const(preview_input['value']) for i,n in enumerate(list(ir.nodes))
-                if n['op']=='input' and n.get('kind')==preview_input['kind'] and
-                   n.get('api')==preview_input['api'] and n.get('dword')==preview_input['dword']})
-            if not any(n['op']=='input' and n.get('kind')==preview_input['kind'] and
-                       n.get('api')==preview_input['api'] and n.get('dword')==preview_input['dword']
-                       for n in ir.nodes):
+            matched=_preview_input_nodes(ir,preview_input)
+            if not matched:
                 raise ValueError('Exact source preview input is absent from the matched writer')
+            substitutions.update({i:ir.const(preview_input['value']) for i in matched})
         lowered['limitations'].extend(extra['limitation'] for extra in source_preview_policy.get('extra_inputs',()))
         if 'selector' in source_preview_policy:
             selector=source_preview_policy['selector']
@@ -451,7 +468,7 @@ def _bind(program,contract,material_data,instance,world_position=False,normal_at
                 parameter_row.get('values')!=parameter['values'] or parameter_row.get('source')!=parameter['source']):
                 raise ValueError('Exact source preview parameter differs from the serialized material and graph table')
         label=source_preview_policy.get('label','Source material')
-        lowered['limitations'].append(
+        lowered['limitations'].append(source_preview_policy['input'].get('limitation') or
             f'{label} source preview: CB0[99] is frozen at 0 as a time/phase presentation input; '
             'the engine upload and runtime value are unverified.')
         if source_preview_policy['graph_path']==CONSTRUCTO_BUTTON_SOURCE_PREVIEW['graph_path']:
@@ -907,11 +924,58 @@ EXPLOSIVE_CRATE_LIGHT_SOURCE_PREVIEW=dict(
     normal='geometry',preferred=True,
     label='Explosive crate light')
 
+# Health (nanotech) crate at viewing distance: the pass-0 deferred writer 0x5c03ef34 (contract 0, record 4) instead of the
+# far variant 0xe5f05839, which has no normal map. The game picks the pass per instance by distance (pass 0 drawn near,
+# pass 1 at 60..143 u in every captured crate draw); that the close-up runs pass 0 is inferred from the fade words, not
+# captured. The writer's normal is x, y = s (_n.rg - 0.5), z = 1 - x^2 - y^2 with s = 2 CB0[95] (1 - fade) and
+# fade = sat(rec[62] + POS_W rec[63]) from two instance-record reads. Freezing CB0[95] = 1 (captured), rec[62] = -7/3
+# (captured in every record) and rec[63] = 0 (the distance term dropped) gives fade = 0 and s = 2, so x, y = 2 rg - 1, the
+# close-range reading. Both crate materials (opaque body, alpha-over panes) run this graph and are gated by exact hash.
+# Research/captures/2026-11-05_gaspar-crates/nanotech_full/README.md and nanotech_verify/README.md (local).
+HEALTH_CRATE_BODY_MATERIAL='material/environment/global/gameplay/gbl_gp_crate_nanotech_01/gbl_gp_crate_nanotech_01.material'
+HEALTH_CRATE_PANE_MATERIAL='material/environment/global/gameplay/gbl_gp_crate_nanotech_01/gbl_gp_crate_nanotech_alpah_01.material'
+HEALTH_CRATE_PASS0_SOURCE_PREVIEW=dict(
+    graph_path='required/materials/health_crate.materialgraph',
+    graph_sha256='40d111aa045c9d5c0fdb3ace0278c996a85e97996d277ca3c58470cb0e5df9f1',
+    material_path=HEALTH_CRATE_BODY_MATERIAL,
+    material_sha256='d32592708cc863b89f3b38800bd226613a228a811f74da8b9a383077b64b1a0e',
+    # Every material the policy admits, by exact hash (the body above and the window panes).
+    materials={HEALTH_CRATE_BODY_MATERIAL:'d32592708cc863b89f3b38800bd226613a228a811f74da8b9a383077b64b1a0e',
+               HEALTH_CRATE_PANE_MATERIAL:'5ccb21f73186bb2bdf4f52d5c917361f90b30dfdd60abc6faed686b980e3f4a8'},
+    shader_id='0x5c03ef34',
+    code_sha256='35bdb100f5f51a08a1e09d1774917970881c8d45897c439dff752c9b771b0dcd',
+    input=dict(kind='cb',api=0,dword=95,value=1.0,name='CB0[95]',
+        meaning='normal-map strength scale; 1 in every captured frame; the per-frame upload is not read',
+        limitation='Health crate pass-0 source preview: CB0[95] (normal-map strength s = 2 CB0[95] (1 - fade)) is frozen '
+            'at 1, its value in every captured frame including the crate draws; the per-frame upload is not read.'),
+    extra_inputs=[
+        dict(kind='tbuffer',api=1,code_offset=404,dword=None,value=-7.0/3.0,name='instance rec[62]',
+            meaning='normal fade bias; -7/3 in every captured instance record',
+            limitation='Instance word rec[62] (normal fade bias, TBUFFER load at code offset 404) is frozen at -7/3, its '
+                'value in every captured instance record; the per-draw read is not made.'),
+        dict(kind='tbuffer',api=1,code_offset=396,dword=None,value=0.0,name='instance rec[63]',
+            meaning='normal fade slope per unit POS_W; 0 drops the distance fade (close-range reading)',
+            limitation='Instance word rec[63] (normal fade slope, TBUFFER load at code offset 396, 0.07..0.11 captured) is '
+                'frozen at 0, so fade = sat(-7/3) = 0 and the normal map is at full strength: the close-range reading. '
+                'The distance fade and the pass-1 switch (0xe5f05839, no normal map) are not modelled.')],
+    normal='tangent',
+    normal_limitation='Health crate pass-0 normal: the recovered _n slice (x, y = 2 rg - 1, linear z = 1 - x^2 - y^2) is '
+        'transported by the decoded vertex tangent with the bitangent sign of the stored int16 position w (vertex program '
+        '0x59bb3ae4; its two per-draw factors taken as 1) in the viewer. Blender uses the UV0 tangent; its handedness '
+        'follows the UV winding, which matches the stored sign on 6180 of 6192 crate vertex corners. Geometric AA = 1.',
+    preferred=True,
+    label='Health crate pass 0')
+
 SOURCE_PREVIEW_POLICIES={rule['graph_path']:rule for rule in
     (CONSTRUCTO_BUTTON_SOURCE_PREVIEW,WARBOT_V3_EYE_SOURCE_PREVIEW,EXTERMITANK_HOSES_SOURCE_PREVIEW,
      TRESPASSER_SCREEN_SOURCE_PREVIEW,PIXELIZER_BARREL_SOURCE_PREVIEW,PLASMA_STRIKER_SCOPE_SOURCE_PREVIEW,
      MAG_BOOT_FAN_SOURCE_PREVIEW,GAUGE_NEEDLE_SOURCE_PREVIEW,MAP_O_MATIC_SCREEN_SOURCE_PREVIEW,
-     EXPLOSIVE_CRATE_LIGHT_SOURCE_PREVIEW)}
+     EXPLOSIVE_CRATE_LIGHT_SOURCE_PREVIEW,HEALTH_CRATE_PASS0_SOURCE_PREVIEW)}
+
+
+def _policy_materials(rule):
+    """{material path: sha256} an exact policy admits."""
+    return dict(rule.get('materials') or {rule['material_path']:rule['material_sha256']})
 
 
 def _source_preview_policy(graph_paths, graph_sha256, material_path, material_sha256, program):
@@ -924,16 +988,18 @@ def _source_preview_policy(graph_paths, graph_sha256, material_path, material_sh
         return None
     rule=SOURCE_PREVIEW_POLICIES.get(normalized_graph)
     if not rule:return None
+    materials=_policy_materials(rule)
     if (normalized_graph!=rule['graph_path'] or graph_sha256!=rule['graph_sha256'] or
-        normalized_material!=rule['material_path'] or material_sha256!=rule['material_sha256'] or
+        normalized_material not in materials or material_sha256!=materials[normalized_material] or
         program.get('shader_id')!=rule['shader_id'] or program.get('code_sha256')!=rule['code_sha256']):
         return None
-    return dict(rule)
+    return dict(rule,material_path=normalized_material,material_sha256=material_sha256)
 
 
 def _extra_input_receipts(rule):
     """Receipt rows for the further frozen engine words of a policy; each names its own meaning."""
     return [dict(name=e['name'],kind=e['kind'],api=e['api'],dword=e['dword'],value=e['value'],
+        **({'code_offset':e['code_offset']} if 'code_offset' in e else {}),
         graph_path=rule['graph_path'],graph_sha256=rule['graph_sha256'],
         material_path=rule['material_path'],material_sha256=rule['material_sha256'],
         shader_id=rule['shader_id'],code_sha256=rule['code_sha256'],meaning=e['meaning'])
@@ -946,12 +1012,15 @@ def validate_source_preview_inputs(translation):
     if not rows:return True
     rule=SOURCE_PREVIEW_POLICIES.get(rows[0].get('graph_path'))
     if not rule:raise ValueError('Source preview input names an unregistered graph')
+    materials=_policy_materials(rule)
+    if rows[0].get('material_path') in materials:
+        rule=dict(rule,material_path=rows[0]['material_path'],material_sha256=materials[rows[0]['material_path']])
     expected=dict(name=rule['input']['name'],kind=rule['input']['kind'],api=rule['input']['api'],
         dword=rule['input']['dword'],value=rule['input']['value'],graph_path=rule['graph_path'],
         graph_sha256=rule['graph_sha256'],material_path=rule['material_path'],
         material_sha256=rule['material_sha256'],shader_id=rule['shader_id'],
         code_sha256=rule['code_sha256'],
-        meaning='time/phase-like source input; runtime upload/value unverified')
+        meaning=rule['input'].get('meaning','time/phase-like source input; runtime upload/value unverified'))
     if 'selector' in rule:
         expected.update(selector_key_hash='0x%08X'%rule['selector']['key_hash'],selector_value=rule['selector']['value'])
     if rule.get('parameters'):
@@ -1059,7 +1128,7 @@ def prepare_translation(graph_datas,material_data,instance,world_position=False,
             graph_path=rule['graph_path'],graph_sha256=rule['graph_sha256'],
             material_path=rule['material_path'],material_sha256=rule['material_sha256'],
             shader_id=rule['shader_id'],code_sha256=rule['code_sha256'],
-            meaning='time/phase-like source input; runtime upload/value unverified')
+            meaning=rule['input'].get('meaning','time/phase-like source input; runtime upload/value unverified'))
         if 'selector' in rule:
             preview_receipt.update(selector_key_hash='0x%08X'%rule['selector']['key_hash'],
                 selector_value=rule['selector']['value'])

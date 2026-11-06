@@ -8,11 +8,11 @@ from __future__ import annotations
 import hashlib
 import math
 
-from rc2016.shaders.bindings import PORTABLE_OPS
+from rc2016.shaders.bindings import PORTABLE_OPS, VERTEX_TANGENT_FRAME
 from rc2016.shaders.ir import DAG, compute
 from rc2016.viewer.textures import TextureDiskCache
 
-EMITTER_VERSION = 8
+EMITTER_VERSION = 9
 # Reserve vertex bone matrices (3) and shared environment lighting (6).
 TEXTURE_UNITS = (0, 1, 2, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15)
 
@@ -145,7 +145,12 @@ def emit_surface(translation, srgb=None, *, experimental=False, rule_preview=Fal
     if translation.get('normal'):
         xyz = [visit(i) for i in translation['normal']['xyz']]
         lines.append(f'    vec3 nativeNormal = nativeNormalize(vec3({", ".join(xyz)}));')
-        lines.append('    N = nativeTangentNormal(N, nativeNormal);')
+        if translation['normal'].get('frame') == VERTEX_TANGENT_FRAME:
+            lines.append('    N = nativeVertexTangentNormal(N, nativeNormal);')
+        elif translation['normal'].get('frame') is None:
+            lines.append('    N = nativeTangentNormal(N, nativeNormal);')
+        else:
+            raise ValueError('Unknown native normal frame')
     key = (EMITTER_VERSION, translation['translation_sha256'], tuple(sorted(srgb.items())))
     return dict(declarations=declarations, body='\n'.join(lines), samplers=samplers, key=key)
 
@@ -174,6 +179,16 @@ vec3 nativeTangentNormal(vec3 N, vec3 tangentNormal) {
     // Blender Normal Map normalizes its tangent basis independently.
     if (dot(T,T) == 0.0 || dot(B,B) == 0.0) return N;
     return nativeNormalize(normalize(T)*tangentNormal.x - normalize(B)*tangentNormal.y + N*tangentNormal.z);
+}
+// Exact source previews with 'normal': 'tangent' (bindings.VERTEX_TANGENT_FRAME): T is the decoded vertex tangent
+// (orthogonalised to N) and the bitangent h * cross(N, T), h = the stored int16 position-w sign, as the writers build it
+// (B = sign(attribute3.w) normalize(n x T)). Without a decoded tangent (level viewer) the derivative frame stands in.
+vec3 nativeVertexTangentNormal(vec3 N, vec3 tangentNormal) {
+    vec3 t = vTangent - N * dot(N, vTangent);
+    if (dot(vTangent, vTangent) <= 0.0 || dot(t, t) <= 1e-12) return nativeTangentNormal(N, tangentNormal);
+    t = normalize(t);
+    float h = vTangentSign < 0.0 ? -1.0 : 1.0;
+    return nativeNormalize(t*tangentNormal.x + h*cross(N, t)*tangentNormal.y + N*tangentNormal.z);
 }
 """
 

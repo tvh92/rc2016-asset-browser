@@ -1187,7 +1187,7 @@ class _ViewerNodes:
         return self.m('MULTIPLY_ADD', x, x, self.m('MULTIPLY', y, y))
 
 
-VIEWER_RULE_FRONTEND_VERSION = 26
+VIEWER_RULE_FRONTEND_VERSION = 27
 
 
 def _viewer_rule_images(nt):

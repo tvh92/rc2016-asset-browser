@@ -1349,6 +1349,68 @@ def _validate_viewer_rule_material(source, material):
                 constants=constants, limitation=material.get("rc_shader_frontend_limitation"))
 
 
+HEALTH_CRATE_PASS0_SHADER_ID = "0x5c03ef34"
+HEALTH_CRATE_NORMAL_SLOT = 0x7AE34E7A   # health_crate_n_ (API 7 of the pass-0 writer)
+
+
+def _evaluate_translation(translation, roots, texels):
+    """Scalar values of translation roots with texture samples from texels[(api, channel)] and UV0 = (0.25, 0.75)."""
+    from rc2016.shaders.ir import compute
+    values = {}
+    def visit(i):
+        if i in values:
+            return values[i]
+        n = translation["nodes"][i]; op = n["op"]
+        if op == "const":
+            value = n["value"]
+        elif op == "input":
+            assert n.get("kind") == "attribute" and n.get("attribute") == 0, "Unexpected engine input " + n.get("name", "")
+            value = (0.25, 0.75)[n["channel"]]
+        elif op == "texture":
+            value = texels[(n["api"], n["channel"])]
+        else:
+            value = compute(op, [visit(j) for j in n["args"]])
+        values[i] = value
+        return value
+    return [visit(i) for i in roots]
+
+
+def validate_health_crate_translation(translation):
+    """Health crate pass-0 source preview (bindings.HEALTH_CRATE_PASS0_SOURCE_PREVIEW): the exact graph, writer and
+    material gate, the frozen-input receipts (CB0[95] = 1, rec[62] = -7/3, rec[63] = 0), the _n slot at API 7, the
+    vertex-tangent frame and the close-range normal x, y = 2 rg - 1 with the linear z = 1 - x^2 - y^2."""
+    from rc2016.shaders.bindings import (HEALTH_CRATE_PASS0_SOURCE_PREVIEW as rule, VERTEX_TANGENT_FRAME,
+                                         _policy_materials, validate_source_preview_inputs)
+    assert translation.get("status") == "ready" and translation.get("game_equivalence") is False, \
+        "Health crate pass-0 translation is not a ready, non-equivalent receipt"
+    assert (translation.get("graph_sha256"), translation.get("shader_id"), translation.get("code_sha256")) == \
+        (rule["graph_sha256"], rule["shader_id"], rule["code_sha256"]), "Health crate pass-0 writer or graph hash changed"
+    validate_source_preview_inputs(translation)
+    rows = translation.get("source_preview_inputs") or []
+    frozen = {row["name"]: row["value"] for row in rows}
+    assert frozen == {"CB0[95]": 1.0, "instance rec[62]": -7.0 / 3.0, "instance rec[63]": 0.0}, \
+        "Health crate frozen-input receipts changed"
+    materials = _policy_materials(rule)
+    assert all(materials.get(row["material_path"]) == row["material_sha256"] for row in rows), \
+        "Health crate receipt names a material outside the hash gate"
+    normal = translation.get("normal") or {}
+    assert normal.get("api") == 7 and normal.get("frame") == VERTEX_TANGENT_FRAME, \
+        "Health crate normal is not the API 7 slice on the vertex-tangent frame"
+    binding = [b for b in translation["texture_bindings"] if b["api"] == 7]
+    assert len(binding) == 1 and binding[0]["slot_key"] == HEALTH_CRATE_NORMAL_SLOT and \
+        binding[0]["path"].endswith("health_crate_n_.texture"), "Health crate API 7 is not the _n slot 0x7AE34E7A"
+    worst = 0.0
+    for r, g in ((0.5, 0.5), (0.9, 0.3), (0.2, 0.65), (1.0, 0.0)):
+        texels = {(api, channel): 0.5 for api in (5, 6, 7, 8) for channel in range(4)}
+        texels[(7, 0)], texels[(7, 1)] = r, g
+        x, y, z = _evaluate_translation(translation, normal["xyz"], texels)
+        ex, ey = 2.0 * r - 1.0, 2.0 * g - 1.0
+        worst = max(worst, abs(x - ex), abs(y - ey), abs(z - (1.0 - ex * ex - ey * ey)))
+    assert worst < 1e-6, f"Health crate normal is not x, y = 2 rg - 1, z = 1 - x^2 - y^2 (difference {worst:g})"
+    return dict(status="passed_health_crate_pass0", shader_id=rule["shader_id"], frame=VERTEX_TANGENT_FRAME,
+                frozen_inputs=frozen, normal_max_difference=worst)
+
+
 def validate_material_preflight(source, material):
     """Validate the reopened Blender graph for one actual polygon-used material."""
     profile = source.get("validated_profile")
@@ -1356,7 +1418,11 @@ def validate_material_preflight(source, material):
         return dict(status="profile_exception", reason="Hash-bound profile has its own reopen validator.")
     if material.get('rc_shader_translation'):
         from rc2016.shaders.nodes import validate_translated_material
-        return validate_translated_material(source,material)
+        result = validate_translated_material(source,material)
+        translation = source.get('shader_translation') or {}
+        if translation.get('shader_id') == HEALTH_CRATE_PASS0_SHADER_ID:
+            result['health_crate_pass0'] = validate_health_crate_translation(translation)
+        return result
     if material.get("rc_viewer_graph_rule"):
         return _validate_viewer_rule_material(source, material)
     glass = [row for row in source.get("shader_preflight", []) if row.get("family") == "character_glass"]

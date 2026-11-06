@@ -31,7 +31,12 @@ class HealthCratePaneTests(unittest.TestCase):
         from rc2016.viewer.textures import material_texture_paths
         pane = material_texture_paths(self.archive, PANE).get('alpha_pane')
         self.assertEqual(pane['graph_sha256'], HEALTH_CRATE_GRAPH_SHA256)
-        self.assertEqual((pane['alpha_api'], pane['discard']), (5, HEALTH_PANE_DISCARD))
+        self.assertEqual((pane['alpha_api'], pane['discard'], pane['opacity']), (5, HEALTH_PANE_DISCARD, 1.0))
+        self.assertEqual((pane['writers'], pane['surface_writer']), (['BCE8624F'], '5C03EF34'))
+        captured = pane['captured']   # the crate's own pane records (pass 1), not another material's
+        self.assertEqual((captured['program'], captured['instance_flags'], captured['rec66'], captured['records']),
+                         ('EC04A1EB', 0x61, 1.0, 7))
+        self.assertEqual(captured['rec67'], HEALTH_PANE_DISCARD)
         self.assertNotIn('alpha_pane', material_texture_paths(self.archive, BODY))
 
     def test_pane_program_writes_c_alpha_and_body_stays_opaque(self):
