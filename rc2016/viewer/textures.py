@@ -339,6 +339,29 @@ WARMONGER_RETICLE_CMB_SLOTS = (0x49A7866B2EA0E356, 0x49A7866B6437A619, 0x49A7866
 WARMONGER_RETICLE_CONSTANTS = dict(
     time=0.0, time_input='CB0 dword 99', presentation=True, game_equivalence=False, writer='4C184DCC',
     frozen_inputs=dict(instance_flags=0x261, instance_fade=0.0, pass_word=0x0, fog=1.0, geometric_aa=0.0))
+# Blarg turret energy barrier (enm_blarg_turret_shield_lg, pass 0 forward program 19D0F1FA) and targeting display
+# (gdgt_blarg_turret_hud, forward program 678C5C0E), docs/material-decoding/turret-barrier.md, evidence
+# Research/captures/2026-11-07_turret-barriers/. Both are alpha-over forward programs; the capture holds no draw of either (its
+# 27 draws are screen-space UI), so the rules rest on the shadPS4 IR dumps, checked numerically against the program IR. Texture
+# images follow the graph's resource order (the barrier binds five resources at API 0..4, API 3 and 4 the same image); the HUD
+# program's API 0 and 4 are engine images, its API 1..3 the graph's three resources (inferred from the sampling patterns).
+# attribute0.z / .w come from the material flags block as for the Warmonger sight (cut-off 4/255, opacity byte 22 / 255). CB0[115]
+# is a per-frame engine value that this capture does not hold: the preview uses the Thumper capture's 0.04464268 (labelled).
+TURRET_BARRIER_PRESENTATION_AMPLITUDE = 0.04464268
+TURRET_SHIELD_GRAPH_SHA256 = 'ac43cf5fe059d5f4f9a4cfc00573a951e2422ecb045e1fed2178017ce5f075d0'
+TURRET_SHIELD_SLOTS = dict(_window_mask=0x49A7866B4AC18E9F, _window_n1=0x49A7866B5DBA9ADC,
+                           _window_n2=0x49A7866BBB8E69C8, _window_c=0x49A7866BF44DF0BB)
+TURRET_SHIELD_IMAGE_SLOTS = (0x49A7866BF44DF0BB, 0x49A7866B0242AAC5)   # API 3 and 4 read one image
+TURRET_SHIELD_CONSTANTS = dict(
+    amplitude=TURRET_BARRIER_PRESENTATION_AMPLITUDE, amplitude_input='CB0[115]', presentation=True, game_equivalence=False,
+    time=0.0, time_input='CB0 dword 99', fog_transmittance=1.0, writer='19D0F1FA',
+    frozen_inputs=dict(attribute1_w=1.0, fog_colour='unused at transmittance 1', light_list='not read by the program'))
+TURRET_HUD_GRAPH_SHA256 = 'c295721478181b38b70797848e61846046563039dd5d903857d9415201ceafc4'
+TURRET_HUD_SLOTS = dict(_window_mask=0x49A7866B0056CBD0, _window_n1=0x49A7866BF582C34E, _window_n2=0x49A7866B2EA0E356)
+TURRET_HUD_CONSTANTS = dict(
+    amplitude=TURRET_BARRIER_PRESENTATION_AMPLITUDE, amplitude_input='CB0[115]', presentation=True, game_equivalence=False,
+    time=0.0, time_input='CB0 dword 99', fog_transmittance=1.0, writer='678C5C0E',
+    frozen_inputs=dict(attribute3_w=1.0, instance_flags='bits 0x20 and 0x40 clear (unlit branch), bit 0x80 clear', engine_images='API 0 and 4 not read'))
 # Novalis window glass, forward program 8DF14766 of jn_glass_parallax_mask (pass contract 0; docs/material-decoding/
 # novalis-window-glass.md, evidence Research/2026-10-29_novalis-window-glass/WINDOW_GLASS_DECODE.md). Slots in API order
 # (API = 5 + resource index): 5 mask (R), 6 window normal (world UV), 7 glass _g (world UV), 8 detail normal (UV1),
@@ -580,6 +603,14 @@ GRAPH_RULES = (
           slots={'_pick': WARMONGER_RETICLE_CMA_SLOTS[0], '_n': WARMONGER_RETICLE_CMB_SLOTS[0]}, params=(
          ('colour', 0x4B4DAB19, 3), ('fresnel_exp', 0xECE213A3, 1), ('f0_base', 0x62835AF9, 1), ('gloss', 0x24F4CA4C, 1),
          ('frame_rate', 0x28E7096A, 1)))),
+    # Blarg turret energy barrier 19D0F1FA and targeting display 678C5C0E: exact graph + SHA (docs/material-decoding/turret-barrier.md).
+    ('materialgraph/character/enemy/enm_blarg_turret_shield_lg/enm_blarg_turret_shield_lg.',
+     dict(forward='turret_shield', writer='19D0F1FA', constants=TURRET_SHIELD_CONSTANTS,
+          _graph_sha256=TURRET_SHIELD_GRAPH_SHA256, slots=TURRET_SHIELD_SLOTS,
+          params=(('gain', 0xEF782F74, 1), ('emission', 0x2F7DD4F2, 1)))),
+    ('materialgraph/visualeffect/equipment/gadget/gdgt_blarg_turret_hud/gdgt_blarg_turret_hud.',
+     dict(forward='turret_hud', writer='678C5C0E', constants=TURRET_HUD_CONSTANTS,
+          _graph_sha256=TURRET_HUD_GRAPH_SHA256, slots=TURRET_HUD_SLOTS, params=(('variant', 0x47EDAA94, 1),))),
     # Novalis window glass 8DF14766 (pass contract 0): exact graph + SHA only (docs/material-decoding/novalis-window-glass.md).
     # Opaque; diffuse light x albedo plus the reflection term, with the engine lighting replaced by the viewer's.
     ('materialgraph/global/basic_glass/jn_glass_parallax_mask.',
@@ -1574,6 +1605,15 @@ def material_texture_paths(archive, material_path: str) -> dict:
                   for group in (WARMONGER_RETICLE_CMA_SLOTS, WARMONGER_RETICLE_CMB_SLOTS)]
         if any(len(paths) != 1 or None in paths for paths in groups):
             rule = {}
+    if rule.get('forward') in ('turret_shield', 'turret_hud'):
+        # Every image the program reads must be bound by slot (the roles are never guessed from suffixes), and the shield's two
+        # last samplers read one image (the program samples it at one coordinate for the r, g and b it uses).
+        barrier_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
+        barrier_bound = lambda slot: barrier_slots.get(slot) or slots.get(slot)
+        if any(not barrier_bound(slot) for slot in rule['slots'].values()):
+            rule = {}
+        elif rule['forward'] == 'turret_shield' and len({barrier_bound(slot) for slot in TURRET_SHIELD_IMAGE_SLOTS}) != 1:
+            rule = {}
     if rule.get('forward') == 'ion_tubes':
         # The program reads both slots as one image and the decoded form has no CB2[4] power term; a material that
         # binds the slots to different images or sets the power is not the decoded program input.
@@ -1626,6 +1666,16 @@ def material_texture_paths(archive, material_path: str) -> dict:
             params['alpha_scale'] = data[flags_offset + 22] / 255.0 if flags_size >= 23 else 1.0
             params['alpha_cut'] = _foliage_alpha_cutoff(data)
             for role in ('_c', '_g', '_h'):   # the program samples only the cma and cmb images
+                result.pop(role, None)
+        if rule['forward'] in ('turret_shield', 'turret_hud'):
+            # attribute0.w (opacity, byte 22 / 255) and attribute0.z (the alpha cut-off) come from the flags block, as for the
+            # Warmonger sight; the programs sample only the images of the graph's resources.
+            flags_offset, flags_size = _sections(data).get(MATERIAL_FLAGS_SECTION, (0, 0))
+            params['alpha_scale'] = data[flags_offset + 22] / 255.0 if flags_size >= 23 else 1.0
+            params['alpha_cut'] = _foliage_alpha_cutoff(data)
+            if rule['forward'] == 'turret_hud':
+                params['variant'] = float(math.floor(params['variant']))   # the program floors the material key
+            for role in ('_c', '_g', '_h', '_n', '_pick'):
                 result.pop(role, None)
         if rule['forward'] == 'water':
             params.update(WATER_PRESENTATION)
@@ -2320,7 +2370,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             entry['alpha_cut'] = float(paths['alpha_cut'])
         if 'za_fresnel_power' in paths:
             entry['za_fresnel_power'] = paths['za_fresnel_power']
-        for role in (*ROLES, *(('_water_height_a', '_water_height_b') if paths.get('forward', {}).get('sampling') else ()), *(('_water_foam_a', '_water_foam_b') if paths.get('forward', {}).get('surface') else ()),*(('_reticle',) if paths.get('forward', {}).get('kind') == 'victor_reticle' and paths.get('_reticle') else ()), *(('_parallax_height',) if paths.get('parallax') else ()), *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') or paths.get('skin_detail') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ()), *(('_cma',) if paths.get('leaf_colour') else ()), *(tuple(role for role, _name in WINDOW_GLASS_ROLES) if paths.get('forward', {}).get('kind') == 'window_glass' else ())):
+        for role in (*ROLES, *(('_water_height_a', '_water_height_b') if paths.get('forward', {}).get('sampling') else ()), *(('_water_foam_a', '_water_foam_b') if paths.get('forward', {}).get('surface') else ()),*(('_reticle',) if paths.get('forward', {}).get('kind') == 'victor_reticle' and paths.get('_reticle') else ()), *(('_parallax_height',) if paths.get('parallax') else ()), *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') or paths.get('skin_detail') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ()), *(('_cma',) if paths.get('leaf_colour') else ()), *(tuple(role for role, _name in WINDOW_GLASS_ROLES) if paths.get('forward', {}).get('kind') in ('window_glass', 'turret_shield', 'turret_hud') else ())):
             path = paths.get(role)
             if not path:
                 continue

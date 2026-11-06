@@ -1517,7 +1517,7 @@ def _viewer_skin_spec(P, skin, gR, gG, f, tinted):
     rgb = P.comb(*(P.sat(P.m('MULTIPLY', grey, ch)) for ch in P.sep(tinted))) if qwark else None
     return grey, gloss_in, rgb
 
-GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_patterned_add', 'glass_patterned', 'glass_liquid', 'glass_tank', 'glass_taxi', 'warmonger_reticle', 'window_glass')
+GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_patterned_add', 'glass_patterned', 'glass_liquid', 'glass_tank', 'glass_taxi', 'warmonger_reticle', 'turret_shield', 'turret_hud', 'window_glass')
 
 
 def _viewer_rule_glass(mat, rule, key, img):
@@ -1785,6 +1785,82 @@ def _viewer_rule_glass(mat, rule, key, img):
                       'a step on alpha; the colour ratio k multiplies F0 and the Principled F90 is collapsed to its maximum channel; '
                       'the program\'s extra RGBA8 MAX pass and the engine light list, probes, shadows and fog are not reproduced'
                       % (p['time'], p['alpha_cut']))
+    elif key in ('turret_shield', 'turret_hud'):
+        # 19D0F1FA (shield) / 678C5C0E (targeting display, unlit branch), docs/material-decoding/turret-barrier.md: emission-only
+        # forward programs. The viewer's GLSL (gl_shading.GLASS_FRAGMENT uKind 18 / 19) term for term; the four window roles hold
+        # the graph's images (shield: noisetile03, noisetile02, hex_grid_02, shield_lg_v2; HUD: hex_grid_02, HUD image, noise cell).
+        mask_img, n1_img, n2_img, c_img = img('_window_mask'), img('_window_n1'), img('_window_n2'), img('_window_c')
+        u, vb, _ = P.uv_split(); v = P.m('SUBTRACT', 1.0, vb)   # game v counts from the top row
+        t = P.const('glass time', p['time'])                     # CB0[99]; key or drive this node to run the scrolls
+        amp = P.const('glass amplitude', p['amplitude'])         # CB0[115], a labelled presentation value
+        inv = lambda x: P.m('SUBTRACT', 1.0, x)
+        sq = lambda x: P.m('MULTIPLY', x, x)
+        mad = lambda a, b, c_: P.m('MULTIPLY_ADD', a, b, c_)
+
+        def sample(image, s_, t_, label, default):
+            if image is None:
+                limits.append('image for %s is not bound: %s' % (label, default))
+                return (default,) * 3
+            return P.sep(P.tex(image, P.gl_coord(s_, t_), 'glass ' + label).outputs['Color'])
+        if key == 'turret_shield':
+            n3 = sample(mask_img, P.m('SUBTRACT', u, P.m('MULTIPLY', t, 0.035)), mad(v, 1.5, P.m('MULTIPLY', t, 0.05)), 'noisetile03', 0.0)[0]
+            n2 = sample(n1_img, mad(u, 0.5, P.m('SUBTRACT', 0.5, P.m('MULTIPLY', t, 0.03))),
+                        mad(v, 0.5, P.m('SUBTRACT', 0.5, P.m('MULTIPLY', t, 0.05))), 'noisetile02', 0.0)[0]
+            hx = sample(n2_img, P.m('MULTIPLY', u, 10.0), P.m('MULTIPLY', v, 10.0), 'hex grid', 1.0)[0]
+            sr, sg, sb = sample(c_img, u, v, 'shield image', 0.0)
+            R = P.sat(P.m('POWER', P.m('SQRT', P.m('ADD', sq(u), sq(P.m('SUBTRACT', v, 0.475)))), 1.25))
+            f1 = P.m('FRACT', P.m('MULTIPLY', P.m('SUBTRACT', R, P.m('MULTIPLY', t, 0.2)), 3.0))
+            q1 = P.m('SUBTRACT', P.m('MINIMUM', sq(f1), 1.0), 0.5)
+            D = P.sat(P.m('MULTIPLY', P.m('ABSOLUTE', P.m('SUBTRACT', inv(n3), n2)), 0.3))
+            f2 = P.m('FRACT', P.m('MULTIPLY', P.m('SUBTRACT', P.sat(P.m('ADD', R, D)), P.m('MULTIPLY', t, 0.2)), 3.0))
+            q2 = P.m('SUBTRACT', P.m('MINIMUM', sq(f2), 1.0), 0.5)
+            ring = P.sat(P.m('MULTIPLY', P.sat(inv(P.m('MULTIPLY', P.m('SQRT', P.m('ADD', sq(q1), P.m('MULTIPLY', sq(q2), 3.0))), 0.5))), 0.5))
+            line = P.sat(P.m('DIVIDE', P.sat(inv(P.m('MULTIPLY', P.m('ABSOLUTE', hx), 20.0))), 3.0))
+            width = P.m('SQRT', P.m('ABSOLUTE', inv(u)))
+            s_sum = P.m('ADD', P.m('ADD', P.m('MULTIPLY', P.m('ADD', ring, line), width), P.m('ADD', sr, sb)),
+                        P.sat(P.m('SUBTRACT', P.m('MULTIPLY', sg, 4.0), 3.0)))
+            ks = P.m('MULTIPLY', s_sum, P.const('glass gain', p['gain']))                 # material key 0xEF782F74
+            cover = P.sat(P.m('MAXIMUM', ks, 0.0))
+            gain = P.m('MULTIPLY', P.m('MULTIPLY', P.m('MULTIPLY', amp, P.const('glass fog transmittance', p['fog_transmittance'])), ks),
+                       mad(P.const('glass emission', p['emission']), 20.0, 5.0))      # A F Ks (20 K1 + 5), K1 = key 0x2F7DD4F2
+            colour = P.v('SCALE', P.comb(36.0, 6.2873064, 0.30845268), gain)
+            limits.append('Blarg turret shield 19D0F1FA (frozen preview, game_equivalence False): t = CB0[99] = %g (drive "VR glass '
+                          'time" to run the scrolls); CB0[115] = %g is a labelled presentation value, fog transmittance %g, attribute0.z/.w '
+                          'from the material flags block (%g, %g); the program reads no light list' %
+                          (p['time'], p['amplitude'], p['fog_transmittance'], p['alpha_cut'], p['alpha_scale']))
+        else:
+            h1 = sample(mask_img, mad(u, 15.2, -0.1), mad(v, 15.2, -0.1), 'hex grid A', 1.0)[0]
+            h2 = sample(mask_img, P.m('MULTIPLY', u, 15.0), P.m('MULTIPLY', v, 15.0), 'hex grid B', 1.0)[0]
+            tr, tg, tb = sample(n1_img, u, v, 'HUD image', 0.0)
+            nz = sample(n2_img, P.m('SUBTRACT', P.m('MULTIPLY', u, 0.01), P.m('MULTIPLY', t, 0.1)), mad(t, 0.1, v), 'noise cell', 0.0)[0]
+            d = P.m('SQRT', P.m('ADD', sq(P.m('SUBTRACT', u, 0.5)), sq(P.m('SUBTRACT', v, 0.5))))
+            ring = P.sat(P.m('POWER', P.m('FRACT', P.m('ADD', t, d)), 0.1))
+            hex_a = P.sat(inv(P.m('MULTIPLY', P.m('ABSOLUTE', h1), 2.2222222)))
+            hex_b = P.sat(inv(P.m('MULTIPLY', P.m('ABSOLUTE', h2), 20.0)))
+            hxx = P.m('MULTIPLY', P.m('ADD', P.m('MULTIPLY', hex_b, 2.857143), P.m('MULTIPLY', hex_a, 0.6666667)), P.m('ADD', d, 0.05))
+            g = P.m('ADD', P.m('MULTIPLY', tg, 1.5), P.m('MULTIPLY', P.m('MULTIPLY', tb, 5.0), inv(ring)))
+            cover = P.sat(P.m('MAXIMUM', P.m('MULTIPLY', hxx, 0.05),
+                              P.m('MULTIPLY', P.m('ADD', g, P.m('MULTIPLY', tr, 1.5)), mad(nz, 0.3, 0.7))))
+            G = mad(P.sat(P.m('ADD', g, P.m('MULTIPLY', hxx, 0.05))), 0.75, 0.25)
+            k = P.const('glass variant', p['variant'])   # floor(material key 0x47EDAA94)
+            g50, g100 = P.m('POWER', G, 50.0), P.m('POWER', G, 100.0)
+            cg = P.m('POWER', G, 0.1)
+            cr = mad(P.m('SUBTRACT', g50, G), k, G)
+            cb = mad(P.m('SUBTRACT', sq(g100), g100), k, g100)
+            pulse = mad(P.m('SINE', P.m('MULTIPLY', t, 3.14159265)), 0.2, 0.9)
+            gain = P.m('MULTIPLY', P.m('MULTIPLY', amp, P.const('glass fog transmittance', p['fog_transmittance'])),
+                       mad(pulse, 15.0, 3.0))                                                # 3 A (5 p + 1) F
+            colour = P.v('SCALE', P.comb(cg, cr, cb), gain)
+            limits.append('Blarg turret HUD 678C5C0E, unlit branch (frozen preview, game_equivalence False): t = CB0[99] = %g (drive '
+                          '"VR glass time" to run the ring and noise); CB0[115] = %g is a labelled presentation value, fog transmittance %g, '
+                          'attribute0.z/.w from the material flags block (%g, %g); the lit branch (instance flags 0x20 / 0x40), the engine '
+                          'images at API 0 and 4 and the light list are not built' %
+                          (p['time'], p['amplitude'], p['fog_transmittance'], p['alpha_cut'], p['alpha_scale']))
+        keep = inv(P.m('LESS_THAN', cover, P.const('glass alpha cut', p['alpha_cut'])))   # attribute0.z: the program discards below it
+        alpha = P.m('MULTIPLY', P.m('MULTIPLY', cover, P.const('glass alpha scale', p['alpha_scale'])), keep, clamp=True)
+        em = P.N.new('ShaderNodeEmission'); em.name = 'VR glass emission'
+        P.L.new(colour, em.inputs['Color'])
+        lit = em.outputs[0]
     elif key == 'glass_taxi':
         # 4E9B2CB3 (docs/material-decoding/taxi-glass.md), labelled preview: with attribute4.w = 0, alpha = sat(attr0.w sat(W (A + B)))
         # with A = H(UV0), B = H(UV0 + view-dependent offset) and H = alpha_H.R (_pick slot), cut at attr0.z. Colour: rgb = Ld(N')
@@ -1917,6 +1993,9 @@ def _viewer_rule_glass(mat, rule, key, img):
     mat.use_backface_culling = not f.get('two_sided')
     if hasattr(mat, 'surface_render_method'):
         mat.surface_render_method = 'DITHERED' if blend == 'opaque' else 'BLENDED'
+    if key in ('turret_shield', 'turret_hud'):
+        return limits + ['Forward emission-only writer %s (blend %s from %s): Cycles lighting does not apply (the program draws no lit '
+                         'term here); fog is the viewer fog (transmittance 1)' % (f.get('writer', key), blend, f.get('blend_source', 'the flags word'))]
     return limits + ['Forward glass writer %s (blend %s from %s): the engine light list, shadows, probes, SSR and fog '
                      '(t = 1) are replaced by Cycles lighting; Schlick F uses the Principled metallic model with the per-channel '
                      'F90 = sat(60 F0) collapsed to its maximum; instance fade b = 0, attr0.w = 1, geometric AA 0; the instance '

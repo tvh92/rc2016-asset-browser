@@ -1213,6 +1213,22 @@ void main() {
 #   w E(R)) + specular(N', F0 = CB2[10] _g.g, gloss sat(CB2[8] _g.r)), T5 = the window _c (unit 13), _g on unit 10, R = reflect(-V, N').
 #   Ld stands in for the probe ambient, sun and light-list diffuse, E for the local box-projected cubes and probe reflection
 #   (windowEnvironment), the lobe for the probe reflection and sun / light specular; no SSR, fog t = 1.
+# uKind 18, turret_shield 19D0F1FA (enm_blarg_turret_shield_lg, the turret's energy barrier; docs/material-decoding/turret-barrier.md),
+#   a labelled PREVIEW: uA = (K0, K1, A, t) with the material keys CB2[0] (0xEF782F74) and CB2[1] (0x2F7DD4F2), the frame glow
+#   amplitude A = CB0[115] (presentation value) and t = CB0[99]; uB = (attribute0.z cut-off, attribute0.w opacity, attribute1.w fog
+#   transmittance F = 1, 0). Four images on the window texture units (API 0 noisetile03 = mask, 1 noisetile02 = n1, 2 hex_grid_02 =
+#   n2, 3 and 4 = shield_lg_v2 = c, one image at (u, v)). With d = |(u, v - 0.475)|, R = sat(d^1.25), Q1 = min(1, fract(3 (R - t/5))^2)
+#   - 0.5, D = sat(0.3 |1 - noise03 - noise02|), Q2 = the same with sat(R + D), ring = sat(0.5 sat(1 - 0.5 sqrt(Q1^2 + 3 Q2^2))),
+#   hex = sat(1 - 20 |hex_grid(10 u, 10 v).r|) / 3: s = (ring + hex) sqrt(|1 - u|) + c.r + c.b + sat(4 c.g - 3); Ks = K0 s.
+#   rgb = A F Ks (20 K1 + 5) (36, 6.2872, 0.30845), alpha = sat(attribute0.w sat(Ks)), discard when sat(Ks) < attribute0.z. The
+#   light list is not read; the game's own fog blend (CB0[112..114], F) is the viewer's fog with F = 1.
+# uKind 19, turret_hud 678C5C0E (gdgt_blarg_turret_hud, the turret's targeting display, unlit branch; docs/material-decoding/
+#   turret-barrier.md), a labelled PREVIEW: uA = (k, A, t, 0) with k = floor(material key 0x47EDAA94) (0) and A = CB0[115];
+#   uB = (cut-off, opacity, fog F = 1, 0). Window units: mask = hex_grid_02 (API 1), n1 = the HUD image (API 2), n2 = hydro_noise_cell_sm
+#   (API 3). cov = sat(max(0.05 hx, (1.5 (T.r + T.g) + 5 T.b (1 - ring)) (0.7 + 0.3 N))), hx = (2.857143 hexB + 0.666667 hexA)
+#   (0.05 + d), d = |(u, v) - 0.5|, ring = sat(fract(t + d)^0.1), hexA = sat(1 - 2.2222 |H(15.2 u - 0.1, 15.2 v - 0.1)|), hexB =
+#   sat(1 - 20 |H(15 u, 15 v)|), N = noise(0.01 u - t/10, v + t/10).r. G = 0.25 + 0.75 sat(1.5 T.g + 5 T.b (1 - ring) + 0.05 hx),
+#   rgb = 3 A (5 p + 1) (G^0.1, G, G^100) with p = 0.9 + 0.2 sin(pi t) (k = 0); alpha = sat(attribute0.w cov), discard cov < cut-off.
 # uKind 14, window_glass 8DF14766 (jn_glass_parallax_mask, the Novalis windows; docs/material-decoding/novalis-window-glass.md),
 #   a labelled PREVIEW (game_equivalence False): uA = reflection tint T.rgb (CB2[8..10]), gloss CB2[3]; uB = parallax depth
 #   CB2[11], rim exponent CB2[13], F weight CB2[14], interior weight CB2[15]; uC.x = interior light CB2[16], uC.y = 1 when the
@@ -1545,6 +1561,42 @@ void main() {
         vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
         vec3 spec = k * (ggxGlass(N, V, L1, F0, F90, a) * C1 + ggxGlass(N, V, L2, F0, F90, a) * C2 + envSpecular(N, V, F0, F90, a, ambient));
         color = vec3(1.0, 0.47353148, 0.0) * (Ld + E) + spec;
+    } else if (uKind == 18) { // 19D0F1FA turret energy shield (see the uKind 18 comment)
+        float t = uA.w, u = vUV.x, v = vUV.y;
+        float n3 = uHasWindowMask ? texture2D(uTexWindowMask, vec2(u - 0.035 * t, 1.5 * v + 0.05 * t)).r : 0.0;
+        float n2 = uHasWindowN1 ? texture2D(uTexWindowN1, vec2(0.5 + 0.5 * u - 0.03 * t, 0.5 + 0.5 * v - 0.05 * t)).r : 0.0;
+        float hx = uHasWindowN2 ? texture2D(uTexWindowN2, vec2(10.0 * u, 10.0 * v)).r : 1.0;
+        vec3 sc = uHasWindowC ? texture2D(uTexWindowC, vUV).rgb : vec3(0.0);
+        float R = sat(pow(length(vec2(u, v - 0.475)), 1.25));
+        float f1 = fract(3.0 * (R - 0.2 * t));
+        float q1 = min(1.0, f1 * f1) - 0.5;
+        float f2 = fract(3.0 * (sat(R + sat(0.3 * abs(1.0 - n3 - n2))) - 0.2 * t));
+        float q2 = min(1.0, f2 * f2) - 0.5;
+        float ring = sat(0.5 * sat(1.0 - 0.5 * sqrt(q1 * q1 + 3.0 * q2 * q2)));
+        float hexLine = sat(sat(1.0 - 20.0 * abs(hx)) / 3.0);
+        float s = (ring + hexLine) * sqrt(abs(1.0 - u)) + sc.r + sc.b + sat(4.0 * sc.g - 3.0);
+        float ks = uA.x * s, cover = sat(max(0.0, ks));
+        if (cover < uB.x) discard;   // attribute0.z
+        alpha = sat(uB.y * cover);   // attribute0.w
+        color = uA.z * uB.z * ks * (20.0 * uA.y + 5.0) * vec3(36.0, 6.2873064, 0.30845268);
+    } else if (uKind == 19) { // 678C5C0E turret targeting display, unlit branch (see the uKind 19 comment)
+        float t = uA.z, u = vUV.x, v = vUV.y;
+        float h1 = uHasWindowMask ? texture2D(uTexWindowMask, vec2(15.2 * u - 0.1, 15.2 * v - 0.1)).r : 1.0;
+        float h2 = uHasWindowMask ? texture2D(uTexWindowMask, vec2(15.0 * u, 15.0 * v)).r : 1.0;
+        vec3 th = uHasWindowN1 ? texture2D(uTexWindowN1, vUV).rgb : vec3(0.0);
+        float nz = uHasWindowN2 ? texture2D(uTexWindowN2, vec2(0.01 * u - 0.1 * t, v + 0.1 * t)).r : 0.0;
+        float d = length(vUV - 0.5);
+        float ring = sat(pow(fract(t + d), 0.1));
+        float hexA = sat(1.0 - 2.2222222 * abs(h1)), hexB = sat(1.0 - 20.0 * abs(h2));
+        float hxx = (2.857143 * hexB + 0.6666667 * hexA) * (0.05 + d);
+        float g = 1.5 * th.g + 5.0 * th.b * (1.0 - ring);
+        float cover = sat(max(0.05 * hxx, (g + 1.5 * th.r) * (0.7 + 0.3 * nz)));
+        if (cover < uB.x) discard;   // attribute0.z
+        alpha = sat(uB.y * cover);   // attribute0.w
+        float G = 0.25 + 0.75 * sat(g + 0.05 * hxx);
+        float G50 = pow(G, 50.0), G100 = pow(G, 100.0), G200 = G100 * G100;
+        vec3 c = vec3(pow(G, 0.1), uA.x * (G50 - G) + G, uA.x * (G200 - G100) + G100);
+        color = 3.0 * uA.y * (5.0 * (0.9 + 0.2 * sin(PI * t)) + 1.0) * c;
     } else if (uKind == 14) { // jn_glass_parallax_mask 8DF14766 Novalis window glass PREVIEW (see the uKind 14 comment)
         vec3 n = normalize(vNrm);
         float face = gl_FrontFacing ? 1.0 : -1.0, nv = dot(n, V);
@@ -1844,7 +1896,8 @@ FRAGMENT = FRAGMENT.replace("// @lighting\n", LIGHTING+FOG+_SCENE_OUTPUT)
 GLASS_FRAGMENT = GLASS_FRAGMENT.replace("// @lighting\n", LIGHTING+FOG)
 GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4, "bright_glow": 5,
                "eye_cornea": 6, "number_display": 7, "glass_basic": 8, "glass_cg02": 9, "glass_jn": 10, "glass_thumper": 11,
-               "ion_tubes": 12, "glass_liquid": 13, "window_glass": 14, "glass_tank": 15, "warmonger_reticle": 16, "glass_taxi": 17}
+               "ion_tubes": 12, "glass_liquid": 13, "window_glass": 14, "glass_tank": 15, "warmonger_reticle": 16, "glass_taxi": 17,
+               "turret_shield": 18, "turret_hud": 19}
 
 
 def frame_fade(time, rate):
@@ -1915,6 +1968,12 @@ def glass_uniforms(forward, time=None):
                 (p["parallax_depth"], p["fade_scale"], p["fade_bias"], p["alpha_test"]),
                 (*p["tint_dense"], p["env_weight"]), (p["alpha_scale"], p["gloss_scale"], p["f0_scale"], p["normal_scale"]),
                 (0.0,) * 4)
+    if forward["kind"] == "turret_shield":
+        return (GLASS_KINDS["turret_shield"], (p["gain"], p["emission"], p["amplitude"], p["time"] if time is None else time),
+                (p["alpha_cut"], p["alpha_scale"], p["fog_transmittance"], 0.0), (0.0,) * 4, (0.0,) * 4, (0.0,) * 4)
+    if forward["kind"] == "turret_hud":
+        return (GLASS_KINDS["turret_hud"], (p["variant"], p["amplitude"], p["time"] if time is None else time, 0.0),
+                (p["alpha_cut"], p["alpha_scale"], p["fog_transmittance"], 0.0), (0.0,) * 4, (0.0,) * 4, (0.0,) * 4)
     if forward["kind"] == "warmonger_reticle":
         return (GLASS_KINDS["warmonger_reticle"], (*p["colour"], p["fresnel_exp"]),
                 (p["f0_base"], p["gloss"], p["frame_rate"], p["time"] if time is None else time),

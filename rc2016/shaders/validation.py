@@ -401,6 +401,8 @@ GLASS_CONSTANTS = {
     "glass_tank": ("tint", "rim bias", "body", "gloss", "f0 base", "rim exp", "alpha scale"),
     "glass_taxi": ("tint", "tint dense", "height weight", "gloss scale", "f0 scale", "alpha scale", "alpha test"),
     "warmonger_reticle": ("colour", "fresnel exp", "f0 base", "gloss", "frame rate", "time", "alpha cut", "alpha scale"),
+    "turret_shield": ("gain", "emission", "amplitude", "fog transmittance", "time", "alpha cut", "alpha scale"),
+    "turret_hud": ("variant", "amplitude", "fog transmittance", "time", "alpha cut", "alpha scale"),
     "window_glass": ("tint", "gloss", "rim exp", "f0 weight", "interior weight", "interior light"),
 }
 
@@ -586,7 +588,7 @@ def _viewer_expected_constants(rule):
                   "cornea fresnel bias": p["fresnel_bias"], "cornea fresnel power": p["fresnel_power"],
                   "cornea reflect base": p["reflect_base"], "cornea alpha bias": p["alpha_bias"],
                   "cornea reflect weight": p["reflect_weight"]})
-    for key in ("glass_basic", "glass_cg02", "glass_jn", "glass_thumper", "glass_patterned_add", "glass_patterned", "glass_liquid", "glass_tank", "glass_taxi", "warmonger_reticle", "window_glass"):
+    for key in ("glass_basic", "glass_cg02", "glass_jn", "glass_thumper", "glass_patterned_add", "glass_patterned", "glass_liquid", "glass_tank", "glass_taxi", "warmonger_reticle", "turret_shield", "turret_hud", "window_glass"):
         if key in ported:
             p = terms[key]["params"]
             e.update({"glass " + name: p[name.replace(" ", "_")] for name in GLASS_CONSTANTS[key]})
@@ -770,7 +772,7 @@ def _viewer_required(rule, has_n):
         names += ["cornea fresnel normal scale", "cornea env normal scale", "cornea fresnel bias", "cornea fresnel power",
                   "cornea reflect base", "cornea alpha bias", "cornea reflect weight"]
         req("_n")
-    for key in ("glass_basic", "glass_cg02", "glass_jn", "glass_thumper", "glass_patterned_add", "glass_patterned", "glass_liquid", "glass_tank", "glass_taxi", "warmonger_reticle", "window_glass"):
+    for key in ("glass_basic", "glass_cg02", "glass_jn", "glass_thumper", "glass_patterned_add", "glass_patterned", "glass_liquid", "glass_tank", "glass_taxi", "warmonger_reticle", "turret_shield", "turret_hud", "window_glass"):
         if key in ported:
             glass = terms[key]
             names += ["glass " + name for name in GLASS_CONSTANTS[key]
@@ -797,6 +799,10 @@ def _viewer_required(rule, has_n):
                 req("_n", "_pick", "_window_c", "_window_g")
             if key == "warmonger_reticle":   # _n = cmb (API 7..10), _pick = cma (API 5, 6)
                 req("_n", "_pick")
+            if key == "turret_shield":   # the four window roles: noisetile03, noisetile02, hex_grid_02, shield_lg_v2
+                req("_window_mask", "_window_n1", "_window_n2", "_window_c")
+            if key == "turret_hud":   # hex_grid_02, the HUD image, the noise cell
+                req("_window_mask", "_window_n1", "_window_n2")
             if key == "window_glass":   # _n = interior _c (API 10/11), _pick = glass _g (API 7); _window_c is optional
                 req("_n", "_pick")
     if "screen" in ported:
@@ -1112,14 +1118,15 @@ def _validate_viewer_rule_material(source, material):
         constants = _viewer_check_constants_and_images(source, material, rule, upstream, has_n)
         return dict(status="passed_viewer_graph_rule_frontend", terms=ported, blend="opaque", constants=constants,
                     limitation=material.get("rc_shader_frontend_limitation"))
-    glass = next((key for key in ("glass_basic", "glass_cg02", "glass_jn", "glass_thumper", "glass_patterned_add", "glass_patterned", "glass_liquid", "glass_tank", "glass_taxi", "warmonger_reticle", "window_glass")
+    glass = next((key for key in ("glass_basic", "glass_cg02", "glass_jn", "glass_thumper", "glass_patterned_add", "glass_patterned", "glass_liquid", "glass_tank", "glass_taxi", "warmonger_reticle", "turret_shield", "turret_hud", "window_glass")
                   if key in ported), None)
     if glass:   # Surface = Cull(blend(alpha; lit = diffuse/emission + F90 * Schlick-GGX))
         upstream = _viewer_upstream(output.inputs["Surface"])
         names = {node.name for node in upstream}
         term = rule["terms"][glass]
         blend, two_sided = term.get("blend"), term.get("two_sided")
-        assert {"VR glass lit", "VR glass specular", "VR glass weight"} <= names, "Glass lit/specular terms are not the output"
+        assert (({"VR glass emission", "VR glass alpha weight"} if glass in ("turret_shield", "turret_hud") else
+                 {"VR glass lit", "VR glass specular", "VR glass weight"}) <= names), "Glass lit/specular terms are not the output"
         assert (blend == "opaque" or ("VR glass blend additive" if blend == "additive" else "VR glass alpha weight") in names), \
             "Glass blend node differs from the flags word"
         assert blend in ("opaque", "additive", "alpha_over"), "Glass blend is not decoded"

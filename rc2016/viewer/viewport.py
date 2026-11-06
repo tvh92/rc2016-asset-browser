@@ -1813,7 +1813,7 @@ class ModelViewport(_TkFrame):
             sh.glUniform1i(u[name], int(bool(texture and texture[1])))
         texture = entry.get('_n'); sh.glUniform1i(u['uScreenSrgbN'], int(bool(texture and texture[1])))
 
-    EFFECT_KINDS = frozenset({'ion_tubes', 'number_display', 'warmonger_reticle'})   # forward rules with a per-frame term (CB0[99] or CB0[107])
+    EFFECT_KINDS = frozenset({'ion_tubes', 'number_display', 'warmonger_reticle', 'turret_shield', 'turret_hud'})   # forward rules with a per-frame term (CB0[99] or CB0[107])
     EFFECT_PERIOD = 1024.0                    # seconds; every decoded scroll has period 1, so the wrap is invisible
 
     def _effect_time(self, forward):
@@ -1953,23 +1953,25 @@ class ModelViewport(_TkFrame):
     def _apply_window_glass(self, u, entry, forward, has_uv1):
         """The window glass rule's extra images (shading.WINDOW_GLASS_TEXTURES: mask, window normal, detail normal,
         painted glass _c), the UV1 flag and uWindowP (GLASS_FRAGMENT uKind 14); the taxi glass (uKind 17) binds its window
-        _g and _c on two of those units (shading.TAXI_GLASS_TEXTURES). Every other forward kind gets the flags cleared and
+        _g and _c on two of those units (shading.TAXI_GLASS_TEXTURES) and the turret barrier kinds (18, 19) bind the four
+        roles as they are. Every other forward kind gets the flags cleared and
         no textures bound."""
         from rc2016.viewer.shading import TAXI_GLASS_TEXTURES, WINDOW_GLASS_TEXTURES, window_glass_uniform
         gl, sh = self._gl, self._shading
         window = forward.get("kind") == "window_glass"
+        turret = forward.get("kind") in ("turret_shield", "turret_hud")   # the barrier rules read the four window roles as they are
         taxi = {unit: role for unit, role, *_ in TAXI_GLASS_TEXTURES} if forward.get("kind") == "glass_taxi" else None
         sh.glUniform1i(u["uHasUV1"], 1 if window and has_uv1 else 0)
         sh.glUniform4f(u["uWindowP"], *window_glass_uniform(forward))
         for unit, role, sampler, has, srgb in WINDOW_GLASS_TEXTURES:
             if taxi is not None:
                 role = taxi.get(unit)
-            texture = entry.get(role) if (window or taxi is not None) and role else None
+            texture = entry.get(role) if (window or turret or taxi is not None) and role else None
             sh.glUniform1i(u[sampler], unit)
             sh.glUniform1i(u[has], 1 if texture else 0)
             if srgb:
                 sh.glUniform1i(u[srgb], 1 if texture and texture[1] else 0)
-            if window or taxi is not None:
+            if window or turret or taxi is not None:
                 sh.glActiveTexture(self.GL_TEXTURE0 + unit)
                 gl.glBindTexture(self.GL_TEXTURE_2D, texture[0] if texture else 0)
         sh.glActiveTexture(self.GL_TEXTURE0)
