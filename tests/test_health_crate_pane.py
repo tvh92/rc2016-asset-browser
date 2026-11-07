@@ -64,5 +64,14 @@ class HealthCratePaneTests(unittest.TestCase):
                          'native_translated_deferred_frontend')
 
 
+class HdrResolveBackgroundTests(unittest.TestCase):
+    def test_window_puts_the_background_behind_the_glass_in_linear(self):
+        from rc2016.viewer.shading import HDR_RESOLVE_FRAGMENT, HDR_RESOLVE_UNIFORMS
+        self.assertIn('uHdrBackground', HDR_RESOLVE_UNIFORMS)
+        # Partly covered pixels: the background enters before the tonemap, not added on top of it.
+        self.assertIn('display(P + (1.0 - cover) * B)', HDR_RESOLVE_FRAGMENT)
+        self.assertIn('display(vec3(exp2(mid)))[channel] < v', HDR_RESOLVE_FRAGMENT)
+
+
 if __name__ == '__main__':
     unittest.main()

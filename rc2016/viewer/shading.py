@@ -2346,11 +2346,13 @@ EFFECT_UNIFORMS = (*LIGHTING_UNIFORMS, "uEffectKind", "uEffectColour", "uEffectA
 # Tonemap of the model viewer's float scene target (ModelViewport._hdr_begin / _hdr_resolve), used for frames with health
 # crate panes, idle-effect quads or the turret barrier kinds (ModelViewport.HDR_FORWARD_KINDS) so that they alpha-blend in
 # scene-linear colour and are tonemapped once, as the game's scene target is. RGB is the linear colour composited over black, A the blended coverage; a drawn depth is full cover.
-# The result goes over the viewer background premultiplied (ONE / ONE_MINUS_SRC_ALPHA): display(P) - display(0) (1 - cover),
-# which is display(P) on covered pixels and exact over a background equal to display(0). The viewer background is a UI
-# colour, not a scene, so partly covered pixels (sprites past the silhouette) are an approximation. uHdrStraight (the
-# thumbnail renderer's transparent target, read back as straight alpha) writes that colour divided by max(cover, brightest
-# channel), unblended, which keeps added light that exceeds its coverage (exact over black).
+# In the window, partly covered pixels (glass in front of no opaque surface, sprites past the silhouette) composite the
+# viewer background behind them in scene-linear colour, as the game blends glass over its HDR scene: the background is taken
+# as the scene-linear colour B that the selected tonemap displays as the background (display(B) = uHdrBackground, solved per
+# channel by bisection), and the pixel is display(P + (1 - cover) B), written opaque. Only the UI background is a stand-in
+# for a scene. uHdrStraight (the thumbnail renderer's transparent target, read back as straight alpha) has no background: it
+# writes display(P) - display(0) (1 - cover) divided by max(cover, brightest channel), unblended, which keeps added light
+# that exceeds its coverage (exact over black).
 HDR_RESOLVE_VERTEX = """
 #version 120
 void main() { gl_Position = gl_Vertex; }
@@ -2360,20 +2362,37 @@ HDR_RESOLVE_FRAGMENT = """
 const float PI = 3.14159265;
 // @lighting
 uniform sampler2D uHdrColour; uniform sampler2D uHdrDepth; uniform vec2 uHdrSize; uniform bool uHdrStraight;
+uniform vec3 uHdrBackground;
+// The scene-linear grey that display() maps to the background level v in one channel (display is monotonic in a grey).
+float backdropLinear(float v, int channel) {
+    if (v <= display(vec3(0.0))[channel]) return 0.0;
+    float lo = -24.0, hi = 8.0;   // log2 of the scene-linear colour
+    for (int i = 0; i < 24; i++) {
+        float mid = 0.5 * (lo + hi);
+        if (display(vec3(exp2(mid)))[channel] < v) lo = mid; else hi = mid;
+    }
+    return exp2(0.5 * (lo + hi));
+}
 void main() {
     vec2 uv = gl_FragCoord.xy / uHdrSize;
     vec4 hdr = texture2D(uHdrColour, uv);
     float cover = texture2D(uHdrDepth, uv).r < 1.0 ? 1.0 : clamp(hdr.a, 0.0, 1.0);
     vec3 P = max(hdr.rgb, 0.0);
     if (cover <= 0.0 && (uHdrStraight || max(P.r, max(P.g, P.b)) <= 0.0)) discard;
+    if (!uHdrStraight) {
+        vec3 B = cover < 1.0 ? vec3(backdropLinear(uHdrBackground.r, 0), backdropLinear(uHdrBackground.g, 1),
+                                    backdropLinear(uHdrBackground.b, 2)) : vec3(0.0);
+        gl_FragColor = vec4(display(P + (1.0 - cover) * B), 1.0);
+        return;
+    }
     vec3 rgb = max(display(P) - display(vec3(0.0)) * (1.0 - cover), 0.0);
     // Straight alpha cannot hold light added over a thin coverage (an emissive pane at alpha 19/255): the alpha is raised to
     // the brightest channel so that the image composites to the same colour over black (rgb / a' times a' = rgb).
     float straightCover = clamp(max(cover, max(rgb.r, max(rgb.g, rgb.b))), 1e-6, 1.0);
-    gl_FragColor = uHdrStraight ? vec4(min(rgb / straightCover, 1.0), straightCover) : vec4(rgb, cover);
+    gl_FragColor = vec4(min(rgb / straightCover, 1.0), straightCover);
 }
 """.replace("// @lighting\n", LIGHTING)
-HDR_RESOLVE_UNIFORMS = (*LIGHTING_UNIFORMS, "uHdrColour", "uHdrDepth", "uHdrSize", "uHdrStraight")
+HDR_RESOLVE_UNIFORMS = (*LIGHTING_UNIFORMS, "uHdrColour", "uHdrDepth", "uHdrSize", "uHdrStraight", "uHdrBackground")
 
 
 # Level viewer scorch-mark decals (rc2016.levels.decals): the zone's pre-clipped `wpn_explosion_scorchmark` meshes, drawn after the

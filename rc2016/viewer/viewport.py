@@ -1678,6 +1678,9 @@ class ModelViewport(_TkFrame):
         sh.glUniform2f(u['uHdrSize'], float(target['size'][0]), float(target['size'][1]))
         straight = bool(getattr(self, 'transparent', False))   # thumbnail renderer: transparent target read as straight alpha
         sh.glUniform1i(u['uHdrStraight'], int(straight))
+        # The colour the window was cleared to (the thumbnail renderer's opaque target clears to its own grey).
+        background = getattr(self._gl, '_clear', None) or gl_color("viewport")
+        sh.glUniform3f(u['uHdrBackground'], *(float(c) for c in background[:3]))
         gl.glBlendFunc.argtypes = [ctypes.c_uint, ctypes.c_uint]; gl.glDepthMask.argtypes = [ctypes.c_ubyte]
         gl.glVertex2f.argtypes = [ctypes.c_float] * 2
         gl.glDisable(self.GL_DEPTH_TEST); gl.glDepthMask(0); gl.glDisable(self.GL_CULL_FACE)
