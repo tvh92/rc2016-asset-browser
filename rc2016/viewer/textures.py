@@ -367,6 +367,33 @@ TURRET_HUD_CONSTANTS = dict(
     presentation=True, game_equivalence=False,
     time=0.0, time_input='CB0 dword 99', fog_transmittance=1.0, writer='678C5C0E',
     frozen_inputs=dict(attribute3_w=1.0, instance_flags='bits 0x20 and 0x40 clear (unlit branch), bit 0x80 clear', engine_images='API 0 and 4 not read'))
+# Telepathipus brain case, pass-0 forward program AE2B0B81 of enm_telepathipus_brain_case_exterior (docs/material-decoding/
+# telepathipus-brain-case.md, evidence Research/captures/2026-11-07_telepathopus/). Alpha-over, back faces culled (flags 0x3A),
+# opacity byte 255. The shadPS4 dumps of the capture session hold this program and its pass-1 twin 775A45A0 (the same terms
+# without the water-flow distortion); the capture's 47 draws are UI only, so the rule rests on the program IR. API = 5 + resource
+# index: 5 flow normal (met_amb_water_pool_flow_01_n, the distortion), 6 and 7 the brain case _g (6 read for its blue channel at
+# UV0, 7 at the distorted UV), 8 _c, 9 _n. The colour reads the engine's scene colour and linear depth behind the surface (two
+# engine images at the screen position): the shell shows what is behind it, tinted toward CB2[4..6] by the thickness. The
+# viewer binds the four images on the window texture units (roles _window_mask = _g, _window_n1 = _n, _window_n2 = flow,
+# _window_c = _c) and its own copies of the frame's colour and depth.
+BRAIN_CASE_GRAPH_SHA256 = '353289b4eae8d1e0e3d943746c506664ee8ea284affc87b5dc6a8838ee4647ad'
+BRAIN_CASE_SLOTS = dict(_window_mask=0x49A7866B1576D848, _window_n1=0x49A7866B5E5B04FB,
+                        _window_n2=0x49A7866B492010B8, _window_c=0x49A7866B0056CBD0)
+BRAIN_CASE_HEIGHT_SLOT = 0x49A7866B93CA35AB   # API 6: the same _g image, read at UV0 for its blue channel
+# R in rgb = lerp(lerp(lerp(Bg, P, k), R C, s), C, C.a): hard-coded in the program (the rim colour times _c).
+BRAIN_CASE_RIM_COLOUR = (0.83577013, 0.16456541, 0.41727373)
+BRAIN_CASE_CONSTANTS = dict(
+    rim_colour=BRAIN_CASE_RIM_COLOUR, normal_scale=1.0, time=0.0, time_input='CB0 dword 99',
+    presentation=True, game_equivalence=False, writer='AE2B0B81',
+    frozen_inputs=dict(CB0_95=1.0, instance_fade=0.0, attr4_w=1.0, instance_flags=0x2061, ssr=False, geometric_aa=0.0,
+                       program_variant='AE2B0B81 (pass 0; 775A45A0 is pass 1 without the flow distortion)'))
+# Telepathipus brain, forward program FBA51F6C of enm_telepathipus_brain (same evidence). Opaque; albedo = API 9 (slot
+# 0xABDAD780, telepathipus_leg_brain_c), grey F0 = CB2[4] _g.G, gloss = sqrt(sat(CB2[5] _g.R)) from API 5 (_g) and the API 6 (_n)
+# normal; the specular tint is API 8 / luma(API 8), and API 8 is the flat grey default_pink_shader_c, so the tint is 1. The
+# program adds 100 _c.r E _c with E one channel of the electricity image picked by the per-frame random CB0[107] (none above 0.25,
+# so in three frames out of four); the rule draws that state. Read through the standard grey reading with the three slots bound
+# by hash: the generic suffix reading took default_pink_shader_c (flat grey) as the albedo.
+BRAIN_GRAPH_SHA256 = '46c6c154732117c62abe9fe9f92ba34e7cc54335bc4aec5d5fe9829f0fbe8654'
 # Novalis window glass, forward program 8DF14766 of jn_glass_parallax_mask (pass contract 0; docs/material-decoding/
 # novalis-window-glass.md, evidence Research/2026-10-29_novalis-window-glass/WINDOW_GLASS_DECODE.md). Slots in API order
 # (API = 5 + resource index): 5 mask (R), 6 window normal (world UV), 7 glass _g (world UV), 8 detail normal (UV1),
@@ -616,6 +643,18 @@ GRAPH_RULES = (
     ('materialgraph/visualeffect/equipment/gadget/gdgt_blarg_turret_hud/gdgt_blarg_turret_hud.',
      dict(forward='turret_hud', writer='678C5C0E', constants=TURRET_HUD_CONSTANTS,
           _graph_sha256=TURRET_HUD_GRAPH_SHA256, slots=TURRET_HUD_SLOTS, params=(('variant', 0x47EDAA94, 1),))),
+    # Telepathipus brain case AE2B0B81: exact graph + SHA (docs/material-decoding/telepathipus-brain-case.md). Pass-0 dwords:
+    # 0..2 grazing specular tint, 3 / 7 gloss scale at _c.a 0 / 1, 4..6 body colour P, 8..10 facing specular tint,
+    # 11 / 12 F0 scale at _c.a 0 / 1, 13 tint exponent, 14 tint scale.
+    ('materialgraph/environment/metropolis/ambient/met_amb_water_pool_01/enm_telepathipus_brain_case_exterior.',
+     dict(forward='brain_case', writer='AE2B0B81', constants=BRAIN_CASE_CONSTANTS, _graph_sha256=BRAIN_CASE_GRAPH_SHA256,
+          slots=BRAIN_CASE_SLOTS, params=(
+         ('tint_grazing', 0x72D80ADC, 3), ('body', 0xD5AE5F05, 3), ('tint_facing', 0xE00CD247, 3),
+         ('gloss_open', 0xAC5F00A0, 1), ('gloss_painted', 0x0B065E94, 1), ('f0_open', 0xCC368EB0, 1),
+         ('f0_painted', 0xBECCB16C, 1), ('tint_exp', 0x4A4437A7, 1), ('tint_scale', 0x2F076BCD, 1)))),
+    # Telepathipus brain FBA51F6C: exact graph + SHA, the grey reading with _c/_g/_n bound by slot (see BRAIN_GRAPH_SHA256).
+    ('materialgraph/character/enemy/enm_telepathipus_brain/enm_telepathipus_brain.',
+     dict(g_mode='grey', self_lit_key=None, slot_cgn=True, _graph_sha256=BRAIN_GRAPH_SHA256)),
     # Novalis window glass 8DF14766 (pass contract 0): exact graph + SHA only (docs/material-decoding/novalis-window-glass.md).
     # Opaque; diffuse light x albedo plus the reflection term, with the engine lighting replaced by the viewer's.
     ('materialgraph/global/basic_glass/jn_glass_parallax_mask.',
@@ -1171,6 +1210,16 @@ def material_texture_paths(archive, material_path: str) -> dict:
             if path: result[role] = path
             else: result.pop(role, None)
         result['foliage'] = True
+    if rule.get('slot_cgn'):
+        # _c, _g, _n by serialized slot (API 9, 5, 6 of the Telepathipus brain), never by suffix: the graph also binds the flat
+        # grey default_pink_shader_c (the specular tint image) under a '_c' name.
+        material_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
+        for role, slot in (('_c', 0x49A7866BABDAD780), ('_g', 0x49A7866B1576D848), ('_n', 0x49A7866B7AE34E7A)):
+            path = material_slots.get(slot) or slots.get(slot)
+            if path: result[role] = path
+            else: result.pop(role, None)
+        result.pop('_h', None)
+        result['graph_identity'] = dict(path=rule['graph_path'], sha256=rule['graph_sha256'])
     if rule.get('alpha_cut'):
         result['alpha_cut'] = _foliage_alpha_cutoff(data)
     if rule.get('swap'):
@@ -1619,6 +1668,14 @@ def material_texture_paths(archive, material_path: str) -> dict:
             rule = {}
         elif rule['forward'] == 'turret_shield' and len({barrier_bound(slot) for slot in TURRET_SHIELD_IMAGE_SLOTS}) != 1:
             rule = {}
+    if rule.get('forward') == 'brain_case':
+        # Every image the program reads must be bound by slot, and API 6 (blue channel at UV0) must be the API 7 _g image: the
+        # viewer reads both from one unit.
+        case_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
+        case_bound = lambda slot: case_slots.get(slot) or slots.get(slot)
+        if (any(not case_bound(slot) for slot in rule['slots'].values())
+                or case_bound(BRAIN_CASE_HEIGHT_SLOT) != case_bound(rule['slots']['_window_mask'])):
+            rule = {}
     if rule.get('forward') == 'ion_tubes':
         # The program reads both slots as one image and the decoded form has no CB2[4] power term; a material that
         # binds the slots to different images or sets the power is not the decoded program input.
@@ -1681,6 +1738,12 @@ def material_texture_paths(archive, material_path: str) -> dict:
             if rule['forward'] == 'turret_hud':
                 params['variant'] = float(math.floor(params['variant']))   # the program floors the material key
             for role in ('_c', '_g', '_h', '_n', '_pick'):
+                result.pop(role, None)
+        if rule['forward'] == 'brain_case':
+            # attribute0.w is the opacity byte 22 / 255 (255 here: the shell replaces what is behind it with its own mix of it).
+            flags_offset, flags_size = _sections(data).get(MATERIAL_FLAGS_SECTION, (0, 0))
+            params['alpha_scale'] = data[flags_offset + 22] / 255.0 if flags_size >= 23 else 1.0
+            for role in ('_c', '_g', '_h', '_n', '_pick'):   # the four images are on the window roles
                 result.pop(role, None)
         if rule['forward'] == 'water':
             params.update(WATER_PRESENTATION)
@@ -1769,6 +1832,10 @@ def material_texture_paths(archive, material_path: str) -> dict:
                                       f0=0x62835AF9, gloss=0x24F4CA4C))
                 flat['signed_inputs'] = (any(value < 0.0 for value in flat['colour']) or flat['emission_scale'] < 0.0
                                          or flat['f0'] < 0.0 or flat['gloss'] < 0.0)
+                # The program is drawn forward with the flags word's culling. The viewer draws other opaque materials
+                # two-sided; this one keeps the game's cull, because inward-facing shells (the Telepathipus brain case
+                # inside) would otherwise hide what they enclose.
+                flat['cull_back'] = not blend_state(material_flags(data))['two_sided']
             except ValueError as error:
                 result['unsupported_flat_surface'] = str(error)
                 result.pop('graph_identity', None)
@@ -2375,7 +2442,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             entry['alpha_cut'] = float(paths['alpha_cut'])
         if 'za_fresnel_power' in paths:
             entry['za_fresnel_power'] = paths['za_fresnel_power']
-        for role in (*ROLES, *(('_water_height_a', '_water_height_b') if paths.get('forward', {}).get('sampling') else ()), *(('_water_foam_a', '_water_foam_b') if paths.get('forward', {}).get('surface') else ()),*(('_reticle',) if paths.get('forward', {}).get('kind') == 'victor_reticle' and paths.get('_reticle') else ()), *(('_parallax_height',) if paths.get('parallax') else ()), *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') or paths.get('skin_detail') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ()), *(('_cma',) if paths.get('leaf_colour') else ()), *(tuple(role for role, _name in WINDOW_GLASS_ROLES) if paths.get('forward', {}).get('kind') in ('window_glass', 'turret_shield', 'turret_hud') else ())):
+        for role in (*ROLES, *(('_water_height_a', '_water_height_b') if paths.get('forward', {}).get('sampling') else ()), *(('_water_foam_a', '_water_foam_b') if paths.get('forward', {}).get('surface') else ()),*(('_reticle',) if paths.get('forward', {}).get('kind') == 'victor_reticle' and paths.get('_reticle') else ()), *(('_parallax_height',) if paths.get('parallax') else ()), *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') or paths.get('skin_detail') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ()), *(('_cma',) if paths.get('leaf_colour') else ()), *(tuple(role for role, _name in WINDOW_GLASS_ROLES) if paths.get('forward', {}).get('kind') in ('window_glass', 'turret_shield', 'turret_hud', 'brain_case') else ())):
             path = paths.get(role)
             if not path:
                 continue

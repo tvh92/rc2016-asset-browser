@@ -101,7 +101,7 @@ class RuleBindingTests(unittest.TestCase):
         # Both blend in the viewer's float scene target (tonemapped once, as the game's HDR target), not per fragment.
         from rc2016.viewer.shading import HDR_RESOLVE_FRAGMENT
         from rc2016.viewer.viewport import ModelViewport
-        self.assertEqual(ModelViewport.HDR_FORWARD_KINDS, frozenset({'turret_shield', 'turret_hud'}))
+        self.assertTrue({'turret_shield', 'turret_hud'} <= ModelViewport.HDR_FORWARD_KINDS)
         self.assertIn('max(cover, max(rgb.r, max(rgb.g, rgb.b)))', HDR_RESOLVE_FRAGMENT)   # straight alpha keeps added light
 
     def test_glsl_branches_carry_the_decoded_equations(self):

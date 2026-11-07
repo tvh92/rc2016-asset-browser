@@ -1278,10 +1278,25 @@ void main() {
 #   uW[3] = foam height weights CB2[19], CB2[20], foam UV scales CB2[25], CB2[26]; uW[4] = foam displacements CB2[27], CB2[28];
 #   uW[5] = foam scrolls CB2[29..32]. World X/Z are exact (attribute3 is camera minus world); the probe is the viewer environment,
 #   SSR weight 0, scene depth (thickness) only where the viewer binds uSceneDepth.
+# uKind 20, brain_case AE2B0B81 (enm_telepathipus_brain_case_exterior pass 0; docs/material-decoding/telepathipus-brain-case.md),
+#   a labelled PREVIEW: uA = body colour P (CB2[4..6]), t = CB0[99]; uB = grazing tint (CB2[0..2]), tint exponent CB2[13];
+#   uC = facing tint (CB2[8..10]), tint scale CB2[14]; uD = gloss scale at _c.a 0 and 1 (CB2[3], CB2[7]), F0 scale at _c.a 0 and 1
+#   (CB2[11], CB2[12]); uE = (attribute0.w opacity, normal strength CB0[95] (1 - fade), 0, 0). Window units: mask = _g (API 6, 7),
+#   n1 = _n (API 9), n2 = flow normal (API 5), c = _c (API 8). Flow f = q (2 flow(0.3 u - 0.1 t, 0.3 v + 0.025 t).rg - 1),
+#   zf = 1 - |f|^2; uv' = uv + o (-T.V, B.V), o = -0.4 _g.b(uv) q f.y; m = q (2 _n(uv').rg - 1), zm = 1 - |m|^2.
+#   Rim normal Nr = normalize(T m.x + B m.y + n zm), e = 1.001 - sat(Nr.V); shaded normal
+#   Ns = normalize(T (m.x zf + w f.x) + B (m.y zf + w f.y) + n zm zf), w = 3 _g.b zm. Gloss: GGX alpha 2^(-5.5 sqrt(sat(_g.r
+#   lerp(CB2[3], CB2[7], _c.a)))); F0 = sat(_g.g lerp(CB2[11], CB2[12], _c.a)), F90 = sat(60 F0); specular tint
+#   A = sat(CB2[14] lerp(CB2[8..10], CB2[0..2], e^CB2[13])). Albedo = lerp(lerp(lerp(Bg, P, k), R _c, s), _c, _c.a) with R the
+#   hard-coded (0.83577013, 0.16456541, 0.41727373), s = sat((10 e^4)^5), k = sat((|Z - W| - 1) / 3), Bg / Z the scene colour and
+#   linear depth behind the fragment, W its own depth. rgb = albedo Ld + A specular. With the frame copies bound (uHasSceneColour,
+#   uHasSceneDepth: the model viewer's float-target frames) this is the program's composition; without them k = 1 when no depth is
+#   bound, and the blend supplies Bg (alpha = opacity (1 - wbg), wbg = (1 - k)(1 - s)(1 - _c.a), Ld taken as 1 for Bg).
 GLASS_FRAGMENT = """
 #version 120
 #extension GL_ARB_shader_texture_lod : enable
 uniform sampler2D uWaterHeightA; uniform sampler2D uWaterHeightB; uniform bool uHasWaterHeights;
+uniform sampler2D uSceneColour; uniform bool uHasSceneColour;   // copy of the frame's scene colour (uKind 20)
 uniform vec4 uW[6];
 uniform sampler2D uWaterFoamA; uniform sampler2D uWaterFoamB; uniform bool uHasWaterFoam;
 uniform bool uWaterFoamSrgbA; uniform bool uWaterFoamSrgbB;
@@ -1834,6 +1849,50 @@ void main() {
         vec3 S = ggx(N, V, L1, F0, F90, a) * C1 + ggx(N, V, L2, F0, F90, a) * C2
                + envSpecular(N, V, F0, F90, a, ambient);
         color = S + 0.400295 * pick * Ld;
+    } else if (uKind == 20) { // AE2B0B81 Telepathipus brain case (see the uKind 20 comment)
+        vec3 n = normalize(vNrm);
+        vec3 dp1 = dFdx(vPos), dp2 = dFdy(vPos); vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
+        vec3 p2 = cross(dp2, n), p1 = cross(n, dp1);
+        vec3 T = normalize(p2 * du1.x + p1 * du2.x), B = normalize(-(p2 * du1.y + p1 * du2.y));
+        float t = uA.w, q = uE.y;
+        vec2 fl = uHasWindowN2 ? texture2D(uTexWindowN2, vec2(0.3 * vUV.x - 0.1 * t, 0.3 * vUV.y + 0.025 * t)).rg : vec2(0.5);
+        vec2 f = q * (2.0 * fl - 1.0);
+        float zf = 1.0 - dot(f, f);
+        vec3 g0 = uHasWindowMask ? texture2D(uTexWindowMask, vUV).rgb : vec3(0.0);
+        if (uSrgbWindowMask) g0 = linear(g0);
+        vec2 uv = vUV - 0.4 * g0.b * q * f.y * vec2(-dot(T, V), dot(B, V));
+        vec2 m = uHasWindowN1 ? q * (2.0 * texture2D(uTexWindowN1, uv).rg - 1.0) : vec2(0.0);
+        float zm = 1.0 - dot(m, m);
+        vec3 G = uHasWindowMask ? texture2D(uTexWindowMask, uv).rgb : vec3(0.0);
+        if (uSrgbWindowMask) G = linear(G);
+        vec4 c4 = uHasWindowC ? texture2D(uTexWindowC, uv) : vec4(0.0);
+        vec3 C = uSrgbWindowC ? linear(c4.rgb) : c4.rgb;
+        float w = 3.0 * G.b * zm;
+        vec3 Ns = normalize(T * (m.x * zf + w * f.x) + B * (m.y * zf + w * f.y) + n * (zm * zf));
+        float e = abs(1.001 - sat(dot(normalize(T * m.x + B * m.y + n * zm), V)));
+        float a = pow(2.0, -5.5 * sqrt(sat(G.r * mix(uD.x, uD.y, c4.a))));
+        vec3 F0 = vec3(sat(G.g * mix(uD.z, uD.w, c4.a)));
+        vec3 A = clamp(uC.w * mix(uC.rgb, uB.rgb, pow(e, uB.w)), 0.0, 1.0);
+        float s = sat(pow(10.0 * pow(e, 4.0), 5.0));
+        float k = 1.0;
+        if (uHasSceneDepth) {
+            float zn = texture2D(uSceneDepth, gl_FragCoord.xy / uSceneDepthInfo.xy).r * 2.0 - 1.0;
+            float zN = uSceneDepthInfo.z, zF = uSceneDepthInfo.w;
+            k = sat((abs(2.0 * zN * zF / (zF + zN - zn * (zF - zN)) + vPos.z) - 1.0) / 3.0);
+        }
+        vec3 rest = (1.0 - c4.a) * ((1.0 - s) * k * uA.rgb + s * vec3(0.83577013, 0.16456541, 0.41727373) * C) + c4.a * C;
+        float wbg = (1.0 - k) * (1.0 - s) * (1.0 - c4.a);
+        vec3 ambient = ambientLight(Ns);
+        vec3 Ld = (max(dot(Ns, L1), 0.0) * C1 + max(dot(Ns, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
+        vec3 S = A * glassSpec(Ns, V, L1, L2, C1, C2, F0, a, ambient);
+        if (uHasSceneColour) {
+            vec3 bg = texture2D(uSceneColour, gl_FragCoord.xy / uSceneDepthInfo.xy).rgb;
+            color = (rest + wbg * bg) * Ld + S;
+            alpha = sat(uE.x);
+        } else {
+            alpha = sat(uE.x) * (1.0 - wbg);
+            color = (rest * Ld + S) / max(1.0 - wbg, 1e-4);
+        }
     } else {
         alpha = sat(pow(1.001 - ndv, uC.x) * (uC.z + sat(uC.w + sat(4.0 * pow(om, uD.y)))));
         vec3 tint = clamp(uB.w * clamp(uB.rgb / max(dot(vec3(0.2126, 0.7152, 0.0722), uB.rgb), 1e-6), 0.0, 1.0), 0.0, 1.0);
@@ -1902,7 +1961,7 @@ GLASS_FRAGMENT = GLASS_FRAGMENT.replace("// @lighting\n", LIGHTING+FOG)
 GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4, "bright_glow": 5,
                "eye_cornea": 6, "number_display": 7, "glass_basic": 8, "glass_cg02": 9, "glass_jn": 10, "glass_thumper": 11,
                "ion_tubes": 12, "glass_liquid": 13, "window_glass": 14, "glass_tank": 15, "warmonger_reticle": 16, "glass_taxi": 17,
-               "turret_shield": 18, "turret_hud": 19}
+               "turret_shield": 18, "turret_hud": 19, "brain_case": 20}
 
 
 def frame_fade(time, rate):
@@ -1976,6 +2035,10 @@ def glass_uniforms(forward, time=None):
     if forward["kind"] == "turret_shield":
         return (GLASS_KINDS["turret_shield"], (p["gain"], p["emission"], p["amplitude"], p["time"] if time is None else time),
                 (p["alpha_cut"], p["alpha_scale"], p["fog_transmittance"], 0.0), (0.0,) * 4, (0.0,) * 4, (0.0,) * 4)
+    if forward["kind"] == "brain_case":
+        return (GLASS_KINDS["brain_case"], (*p["body"], p["time"] if time is None else time), (*p["tint_grazing"], p["tint_exp"]),
+                (*p["tint_facing"], p["tint_scale"]), (p["gloss_open"], p["gloss_painted"], p["f0_open"], p["f0_painted"]),
+                (p["alpha_scale"], p["normal_scale"], 0.0, 0.0))
     if forward["kind"] == "turret_hud":
         return (GLASS_KINDS["turret_hud"], (p["variant"], p["amplitude"], p["time"] if time is None else time, 0.0),
                 (p["alpha_cut"], p["alpha_scale"], p["fog_transmittance"], 0.0), (0.0,) * 4, (0.0,) * 4, (0.0,) * 4)
@@ -2002,6 +2065,7 @@ def glass_uniforms(forward, time=None):
 # Texture units of the decoded water closure's extra samplers (the glass pass binds no other texture there).
 WATER_FOAM_TEXTURE_UNITS = (7, 8)
 SCENE_DEPTH_TEXTURE_UNIT = 9
+SCENE_COLOUR_TEXTURE_UNIT = 14   # the frame's colour copy read by the Telepathipus brain case (uKind 20); free in the glass program
 # The window glass rule's extra images (uKind 14), unused by every other glass kind:
 # (unit, texture_preview role, sampler, has flag, sRGB flag or None). Normal maps are always Non-Color.
 WINDOW_GLASS_TEXTURES = ((10, "_window_mask", "uTexWindowMask", "uHasWindowMask", "uSrgbWindowMask"),
@@ -2058,7 +2122,7 @@ OPAQUE_UNIFORMS = (
 GLASS_UNIFORMS = ("uSkin", "uBoneTex", "uBoneWidth", "uKind", "uA", "uB", "uC", "uD", "uE",
                   "uWaterHeightA", "uWaterHeightB", "uHasWaterHeights", "uTexN", "uHasN", "uTexP", "uHasP", "uSrgbP",
                   "uW", "uWaterFoamA", "uWaterFoamB", "uHasWaterFoam", "uWaterFoamSrgbA", "uWaterFoamSrgbB",
-                  "uSceneDepth", "uHasSceneDepth", "uSceneDepthInfo",
+                  "uSceneDepth", "uHasSceneDepth", "uSceneDepthInfo", "uSceneColour", "uHasSceneColour",
                   "uScreenNoiseA", "uScreenNoiseB", "uScreenSrgbN", "uScreenSrgbA", "uScreenSrgbB",
                   "uTexWindowMask", "uTexWindowN1", "uTexWindowN2", "uTexWindowC", "uHasWindowMask", "uHasWindowN1",
                   "uHasWindowN2", "uHasWindowC", "uSrgbWindowMask", "uSrgbWindowC", "uHasUV1", "uWindowP",

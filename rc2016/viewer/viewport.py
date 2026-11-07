@@ -1456,7 +1456,14 @@ class ModelViewport(_TkFrame):
                     gl.glBlendFunc.argtypes = [ctypes.c_uint, ctypes.c_uint]; gl.glDepthMask.argtypes = [ctypes.c_ubyte]
                     gl.glEnable(self.GL_BLEND); self._blend_over()
                     gl.glDepthMask(0); gl.glEnable(self.GL_CULL_FACE)
+                # basic_flat_color keeps the flags word's back-face cull (inward-facing shells such as the Telepathipus brain
+                # case inside); other opaque materials draw both faces.
+                cull = bool((entry.get('flat_surface') or {}).get('cull_back'))
+                if cull:
+                    gl.glEnable(self.GL_CULL_FACE)
                 self._draw_range(index_array, first, count)
+                if cull:
+                    gl.glDisable(self.GL_CULL_FACE)
                 if pane:
                     gl.glDepthMask(1); gl.glDisable(self.GL_BLEND); gl.glDisable(self.GL_CULL_FACE)
                 if reticle and reticle.get('blend') == 'additive':
@@ -1577,7 +1584,9 @@ class ModelViewport(_TkFrame):
     # Emission-only forward programs whose colour is far above display white at a small alpha (the turret barrier and its
     # targeting display: alpha 19/255 over HDR emission). Tonemapped per fragment they would clip to white before blending
     # and show as a faint pane; the game blends them in its HDR target, so their frames use the float target too.
-    HDR_FORWARD_KINDS = frozenset({'turret_shield', 'turret_hud'})
+    # The Telepathipus brain case (uKind 20) mixes the scene colour behind it into its own colour, so its frames need the
+    # scene-linear colour of the float target to copy (_scene_copies).
+    HDR_FORWARD_KINDS = frozenset({'turret_shield', 'turret_hud', 'brain_case'})
     GL_FRAMEBUFFER, GL_FRAMEBUFFER_BINDING, GL_FRAMEBUFFER_COMPLETE = 0x8D40, 0x8CA6, 0x8CD5
     _HDR_FUNCTIONS = {'glGenFramebuffers': (None, 'ip'), 'glBindFramebuffer': (None, 'uu'),
                       'glFramebufferTexture2D': (None, 'uuuui'), 'glCheckFramebufferStatus': ('u', 'u'),
@@ -2070,6 +2079,7 @@ class ModelViewport(_TkFrame):
         gl.glCullFace(self.GL_BACK)   # decoded meshes are counter-clockwise front, GL's default
         ordered = forward_order(batches, cached[1], list(modelview),
                                 lambda slot: self._gl_textures[slot]["forward"].get("blend") == "opaque")
+        copies = None   # the frame's colour and depth, copied before the first brain case batch (_scene_copies)
         for slot, first, count in ordered:
             entry = self._gl_textures[slot]
             forward = entry["forward"]
@@ -2102,6 +2112,9 @@ class ModelViewport(_TkFrame):
                     sh.glUniform1i(u[name], unit)
             self._apply_water_surface(u, entry, forward, scene_depth=None)
             self._apply_window_glass(u, entry, forward, uv1 is not None)
+            if forward.get('kind') == 'brain_case':
+                copies = copies or self._scene_copies()
+            self._bind_scene_copies(u, copies if forward.get('kind') == 'brain_case' else None)
             kind, *vectors = glass_uniforms(forward, self._effect_time(forward))
             sh.glUniform1i(u["uKind"], kind)
             for name, vector in zip(("uA", "uB", "uC", "uD", "uE"), vectors):
@@ -2109,6 +2122,52 @@ class ModelViewport(_TkFrame):
             self._draw_range(index_array, first, count)
         gl.glDepthMask(1); gl.glDisable(self.GL_BLEND); gl.glDisable(self.GL_CULL_FACE)
         sh.glDisableVertexAttribArray(UV1_ATTRIBUTE)
+
+    def _scene_copies(self):
+        """(colour texture, depth texture, (width, height, near, far)): the frame's colour and depth buffers as they are before
+        the Telepathipus brain case draws (its program reads the scene colour and linear depth behind each fragment). The colour
+        is RGBA16F in the float scene target (scene-linear, as the game's), else RGBA8 display-referred."""
+        from rc2016.viewer.shading import SCENE_COLOUR_TEXTURE_UNIT
+        gl, sh = self._gl, self._shading
+        names = self.__dict__.get('_scene_copy_gl')
+        if names is None:
+            ids = (ctypes.c_uint * 2)()
+            gl.glGenTextures(2, ids)
+            for name in ids:
+                gl.glBindTexture(self.GL_TEXTURE_2D, name)
+                for parameter, value in ((self.GL_TEXTURE_MIN_FILTER, 0x2600), (self.GL_TEXTURE_MAG_FILTER, 0x2600),   # GL_NEAREST
+                                         (self.GL_TEXTURE_WRAP_S, 0x812F), (self.GL_TEXTURE_WRAP_T, 0x812F)):
+                    gl.glTexParameteri(self.GL_TEXTURE_2D, parameter, value)
+            names = self._scene_copy_gl = (ids[0], ids[1])
+        viewport = (ctypes.c_int * 4)()
+        gl.glGetIntegerv.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+        gl.glGetIntegerv(0x0BA2, viewport)      # GL_VIEWPORT
+        gl.glCopyTexImage2D.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_uint, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                        ctypes.c_int, ctypes.c_int]
+        sh.glActiveTexture(self.GL_TEXTURE0 + SCENE_COLOUR_TEXTURE_UNIT)
+        colour_format = 0x881A if getattr(self, '_linear_output', False) else 0x8058   # GL_RGBA16F / GL_RGBA8
+        for name, internal in zip(names, (colour_format, 0x1902)):   # GL_DEPTH_COMPONENT
+            gl.glBindTexture(self.GL_TEXTURE_2D, name)
+            gl.glCopyTexImage2D(self.GL_TEXTURE_2D, 0, internal, viewport[0], viewport[1], viewport[2], viewport[3], 0)
+        gl.glBindTexture(self.GL_TEXTURE_2D, 0)
+        sh.glActiveTexture(self.GL_TEXTURE0)
+        camera = self._camera or {}
+        return names[0], names[1], (float(viewport[2]), float(viewport[3]), float(camera.get('near', 0.05)), float(camera.get('far', 1000.0)))
+
+    def _bind_scene_copies(self, u, copies):
+        """Bind _scene_copies on the scene colour and depth units of the glass program, or clear its flags (copies None)."""
+        from rc2016.viewer.shading import SCENE_COLOUR_TEXTURE_UNIT, SCENE_DEPTH_TEXTURE_UNIT
+        gl, sh = self._gl, self._shading
+        sh.glUniform1i(u['uSceneColour'], SCENE_COLOUR_TEXTURE_UNIT)
+        sh.glUniform1i(u['uHasSceneColour'], 1 if copies else 0)
+        if not copies:
+            return
+        sh.glUniform1i(u['uHasSceneDepth'], 1)
+        sh.glUniform4f(u['uSceneDepthInfo'], *copies[2])
+        for unit, name in ((SCENE_COLOUR_TEXTURE_UNIT, copies[0]), (SCENE_DEPTH_TEXTURE_UNIT, copies[1])):
+            sh.glActiveTexture(self.GL_TEXTURE0 + unit)
+            gl.glBindTexture(self.GL_TEXTURE_2D, name)
+        sh.glActiveTexture(self.GL_TEXTURE0)
 
     def _apply_window_glass(self, u, entry, forward, has_uv1):
         """The window glass rule's extra images (shading.WINDOW_GLASS_TEXTURES: mask, window normal, detail normal,
@@ -2119,7 +2178,8 @@ class ModelViewport(_TkFrame):
         from rc2016.viewer.shading import TAXI_GLASS_TEXTURES, WINDOW_GLASS_TEXTURES, window_glass_uniform
         gl, sh = self._gl, self._shading
         window = forward.get("kind") == "window_glass"
-        turret = forward.get("kind") in ("turret_shield", "turret_hud")   # the barrier rules read the four window roles as they are
+        # The barrier rules and the brain case read the four window roles as they are.
+        turret = forward.get("kind") in ("turret_shield", "turret_hud", "brain_case")
         taxi = {unit: role for unit, role, *_ in TAXI_GLASS_TEXTURES} if forward.get("kind") == "glass_taxi" else None
         sh.glUniform1i(u["uHasUV1"], 1 if window and has_uv1 else 0)
         sh.glUniform4f(u["uWindowP"], *window_glass_uniform(forward))

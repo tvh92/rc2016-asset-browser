@@ -1517,7 +1517,7 @@ def _viewer_skin_spec(P, skin, gR, gG, f, tinted):
     rgb = P.comb(*(P.sat(P.m('MULTIPLY', grey, ch)) for ch in P.sep(tinted))) if qwark else None
     return grey, gloss_in, rgb
 
-GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_patterned_add', 'glass_patterned', 'glass_liquid', 'glass_tank', 'glass_taxi', 'warmonger_reticle', 'turret_shield', 'turret_hud', 'window_glass')
+GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_patterned_add', 'glass_patterned', 'glass_liquid', 'glass_tank', 'glass_taxi', 'warmonger_reticle', 'turret_shield', 'turret_hud', 'brain_case', 'window_glass')
 
 
 def _viewer_rule_glass(mat, rule, key, img):
@@ -1861,6 +1861,65 @@ def _viewer_rule_glass(mat, rule, key, img):
         em = P.N.new('ShaderNodeEmission'); em.name = 'VR glass emission'
         P.L.new(colour, em.inputs['Color'])
         lit = em.outputs[0]
+    elif key == 'brain_case':
+        # AE2B0B81 (docs/material-decoding/telepathipus-brain-case.md), labelled preview of gl_shading.GLASS_FRAGMENT uKind 20 without
+        # the frame's colour and depth: Cycles has no scene-colour lookup, so the thickness k is taken as 1 (the shell's own body
+        # colour P where the viewer shows the scene behind it) and the water-flow UV distortion is not built. Albedo =
+        # lerp(lerp(P, R _c, s), _c, _c.a), rim s = sat((10 e^4)^5), e = 1.001 - sat(Nr.V); specular tint A = sat(CB2[14]
+        # lerp(CB2[8..10], CB2[0..2], e^CB2[13])) on the specular lobe (F0 = sat(_g.g lerp(CB2[11], CB2[12], _c.a)), gloss
+        # sat(_g.r lerp(CB2[3], CB2[7], _c.a))); window roles: mask = _g, n1 = _n, n2 = flow normal, c = _c.
+        g_img, n_img, flow_img, c_img = img('_window_mask'), img('_window_n1'), img('_window_n2'), img('_window_c')
+        mx, my, zm = 0.0, 0.0, 1.0
+        if n_img is not None:
+            mx, my = P.rg(P.tex(n_img, P.game_uv(), 'brain case normal map').outputs['Color'])
+            zm = P.m('SUBTRACT', 1.0, P.dot2(mx, my))
+        else:
+            limits.append('no brain case _n bound: geometric normal')
+        rim_n = P.v('NORMALIZE', P.tangent_normal(mx, my, zm, 'brain case rim normal Nr'))
+        e = P.m('ABSOLUTE', P.m('SUBTRACT', 1.001, P.sat(P.v('DOT_PRODUCT', rim_n, Vv))))
+        s = P.sat(P.m('POWER', P.m('MULTIPLY', P.m('POWER', e, 4.0), 10.0), 5.0))
+        if c_img is not None:
+            c_node = P.tex(c_img, P.game_uv(), 'brain case _c')
+            C, ca = c_node.outputs['Color'], c_node.outputs['Alpha']
+        else:
+            C, ca = (0.0, 0.0, 0.0), 0.0
+            limits.append('no brain case _c bound: _c = 0')
+        g_r, g_g, g_b = 0.0, 0.0, 0.0
+        if g_img is not None:
+            g_r, g_g, g_b = P.sep(P.tex(g_img, P.game_uv(), 'brain case _g').outputs['Color'])
+        else:
+            limits.append('no brain case _g bound: F0 = 0, gloss 0')
+        if flow_img is not None:   # Ns blends the flow normal (time 0) in by w = 3 _g.b zm
+            fx, fy = P.rg(P.tex(flow_img, P.game_uv(0.3, 0.3), 'brain case flow normal').outputs['Color'])
+            zf = P.m('SUBTRACT', 1.0, P.dot2(fx, fy))
+            w = P.m('MULTIPLY', P.m('MULTIPLY', g_b, zm), 3.0)
+            shade = P.v('NORMALIZE', P.tangent_normal(P.m('MULTIPLY_ADD', mx, zf, P.m('MULTIPLY', w, fx)),
+                                                      P.m('MULTIPLY_ADD', my, zf, P.m('MULTIPLY', w, fy)),
+                                                      P.m('MULTIPLY', zm, zf), "brain case shaded normal Ns"))
+        else:
+            shade = rim_n
+            limits.append('no flow normal bound: Ns = Nr')
+        lerp = lambda a, b, t_: P.m('MULTIPLY_ADD', P.m('SUBTRACT', b, a), t_, a)
+        gloss = P.sat(P.m('MULTIPLY', g_r, lerp(P.const('glass gloss open', p['gloss_open']), P.const('glass gloss painted', p['gloss_painted']), ca)))
+        f0 = P.sat(P.m('MULTIPLY', g_g, lerp(P.const('glass f0 open', p['f0_open']), P.const('glass f0 painted', p['f0_painted']), ca)))
+        ep = P.m('POWER', e, P.const('glass tint exp', p['tint_exp']))
+        facing = P.const3('glass tint facing', p['tint_facing'])
+        tint = P.vsat(P.v('SCALE', P.v('ADD', facing, P.v('SCALE', P.v('SUBTRACT', P.const3('glass tint grazing', p['tint_grazing']), facing), ep)),
+                              P.const('glass tint scale', p['tint_scale'])))
+        rim_c = P.v('MULTIPLY', P.const3('glass rim colour', p['rim_colour']), C)
+        body = P.const3('glass body', p['body'])
+        alb = P.v('ADD', body, P.v('SCALE', P.v('SUBTRACT', rim_c, body), s))
+        alb = P.v('ADD', alb, P.v('SCALE', P.v('SUBTRACT', C, alb), ca), label='brain case albedo')
+        lobe, f90 = spec_lobe(P.v('MULTIPLY', tint, P.comb(f0, f0, f0)), gloss)
+        if 'Specular Tint' in lobe.node.inputs:   # the tint A also colours the Schlick edge (the program multiplies all of S by A)
+            P.L.new(tint, lobe.node.inputs['Specular Tint'])
+        lit = add(diffuse(alb), scaled(lobe, f90), 'VR glass lit')
+        alpha = P.sat(P.const('glass alpha scale', p['alpha_scale']))
+        limits.append('Telepathipus brain case AE2B0B81 (frozen preview, game_equivalence False): the scene colour and depth behind '
+                      'the shell are not available in Cycles, so the thickness term k is 1 (body colour %s, no view of the brain '
+                      'inside) and alpha is attribute0.w = %g; the water-flow UV distortion (0.4 _g.b flow) is not built, the flow '
+                      'normal is read at time 0 and the normal maps use the Blender UV tangent; the specular tint multiplies F0 and '
+                      'the Principled specular tint (edge), and F90 = sat(60 max(A F0))' % (tuple(round(x, 4) for x in p['body']), p['alpha_scale']))
     elif key == 'glass_taxi':
         # 4E9B2CB3 (docs/material-decoding/taxi-glass.md), labelled preview: with attribute4.w = 0, alpha = sat(attr0.w sat(W (A + B)))
         # with A = H(UV0), B = H(UV0 + view-dependent offset) and H = alpha_H.R (_pick slot), cut at attr0.z. Colour: rgb = Ld(N')
@@ -2930,6 +2989,13 @@ def apply_viewer_graph_rule(mat, source):
         L.new(emission_colour, emission.inputs['Color'])
         add = nt.nodes.new('ShaderNodeAddShader'); add.name = add.label = 'VR basic_flat_color additive source term'; add.location = (650, -150)
         L.new(grp.outputs[0], add.inputs[0]); L.new(emission.outputs[0], add.inputs[1]); L.new(add.outputs[0], out.inputs['Surface'])
+        if flat.get('cull_back'):   # the forward program keeps the flags word's back-face cull (inward-facing shells)
+            geometry = nt.nodes.new('ShaderNodeNewGeometry')
+            clear = nt.nodes.new('ShaderNodeBsdfTransparent'); clear.name = 'VR culled back face'
+            cull = nt.nodes.new('ShaderNodeMixShader'); cull.name = cull.label = 'VR cull back faces'
+            L.new(geometry.outputs['Backfacing'], cull.inputs[0]); L.new(add.outputs[0], cull.inputs[1])
+            L.new(clear.outputs[0], cull.inputs[2]); L.new(cull.outputs[0], out.inputs['Surface'])
+            mat.use_backface_culling = True
     if facing:   # 0CD2AAFB rel 12552-12672, added after lighting: an emission beside the BRDF
         ndv = P.sat(P.v('DOT_PRODUCT', final_n, V))
         f = P.m('POWER', P.m('MAXIMUM', P.m('SUBTRACT', ndv, P.const('facing glow bias', facing['bias'])), 0.0),
