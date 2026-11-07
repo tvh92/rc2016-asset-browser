@@ -421,11 +421,13 @@ vec3 ggx(vec3 N, vec3 V, vec3 L, vec3 F0, vec3 F90, float a) {
 }
 // Model-viewer effect light (rc2016/viewer/idle_effect.py, the health crate's idle-effect light): view-space position,
 // w = 1 / radius, and colour; zero colour (the default) is off. Radius, falloff (1 - d/R)^4 and the unit scale are
-// inferred stand-ins; only the hue and the captured colour are game values.
+// inferred stand-ins; only the hue and the captured colour are game values. w <= 0 (every other model) is off: the
+// callers then skip both terms, since L = V there and ggx() can reach D = 0/0 (NaN x 0 is still NaN, drawn black).
 uniform vec4 uPreviewLightPos; uniform vec3 uPreviewLightColour;
 float previewLightWeight(out vec3 L) {
     vec3 delta = uPreviewLightPos.xyz - vPos; float d = length(delta);
     L = delta / max(d, 0.0001);
+    if (uPreviewLightPos.w <= 0.0) return 0.0;
     return pow(clamp(1.0 - d * uPreviewLightPos.w, 0.0, 1.0), 4.0);
 }
 // Shared surface lighting: hand rules and native DAGs use identical closures.
@@ -433,9 +435,9 @@ vec3 deferredDiffuse(vec3 N, vec3 albedo) {
     if (!uLightingEnabled) return albedo;
 #ifndef RC_SCENE_EFFECTS
     vec3 previewL; float previewW = previewLightWeight(previewL);
+    vec3 preview = previewW > 0.0 ? uPreviewLightColour * previewW * max(dot(N, previewL), 0.0) : vec3(0.0);
     return albedo * ((max(dot(N, rigKey()), 0.0) * keyColour()
-        + max(dot(N, rigFill()), 0.0) * fillColour() + ambientLight(N)) / PI * diffuseScale()
-        + uPreviewLightColour * previewW * max(dot(N, previewL), 0.0));
+        + max(dot(N, rigFill()), 0.0) * fillColour() + ambientLight(N)) / PI * diffuseScale() + preview);
 #else
     sceneCaptureNormal=N;float A=sceneAO();float NdK=max(dot(N,rigKey()),0.0),Sh=sceneShadow(vPos,N);
     vec3 D=(NdK*keyColour()*Sh
@@ -456,10 +458,11 @@ vec3 deferredSpecular(vec3 N, vec3 V, vec3 F0, float gloss) {
     float a = pow(2.0, -5.5 * gloss);
 #ifndef RC_SCENE_EFFECTS
     vec3 previewL; float previewW = previewLightWeight(previewL);
-    return ggx(N,V,rigKey(),F0,F90,a)*keyColour()
+    vec3 S = ggx(N,V,rigKey(),F0,F90,a)*keyColour()
         + ggx(N,V,rigFill(),F0,F90,a)*fillColour()
-        + envSpecular(N,V,F0,F90,a,ambientLight(N))
-        + ggx(N,V,previewL,F0,F90,a)*uPreviewLightColour*previewW;
+        + envSpecular(N,V,F0,F90,a,ambientLight(N));
+    if (previewW > 0.0) S += ggx(N,V,previewL,F0,F90,a)*uPreviewLightColour*previewW;
+    return S;
 #else
     vec3 S=ggx(N,V,rigKey(),F0,F90,a)*keyColour()*sceneShadow(vPos,N)
         + ggx(N,V,rigFill(),F0,F90,a)*fillColour()
