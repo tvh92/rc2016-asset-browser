@@ -346,20 +346,25 @@ WARMONGER_RETICLE_CONSTANTS = dict(
 # images follow the graph's resource order (the barrier binds five resources at API 0..4, API 3 and 4 the same image); the HUD
 # program's API 0 and 4 are engine images, its API 1..3 the graph's three resources (inferred from the sampling patterns).
 # attribute0.z / .w come from the material flags block as for the Warmonger sight (cut-off 4/255, opacity byte 22 / 255). CB0[115]
-# is a per-frame engine value that this capture does not hold: the preview uses the Thumper capture's 0.04464268 (labelled).
-TURRET_BARRIER_PRESENTATION_AMPLITUDE = 0.04464268
+# is a per-frame engine value that the capture's constants do not hold; it is fitted to the capture's final image instead
+# (fit/ in the evidence folder): with the camera solved from the barrier's corners and the decoded program evaluated per pixel,
+# the frame bands give opacity x exposure x A x F = 0.069 (interquartile 0.063 to 0.074, 120 columns), so A F = 0.20 at the
+# opacity 19/255 and the Veldin exposure 4.5538 (EXPOSURE_MULTIPLIER, assumed for Gaspar). F, the fog transmittance, is folded in.
+TURRET_BARRIER_FITTED_AMPLITUDE = 0.20
 TURRET_SHIELD_GRAPH_SHA256 = 'ac43cf5fe059d5f4f9a4cfc00573a951e2422ecb045e1fed2178017ce5f075d0'
 TURRET_SHIELD_SLOTS = dict(_window_mask=0x49A7866B4AC18E9F, _window_n1=0x49A7866B5DBA9ADC,
                            _window_n2=0x49A7866BBB8E69C8, _window_c=0x49A7866BF44DF0BB)
 TURRET_SHIELD_IMAGE_SLOTS = (0x49A7866BF44DF0BB, 0x49A7866B0242AAC5)   # API 3 and 4 read one image
 TURRET_SHIELD_CONSTANTS = dict(
-    amplitude=TURRET_BARRIER_PRESENTATION_AMPLITUDE, amplitude_input='CB0[115]', presentation=True, game_equivalence=False,
+    amplitude=TURRET_BARRIER_FITTED_AMPLITUDE, amplitude_input='CB0[115]', amplitude_source='fitted to the Gaspar capture image',
+    presentation=True, game_equivalence=False,
     time=0.0, time_input='CB0 dword 99', fog_transmittance=1.0, writer='19D0F1FA',
     frozen_inputs=dict(attribute1_w=1.0, fog_colour='unused at transmittance 1', light_list='not read by the program'))
 TURRET_HUD_GRAPH_SHA256 = 'c295721478181b38b70797848e61846046563039dd5d903857d9415201ceafc4'
 TURRET_HUD_SLOTS = dict(_window_mask=0x49A7866B0056CBD0, _window_n1=0x49A7866BF582C34E, _window_n2=0x49A7866B2EA0E356)
 TURRET_HUD_CONSTANTS = dict(
-    amplitude=TURRET_BARRIER_PRESENTATION_AMPLITUDE, amplitude_input='CB0[115]', presentation=True, game_equivalence=False,
+    amplitude=TURRET_BARRIER_FITTED_AMPLITUDE, amplitude_input='CB0[115]', amplitude_source='fitted to the Gaspar capture image',
+    presentation=True, game_equivalence=False,
     time=0.0, time_input='CB0 dword 99', fog_transmittance=1.0, writer='678C5C0E',
     frozen_inputs=dict(attribute3_w=1.0, instance_flags='bits 0x20 and 0x40 clear (unlit branch), bit 0x80 clear', engine_images='API 0 and 4 not read'))
 # Novalis window glass, forward program 8DF14766 of jn_glass_parallax_mask (pass contract 0; docs/material-decoding/

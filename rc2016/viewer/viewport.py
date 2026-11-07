@@ -1423,9 +1423,13 @@ class ModelViewport(_TkFrame):
                 gl.glGetFloatv.argtypes = [ctypes.c_uint, ctypes.c_void_p]
                 gl.glGetFloatv(self.GL_MODELVIEW_MATRIX, modelview)
                 opaque = opaque + list(forward_order(panes, cached[1], list(modelview), lambda slot: False))
-            # Panes and idle-effect quads blend in scene-linear colour and are tonemapped once (_hdr_begin); other models keep
-            # drawing display-referred straight into the window.
-            hdr = self._hdr_begin() if level == 2 and (panes or effect_quads) else None
+            # Panes, idle-effect quads and the HDR_FORWARD_KINDS batches blend in scene-linear colour and are tonemapped once
+            # (_hdr_begin); other models keep drawing display-referred straight into the window.
+            hdr_forward = any((((self._gl_textures or {}).get(b[0]) or {}).get('forward') or {}).get('kind') in self.HDR_FORWARD_KINDS
+                              for b in glass)
+            hdr = self._hdr_begin() if level == 2 and (panes or effect_quads or hdr_forward) else None
+            if hdr:   # the program in use took its tonemap uniform before the float target was bound
+                self._apply_lighting(u)
             for slot, first, count in opaque:
                 entry = (self._gl_textures or {}).get(slot) or {}
                 next_program, next_u = self._surface_program(entry, level)
@@ -1570,6 +1574,10 @@ class ModelViewport(_TkFrame):
     # (uTonemap 3, LINEAR_TONEMAP), and shading.HDR_RESOLVE_FRAGMENT tonemaps it over the background. Every other frame
     # draws display-referred straight into the window, as before (its glass still tonemaps per fragment).
     LINEAR_TONEMAP = 3
+    # Emission-only forward programs whose colour is far above display white at a small alpha (the turret barrier and its
+    # targeting display: alpha 19/255 over HDR emission). Tonemapped per fragment they would clip to white before blending
+    # and show as a faint pane; the game blends them in its HDR target, so their frames use the float target too.
+    HDR_FORWARD_KINDS = frozenset({'turret_shield', 'turret_hud'})
     GL_FRAMEBUFFER, GL_FRAMEBUFFER_BINDING, GL_FRAMEBUFFER_COMPLETE = 0x8D40, 0x8CA6, 0x8CD5
     _HDR_FUNCTIONS = {'glGenFramebuffers': (None, 'ip'), 'glBindFramebuffer': (None, 'uu'),
                       'glFramebufferTexture2D': (None, 'uuuui'), 'glCheckFramebufferStatus': ('u', 'u'),
@@ -2030,7 +2038,8 @@ class ModelViewport(_TkFrame):
 
         Blend/cull come from the material flags word (texture_preview.blend_state): additive is
         (SRC_ALPHA, ONE), alpha-over (SRC_ALPHA, ONE_MINUS_SRC_ALPHA); an opaque flag draws without
-        blending and with depth write; mode 3 (never captured) falls back to alpha-over.
+        blending and with depth write; mode 3 (never captured) falls back to alpha-over. In the float scene
+        target the alpha channel accumulates coverage (_blend_over) and additive draws leave it unchanged.
         """
         from rc2016.viewer.shading import BONE_TEXTURE_UNIT, PICK_TEXTURE_UNIT, UV1_ATTRIBUTE, glass_uniforms
         gl, sh = self._gl, self._shading
@@ -2064,7 +2073,12 @@ class ModelViewport(_TkFrame):
             blended = forward.get("blend") != "opaque"
             gl.glDepthMask(0 if blended else 1)
             (gl.glEnable if blended else gl.glDisable)(self.GL_BLEND)
-            gl.glBlendFunc(self.GL_SRC_ALPHA, self.GL_ONE if forward.get("blend") == "additive" else self.GL_ONE_MINUS_SRC_ALPHA)
+            if forward.get("blend") != "additive":
+                self._blend_over()
+            elif getattr(self, '_linear_output', False):   # float target: added light leaves the coverage alone
+                self._hdr_fns['glBlendFuncSeparate'](self.GL_SRC_ALPHA, self.GL_ONE, 0, 1)   # ZERO, ONE
+            else:
+                gl.glBlendFunc(self.GL_SRC_ALPHA, self.GL_ONE)
             (gl.glDisable if forward.get("two_sided") else gl.glEnable)(self.GL_CULL_FACE)
             for unit, role, has, srgb in ((2, "_n", "uHasN", None), (PICK_TEXTURE_UNIT, "_pick", "uHasP", "uSrgbP")):
                 texture = entry.get(role)

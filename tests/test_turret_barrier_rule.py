@@ -94,6 +94,16 @@ class RuleBindingTests(unittest.TestCase):
         self.assertEqual(glass_uniforms(hud), (19, (0.0, 0.5, 0.0, 0.0), (0.1, 0.2, 1.0, 0.0), (0.0,) * 4, (0.0,) * 4, (0.0,) * 4))
         self.assertEqual(glass_uniforms(hud, 2.0)[1], (0.0, 0.5, 2.0, 0.0))
 
+    def test_fitted_amplitude_and_hdr_blending(self):
+        # CB0[115] (times the fog transmittance) fitted to the Gaspar capture's final image, one frame value for both programs.
+        self.assertEqual(tp.TURRET_BARRIER_FITTED_AMPLITUDE, 0.20)
+        self.assertEqual((tp.TURRET_SHIELD_CONSTANTS['amplitude'], tp.TURRET_HUD_CONSTANTS['amplitude']), (0.20, 0.20))
+        # Both blend in the viewer's float scene target (tonemapped once, as the game's HDR target), not per fragment.
+        from rc2016.viewer.shading import HDR_RESOLVE_FRAGMENT
+        from rc2016.viewer.viewport import ModelViewport
+        self.assertEqual(ModelViewport.HDR_FORWARD_KINDS, frozenset({'turret_shield', 'turret_hud'}))
+        self.assertIn('max(cover, max(rgb.r, max(rgb.g, rgb.b)))', HDR_RESOLVE_FRAGMENT)   # straight alpha keeps added light
+
     def test_glsl_branches_carry_the_decoded_equations(self):
         shield = GLASS_FRAGMENT.split('uKind == 18')[1].split('uKind == 19')[0]
         for text in ('vec2(u - 0.035 * t, 1.5 * v + 0.05 * t)', 'vec2(0.5 + 0.5 * u - 0.03 * t, 0.5 + 0.5 * v - 0.05 * t)',
@@ -214,6 +224,7 @@ class ArchiveProgramTests(unittest.TestCase):
                 self.assertAlmostEqual(p['alpha_cut'], 4.0 / 255.0, places=7)
                 self.assertAlmostEqual(p['alpha_scale'], alpha_scale, places=7)
                 self.assertEqual((p['time'], p['fog_transmittance'], p['game_equivalence']), (0.0, 1.0, False))
+                self.assertEqual((p['amplitude'], p['amplitude_source']), (0.20, 'fitted to the Gaspar capture image'))
                 if kind == 'turret_shield':
                     self.assertEqual((p['gain'], p['emission']), (1.0, 0.0))   # material 0xEF782F74 = 1, key 0x2F7DD4F2 at its default
                 else:

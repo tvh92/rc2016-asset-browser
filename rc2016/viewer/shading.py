@@ -2344,12 +2344,13 @@ EFFECT_UNIFORMS = (*LIGHTING_UNIFORMS, "uEffectKind", "uEffectColour", "uEffectA
 
 
 # Tonemap of the model viewer's float scene target (ModelViewport._hdr_begin / _hdr_resolve), used for frames with health
-# crate panes or idle-effect quads so that they alpha-blend in scene-linear colour and are tonemapped once, as the game's
-# scene target is. RGB is the linear colour composited over black, A the blended coverage; a drawn depth is full cover.
+# crate panes, idle-effect quads or the turret barrier kinds (ModelViewport.HDR_FORWARD_KINDS) so that they alpha-blend in
+# scene-linear colour and are tonemapped once, as the game's scene target is. RGB is the linear colour composited over black, A the blended coverage; a drawn depth is full cover.
 # The result goes over the viewer background premultiplied (ONE / ONE_MINUS_SRC_ALPHA): display(P) - display(0) (1 - cover),
 # which is display(P) on covered pixels and exact over a background equal to display(0). The viewer background is a UI
 # colour, not a scene, so partly covered pixels (sprites past the silhouette) are an approximation. uHdrStraight (the
-# thumbnail renderer's transparent target, read back as straight alpha) writes that colour divided by the cover, unblended.
+# thumbnail renderer's transparent target, read back as straight alpha) writes that colour divided by max(cover, brightest
+# channel), unblended, which keeps added light that exceeds its coverage (exact over black).
 HDR_RESOLVE_VERTEX = """
 #version 120
 void main() { gl_Position = gl_Vertex; }
@@ -2366,7 +2367,10 @@ void main() {
     vec3 P = max(hdr.rgb, 0.0);
     if (cover <= 0.0 && (uHdrStraight || max(P.r, max(P.g, P.b)) <= 0.0)) discard;
     vec3 rgb = max(display(P) - display(vec3(0.0)) * (1.0 - cover), 0.0);
-    gl_FragColor = uHdrStraight ? vec4(min(rgb / cover, 1.0), cover) : vec4(rgb, cover);
+    // Straight alpha cannot hold light added over a thin coverage (an emissive pane at alpha 19/255): the alpha is raised to
+    // the brightest channel so that the image composites to the same colour over black (rgb / a' times a' = rgb).
+    float straightCover = clamp(max(cover, max(rgb.r, max(rgb.g, rgb.b))), 1e-6, 1.0);
+    gl_FragColor = uHdrStraight ? vec4(min(rgb / straightCover, 1.0), straightCover) : vec4(rgb, cover);
 }
 """.replace("// @lighting\n", LIGHTING)
 HDR_RESOLVE_UNIFORMS = (*LIGHTING_UNIFORMS, "uHdrColour", "uHdrDepth", "uHdrSize", "uHdrStraight")
