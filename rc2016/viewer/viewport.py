@@ -709,7 +709,7 @@ class ModelViewport(_TkFrame):
         state = self._lighting_state()
         sh.glUniform1i(u['uLightingEnabled'], int(getattr(self,'lighting_enabled',True)))
         sh.glUniform1i(u["uLighting"], 1 if state["hdri"] else 0)
-        sh.glUniform1i(u["uTonemap"], state["tonemap"])
+        sh.glUniform1i(u["uTonemap"], self.LINEAR_TONEMAP if getattr(self, '_linear_output', False) else state["tonemap"])
         sh.glUniform1f(u["uExposure"], state["exposure"])
         on, colour, ramp_a, ramp_b, alpha, beta, misc = state["fog"]
         sh.glUniform1i(u["uFogOn"], on)
@@ -833,6 +833,8 @@ class ModelViewport(_TkFrame):
     def _release_textures(self):
         if getattr(self, '_effect_textures', None) and self._make_current():
             self._release_effect_textures()
+        if self.__dict__.get('_hdr_target') and self._make_current():
+            self._hdr_release()
         if self._gl_textures and self._make_current():
             ids = list({entry[role][0] for entry in self._gl_textures.values()
                         for role in ("_c", "_g", "_n", "_pick", "_h", "_bng_detail", "_vehicle_p2", "_tint_detail",
@@ -1139,6 +1141,7 @@ class ModelViewport(_TkFrame):
         if not self._hrc or not gl.wglMakeCurrent(self._hdc, self._hrc):
             raise OSError("Windows could not create an OpenGL context")
         self._gl = gl
+        self._gl_direct = gl   # unwrapped handle (the thumbnail renderer proxies _gl to fix its clear colour)
         self._set_gl_prototypes()
         gl.glEnable(self.GL_DEPTH_TEST); gl.glEnable(self.GL_LIGHTING); gl.glEnable(self.GL_LIGHT0)
         gl.glEnable(self.GL_NORMALIZE); gl.glEnable(self.GL_COLOR_MATERIAL)
@@ -1236,6 +1239,7 @@ class ModelViewport(_TkFrame):
                     drawn = True
                 except Exception as exc:   # keep the fixed-function view working
                     self.shading_error = f"Shaded view unavailable: {exc}"
+                    self._hdr_abort()
                     self._shading.glUseProgram(0)
             if not drawn:
                 self._draw_fixed(index_array, uv_array, batches)
@@ -1419,6 +1423,9 @@ class ModelViewport(_TkFrame):
                 gl.glGetFloatv.argtypes = [ctypes.c_uint, ctypes.c_void_p]
                 gl.glGetFloatv(self.GL_MODELVIEW_MATRIX, modelview)
                 opaque = opaque + list(forward_order(panes, cached[1], list(modelview), lambda slot: False))
+            # Panes and idle-effect quads blend in scene-linear colour and are tonemapped once (_hdr_begin); other models keep
+            # drawing display-referred straight into the window.
+            hdr = self._hdr_begin() if level == 2 and (panes or effect_quads) else None
             for slot, first, count in opaque:
                 entry = (self._gl_textures or {}).get(slot) or {}
                 next_program, next_u = self._surface_program(entry, level)
@@ -1443,7 +1450,7 @@ class ModelViewport(_TkFrame):
                 pane = entry.get('alpha_pane')
                 if pane:
                     gl.glBlendFunc.argtypes = [ctypes.c_uint, ctypes.c_uint]; gl.glDepthMask.argtypes = [ctypes.c_ubyte]
-                    gl.glEnable(self.GL_BLEND); gl.glBlendFunc(self.GL_SRC_ALPHA, self.GL_ONE_MINUS_SRC_ALPHA)
+                    gl.glEnable(self.GL_BLEND); self._blend_over()
                     gl.glDepthMask(0); gl.glEnable(self.GL_CULL_FACE)
                 self._draw_range(index_array, first, count)
                 if pane:
@@ -1458,6 +1465,9 @@ class ModelViewport(_TkFrame):
             gl.glDisable(self.GL_POLYGON_OFFSET_FILL)
             if level == 2 and effect_quads:
                 self._draw_effect_preview(effect_quads)
+                sh.glUseProgram(program)
+            if hdr:
+                self._hdr_resolve(hdr)
                 sh.glUseProgram(program)
         if mode in ("Wireframe", "Solid + wireframe"):
             sh.glUniform1i(u["uMode"], 3)
@@ -1511,8 +1521,9 @@ class ModelViewport(_TkFrame):
 
     def _draw_effect_preview(self, quads):
         """The health crate's idle effect: view-space quads with the decoded sprite programs (EFFECT_FRAGMENT), alpha-over,
-        depth-tested without depth write (the flares with depth test off), after the panes and glass. A labelled preview:
-        idle_effect.PREVIEW_LIMITATIONS names the presentation values and inferred stand-ins."""
+        depth-tested without depth write (the flares with depth test off), after the panes and glass, into the float scene
+        target when there is one (_hdr_begin). A labelled preview: idle_effect.PREVIEW_LIMITATIONS names the presentation
+        values and inferred stand-ins."""
         from rc2016.viewer.idle_effect import MASK_WEIGHT
         gl, sh = self._gl, self._shading
         preview = self._payload['effect_preview']
@@ -1528,7 +1539,7 @@ class ModelViewport(_TkFrame):
         sh.glUniform1f(u['uEffectAmplitude'], float(preview['amplitude']))
         gl.glBlendFunc.argtypes = [ctypes.c_uint, ctypes.c_uint]; gl.glDepthMask.argtypes = [ctypes.c_ubyte]
         gl.glVertex3f.argtypes = [ctypes.c_float] * 3; gl.glTexCoord2f.argtypes = [ctypes.c_float] * 2
-        gl.glEnable(self.GL_BLEND); gl.glBlendFunc(self.GL_SRC_ALPHA, self.GL_ONE_MINUS_SRC_ALPHA)
+        gl.glEnable(self.GL_BLEND); self._blend_over()
         gl.glDepthMask(0); gl.glDisable(self.GL_CULL_FACE)
         gl.glMatrixMode(self.GL_MODELVIEW); gl.glPushMatrix(); gl.glLoadIdentity()   # quads are in view space
         try:
@@ -1552,6 +1563,138 @@ class ModelViewport(_TkFrame):
             for unit in (2, 1, 0):
                 sh.glActiveTexture(self.GL_TEXTURE0 + unit)
                 gl.glBindTexture(self.GL_TEXTURE_2D, 0)
+
+    # Float scene target (2026-11-07) -------------------------------------------
+    # The game alpha-blends its forward draws into an HDR scene target and tonemaps once. Frames with health crate panes or
+    # idle-effect quads do the same: every pass draws into an RGBA16F colour + depth texture target with display() bypassed
+    # (uTonemap 3, LINEAR_TONEMAP), and shading.HDR_RESOLVE_FRAGMENT tonemaps it over the background. Every other frame
+    # draws display-referred straight into the window, as before (its glass still tonemaps per fragment).
+    LINEAR_TONEMAP = 3
+    GL_FRAMEBUFFER, GL_FRAMEBUFFER_BINDING, GL_FRAMEBUFFER_COMPLETE = 0x8D40, 0x8CA6, 0x8CD5
+    _HDR_FUNCTIONS = {'glGenFramebuffers': (None, 'ip'), 'glBindFramebuffer': (None, 'uu'),
+                      'glFramebufferTexture2D': (None, 'uuuui'), 'glCheckFramebufferStatus': ('u', 'u'),
+                      'glDeleteFramebuffers': (None, 'ip'), 'glBlendFuncSeparate': (None, 'uuuu')}
+
+    def _hdr_functions(self):
+        """GL 3 framebuffer and GL 1.4 separate-blend entry points, or False when the driver lacks one."""
+        functions = self.__dict__.get('_hdr_fns')
+        if functions is None:
+            gl, types = self._gl, dict(i=ctypes.c_int, u=ctypes.c_uint, p=ctypes.c_void_p)
+            gl.wglGetProcAddress.argtypes = [ctypes.c_char_p]; gl.wglGetProcAddress.restype = ctypes.c_void_p
+            functions = {}
+            for name, (result, arguments) in self._HDR_FUNCTIONS.items():
+                address = gl.wglGetProcAddress(name.encode())
+                if not address or address in (1, 2, 3, ctypes.c_void_p(-1).value):
+                    functions = False
+                    break
+                functions[name] = ctypes.WINFUNCTYPE(types.get(result), *(types[a] for a in arguments))(address)
+            self._hdr_fns = functions
+        return functions
+
+    def _hdr_create(self, functions, width, height):
+        """The target for one viewport size: {'size', 'fbo', 'colour', 'depth'}; fbo 0 when the driver refuses it."""
+        gl = self._gl
+        names = (ctypes.c_uint * 2)()
+        gl.glGenTextures(2, names)
+        self._shading.glActiveTexture(self.GL_TEXTURE0)
+        for name, (internal, layout, kind) in zip(names, ((0x881A, 0x1908, self.GL_FLOAT), (0x81A6, 0x1902, 0x1405))):
+            gl.glBindTexture(self.GL_TEXTURE_2D, name)   # RGBA16F colour; DEPTH_COMPONENT24 depth
+            for parameter, value in ((self.GL_TEXTURE_MIN_FILTER, 0x2600), (self.GL_TEXTURE_MAG_FILTER, 0x2600),
+                                     (self.GL_TEXTURE_WRAP_S, 0x812F), (self.GL_TEXTURE_WRAP_T, 0x812F)):
+                gl.glTexParameteri(self.GL_TEXTURE_2D, parameter, value)
+            gl.glTexImage2D(self.GL_TEXTURE_2D, 0, internal, width, height, 0, layout, kind, None)
+        gl.glBindTexture(self.GL_TEXTURE_2D, 0)
+        frame = ctypes.c_uint(0)
+        functions['glGenFramebuffers'](1, ctypes.byref(frame))
+        functions['glBindFramebuffer'](self.GL_FRAMEBUFFER, frame.value)
+        functions['glFramebufferTexture2D'](self.GL_FRAMEBUFFER, 0x8CE0, self.GL_TEXTURE_2D, names[0], 0)   # COLOR_ATTACHMENT0
+        functions['glFramebufferTexture2D'](self.GL_FRAMEBUFFER, 0x8D00, self.GL_TEXTURE_2D, names[1], 0)   # DEPTH_ATTACHMENT
+        target = dict(size=(width, height), fbo=frame.value, colour=names[0], depth=names[1])
+        if functions['glCheckFramebufferStatus'](self.GL_FRAMEBUFFER) != self.GL_FRAMEBUFFER_COMPLETE:
+            self._hdr_release(target)
+            target = dict(size=(width, height), fbo=0, colour=0, depth=0)
+        return target
+
+    def _hdr_release(self, target=None):
+        target = target or self.__dict__.pop('_hdr_target', None)
+        if target and target.get('fbo'):
+            self._gl.glDeleteTextures(2, (ctypes.c_uint * 2)(target['colour'], target['depth']))
+            self._hdr_fns['glDeleteFramebuffers'](1, ctypes.byref(ctypes.c_uint(target['fbo'])))
+
+    def _hdr_begin(self):
+        """Bind and clear the float scene target for this frame and switch display() to linear output; returns the target
+        with the framebuffer to resolve into, or None (no framebuffer support: the frame blends display-referred)."""
+        functions = self._hdr_functions()
+        if not functions:
+            return None
+        gl = self._gl
+        gl.glGetIntegerv.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+        viewport, previous = (ctypes.c_int * 4)(), ctypes.c_int(0)
+        gl.glGetIntegerv(0x0BA2, viewport)   # GL_VIEWPORT
+        gl.glGetIntegerv(self.GL_FRAMEBUFFER_BINDING, ctypes.byref(previous))
+        size = (max(1, viewport[2]), max(1, viewport[3]))
+        target = self.__dict__.get('_hdr_target')
+        if target is None or target['size'] != size:
+            self._hdr_release()
+            target = self._hdr_target = self._hdr_create(functions, *size)
+        functions['glBindFramebuffer'](self.GL_FRAMEBUFFER, target['fbo'] or previous.value)
+        if not target['fbo']:
+            return None
+        getattr(self, '_gl_direct', gl).glClearColor(0.0, 0.0, 0.0, 0.0)
+        gl.glClear(self.GL_COLOR_BUFFER_BIT | self.GL_DEPTH_BUFFER_BIT)
+        self._linear_output, self._hdr_previous = True, previous.value
+        return dict(target, previous=previous.value)
+
+    def _blend_over(self):
+        """SRC_ALPHA / ONE_MINUS_SRC_ALPHA; in the float scene target the alpha channel accumulates coverage instead."""
+        gl = self._gl
+        if getattr(self, '_linear_output', False):
+            self._hdr_fns['glBlendFuncSeparate'](self.GL_SRC_ALPHA, self.GL_ONE_MINUS_SRC_ALPHA, self.GL_ONE, self.GL_ONE_MINUS_SRC_ALPHA)
+        else:
+            gl.glBlendFunc.argtypes = [ctypes.c_uint, ctypes.c_uint]
+            gl.glBlendFunc(self.GL_SRC_ALPHA, self.GL_ONE_MINUS_SRC_ALPHA)
+
+    def _hdr_resolve(self, target):
+        """Tonemap the float scene target once into the framebuffer it replaced (shading.HDR_RESOLVE_FRAGMENT)."""
+        gl, sh = self._gl, self._shading
+        self._linear_output = False
+        self._hdr_fns['glBindFramebuffer'](self.GL_FRAMEBUFFER, target['previous'])
+        program, u = sh.hdr_resolve_program()
+        sh.glUseProgram(program)
+        self._apply_lighting(u)
+        for unit, name in ((0, 'colour'), (1, 'depth')):
+            sh.glActiveTexture(self.GL_TEXTURE0 + unit)
+            gl.glBindTexture(self.GL_TEXTURE_2D, target[name])
+            sh.glUniform1i(u['uHdr' + name.title()], unit)
+        sh.glActiveTexture(self.GL_TEXTURE0)
+        sh.glUniform2f(u['uHdrSize'], float(target['size'][0]), float(target['size'][1]))
+        straight = bool(getattr(self, 'transparent', False))   # thumbnail renderer: transparent target read as straight alpha
+        sh.glUniform1i(u['uHdrStraight'], int(straight))
+        gl.glBlendFunc.argtypes = [ctypes.c_uint, ctypes.c_uint]; gl.glDepthMask.argtypes = [ctypes.c_ubyte]
+        gl.glVertex2f.argtypes = [ctypes.c_float] * 2
+        gl.glDisable(self.GL_DEPTH_TEST); gl.glDepthMask(0); gl.glDisable(self.GL_CULL_FACE)
+        if not straight:
+            gl.glEnable(self.GL_BLEND); gl.glBlendFunc(self.GL_ONE, self.GL_ONE_MINUS_SRC_ALPHA)
+        for matrix in (self.GL_PROJECTION, self.GL_MODELVIEW):
+            gl.glMatrixMode(matrix); gl.glPushMatrix(); gl.glLoadIdentity()
+        try:
+            gl.glBegin(0x0007)   # GL_QUADS
+            for x, y in ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)):
+                gl.glVertex2f(x, y)
+            gl.glEnd()
+        finally:
+            for matrix in (self.GL_PROJECTION, self.GL_MODELVIEW):
+                gl.glMatrixMode(matrix); gl.glPopMatrix()
+            gl.glEnable(self.GL_DEPTH_TEST); gl.glDepthMask(1); gl.glDisable(self.GL_BLEND)
+            for unit in (1, 0):
+                sh.glActiveTexture(self.GL_TEXTURE0 + unit)
+                gl.glBindTexture(self.GL_TEXTURE_2D, 0)
+
+    def _hdr_abort(self):
+        """After a failed shaded draw: back to the framebuffer the float target replaced, without a resolve."""
+        if getattr(self, '_linear_output', False):
+            self._linear_output = False
+            self._hdr_fns['glBindFramebuffer'](self.GL_FRAMEBUFFER, self._hdr_previous)
 
     def _unbind_material_units(self):
         self._shading.glActiveTexture(self.GL_TEXTURE0+14);self._gl.glBindTexture(self.GL_TEXTURE_2D,0)

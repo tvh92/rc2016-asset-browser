@@ -31,7 +31,8 @@ GRADE_TEXTURE_UNIT = 18        # captured display table (tone curve + colour gra
 # diffuse from 9 irradiance SH coefficients of the rest, specular from GGX-prefiltered bands and
 # Karis' analytic environment BRDF. All carry the world strength. The rig's diffuse keeps its
 # historical factor 2 (diffuseScale); the HDRI's is physical (albedo x E / pi). display() applies exposure and the tonemap: 0 the ACES fit, 1 Khronos PBR
-# Neutral with the sRGB transfer function (the view transform of the Blender review renders).
+# Neutral with the sRGB transfer function (the view transform of the Blender review renders), 2 the captured game chain;
+# 3 returns the scene-linear colour unchanged, for the model viewer's float scene target (HDR_RESOLVE_FRAGMENT tonemaps it).
 LIGHTING = """
 uniform int uLighting; uniform bool uLightingEnabled; uniform mat3 uLightFrame; uniform mat3 uViewToWorld;
 uniform vec3 uSH[9]; uniform sampler2D uEnvTex; uniform vec3 uSunDir; uniform vec3 uSunColour;
@@ -149,6 +150,7 @@ vec3 gameDisplay(vec3 color) {
     return gameGrade(vec3(srgbEncode(t.r), srgbEncode(t.g), srgbEncode(t.b)));
 }
 vec3 display(vec3 color) {
+    if (uTonemap == 3) return color;   // float scene target: blended in linear, tonemapped once by HDR_RESOLVE_FRAGMENT
     color *= uExposure;
     if (uTonemap == 2) return gameDisplay(color);
     if (uTonemap == 1) {   // Khronos PBR Neutral: start compression 0.76, desaturation 0.15
@@ -2285,8 +2287,9 @@ BEAM_UNIFORMS = (*LIGHTING_UNIFORMS, "uBeamNoise", "uBeamDepth", "uBeamViewport"
 
 
 # Model-viewer idle-effect sprites (rc2016/viewer/idle_effect.py): the decoded pixel programs of the health crate's
-# pup_health_crate_idle effect, drawn as view-space quads alpha-over (SRC_ALPHA / ONE_MINUS_SRC_ALPHA), tonemapped per
-# fragment as the glass is. uEffectKind: 0 glow_simp_soft EBC94A93, 1 flare_round 5FE9EF08, 2 flare_square B1310A54,
+# pup_health_crate_idle effect, drawn as view-space quads alpha-over (SRC_ALPHA / ONE_MINUS_SRC_ALPHA). As in the game they
+# blend in HDR: the viewport draws the crate, its panes and these quads into a float target with display() bypassed
+# (uTonemap 3) and HDR_RESOLVE_FRAGMENT tonemaps the result once. uEffectKind: 0 glow_simp_soft EBC94A93, 1 flare_round 5FE9EF08, 2 flare_square B1310A54,
 # 3 glow_spin 41E80E53, 4 shockwave 094D0CAE. P2 = uEffectColour, a = uEffectAlpha (with the distance fade),
 # attribute0.z = uEffectDiscard, A = uEffectAmplitude (CB0[115], a presentation value). Taken as 1 (labelled): fog
 # transmittance Tf, the lit-path factor L (unlit particles), the soft-depth term and the shockwave depth term (no scene
@@ -2338,6 +2341,35 @@ void main() {
 """.replace("// @lighting\n", LIGHTING)
 EFFECT_UNIFORMS = (*LIGHTING_UNIFORMS, "uEffectKind", "uEffectColour", "uEffectAlpha", "uEffectDiscard", "uEffectAmplitude",
                    "uEffectMaskWeight", "uEffectNoise", "uEffectSpin", "uEffectRing")
+
+
+# Tonemap of the model viewer's float scene target (ModelViewport._hdr_begin / _hdr_resolve), used for frames with health
+# crate panes or idle-effect quads so that they alpha-blend in scene-linear colour and are tonemapped once, as the game's
+# scene target is. RGB is the linear colour composited over black, A the blended coverage; a drawn depth is full cover.
+# The result goes over the viewer background premultiplied (ONE / ONE_MINUS_SRC_ALPHA): display(P) - display(0) (1 - cover),
+# which is display(P) on covered pixels and exact over a background equal to display(0). The viewer background is a UI
+# colour, not a scene, so partly covered pixels (sprites past the silhouette) are an approximation. uHdrStraight (the
+# thumbnail renderer's transparent target, read back as straight alpha) writes that colour divided by the cover, unblended.
+HDR_RESOLVE_VERTEX = """
+#version 120
+void main() { gl_Position = gl_Vertex; }
+"""
+HDR_RESOLVE_FRAGMENT = """
+#version 120
+const float PI = 3.14159265;
+// @lighting
+uniform sampler2D uHdrColour; uniform sampler2D uHdrDepth; uniform vec2 uHdrSize; uniform bool uHdrStraight;
+void main() {
+    vec2 uv = gl_FragCoord.xy / uHdrSize;
+    vec4 hdr = texture2D(uHdrColour, uv);
+    float cover = texture2D(uHdrDepth, uv).r < 1.0 ? 1.0 : clamp(hdr.a, 0.0, 1.0);
+    vec3 P = max(hdr.rgb, 0.0);
+    if (cover <= 0.0 && (uHdrStraight || max(P.r, max(P.g, P.b)) <= 0.0)) discard;
+    vec3 rgb = max(display(P) - display(vec3(0.0)) * (1.0 - cover), 0.0);
+    gl_FragColor = uHdrStraight ? vec4(min(rgb / cover, 1.0), cover) : vec4(rgb, cover);
+}
+""".replace("// @lighting\n", LIGHTING)
+HDR_RESOLVE_UNIFORMS = (*LIGHTING_UNIFORMS, "uHdrColour", "uHdrDepth", "uHdrSize", "uHdrStraight")
 
 
 # Level viewer scorch-mark decals (rc2016.levels.decals): the zone's pre-clipped `wpn_explosion_scorchmark` meshes, drawn after the
@@ -2627,6 +2659,12 @@ class Shading:
         if "effect" not in self.programs:
             self.programs["effect"] = self._link(EFFECT_VERTEX, EFFECT_FRAGMENT, {}, EFFECT_UNIFORMS)
         return self.programs["effect"]
+
+    def hdr_resolve_program(self):
+        """Model viewer: tonemap of the float scene target (HDR_RESOLVE_FRAGMENT)."""
+        if "hdr_resolve" not in self.programs:
+            self.programs["hdr_resolve"] = self._link(HDR_RESOLVE_VERTEX, HDR_RESOLVE_FRAGMENT, {}, HDR_RESOLVE_UNIFORMS)
+        return self.programs["hdr_resolve"]
 
     def scorch_program(self):
         """Level viewer scorch-mark decals (SCORCH_FRAGMENT)."""

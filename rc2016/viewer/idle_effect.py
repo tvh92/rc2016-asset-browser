@@ -18,9 +18,14 @@ Decoded (game data, eboot code or pixel-program IR) and captured on the crate's 
   the ring discard threshold t, and the emitter colour 10 x (0.1505, 0.6939, 1.0).
 
 Presentation values (chosen, not the game's per-frame values): CB0[115] (the sprites' amplitude A) is the 0.277088 captured
-in the Novalis frame (the Gaspar value is unknown; 0.082 and 0.442 were captured elsewhere); fog transmittance 1; the lit
-particle path off (L = 1); the soft-particle and shockwave depth terms 1 (the model viewer has no scene depth); the
-shockwave instance colour rec[44..46] = 1; the frame time CB0[99] = 0.
+in the Novalis frame (0.082 and 0.442 were captured elsewhere). It is consistent with the Gaspar streak, which fixes only the
+product of Gaspar's exposure E and A: E x A ~ 1.18 (0.82..1.26) under the Veldin tone curve and an identity grade
+(captured-derived; the viewer's 4.554 x 0.277 = 1.26); A alone is unknown. Also: fog transmittance 1; the lit particle path
+off (L = 1); the soft-particle and shockwave depth terms 1 (the model viewer has no scene depth); the shockwave instance
+colour rec[44..46] = 1; the frame time CB0[99] = 0.
+
+The sprites alpha-blend in HDR with the crate and its panes and are tonemapped once, as in the game's scene target
+(ModelViewport._hdr_begin, shading.HDR_RESOLVE_FRAGMENT): the Gaspar streak matches only that order.
 
 INFERRED STAND-INS (not decoded; every one is named in PREVIEW_LIMITATIONS and docs/viewer.md):
 - SPAWN_RATE, ORB_LIFE, RING_LIFE and DRIFT_SPEED of the two emitters, fitted to the captured particle counts and ages;
@@ -28,9 +33,11 @@ INFERRED STAND-INS (not decoded; every one is named in PREVIEW_LIMITATIONS and d
 - SNAPSHOT_AGE, the effect age of the still frame, and the random spawn directions (a fixed seed);
 - LIGHT_RADIUS and the falloff (1 - d / R)^4, and LIGHT_UNIT_SCALE from light-record units to viewer units.
 
-Not reproduced: the gate of the round flares (components 1 to 4; decoded values, never captured, shown at close range in
-the Gaspar image), the per-frame slots b0 / b3 beyond the spin, the break effect and bloom.
-Research/captures/2026-11-05_gaspar-crates/nanotech_verify/README.md and nanotech_full/README.md (local).
+Round flares 1 to 4 are drawn at close range: the Gaspar streak (d = 8 u) is components 3 + 1 + 5 (captured-derived from
+pixels); what removes them in the far captures (60+ u) is unknown. Not reproduced: that gate, the per-frame slots b0 / b3
+beyond the spin, the break effect and bloom (not decoded; the Gaspar core is larger than the HDR-composited preview).
+Research/captures/2026-11-05_gaspar-crates/nanotech_verify/README.md, nanotech_full/README.md and nanotech_glow/README.md
+(local).
 """
 from __future__ import annotations
 
@@ -56,7 +63,9 @@ TEXTURES = dict(noise='textures/visualeffect/test/noise_test/fx_graphic_noise_01
 
 FADE_DISTANCE, FADE_RANGE = 100.0, 25.0   # alpha x sat((100 - d) / 25); 100 is component +0xD8 (decoded), 25 inferred as sqrt(625)
 FLARE_PULL = 2.5                           # component +0x7C = -2.5: the flare centre moves this far toward the camera
-AMPLITUDE = 0.277088                       # CB0[115], Novalis capture: presentation choice
+# CB0[115], Novalis capture; consistent with the Gaspar streak, which fixes E x A ~ 1.18 (0.82..1.26) under the Veldin tone
+# curve and an identity grade (captured-derived; A alone unknown).
+AMPLITUDE = 0.277088
 
 
 def _byte(value):
@@ -115,11 +124,13 @@ LIGHT_COLOUR = (0.100125, 0.176066, 0.223995)          # captured at fade 1 (Ril
 PREVIEW_LIMITATIONS = (
     'Idle effect preview of pup_health_crate_idle at igLoc_health_FX: decoded sizes, colours, alphas, programs, blend, '
     'flare offset and the distance fade sat((100 - d) / 25); game_equivalence false.',
-    'Presentation values: CB0[115] = 0.277088 (Novalis capture), fog off, unlit particles, soft-depth and shockwave depth '
-    'terms 1, shockwave instance colour 1, frame time 0.',
+    'Presentation values: CB0[115] = 0.277088 (Novalis capture; consistent with the Gaspar streak, which fixes E x A ~ 1.18 '
+    '(0.82..1.26) under the Veldin tone curve and an identity grade, captured-derived; A alone unknown), fog off, unlit '
+    'particles, soft-depth and shockwave depth terms 1, shockwave instance colour 1, frame time 0.',
     'Inferred stand-ins: spawn rate 10/s, orb life 0.75..1.0 s, ring life 1.0..2.0 s, drift 0.35..0.5 u/s, spin 360 deg/s, '
     'a still frame at effect age 4 s with seeded directions, light radius 1 u with (1 - d/R)^4 falloff, light units x 1.',
-    'Round flares (components 1 to 4) use decoded values but were never captured; their visibility gate is unknown.',
+    'Round flares 1 to 4 are drawn at close range: the Gaspar streak (d = 8 u) is components 3 + 1 + 5 (captured-derived '
+    'from pixels); what removes them in the far captures (60+ u) is unknown. Bloom is not decoded and not drawn.',
 )
 
 
