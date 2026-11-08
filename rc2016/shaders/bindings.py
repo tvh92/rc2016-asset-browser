@@ -966,11 +966,48 @@ HEALTH_CRATE_PASS0_SOURCE_PREVIEW=dict(
     preferred=True,
     label='Health crate pass 0')
 
+# Teleport pad (gbl_gp_teleport_pad_01), open state. Both pad graphs read one CB2 float, key 0xFE1183C5 (graph default 0, no
+# material override): a closed/open colour state k. Light tint = (0.381 (1 - k), 0.0065 + 0.490 k, k): red at 0, cyan-blue
+# (0, 0.497, 1) at 1. Graph 02 (body, domes) adds 10 _g.B times that tint to _c and emits 10 _g.B. Graph 01 (rim ring) builds a
+# light mask m = lerp(_cma.r * pulse, _cma.r * _cma.g(u, v + CB0[99] / 2), k), pulse = 0.17 + 0.83 (0.5 + 0.5 cos(2 CB0[99])), then
+# albedo = 1 - (1 - _c) (1 + k m, 1 - m (0.033 + 0.464 k), 1 - k m) and emission 4 m: closed lights are a grey pulse, open lights
+# a cyan-blue scrolling dash. The pad actor has an AnimMaterialComponent (four igAnimWrinkle tracks) and Open_Idle / Closed_Idle
+# clips, the likely driver of k; the open value 1 is inferred from the game screenshot (cyan lights), not decoded from the
+# clip tracks. The ring writer also reads CB0[99] (time), frozen at 0 as for the other gated writers.
+TELEPORTER_BODY_SOURCE_PREVIEW=dict(
+    graph_path='materialgraph/environment/global/gameplay/gbl_gp_teleporter_02/gbl_gp_teleporter_02.materialgraph',
+    graph_sha256='a71a71eb90503af27fa46e5e45c74c82f4e199c24a6a20b270293f7bdafe2da7',
+    material_path='material/environment/global/gameplay/gbl_gp_teleporter_01/gbl_gp_teleporter_01.material',
+    material_sha256='184b94e50233ead71411d11001acf07d96a118670f39c750aeba194f9aac12e4',
+    shader_id='0x912a9b4b',
+    code_sha256='f7920d7b80e2d3b488d32151950417599074d062ec65121addb4d7f67408904e',
+    input=dict(kind='cb',api=2,dword=0,value=1.0,name='CB2[0]',
+        meaning='teleport pad open/closed colour state k (key 0xFE1183C5); graph default 0 = red, 1 = cyan-blue; open value inferred',
+        limitation='Teleport pad open-state preview: CB2[0] (colour state k, key 0xFE1183C5, graph default 0 = red) is set to 1, '
+            'the cyan-blue state seen in the game. The game drives it at runtime (AnimMaterialComponent); its value is not decoded.'),
+    label='Teleport pad body')
+
+TELEPORTER_RING_SOURCE_PREVIEW=dict(
+    graph_path='materialgraph/environment/global/gameplay/gbl_gp_teleporter_01/gbl_gp_teleporter_01.materialgraph',
+    graph_sha256='60a3a2d42c06ad7eab955e7c719964482b87d633292ae217f35938af223a8c9c',
+    material_path='material/environment/global/gameplay/gbl_gp_teleporter_01/gbl_gp_teleporter_02.material',
+    material_sha256='8a092dfb40b4cf94ebaa78827c251190e7b2630eef36933e501471479d2014d1',
+    shader_id='0xc7bf8270',
+    code_sha256='9a3e6d5f166f188a82e2ca1a5edcc1a7ef344035cb25e62d7ce0d05b8bf64d2b',
+    input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
+    extra_inputs=[dict(kind='cb',api=2,dword=0,value=1.0,name='CB2[0]',
+        meaning='teleport pad open/closed colour state k (key 0xFE1183C5); graph default 0 = red, 1 = cyan-blue; open value inferred',
+        limitation='Teleport pad open-state preview: CB2[0] (colour state k, key 0xFE1183C5, graph default 0 = red) is set to 1, '
+            'the cyan-blue state seen in the game. The game drives it at runtime (AnimMaterialComponent); its value is not decoded.')],
+    normal='geometry',preferred=True,
+    label='Teleport pad ring')
+
 SOURCE_PREVIEW_POLICIES={rule['graph_path']:rule for rule in
     (CONSTRUCTO_BUTTON_SOURCE_PREVIEW,WARBOT_V3_EYE_SOURCE_PREVIEW,EXTERMITANK_HOSES_SOURCE_PREVIEW,
      TRESPASSER_SCREEN_SOURCE_PREVIEW,PIXELIZER_BARREL_SOURCE_PREVIEW,PLASMA_STRIKER_SCOPE_SOURCE_PREVIEW,
      MAG_BOOT_FAN_SOURCE_PREVIEW,GAUGE_NEEDLE_SOURCE_PREVIEW,MAP_O_MATIC_SCREEN_SOURCE_PREVIEW,
-     EXPLOSIVE_CRATE_LIGHT_SOURCE_PREVIEW,HEALTH_CRATE_PASS0_SOURCE_PREVIEW)}
+     EXPLOSIVE_CRATE_LIGHT_SOURCE_PREVIEW,HEALTH_CRATE_PASS0_SOURCE_PREVIEW,
+     TELEPORTER_BODY_SOURCE_PREVIEW,TELEPORTER_RING_SOURCE_PREVIEW)}
 
 
 def _policy_materials(rule):
