@@ -2355,7 +2355,8 @@ BEAM_UNIFORMS = (*LIGHTING_UNIFORMS, "uBeamNoise", "uBeamDepth", "uBeamViewport"
 # pup_health_crate_idle effect, drawn as view-space quads alpha-over (SRC_ALPHA / ONE_MINUS_SRC_ALPHA). As in the game they
 # blend in HDR: the viewport draws the crate, its panes and these quads into a float target with display() bypassed
 # (uTonemap 3) and HDR_RESOLVE_FRAGMENT tonemaps the result once. uEffectKind: 0 glow_simp_soft EBC94A93, 1 flare_round 5FE9EF08, 2 flare_square B1310A54,
-# 3 glow_spin 41E80E53, 4 shockwave 094D0CAE. P2 = uEffectColour, a = uEffectAlpha (with the distance fade),
+# 3 glow_spin 41E80E53, 4 shockwave 094D0CAE; and the holocon holograms (rc2016/viewer/holocon_effect.py, runtime programs
+# captured on the weapon vendor): 5 icon 7628b331, 6 rays c5646808. P2 = uEffectColour, a = uEffectAlpha (with the distance fade),
 # attribute0.z = uEffectDiscard, A = uEffectAmplitude (CB0[115], a presentation value). Taken as 1 (labelled): fog
 # transmittance Tf, the lit-path factor L (unlit particles), the soft-depth term and the shockwave depth term (no scene
 # depth here) and the shockwave instance colour rec[44..46]; the frame time CB0[99] is 0.
@@ -2372,6 +2373,9 @@ varying vec2 vUV;
 uniform int uEffectKind; uniform vec3 uEffectColour; uniform float uEffectAlpha; uniform float uEffectDiscard;
 uniform float uEffectAmplitude; uniform float uEffectMaskWeight;
 uniform sampler2D uEffectNoise; uniform sampler2D uEffectSpin; uniform sampler2D uEffectRing;
+uniform sampler2D uHoloIcon; uniform sampler2D uHoloBackground; uniform sampler2D uHoloScan; uniform sampler2D uHoloTrigger;
+uniform sampler2D uHoloLaser;
+uniform vec4 uHoloOffsetsRB; uniform vec2 uHoloOffsetG; uniform float uHoloHue; uniform vec3 uHoloFrame;   // time, CB0[107], seed
 void main() {
     vec2 c = vUV - 0.5; float r = length(c);
     float A = uEffectAmplitude, L = 1.0, soft = 1.0;
@@ -2394,6 +2398,29 @@ void main() {
         m = clamp(m - m * clamp(1.5384616 * sqrt(r), 0.0, 1.0), 0.0, 1.0);
         if (m < uEffectDiscard) discard;
         rgb = uEffectColour * (L + 1.0); alpha = clamp(uEffectAlpha * m, 0.0, 1.0);
+    } else if (uEffectKind == 5) {   // 7628b331 holocon icon (rc2016/viewer/holocon_effect.py): split icon, trigger glitch, scan lines
+        float t = uHoloFrame.x, rnd = uHoloFrame.y, seed = uHoloFrame.z;
+        float s0 = clamp(texture2D(uHoloIcon, vUV + uHoloOffsetsRB.xy).r, 0.0, 1.0);
+        float s1 = clamp(texture2D(uHoloIcon, vUV + uHoloOffsetG).r, 0.0, 1.0);
+        float s2 = clamp(texture2D(uHoloIcon, vUV + uHoloOffsetsRB.zw).r, 0.0, 1.0);
+        float f = texture2D(uHoloTrigger, vec2(1.0 + 0.1 * t + seed, 0.5)).r;
+        float glitch = rnd * seed < 0.001 ? 0.01 : 0.0;
+        float d = 0.01 * (texture2D(uHoloScan, vec2(vUV.x, 2.0 * vUV.y + 0.2 * t)).g + texture2D(uHoloScan, vec2(vUV.x, vUV.y + 0.25 * t)).g
+                          + f * texture2D(uHoloBackground, vUV + 0.5 * rnd).r);
+        vec2 ud = vUV + glitch + d;
+        float icon = texture2D(uHoloIcon, ud).r;
+        float mraw = (0.3 * s0 + 0.59 * s1 + 0.11 * s2) * f + icon;
+        float m = clamp(mraw, 0.0, 1.0);
+        if (m < uEffectDiscard) discard;
+        float E = 0.25 * texture2D(uHoloBackground, vUV).b + icon + f * texture2D(uHoloBackground, ud + 0.5 * rnd).r
+                + 0.841 * texture2D(uHoloScan, vec2(vUV.x + seed, 5.0 * vUV.y + 0.1 * t)).g;
+        vec3 C = vec3(0.00151763 + 0.99848235 * uHoloHue, 0.43415365 - 0.42117062 * uHoloHue, 1.0 - uHoloHue);
+        vec3 split = vec3(1.0) + f * (vec3(s0, s1, s2) - 1.0);
+        rgb = 10.0 * A * C * E * split * (L + mraw); alpha = clamp(uEffectAlpha * m, 0.0, 1.0);
+    } else if (uEffectKind == 6) {   // c5646808 holocon rays: laser cone mask r; rgb = A P2 (L + 5 r), soft-depth term 1
+        float r = clamp(texture2D(uHoloLaser, vUV).r, 0.0, 1.0);
+        if (r < uEffectDiscard) discard;
+        rgb = A * uEffectColour * (L + 5.0 * r); alpha = clamp(uEffectAlpha * r, 0.0, 1.0);
     } else {                         // 094D0CAE: ring texture; k = A C.r P2.r, R = 2k (2k + L), G/B = 2A P2 (2k + L)
         float m = clamp(texture2D(uEffectRing, vUV).r, 0.0, 1.0);
         if (m < uEffectDiscard) discard;
@@ -2405,7 +2432,8 @@ void main() {
 }
 """.replace("// @lighting\n", LIGHTING)
 EFFECT_UNIFORMS = (*LIGHTING_UNIFORMS, "uEffectKind", "uEffectColour", "uEffectAlpha", "uEffectDiscard", "uEffectAmplitude",
-                   "uEffectMaskWeight", "uEffectNoise", "uEffectSpin", "uEffectRing")
+                   "uEffectMaskWeight", "uEffectNoise", "uEffectSpin", "uEffectRing", "uHoloIcon", "uHoloBackground", "uHoloScan",
+                   "uHoloTrigger", "uHoloLaser", "uHoloOffsetsRB", "uHoloOffsetG", "uHoloHue", "uHoloFrame")
 
 
 # Tonemap of the model viewer's float scene target (ModelViewport._hdr_begin / _hdr_resolve), used for frames with health

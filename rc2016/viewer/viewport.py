@@ -1501,13 +1501,17 @@ class ModelViewport(_TkFrame):
         sh.glUseProgram(0)
 
     def _effect_frame(self):
-        """This frame's idle-effect quads (rc2016/viewer/idle_effect.py) in Shaded mode, and the effect light for
-        _apply_lighting; none for models without the igLoc_health_FX locator or beyond the 100-unit fade."""
+        """This frame's effect quads in Shaded mode (the health crate's idle effect, rc2016/viewer/idle_effect.py, or a holocon
+        device's hologram, rc2016/viewer/holocon_effect.py), and the effect light for _apply_lighting; none for other models
+        or beyond the effect's fade distance."""
         self._preview_light = None
         preview = (self._payload or {}).get('effect_preview')
         if not preview or self._mode != 'Shaded':
             return []
-        from rc2016.viewer.idle_effect import billboards
+        if preview.get('family') == 'holocon':
+            from rc2016.viewer.holocon_effect import billboards
+        else:
+            from rc2016.viewer.idle_effect import billboards
         modelview = (ctypes.c_float * 16)()
         self._gl.glGetFloatv.argtypes = [ctypes.c_uint, ctypes.c_void_p]
         self._gl.glGetFloatv(self.GL_MODELVIEW_MATRIX, modelview)
@@ -1537,10 +1541,11 @@ class ModelViewport(_TkFrame):
             self._gl.glDeleteTextures(len(ids), (ctypes.c_uint * len(ids))(*ids))
 
     def _draw_effect_preview(self, quads):
-        """The health crate's idle effect: view-space quads with the decoded sprite programs (EFFECT_FRAGMENT), alpha-over,
-        depth-tested without depth write (the flares with depth test off), after the panes and glass, into the float scene
-        target when there is one (_hdr_begin). A labelled preview: idle_effect.PREVIEW_LIMITATIONS names the presentation
-        values and inferred stand-ins."""
+        """The health crate's idle effect or a holocon hologram: view-space quads with the decoded sprite programs
+        (EFFECT_FRAGMENT), alpha-over, depth-tested without depth write (the flares with depth test off; the holocon icon
+        culls back faces, as captured), after the panes and glass, into the float scene target when there is one
+        (_hdr_begin). A labelled preview: the module's PREVIEW_LIMITATIONS names the presentation values and inferred
+        stand-ins."""
         from rc2016.viewer.idle_effect import MASK_WEIGHT
         gl, sh = self._gl, self._shading
         preview = self._payload['effect_preview']
@@ -1548,12 +1553,22 @@ class ModelViewport(_TkFrame):
         program, u = sh.effect_program()
         sh.glUseProgram(program)
         self._apply_lighting(u)
-        for unit, role, name in ((0, 'noise', 'uEffectNoise'), (1, 'spin', 'uEffectSpin'), (2, 'ring', 'uEffectRing')):
+        units = ((0, 'noise', 'uEffectNoise'), (1, 'spin', 'uEffectSpin'), (2, 'ring', 'uEffectRing'), (3, 'icon', 'uHoloIcon'),
+                 (4, 'background', 'uHoloBackground'), (5, 'scan', 'uHoloScan'), (6, 'trigger', 'uHoloTrigger'))
+        for unit, role, name in units:
             sh.glActiveTexture(self.GL_TEXTURE0 + unit)
             gl.glBindTexture(self.GL_TEXTURE_2D, textures.get(role, 0))
             sh.glUniform1i(u[name], unit)
+        sh.glUniform1i(u['uHoloLaser'], 7)
         sh.glActiveTexture(self.GL_TEXTURE0)
         sh.glUniform1f(u['uEffectAmplitude'], float(preview['amplitude']))
+        values, frame = preview.get('icon_values'), preview.get('frame')
+        if values:
+            sh.glUniform4f(u['uHoloOffsetsRB'], *values['offset_r'], *values['offset_b'])
+            sh.glUniform2f(u['uHoloOffsetG'], *values['offset_g'])
+            sh.glUniform1f(u['uHoloHue'], float(values['hue']))
+        if frame:
+            sh.glUniform3f(u['uHoloFrame'], float(frame['time']), float(frame['random']), float(frame['seed']))
         gl.glBlendFunc.argtypes = [ctypes.c_uint, ctypes.c_uint]; gl.glDepthMask.argtypes = [ctypes.c_ubyte]
         gl.glVertex3f.argtypes = [ctypes.c_float] * 3; gl.glTexCoord2f.argtypes = [ctypes.c_float] * 2
         gl.glEnable(self.GL_BLEND); self._blend_over()
@@ -1565,6 +1580,14 @@ class ModelViewport(_TkFrame):
                     gl.glEnable(self.GL_DEPTH_TEST)
                 else:
                     gl.glDisable(self.GL_DEPTH_TEST)
+                if quad.get('cull'):
+                    gl.glEnable(self.GL_CULL_FACE)
+                else:
+                    gl.glDisable(self.GL_CULL_FACE)
+                if quad.get('laser'):
+                    sh.glActiveTexture(self.GL_TEXTURE0 + 7)
+                    gl.glBindTexture(self.GL_TEXTURE_2D, textures.get(quad['laser'], 0))
+                    sh.glActiveTexture(self.GL_TEXTURE0)
                 sh.glUniform1i(u['uEffectKind'], quad['kind'])
                 sh.glUniform3f(u['uEffectColour'], *quad['colour'])
                 sh.glUniform1f(u['uEffectAlpha'], quad['alpha'])
@@ -1576,8 +1599,8 @@ class ModelViewport(_TkFrame):
                 gl.glEnd()
         finally:
             gl.glPopMatrix()
-            gl.glEnable(self.GL_DEPTH_TEST); gl.glDepthMask(1); gl.glDisable(self.GL_BLEND)
-            for unit in (2, 1, 0):
+            gl.glEnable(self.GL_DEPTH_TEST); gl.glDepthMask(1); gl.glDisable(self.GL_BLEND); gl.glDisable(self.GL_CULL_FACE)
+            for unit in (7, 6, 5, 4, 3, 2, 1, 0):
                 sh.glActiveTexture(self.GL_TEXTURE0 + unit)
                 gl.glBindTexture(self.GL_TEXTURE_2D, 0)
 

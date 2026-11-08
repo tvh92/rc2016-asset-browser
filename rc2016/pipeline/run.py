@@ -784,7 +784,21 @@ def process_model(key,index,args,code_hash,previous,log):
         from rc2016.pipeline import health_effect
         health_effect_job=dict(description=health_effect.effect_description(effect_at,flares=False,light=False,raise_bounces=False),
             textures=health_effect.prepare_textures(archive,model_root/'health_effect'))
+    # A holocon device's hologram is its *_UI_Holocon effect at a model locator: built as emission quads.
+    holocon_effect_job=None
+    try:
+        from rc2016.formats.native_model import decode_locators
+        from rc2016.viewer.holocon_effect import holocon_preview
+        model_bytes=Path(model_path).read_bytes()
+        holocon=holocon_preview(archive,asset['path'],model_bytes,decode_locators(model_bytes))
+    except (ValueError,KeyError,IndexError,OSError):
+        holocon=None
+    if holocon is not None:
+        from rc2016.pipeline import holocon_effect
+        holocon_effect_job=dict(description=holocon_effect.effect_description(archive,holocon),
+            textures=holocon_effect.prepare_textures(archive,holocon,model_root/'holocon_effect'))
     job=dict(schema=VERSION,fingerprint=fingerprint,model=model,geometry=geometry,native_geometry=native_geometry,native_parts=native_parts,health_effect=health_effect_job,
+        holocon_effect=holocon_effect_job,
         animation_selection=selection_identity,active_clip_index=active_clip_index,clip_catalog=entries,
         texture_transport=texture_transport,
         experimental_ambiguous_inheritance=args.experimental_ambiguous_inheritance,

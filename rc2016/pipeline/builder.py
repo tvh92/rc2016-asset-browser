@@ -581,6 +581,11 @@ def build(job):
         from rc2016.pipeline import health_effect
         anchors=[o for o in scene.objects if o.type=='MESH' and o.get('source_model_sha256')==job['model']['model_sha256']]
         if anchors:health_effect.build(scene,anchors[0],job['health_effect']['description'],job['health_effect']['textures'])
+    if job.get('holocon_effect'):
+        # A holocon device's hologram (rc2016/pipeline/holocon_effect.py), added before the structural baseline like the crate's effect.
+        from rc2016.pipeline import holocon_effect
+        anchors=[o for o in scene.objects if o.type=='MESH' and o.get('source_model_sha256')==job['model']['model_sha256']]
+        if anchors:holocon_effect.build(scene,anchors[0],job['holocon_effect']['description'],job['holocon_effect']['textures'])
     bpy.context.view_layer.update()
     # Columns in the shader editor (rc2016/pipeline/node_layout.py): built in, so no Blender add-on is needed.
     from rc2016.pipeline.node_layout import arrange_tree
