@@ -185,6 +185,8 @@ class GameFileTests(unittest.TestCase):
         self.assertEqual(description['icon']['trigger'], 0.0)      # the presentation seed lands on a 0 texel
         self.assertEqual([q['kind'] for q in description['quads']][0], 'holo_icon')
         self.assertIsNone(description['light'])
+        # every quad a view ray crosses costs a Cycles transparent bounce; a ray past the limit renders black
+        self.assertGreater(holocon_effect.required_transparent_bounces(description), len(description['quads']))
 
 
 @unittest.skipUnless((CAPTURE / 'pixels/hdr_after_9761.bin').exists() and (CAPTURE / 'tex_png').exists(),

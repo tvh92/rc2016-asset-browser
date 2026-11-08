@@ -279,6 +279,7 @@ A holocon device's hologram (the weapon vendor, the Hydrodisplacer and Trespasse
 - The soft glow uses the health crate's `glow_soft` material (the same program). A group build retargets the constraints and drivers to its own camera.
 - Every quad's `fx_alpha` is a scripted driver with the viewer's distance fade sat((150 - d) / 25). The light is left out of the pipeline's audited build (the audit forbids lights); the description builds it on request.
 - The icon, background and scan-line images and the laser cones a ray uses are written as PNGs under the model's `holocon_effect` folder and packed; only images a material reads are loaded, because an image without users is dropped on save and the reopen check would see it.
+- The quads stack on every view ray, and Cycles ends a ray that runs out of transparent bounces black (black blocks across the rays), so the build raises the scene's transparent bounce limit to the larger of 64 and the quad count + 8 (never lowers it).
 - Not built: the scan-line scroll, the trigger glitch and ray motion over time, the soft-particle depth term and mip filtering.
 
 ## Shader node layout

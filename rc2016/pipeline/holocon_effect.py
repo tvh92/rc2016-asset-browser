@@ -361,8 +361,24 @@ def build(scene, anchor, description, texture_paths, camera=None):
         del light[he.FAMILY]
         light[FAMILY] = 'light'
         created += [light_pivot, light]
+    raise_transparent_bounces(scene, description)
     scene[FAMILY] = json.dumps(dict(effect=description['effect'], device=description['device'], limitations=description['limitations']))
     return created
+
+
+def required_transparent_bounces(description):
+    """Cycles transparent bounces the stacked quads need: a ray through every quad crosses all of them, and a ray that runs
+    out of bounces ends black, which shows as black blocks in the rays where many quads overlap."""
+    from rc2016.pipeline.health_effect import TRANSPARENT_BOUNCES
+    return max(TRANSPARENT_BOUNCES, len(description['quads']) + 8)
+
+
+def raise_transparent_bounces(scene, description):
+    """Raise (never lower) the scene's Cycles transparent bounce limit to ``required_transparent_bounces``."""
+    try:
+        scene.cycles.transparent_max_bounces = max(scene.cycles.transparent_max_bounces, required_transparent_bounces(description))
+    except AttributeError:
+        pass
 
 
 def retarget_camera(scene, camera):
