@@ -13,10 +13,18 @@ What is built (every value is the viewer's, see idle_effect.py for what is decod
 - the sprite textures as images next to the output (``prepare_textures``): the dissolve noise at mip 4 (a 32 x 32 box
   filter; the game samples it at LOD about 4.5 and Cycles has no mip chain), the spin image and the ring.
 
+Bloom (``add_bloom``): compositor nodes that add the game's bloom of the effect to the health crate only. The effect quads carry
+Object Index 2; a mask on it feeds the decoded bright pass (rc2016/viewer/bloom.py: gate sat(exposure L / 8 - 0.5) and chroma
+c / L, exposure 4.554) and one Gaussian for the decoded sprite chain, measured on a point source through the decoded pyramid
+(weight 1, sigma 10.9 px at 1080p), scaled with the output height (drivers on the blur sizes). Nothing else in the scene blooms.
+The game's other chain (the lit scene: weight 0.82, sigma 76 px) is left out: the review lighting makes metal highlights pass its
+gate, and they would haze the crate. The game adds the bloom after its tone curve; here it is added in scene-linear light before
+the file's view transform, so its strength is a stand-in. The mask follows the sprites' stochastic transparency, so its edge is as
+noisy as the render.
+
 Not built: the anamorphic flares (their centre is pulled 2.5 u toward the game camera and they are gated by a distance that
 is not known, so they do not suit a free camera), the effect light, the soft-particle depth fade, the break effect, the
-particle animation, and bloom (the game's bloom is a post-process, rc2016/viewer/bloom.py; enable the compositor's Glare
-for it). ``bpy`` is imported inside the functions that need it, so the data helpers import anywhere.
+particle animation, and the bloom's exact pyramid (see above). ``bpy`` is imported inside the functions that need it, so the data helpers import anywhere.
 """
 from __future__ import annotations
 
@@ -27,6 +35,11 @@ import sys
 from pathlib import Path
 
 FAMILY = 'health_effect'
+EFFECT_PASS_INDEX = 2                            # Object Index of the effect quads, which the bloom mask reads
+GAME_EXPOSURE = 4.553783893585205                # levels.display.EXPOSURE_MULTIPLIER, the viewer's bloom gate exposure
+SIGMA_SPRITE_PX, SIGMA_LIT_PX = 10.9, 75.9       # decoded chains' spread on a point source, at the game's 1080p height
+LIT_WEIGHT, SPRITE_WEIGHT = 0.82, 1.0            # the lit-scene chain is not built (see the docstring)
+GAME_HEIGHT = 1080.0
 
 
 def effect_description(origin=None):
@@ -278,6 +291,7 @@ def build(scene, anchor, description, texture_paths, camera=None):
         obj.location = anchor.matrix_world @ (origin + Vector(row['offset']))
         obj.scale = (row['size'][0], row['size'][1], 1.0)
         obj[FAMILY] = row['kind']
+        obj.pass_index = EFFECT_PASS_INDEX
         obj['fx_emit'] = [float(v) for v in row['emit']]
         obj['fx_alpha'] = float(row['alpha'])
         obj['fx_discard'] = float(row['discard'])
@@ -316,10 +330,124 @@ def apply_to_scene(description, texture_paths):
     return build(scene, anchors[0], description, texture_paths)
 
 
+def _mix(tree, blend, a, b, factor=1.0):
+    node = _node(tree, 'ShaderNodeMix', data_type='RGBA', blend_type=blend)
+    node.inputs['Factor'].default_value = factor
+    for slot, value in ((6, a), (7, b)):
+        if value is not None:
+            tree.links.new(value, node.inputs[slot])
+    return node.outputs[2]
+
+
+def add_bloom(scene, exposure=GAME_EXPOSURE):
+    """Add the health crate's bloom to the scene compositor (see the module docstring); returns the receipt dict.
+    The crate body gets Object Index 1; the effect quads already carry 2. An existing compositor tree is kept and the bloom is
+    spliced in between the render layer and whatever consumed its image."""
+    import bpy
+    quads = [o for o in scene.objects if o.get(FAMILY)]
+    if not quads:
+        raise RuntimeError('no health effect quads: build the effect first')
+    scene.view_layers[0].use_pass_object_index = True
+    tree = scene.compositing_node_group
+    if tree is None:
+        tree = bpy.data.node_groups.new('Health crate bloom', 'CompositorNodeTree')
+        tree.interface.new_socket('Image', in_out='OUTPUT', socket_type='NodeSocketColor')
+        scene.compositing_node_group = tree
+    for node in [n for n in tree.nodes if n.name.startswith('Health bloom')]:
+        tree.nodes.remove(node)
+    layers = next((n for n in tree.nodes if n.bl_idname == 'CompositorNodeRLayers'), None) or _node(tree, 'CompositorNodeRLayers')
+    image, alpha, index = layers.outputs['Image'], layers.outputs['Alpha'], layers.outputs['Object Index']
+    consumers = [link.to_socket for link in list(image.links)]
+    for link in list(image.links):
+        tree.links.remove(link)
+    height = scene.render.resolution_y * scene.render.resolution_percentage / 100.0
+    luma_weights = (0.2126, 0.7152, 0.0722)
+    total = None
+    nodes_before = set(tree.nodes)
+    for pass_index, weight, sigma in ((EFFECT_PASS_INDEX, SPRITE_WEIGHT, SIGMA_SPRITE_PX),):
+        mask = _node(tree, 'CompositorNodeIDMask')
+        mask.inputs['Index'].default_value = pass_index
+        mask.inputs['Anti-Alias'].default_value = True
+        tree.links.new(index, mask.inputs['ID value'])
+        masked = _mix(tree, 'MULTIPLY', image, mask.outputs[0])
+        colour = _vector(tree, 'SCALE', masked, None)
+        luma = _vector(tree, 'DOT_PRODUCT', masked, luma_weights).outputs['Value']
+        luma = _math(tree, 'MAXIMUM', luma, 1.0 / 1024.0)
+        gate = _math(tree, 'MULTIPLY_ADD', luma, exposure * 0.125, clamp=True)
+        gate.node.inputs[2].default_value = -0.5
+        factor = _math(tree, 'MULTIPLY', _math(tree, 'DIVIDE', gate, luma), weight)
+        tree.links.new(factor, colour.inputs['Scale'])
+        blur = _node(tree, 'CompositorNodeBlur')
+        size = 3.0 * sigma * height / GAME_HEIGHT        # Blender's Gaussian: sigma = size / 3 (measured)
+        blur.inputs['Size'].default_value = (size, size)
+        for axis in (0, 1):   # follow the output height, so a resolution percentage change keeps the bloom's screen size
+            driver = blur.inputs['Size'].driver_add('default_value', axis).driver
+            driver.type = 'SCRIPTED'
+            for name, path in (('h', 'render.resolution_y'), ('p', 'render.resolution_percentage')):
+                variable = driver.variables.new()
+                variable.name, variable.type = name, 'SINGLE_PROP'
+                variable.targets[0].id_type, variable.targets[0].id, variable.targets[0].data_path = 'SCENE', scene, path
+            driver.expression = '%r * h * p / 100' % (3.0 * sigma / GAME_HEIGHT)
+        tree.links.new(colour.outputs['Vector'], blur.inputs['Image'])
+        total = blur.outputs[0] if total is None else _mix(tree, 'ADD', total, blur.outputs[0])
+    summed = _mix(tree, 'ADD', image, total)
+    split = _node(tree, 'CompositorNodeSeparateColor')
+    tree.links.new(summed, split.inputs[0])
+    combine = _node(tree, 'CompositorNodeCombineColor')
+    for channel in range(3):
+        tree.links.new(split.outputs[channel], combine.inputs[channel])
+    tree.links.new(alpha, combine.inputs['Alpha'])
+    for socket in consumers:
+        tree.links.new(combine.outputs[0], socket)
+    if not consumers:   # a fresh tree: the bloomed image is the output
+        out = next((n for n in tree.nodes if n.bl_idname == 'NodeGroupOutput'), None) or _node(tree, 'NodeGroupOutput')
+        tree.links.new(combine.outputs[0], out.inputs['Image'])
+    for node in set(tree.nodes) - nodes_before:
+        node.name = 'Health bloom | ' + node.bl_idname.replace('CompositorNode', '').replace('ShaderNode', '')
+    scene.render.use_compositing = True
+    scene['health_bloom'] = json.dumps(dict(exposure=exposure, sprite_sigma_px_1080=SIGMA_SPRITE_PX, lit_sigma_px_1080=SIGMA_LIT_PX,
+                                            output_height=height, limitation='added in scene-linear light before the view transform; '
+                                            'Gaussian stand-ins for the decoded pyramid'))
+    return dict(quads=len(quads), output_height=height)
+
+
+def apply_game_tonemap(scene):
+    """Replace the file's view transform with the game's exposure and tone curve as compositor nodes, as the pipeline's
+    ``--tonemap game`` does (rc2016/pipeline/game_view_compositor.py, identity grade). The file's own exposure is kept on top of
+    the captured multiplier."""
+    from rc2016.pipeline import game_view_compositor
+    from rc2016.pipeline.scene_defaults import game_tonemap_stops
+    settings = json.loads(scene['shared_lighting'])
+    return game_view_compositor.apply(scene, exposure_stops=game_tonemap_stops(settings), grade='identity')
+
+
+def repair_environment(repo_hdri=None):
+    """Pack the shared HDRI so the file does not depend on a relative path (an unresolved one renders the world magenta):
+    the image's own path when it exists, else `repo_hdri`. Returns the image name or None."""
+    import bpy
+    for image in bpy.data.images:
+        if image.source != 'FILE' or image.packed_file or not image.name.lower().endswith('.exr'):
+            continue
+        path = Path(bpy.path.abspath(image.filepath))
+        if not path.exists() and repo_hdri and Path(repo_hdri).exists():
+            image.filepath = str(repo_hdri)
+            path = Path(repo_hdri)
+        if path.exists():
+            image.pack()
+            return image.name
+    return None
+
+
 def _blender_main(argv):
     import bpy
     job = json.load(open(argv[0]))
     apply_to_scene(job['description'], job['textures'])
+    if job.get('game_tonemap'):
+        apply_game_tonemap(bpy.context.scene)
+    if job.get('bloom'):
+        add_bloom(bpy.context.scene)
+    if job.get('pack_environment', True):
+        repair_environment(job.get('repo_hdri'))
     bpy.ops.wm.save_as_mainfile(filepath=job['output'], compress=True, relative_remap=False)   # the quads' images are packed; the file's other paths stay as they were
     print('HEALTH EFFECT', job['output'], flush=True)
 
