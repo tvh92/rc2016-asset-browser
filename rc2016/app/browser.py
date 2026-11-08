@@ -107,8 +107,6 @@ def material_toggles(textures):
 def lighting_controls(ttk, parent, viewport, lighting_var, tonemap_var, note_parent=None):
     """Lighting source selector; returns its combobox. The note about a pending HDRI goes in ``note_parent``."""
     def lighting_changed(_event=None):
-        if lighting_var.get() == 'Shared HDRI':
-            tonemap_var.set('Khronos PBR Neutral')
         viewport.set_lighting(lighting_var.get(), tonemap_var.get())
     box = ttk.Combobox(parent, textvariable=lighting_var, values=viewport.LIGHTINGS, state='readonly', width=12)
     box.pack(side='left', padx=(4, 0)); box.bind('<<ComboboxSelected>>', lighting_changed)
@@ -328,7 +326,7 @@ class AssetBrowser:
         tip('Source look: a model can hold several alternative mesh sets. Only shown when it does.',self.native_look_label,self.native_look_box)
         lodrow.grid_remove()
         # Shading: lighting, then the tonemap that turns its output into screen colours.
-        self.lighting_var=remember_var(self.tk.StringVar(value=self.viewport.LIGHTINGS[0]),'model.lighting',self.viewport.LIGHTINGS)
+        self.lighting_var=remember_var(self.tk.StringVar(value='Shared HDRI'),'model.lighting',self.viewport.LIGHTINGS)
         self.lighting_enabled_var=remember_var(self.tk.BooleanVar(value=True),'model.lighting_enabled')
         self.lighting_group=lighting_group=ttk.LabelFrame(side,text='Shading',padding=(4,2))
         lighting_group.grid(row=2,column=0,sticky='ew',pady=(0,4))
@@ -338,7 +336,7 @@ class AssetBrowser:
         self.lighting_enabled_check.grid(row=0,column=0,sticky='w')
         self.lighting_controls=ttk.Frame(lighting_group)
         self.lighting_controls.grid(row=0,column=1,sticky='w')
-        self.tonemap_var=remember_var(self.tk.StringVar(value=self.viewport.TONEMAPS[0]),'model.tonemap',self.viewport.TONEMAPS)
+        self.tonemap_var=remember_var(self.tk.StringVar(value='Game (captured)'),'model.tonemap',self.viewport.TONEMAPS)
         lighting_note_row=ttk.Frame(lighting_group);lighting_note_row.grid(row=2,column=0,columnspan=2,sticky='w')
         lighting_box=lighting_controls(ttk,self.lighting_controls,self.viewport,self.lighting_var,self.tonemap_var,note_parent=lighting_note_row)
         tonemap_label=ttk.Label(lighting_group,text='Tonemap')
@@ -347,8 +345,9 @@ class AssetBrowser:
         tonemap_box.grid(row=1,column=1,sticky='w',padx=4,pady=(2,0))
         tonemap_box.bind('<<ComboboxSelected>>',lambda _e:self.viewport.set_lighting(tonemap=self.tonemap_var.get()))
         tip('Master switch for lighting. Off shows the unlit surface colour; self-lit emission stays.',self.lighting_enabled_check)
-        tip('Viewer rig: fixed key, fill and sky light that turns with the camera (what the gallery thumbnails use).\nShared HDRI: the shared review HDRI, as the Blender review render uses. Choosing it also selects Khronos PBR Neutral.',lighting_box)
-        tip('Maps the lit HDR result to screen colours.\nACES fit: filmic, desaturates highlights (gallery thumbnails).\nKhronos PBR Neutral: keeps base colours accurate until highlights.\nGame (captured): the game\'s exposure and tone curve from one Veldin frame, no level colour grade.\nThe lighting is still the viewer\'s, so overall brightness is not the game\'s.',tonemap_label,tonemap_box)
+        tip('Viewer rig: fixed key, fill and sky light that turns with the camera (what the gallery thumbnails use).\nShared HDRI: the shared review HDRI, as the Blender review render uses (the default).',lighting_box)
+        tip('Maps the lit HDR result to screen colours.\nACES fit: filmic, desaturates highlights (gallery thumbnails).\nKhronos PBR Neutral: keeps base colours accurate until highlights.\nGame (captured, the default): the game\'s exposure and tone curve from one Veldin frame, no level colour grade.\nThe lighting is still the viewer\'s, so overall brightness is not the game\'s.',tonemap_label,tonemap_box)
+        self.viewport.set_lighting(self.lighting_var.get(),self.tonemap_var.get())   # the defaults or the remembered choice
         # Materials: only the toggles that change something for this model (see _update_source_controls).
         self.native_translation_var=remember_var(self.tk.BooleanVar(value=True),'model.native_translation')
         self.experimental_materials_var=remember_var(self.tk.BooleanVar(value=False),'model.experimental_materials')

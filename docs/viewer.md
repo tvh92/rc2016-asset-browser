@@ -160,10 +160,10 @@ The Lighting source and Display tonemap selectors offer:
 
 | Selector | Choices | Default |
 |---|---|---|
-| Lighting | `Viewer rig`, `Shared HDRI` | `Viewer rig` |
-| Tonemap | `ACES fit`, `Khronos PBR Neutral`, `Game (captured)` | `ACES fit` |
+| Lighting | `Viewer rig`, `Shared HDRI` | `Shared HDRI` in the model browser; `Viewer rig` in the viewport itself, the level viewer and gallery thumbnails |
+| Tonemap | `ACES fit`, `Khronos PBR Neutral`, `Game (captured)` | `Game (captured)` in the model browser; `ACES fit` elsewhere |
 
-Choosing Shared HDRI also selects Khronos PBR Neutral; the tonemap can be changed back.
+The model browser applies its remembered (or default) lighting and tonemap at start. Choosing Shared HDRI no longer changes the tonemap.
 
 ### Experimental material previews
 
