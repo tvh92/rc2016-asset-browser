@@ -576,6 +576,11 @@ def build(job):
             if area.type=='VIEW_3D':
                 space=area.spaces.active;space.lock_camera=True
                 space.region_3d.view_perspective='CAMERA'
+    if job.get('health_effect'):
+        # The crate's idle effect (rc2016/pipeline/health_effect.py), added before the structural baseline so that it is part of it.
+        from rc2016.pipeline import health_effect
+        anchors=[o for o in scene.objects if o.type=='MESH' and o.get('source_model_sha256')==job['model']['model_sha256']]
+        if anchors:health_effect.build(scene,anchors[0],job['health_effect']['description'],job['health_effect']['textures'])
     bpy.context.view_layer.update()
     # Columns in the shader editor (rc2016/pipeline/node_layout.py): built in, so no Blender add-on is needed.
     from rc2016.pipeline.node_layout import arrange_tree

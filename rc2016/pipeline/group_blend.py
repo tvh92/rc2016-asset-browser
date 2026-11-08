@@ -393,6 +393,8 @@ def assemble(job):
     camera = bpy.data.objects.new("Group review camera", camera_data)
     scene.collection.objects.link(camera)
     scene.camera = camera
+    from rc2016.pipeline.health_effect import retarget_camera
+    retarget_camera(scene, camera)   # the health crate's effect quads face the group camera
     points = visible_mesh_points(scene)
     if not len(points):
         raise RuntimeError("The group has no visible mesh to frame")

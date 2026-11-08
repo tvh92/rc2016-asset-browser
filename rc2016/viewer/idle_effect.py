@@ -47,6 +47,7 @@ import random
 EFFECT_PATH = 'visualeffect/equipment/pickup/pup_health_crate_idle/pup_health_crate_idle.visualeffect'
 CONDUIT_PATH = 'conduit/environment/global/gameplay/gbl_gp_crate_health_vfx/gbl_gp_crate_health_vfx.conduit'
 LOCATOR = 'igLoc_health_FX'
+HEALTH_CRATE_LOCATOR = (0.0, 0.5003, 0.0)   # its native position on the health crate (decoded locator table); the Blender script's default
 
 # Sprite pixel programs (shading.EFFECT_FRAGMENT uEffectKind) and their materials.
 GLOW_SOFT, FLARE_ROUND, FLARE_SQUARE, GLOW_SPIN, SHOCKWAVE = range(5)

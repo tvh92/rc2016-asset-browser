@@ -772,7 +772,19 @@ def process_model(key,index,args,code_hash,previous,log):
                 built_sha256=check.get('built_sha256'),stream_sha256=check.get('stream_sha256'),
                 stream_size=check.get('stream_size'),stream_occurrences=check.get('stream_occurrences',[]),
                 source_evidence=check))
-    job=dict(schema=VERSION,fingerprint=fingerprint,model=model,geometry=geometry,native_geometry=native_geometry,native_parts=native_parts,
+    # The health crate's glowing ball is its idle effect, started at the locator igLoc_health_FX: built as emission quads.
+    health_effect_job=None
+    try:
+        from rc2016.formats.native_model import decode_locators
+        from rc2016.viewer.idle_effect import effect_origin
+        effect_at=effect_origin(decode_locators(Path(model_path).read_bytes()))
+    except (ValueError,KeyError,IndexError,OSError):
+        effect_at=None
+    if effect_at is not None:
+        from rc2016.pipeline import health_effect
+        health_effect_job=dict(description=health_effect.effect_description(effect_at),
+            textures=health_effect.prepare_textures(archive,model_root/'health_effect'))
+    job=dict(schema=VERSION,fingerprint=fingerprint,model=model,geometry=geometry,native_geometry=native_geometry,native_parts=native_parts,health_effect=health_effect_job,
         animation_selection=selection_identity,active_clip_index=active_clip_index,clip_catalog=entries,
         texture_transport=texture_transport,
         experimental_ambiguous_inheritance=args.experimental_ambiguous_inheritance,

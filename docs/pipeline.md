@@ -254,6 +254,14 @@ The shared review lighting applies, one camera is dollied to fit the whole group
 
 Members are not re-validated by the group step; each keeps the checks of its own build. Models with a limited status are included when their `.blend` was delivered.
 
+## Health crate idle effect
+
+The glowing ball inside the health (nanotech) crate is not model geometry: it is the effect `pup_health_crate_idle.visualeffect`, started at the locator `igLoc_health_FX`. A model with that locator gets it built as scene objects (`rc2016/pipeline/health_effect.py`, called from `run.py` and `builder.py` before the structural baseline, so reopen validation covers it). The same decoded values drive the model viewer ([viewer](viewer.md#health-crate-idle-effect)).
+
+- Each sprite is a 1 x 1 quad (`Health effect | ...`, custom property `health_effect`) scaled to its size, at the locator or, for the emitters' orbs and rings, at the still-frame offsets (inferred stand-ins), with a Copy Rotation constraint on the scene camera. A group build retargets the constraint to its own camera.
+- Materials: one emission-over-transparent material per program (soft glow, spin glow, shockwave ring) with the program's shape and colour terms as nodes; per-object `fx_emit`, `fx_alpha` and `fx_discard` custom properties feed them. The dissolve noise (mip 4), the spin image and the ring are written as PNGs under the model's `health_effect` folder and packed into the .blend.
+- Not built: the anamorphic flares (they depend on the game camera distance), the effect light, the soft-particle depth fade, particle animation and bloom. Enable the compositor's Glare for a bloom look; the game's own bloom is decoded in `rc2016/viewer/bloom.py`.
+- An already extracted .blend can be given the effect without rebuilding: `python -m rc2016.pipeline.add_health_effect --extracted-root <game> --blend in.blend --output out.blend --blender <blender.exe>` (the crate is found by the mesh name `Crate_Nanotech`; the input is not changed).
 ## Shader node layout
 
 Before the candidate `.blend` is saved, every material's node tree and every node group is arranged in columns by `rc2016/pipeline/node_layout.py`: a node sits left of everything it feeds, and each column starts stacked top to bottom in creation order, then a few passes move every node toward the middle of the nodes it links to, so wires stay short and cross less. The layout is part of the pipeline, not a Blender add-on, so a file built on any machine opens the same way. Weapon merges and the group `.blend` keep the positions they set. Node positions carry no game data and are not validated.
