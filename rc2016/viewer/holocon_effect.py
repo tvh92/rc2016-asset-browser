@@ -28,9 +28,10 @@ CB0[107] = 0.0763 and the icon's per-particle seed attribute3.z = 0.9059 (both c
 (9 of its 256 texels are 1) is off; CB0[115] = idle_effect.AMPLITUDE (0.277; the vendor frame had 0.343).
 
 INFERRED STAND-INS (not decoded; named in PREVIEW_LIMITATIONS and docs/viewer.md):
-- the ray length scale 1.18 (the teleporter capture, rays reaching the icon as in every screenshot; 0.37 in the vendor
-  capture, cause unknown), the tilt 5..19.5 degrees off the emitter axis and the apex within 0.1 u of the origin (the
-  captured ranges over 19 rays); width and length otherwise follow list entry 9 (0.52..1.0, decoded);
+- the ray length scale 1.18 per unit of icon distance (the teleporter capture, rays reaching the icon as in every
+  screenshot; 0.37 in the vendor capture, cause unknown), and the tilt 5..19.5 degrees off the emitter axis (the captured
+  range over 19 rays); width and length otherwise follow list entry 9 (0.52..1.0), the rate and life entries 4 and 5 and the
+  apex radius section 0x3F03BE86 +0x54 (decoded, per effect);
 - the light's colour 0.112 x b2 x hue and radius b4 (the health crate's one captured light: b2 = 2, b4 = 1, colour 0.224 x
   hue, radius stand-in 1 u);
 - the device -> conduit pairing by folder name, and the normal (not locked) holocon as the one shown.
@@ -95,7 +96,7 @@ DISCARD = 4.0 / 255.0                            # attribute0.z of the icon and 
 FRAME_TIME, FRAME_RANDOM, ICON_SEED = 0.0, 0.0763, 0.9059   # CB0[99] (presentation), CB0[107] and attribute3.z (captured)
 
 # Ray emitter: decoded parameter list entries (the health crate's emitter list layout) and the captured spread.
-RAY_RATE = 10.0                                  # list index 4: particles per second
+RAY_RATE = 10.0                                  # list index 4: particles per second (default; read per effect: 20 on the ports)
 RAY_LIFE = (0.9, 1.0)                            # list index 5: 1.0 - 0.1 rnd seconds
 RAY_ALPHA_MAX, RAY_ALPHA_RAMP = 0.532, 0.2       # list index 11: alpha 0 -> (0.532 - 0.532 rnd) over the first 0.2 of the life
 RAY_COLOUR_SCALE = 10.0                          # list index 7
@@ -104,9 +105,12 @@ RAY_SIZE = (0.5226, 0.9966)                      # list index 9 y: 0.9966 - 0.47
 # INFERRED stand-ins. The length scale is a runtime factor: 1.18 in the teleporter capture, whose rays reach the icon as in
 # every game screenshot (lengths 0.62..1.17 = 1.18 x the list range), 0.37 in the vendor capture (0.21..0.37); what sets
 # it is not found (not the camera distance, the frame time or the effect data, which is the same for both devices).
+# Taken per unit of the icon's distance from the emitter (1.0 on the captured teleporter), so that the rays reach the icon
+# on the Hydrodisplacer and Trespasser too (0.75), as the game's screenshots show; that scaling is inferred.
 RAY_LENGTH_SCALE = 1.18
 RAY_TILT_DEG = (5.0, 19.5)                       # the captured range over 19 rays in two captures
-RAY_APEX_RADIUS = 0.1
+RAY_APEX_RADIUS = 0.1                            # default; read per effect from RAY_SPREAD_SECTION +0x54
+RAY_SPREAD_SECTION = 0x3F03BE86
 SNAPSHOT_AGE, SNAPSHOT_SEED = 4.0, 2016
 LIGHT_SCALE = 0.112                              # INFERRED: the health crate's captured 0.224 x hue at b2 = 2
 
@@ -115,8 +119,8 @@ PREVIEW_LIMITATIONS = (
     'capture), component sizes, offsets, colours, the emitter axis, blend and discard; game_equivalence false.',
     'Presentation values: frame time 0 (the trigger glitch and the scan-line scroll are frozen), CB0[107] 0.0763 and the '
     'icon seed 0.9059 (captured), CB0[115] = 0.277 (the vendor frame had 0.343), fog off, unlit particles (as captured).',
-    'Inferred stand-ins: the ray length scale 1.18 (teleporter capture; 0.37 in the vendor capture), tilt 5..19.5 deg and '
-    'apex radius 0.1 u (captured ranges), a still frame at effect age 4 s with seeded rays, the light colour 0.112 x b2 x hue with radius b4, the device '
+    'Inferred stand-ins: the ray length scale 1.18 per unit of icon distance (teleporter capture; 0.37 in the vendor '
+    'capture), tilt 5..19.5 deg (captured range), a still frame at effect age 4 s with seeded rays, the light colour 0.112 x b2 x hue with radius b4, the device '
     '-> conduit pairing by folder name, and the unlocked holocon.',
 )
 
@@ -237,7 +241,17 @@ def decode_holocon(archive, effect_path):
                 rows = [struct.unpack_from('<3f', data, start + 12 * r) for r in range(3)]
             else:
                 rows = [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)]
-            result['rays'] = dict(component=n, axis_rows=rows, material=material)
+            # Emitter list entries 4 (rate) and 5 (life: value + spread x rnd), and the apex radius at section 0x3F03BE86
+            # +0x54 (0.1 on the vendor and teleporter, matching the captured apexes; 0 on the Hydrodisplacer and Trespasser).
+            rate, life = RAY_RATE, RAY_LIFE
+            if len(parameters) > 5:
+                rate = parameter_at(parameters[4])[0] or RAY_RATE
+                key = parameters[5]['keys'][0]
+                life = (key['value'][0] + min(0.0, key['spread'][0]), key['value'][0] + max(0.0, key['spread'][0]))
+            radius = RAY_APEX_RADIUS
+            if RAY_SPREAD_SECTION in table and table[RAY_SPREAD_SECTION][1] >= 0x58:
+                radius = struct.unpack_from('<f', data, table[RAY_SPREAD_SECTION][0] + 0x54)[0]
+            result['rays'] = dict(component=n, axis_rows=rows, material=material, rate=rate, life=life, apex_radius=radius)
         elif component['kind'] == 0 and name.startswith('gbl_icon_hologram'):
             size = slot(component, 4)
             result['icon'] = dict(component=n, offset=position, size=(size[0], size[1]), alpha=slot(component, 6)[0],
@@ -249,20 +263,26 @@ def decode_holocon(archive, effect_path):
     return result
 
 
-def rays(seed=SNAPSHOT_SEED, age=SNAPSHOT_AGE):
+def rays(seed=SNAPSHOT_SEED, age=SNAPSHOT_AGE, emitter=None, icon_distance=1.0):
     """The live rays at the snapshot, oldest first (the captured draw order): ``tilt`` (radians), ``azimuth``, ``apex``
-    (offset in the emitter's plane), ``length``, ``width``, ``alpha``, ``colour``, ``laser`` (1..3) and ``t``."""
+    (offset in the emitter's plane), ``length``, ``width``, ``alpha``, ``colour``, ``laser`` (1..3) and ``t``. ``emitter``
+    (decode_holocon's ``rays``) gives the rate, life and apex radius; the length scale is RAY_LENGTH_SCALE per unit of
+    ``icon_distance`` (the icon's distance from the emitter)."""
+    emitter = emitter or {}
+    rate, lives = emitter.get('rate', RAY_RATE), emitter.get('life', RAY_LIFE)
+    apex_radius = emitter.get('apex_radius', RAY_APEX_RADIUS)
+    scale = RAY_LENGTH_SCALE * icon_distance
     rng = random.Random(seed)
     result = []
-    for n in range(int(math.floor(age * RAY_RATE)) + 1):
-        life = rng.uniform(*RAY_LIFE)
+    for n in range(int(math.floor(age * rate)) + 1):
+        life = rng.uniform(*lives)
         tilt, azimuth = math.radians(rng.uniform(*RAY_TILT_DEG)), rng.uniform(0.0, 2.0 * math.pi)
-        radius, angle = RAY_APEX_RADIUS * math.sqrt(rng.random()), rng.uniform(0.0, 2.0 * math.pi)
-        length, width = RAY_LENGTH_SCALE * rng.uniform(*RAY_SIZE), rng.uniform(*RAY_SIZE)
+        radius, angle = apex_radius * math.sqrt(rng.random()), rng.uniform(0.0, 2.0 * math.pi)
+        length, width = scale * rng.uniform(*RAY_SIZE), rng.uniform(*RAY_SIZE)
         target = RAY_ALPHA_MAX * (1.0 - rng.random())
         hue = rng.random()
         laser = 1 + min(2, int(rng.random() * 3.0))
-        elapsed = age - n / RAY_RATE
+        elapsed = age - n / rate
         if not 0.0 <= elapsed < life:
             continue
         t = elapsed / life
@@ -296,6 +316,7 @@ def holocon_preview(archive, model_path, data, locators):
     if parts['icon']:
         texture_paths['icon'] = _icon_texture(archive, parts['icon']['material'])
         icon_values = _material_values(archive, parts['icon']['material'])
+    icon_distance = math.sqrt(sum(v * v for v in parts['icon']['offset'])) if parts['icon'] else 1.0
     light = None
     if parts['light']:
         hue, b2 = parts['light']['hue'], parts['light']['b2']
@@ -303,7 +324,7 @@ def holocon_preview(archive, model_path, data, locators):
                      radius=parts['light']['b4'], unit_scale=1.0)
     return dict(family='holocon', device=key, effect=effect_path, locator=locator_name, origin=origin, rows=rows,
                 icon=parts['icon'], icon_values=icon_values, glow=parts['glow'], ray_emitter=parts['rays'],
-                rays=rays() if parts['rays'] else [], light=light, amplitude=AMPLITUDE, texture_paths=texture_paths,
+                rays=rays(emitter=parts['rays'], icon_distance=icon_distance) if parts['rays'] else [], light=light, amplitude=AMPLITUDE, texture_paths=texture_paths,
                 frame=dict(time=FRAME_TIME, random=FRAME_RANDOM, seed=ICON_SEED), programs=dict(PROGRAMS),
                 limitations=list(PREVIEW_LIMITATIONS), game_equivalence=False)
 

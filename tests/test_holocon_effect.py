@@ -150,6 +150,13 @@ class GameFileTests(unittest.TestCase):
         parts = fx.decode_holocon(self.archive, fx.EFFECTS['hydrodisplacer'])
         self.assertEqual(tuple(round(v, 6) for v in parts['icon']['offset']), (0.0, 0.0, 0.75))
         self.assertTrue(parts['icon']['fixed'])
+        self.assertAlmostEqual(parts['rays']['rate'], 20.0, places=5)
+        self.assertEqual(parts['rays']['apex_radius'], 0.0)
+        self.assertAlmostEqual(fx.decode_holocon(self.archive, fx.EFFECTS['vendor'])['rays']['apex_radius'], 0.1, places=6)
+        port_rays = fx.rays(emitter=parts['rays'], icon_distance=0.75)
+        self.assertGreater(len(port_rays), 15)                   # 20 per second
+        self.assertTrue(all(r['length'] <= 0.9966 * fx.RAY_LENGTH_SCALE * 0.75 + 1e-9 for r in port_rays))
+        self.assertTrue(all(r['apex'] == (0.0, 0.0) for r in port_rays))
         self.assertTrue(fx.decode_holocon(self.archive, fx.EFFECTS['trespasser'])['icon']['fixed'])
         for key in ('vendor', 'teleporter', 'turret', 'jetpack', 'hologuise', 'bolt_crank'):
             self.assertFalse(fx.decode_holocon(self.archive, fx.EFFECTS[key])['icon']['fixed'], key)
