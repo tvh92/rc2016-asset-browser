@@ -247,7 +247,8 @@ class AssetBrowserApp:
         self.selection_var.trace_add("write", lambda *_: self._sync_status_text())
         self._sync_status_text()
         self.pending_batches: list[list] = []   # queued extractions: the models as queued, in the order they were queued
-        self.batch_records: list = []   # the models of the running extraction; the ones it extracts are deselected after it
+        self.batch_records: list = []   # the models of the running extraction
+        self.batch_extracted: set[str] = set()   # queue keys of the running extraction's models that finished extracting
 
     def _build_ui(self) -> None:
         tk, ttk = self.tk, self.ttk
@@ -332,8 +333,8 @@ class AssetBrowserApp:
         filters.columnconfigure(2, weight=1)
         view_box = ttk.Frame(filters)
         view_box.grid(row=0, column=0, padx=(0, 18))
-        self.list_view_var = tk.StringVar(value="List")
-        self.model_list_view = "List"   # the model list's own mode, kept while the Texture type uses the shared toggle
+        self.list_view_var = tk.StringVar(value="Grid")
+        self.model_list_view = "Grid"   # the model list's own mode, kept while the Texture type uses the shared toggle
         for kind in ("List", "Grid"):
             button = ttk.Radiobutton(view_box, text=kind, value=kind, variable=self.list_view_var, style="Segment.Toolbutton", width=6,
                                      command=lambda: self.show_list_view(self.list_view_var.get()))
@@ -421,6 +422,7 @@ class AssetBrowserApp:
 
         from rc2016.app.browser import AssetBrowser
         self.browser = AssetBrowser(self, browser_split, type_host=top, model_view=model_view)
+        self.show_list_view(self.model_list_view)   # Grid is the default; the List table shows only when chosen
         self.root.after(200, lambda: browser_split.sashpos(0, int(self.root.winfo_width() * self._saved_split())))
         self.prefix_entry.configure(state="disabled")
 
@@ -1225,6 +1227,7 @@ class AssetBrowserApp:
             clip_choices = picked
         self._append_log(f"Batch started: {len(selected)} model(s)", "success")
         self.batch_records = list(selected)
+        self.batch_extracted = set()
         self._set_busy(running=True)
         self.progress_done = 0
         self.progress_total = len(selected)
@@ -1350,15 +1353,18 @@ class AssetBrowserApp:
         return picked
 
     def _batch_finished(self, succeeded: bool) -> None:
-        """An export that finished without a failure deselects the models it extracted, and only those. Otherwise the selection stays, and the
-        picker's ticks for its models are kept for the next picker, which shows them again."""
+        """Every model that extracted is deselected, even when the batch as a whole failed or was cancelled. A model that
+        did not extract stays selected, so it can be extracted again. The picker's ticks are kept for the next picker
+        when the batch did not finish."""
+        extracted = [record for record in self.batch_records if self._queue_key(self._record_path(record)) in self.batch_extracted]
+        self._deselect_records(extracted)
         if succeeded:
             self.retained_clips = {}
-            self._deselect_records(self.batch_records)
         elif self.batch_clips:
             self.retained_clips = dict(self.batch_clips)
         self.batch_clips = {}
         self.batch_records = []
+        self.batch_extracted = set()
 
     def _deselect_records(self, records) -> None:
         """Deselect the given models in the list and in selected_map. Every other selected model keeps its selection."""
@@ -1462,6 +1468,8 @@ class AssetBrowserApp:
             self.root.destroy()
 
     PROGRESS_STEPS = 1000
+    # Model outcomes that count as extracted: the model's files were written, or were already there.
+    EXTRACTED_STATUSES = frozenset({"completed", "verified", "delivered", "reused_verified_delivery", "exported", "skipped"})
 
     def _set_busy(self, scanning: bool = False, running: bool = False, measured: bool = False) -> None:
         self.scanning = scanning
@@ -1594,7 +1602,10 @@ class AssetBrowserApp:
                 name = candidate.display_name
             else:
                 name = Path(str(values.get("model", ""))).stem
-            tag = ("success" if status in {"completed", "verified", "delivered", "reused_verified_delivery", "exported", "skipped"}
+            path = self._record_path(values["candidate"]) if "candidate" in values else str(values.get("model", ""))
+            if status in self.EXTRACTED_STATUSES:
+                self.batch_extracted.add(self._queue_key(path))
+            tag = ("success" if status in self.EXTRACTED_STATUSES
                    else "error" if status in {"failed", "model_failed"} else "muted")
             self._append_log(f"{name}: {status} — {values['message']}", tag)
             if "candidate" not in values:

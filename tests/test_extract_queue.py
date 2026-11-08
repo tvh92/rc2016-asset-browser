@@ -102,6 +102,28 @@ class QueuedBatchTests(unittest.TestCase):
         self.assertEqual(started, [])
 
 
+class BatchFinishTests(unittest.TestCase):
+    def test_only_models_that_extracted_are_deselected_even_when_the_batch_failed(self):
+        from rc2016.app.batch import PipelineModelCandidate
+        a = PipelineModelCandidate(model_id="1", archive_path="models/a.model")
+        b = PipelineModelCandidate(model_id="2", archive_path="models/b.model")
+        c = PipelineModelCandidate(model_id="3", archive_path="models/c.model")
+        deselected = []
+        stub = _Stub(
+            batch_records=[a, b, c],
+            batch_extracted={AssetBrowserApp._queue_key("models/a.model"), AssetBrowserApp._queue_key("models/b.model")},
+            batch_clips={},
+            retained_clips={},
+            _record_path=staticmethod(AssetBrowserApp._record_path),
+            _queue_key=staticmethod(AssetBrowserApp._queue_key),
+            _deselect_records=lambda records: deselected.append(list(records)),
+        )
+        AssetBrowserApp._batch_finished(stub, False)
+        self.assertEqual(deselected, [[a, b]])
+        self.assertEqual(stub.batch_records, [])
+        self.assertEqual(stub.batch_extracted, set())
+
+
 class StatusTextTests(unittest.TestCase):
     def test_counts_line_has_no_space_before_the_comma(self):
         class Var:
