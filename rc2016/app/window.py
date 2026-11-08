@@ -75,7 +75,8 @@ HELP = {
     "extract": (
         "Exports the selected models in the formats chosen under Options… (GLB by default), "
         "with their textures and animations.\n\n"
-        "Select rows in the list first (Ctrl-click or Shift-click for several)."),
+        "Select rows in the list first (Ctrl-click or Shift-click for several).\n\n"
+        "While an extraction runs, this button reads Add to queue: the selected models run after the current ones."),
     "options": "Export formats, what to include, Python/Blender locations and display size.",
     "formats": (
         "GLB/glTF: model, skeleton, materials and animations in one standard file; opens in Blender, "
@@ -239,8 +240,14 @@ class AssetBrowserApp:
         self.retained_clips: dict[str, tuple[str, ...]] = {}  # those of an export that did not finish, for the next picker
         self.export_summary_var = tk.StringVar()
         self.exported_names: set[str] = set()
-        self.selection_var = tk.StringVar(value=", 0 selected")
+        self.selection_var = tk.StringVar(value="0 selected")
+        self.status_text = tk.StringVar()   # the counts line: the progress text, then the selection; see _sync_status_text
         self.progress_var = tk.StringVar(value="Step 1: pick the game folder (Browse…).")
+        self.progress_var.trace_add("write", lambda *_: self._sync_status_text())
+        self.selection_var.trace_add("write", lambda *_: self._sync_status_text())
+        self._sync_status_text()
+        self.pending_batches: list[list] = []   # queued extractions: the models as queued, in the order they were queued
+        self.batch_records: list = []   # the models of the running extraction; the ones it extracts are deselected after it
 
     def _build_ui(self) -> None:
         tk, ttk = self.tk, self.ttk
@@ -274,8 +281,8 @@ class AssetBrowserApp:
         # The model counts read "N models found, N visible, N selected", then the selection actions.
         status_row = ttk.Frame(actions)
         status_row.grid(row=0, column=1, padx=(0, 8), sticky="ns")
-        ttk.Label(status_row, textvariable=self.progress_var, anchor="w").pack(side="left")
-        ttk.Label(status_row, textvariable=self.selection_var, anchor="w").pack(side="left", padx=(0, 10))
+        # One label for the whole counts line, so the progress text and the selection can never be spaced apart.
+        ttk.Label(status_row, textvariable=self.status_text, anchor="w").pack(side="left", padx=(0, 10))
         select_button = ttk.Button(status_row, text="Select visible", command=self.select_visible)
         select_button.pack(side="left")
         clear_button = ttk.Button(status_row, text="Deselect all", command=self.clear_selection)
@@ -286,7 +293,7 @@ class AssetBrowserApp:
         self.progressbar = ttk.Progressbar(actions, mode="determinate", maximum=1, value=0)
         # The 4 px right pad matches Extract's left pad, so the bar is centred between the two buttons.
         self.progressbar.grid(row=0, column=2, sticky="nsew", padx=(0, 4))
-        self.start_button = tk.Button(actions, text="Extract selected", command=self.start_batch, state="disabled",
+        self.start_button = tk.Button(actions, text="Extract selected", command=self.extract_or_queue, state="disabled",
                                       font="AccentButtonFont", relief="flat", borderwidth=0, padx=18, pady=6,
                                       cursor="hand2")
         track(self.start_button, foreground="select_fg", disabledforeground="accent_disabled", background="accent",
@@ -862,7 +869,7 @@ class AssetBrowserApp:
         finally:
             self._rebuilding = False
         self.update_selection_label()
-        self.start_button.configure(state="normal" if self.records and self.runner is None and not getattr(self, "scanning", False) and not self.browser.review else "disabled")
+        self._update_start_button()
         where = f" in {scope}" if scope else ""
         self.progress_var.set(f"{len(self.records)} models found; {len(self.filtered_records)} visible{where}"
                               + (" (reading material links…)" if shading_filter != "All" and coverage is None else ""))
@@ -1078,11 +1085,16 @@ class AssetBrowserApp:
 
     def update_selection_label(self) -> None:
         selected = self._selected_records() if hasattr(self, "table") else []
-        self.selection_var.set(f", {len(selected)} selected")
+        self.selection_var.set(f"{len(selected)} selected")
         items = self.table.selection() if hasattr(self, "table") else ()
         if len(items) == 1 and items[0] in self.item_by_record and hasattr(self, "browser"):
             self.browser.select_asset(self.item_by_record[items[0]])
         self._gallery_changed()
+
+    def _sync_status_text(self) -> None:
+        """The counts line: the progress text, then the selection, as one string."""
+        progress, selection = self.progress_var.get(), self.selection_var.get()
+        self.status_text.set(f"{progress}, {selection}" if progress else selection)
 
     @staticmethod
     def _record_key(record: ModelCandidate | PipelineModelCandidate):
@@ -1126,10 +1138,27 @@ class AssetBrowserApp:
              else f"Model:\n{record.model}\n\nAnimset:\n{record.animset or 'not found'}") + f"\n\nState: {state}\n{reason}",
         )
 
-    def start_batch(self) -> None:
-        if self.runner is not None or (self.worker and self.worker.is_alive()) or self.browser.review:
+    def extract_or_queue(self) -> None:
+        """The Extract button: starts the selected models, or while an extraction runs, queues them to run after it."""
+        if not self._extracting():
+            self.start_batch()
             return
         selected = self._selected_records()
+        if not selected:
+            self.messagebox.showinfo("Selection", "Select one or more models first.")
+            return
+        self.pending_batches.append(list(selected))
+        self._append_log(f"Queued {len(selected)} model(s); they start when the current extraction ends", "muted")
+        self._update_start_button()
+
+    def _extracting(self) -> bool:
+        """True while a batch runner is active, or its worker thread has not yet finished."""
+        return self.runner is not None or bool(self.worker and self.worker.is_alive())
+
+    def start_batch(self, records=None) -> None:
+        if self._extracting() or self.browser.review:
+            return
+        selected = self._selected_records() if records is None else list(records)
         if not selected:
             self.messagebox.showinfo("Selection", "Select one or more models first.")
             return
@@ -1195,6 +1224,7 @@ class AssetBrowserApp:
                 return
             clip_choices = picked
         self._append_log(f"Batch started: {len(selected)} model(s)", "success")
+        self.batch_records = list(selected)
         self._set_busy(running=True)
         self.progress_done = 0
         self.progress_total = len(selected)
@@ -1220,6 +1250,7 @@ class AssetBrowserApp:
         self._fill_queue(selected)
         self.worker = threading.Thread(target=self._batch_worker, args=(self.runner,), daemon=True)
         self.worker.start()
+        self._update_start_button()
 
     def _picker_threshold(self) -> int | None:
         """Clip count above which the animation picker opens; None when it is switched off under Options…"""
@@ -1319,14 +1350,52 @@ class AssetBrowserApp:
         return picked
 
     def _batch_finished(self, succeeded: bool) -> None:
-        """An export that finished without a failure deselects every model. Otherwise the selection stays, and the
+        """An export that finished without a failure deselects the models it extracted, and only those. Otherwise the selection stays, and the
         picker's ticks for its models are kept for the next picker, which shows them again."""
         if succeeded:
             self.retained_clips = {}
-            self.clear_selection()
+            self._deselect_records(self.batch_records)
         elif self.batch_clips:
             self.retained_clips = dict(self.batch_clips)
         self.batch_clips = {}
+        self.batch_records = []
+
+    def _deselect_records(self, records) -> None:
+        """Deselect the given models in the list and in selected_map. Every other selected model keeps its selection."""
+        keys = {self._record_key(record) for record in records}
+        if not keys:
+            return
+        items = [item for item, record in self.item_by_record.items() if self._record_key(record) in keys]
+        if items:
+            self.table.selection_remove(items)
+        self.selected_map = {key: record for key, record in self.selected_map.items() if key not in keys}
+        self.update_selection_label()
+
+    def _start_next_queued(self) -> None:
+        """Start the oldest queued extraction once the running one has ended. Its worker thread may still be closing, so it waits."""
+        if not self.pending_batches:
+            return
+        if self._extracting() or getattr(self, "browser", None) is None or self.browser.review:
+            self.root.after(300, self._start_next_queued)
+            return
+        queued = self.pending_batches.pop(0)
+        # The models as the list holds them now, since a scan may have replaced their records. Deselecting one does not drop it.
+        current = {self._record_key(record): record for record in self.records}
+        records = [current[key] for key in (self._record_key(record) for record in queued) if key in current]
+        if records:
+            self._append_log(f"Starting the queued extraction of {len(records)} model(s)", "muted")
+            self.start_batch(records)
+        else:
+            self._append_log("A queued extraction was skipped: none of its models is listed any more", "muted")
+        if self.runner is None and self.pending_batches:   # did not start: try the next one
+            self.root.after(0, self._start_next_queued)
+
+    def _update_start_button(self) -> None:
+        """Extract selected, or Add to queue while an extraction runs. The button stays usable for queueing."""
+        browser = getattr(self, "browser", None)
+        blocked = getattr(self, "scanning", False) or bool(browser and browser.review) or not self.records
+        self.start_button.configure(text="Add to queue" if self._extracting() else "Extract selected",
+                                    state="disabled" if blocked else "normal")
 
     def _batch_worker(self, runner: BatchRunner) -> None:
         try:
@@ -1337,7 +1406,7 @@ class AssetBrowserApp:
     def cancel_batch(self) -> None:
         if self.runner:
             self._append_log("Cancellation requested…", "muted")
-            self.runner.cancel()
+            self.runner.cancel()   # only the running extraction stops; queued ones start after it
 
     def _restore_window(self) -> None:
         """Last size and place, and whether it was maximised; the defaults on a first start or when the saved
@@ -1371,6 +1440,7 @@ class AssetBrowserApp:
         _save_settings({**_load_settings(), **values})
 
     def _close(self) -> None:
+        self.pending_batches.clear()   # closing: queued extractions are dropped; the running one stops
         self._remember_settings()
         self._remember_window()
         self.browser.cancel_review()
@@ -1402,12 +1472,8 @@ class AssetBrowserApp:
             self.progressbar.start(25)
         else:
             self.progressbar.configure(mode="determinate", maximum=self.PROGRESS_STEPS, value=0)
-        if scanning or running or (hasattr(self, "browser") and self.browser.review):
-            self.start_button.configure(state="disabled")
-            self.cancel_button.configure(state="normal" if running else "disabled")
-        else:
-            self.cancel_button.configure(state="disabled")
-            self.start_button.configure(state="normal" if self.records else "disabled")
+        self.cancel_button.configure(state="normal" if (running or self._extracting()) and not scanning else "disabled")
+        self._update_start_button()
 
     @staticmethod
     def _queue_label(status: str) -> str:
@@ -1570,6 +1636,7 @@ class AssetBrowserApp:
             self._set_busy()
             self.progress_var.set("Batch cancelled" if cancelled else "Batch finished with errors" if failed else "Batch complete")
             self.browser.reload()
+            self._start_next_queued()
         elif kind == "batch_error":
             self._append_log(str(values["message"]), "error")
             self._queue_finish("failed")
@@ -1577,6 +1644,7 @@ class AssetBrowserApp:
             self.runner = None
             self._set_busy()
             self.progress_var.set("Batch failed before completion")
+            self._start_next_queued()
             self.messagebox.showerror("Batch failed", str(values["message"]))
 
     def run(self) -> None:
