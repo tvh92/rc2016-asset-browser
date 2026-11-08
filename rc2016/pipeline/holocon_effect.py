@@ -13,9 +13,10 @@ What is built (every value is the viewer's, see holocon_effect.py there for what
 - the rays: one quad per live ray of the viewer's still frame, its apex edge on the emitter and its length along the ray,
   turned about that axis toward the camera (Locked Track: the game's rays are axial billboards), with the rays program
   (c5646808): colour A P2 (1 + 5 r), alpha sat(a r), r the ray's laser cone image;
-- the soft glow, where the effect has one, with the health crate's glow_soft material (the same program);
-- the camera-distance fade sat((150 - d) / 25) as a driver on every quad's ``fx_alpha``; the light (a viewer stand-in) only
-  when the description asks for it (the pipeline's audited build does not).
+- the soft glow, where the effect has one: the health crate's glow_soft program with its soft-particle fade toward the
+  emitter's plane (``make_glow_material``);
+- the camera-distance fade sat((150 - d) / 25) as a driver on every quad's ``fx_alpha``; the effect light (the
+  viewer's inferred colour and radius) when the description asks for it, as the pipeline build does.
 
 The images are written next to the output (``prepare_textures``): the icon, the background, the scan lines, the trigger curve
 and the three laser cones, as 8-bit PNGs of the decoded top mips (Non-Color). Not built: the scan-line scroll and the trigger
@@ -87,9 +88,13 @@ def effect_description(archive, preview, light=False):
                           discard=fx.DISCARD, emit=[amplitude * c for c in ray['colour']], laser='laser%d' % ray['laser']))
     if preview.get('glow'):
         glow = preview['glow']
+        # The soft-particle term needs the surface behind the glow: the emitter's own plane (normal = the emitter axis,
+        # through the origin: the pad floor, the vendor's top), the stand-in for the game's scene depth.
+        normal = fx.emitter_axes(preview)[2] if preview.get('ray_emitter') else fx._rows_apply(preview['rows'], (0.0, 1.0, 0.0))
         quads.append(dict(kind='glow_soft', name='soft glow (component %d)' % glow['component'],
                           position=list(fx.effect_point(preview, glow['offset'])), size=list(glow['size']), alpha=glow['alpha'],
-                          discard=glow['discard'], emit=[2.0 * amplitude * c for c in glow['colour']]))
+                          discard=glow['discard'], emit=[2.0 * amplitude * c for c in glow['colour']],
+                          soft_size=glow['size'][0], plane_point=list(preview['origin']), plane_normal=list(normal)))
     effect_light = None
     if light and preview.get('light'):
         spec = preview['light']
@@ -98,8 +103,8 @@ def effect_description(archive, preview, light=False):
     return dict(effect=preview['effect'], device=preview['device'], locator=preview['locator'], origin=list(preview['origin']),
                 icon=icon_constants, quads=quads, fade=dict(distance=fx.FADE_DISTANCE, range=fx.FADE_RANGE), light=effect_light,
                 limitations=list(fx.PREVIEW_LIMITATIONS) + [
-                    'Blender: a still frame (no scan-line scroll, trigger glitch or ray motion); no soft-particle depth term or '
-                    'mip filtering; the light only when asked for (a viewer stand-in).'])
+                    "Blender: a still frame (no scan-line scroll, trigger glitch or ray motion); the glow's soft-particle depth is "
+                    "measured to the emitter plane, not the scene; no mip filtering; the light's magnitude and radius are inferred."])
 
 
 def prepare_textures(archive, preview, directory):
@@ -252,6 +257,36 @@ def make_rays_material(image, number):
     return material
 
 
+def make_glow_material():
+    """The soft glow program (1fc6a696, the health crate's glow_soft) with its soft-particle term: g = sat(1.001 (1 - r)^10
+    - 0.001), colour 2A P2 (0.45 g + 1) (``fx_emit`` holds 2A P2), alpha sat(a sat(g sat(2.5 dz / s))), s = attribute4.x =
+    the glow size (captured on the vendor). dz, the depth from the glow to the surface behind it, is the distance along the
+    view ray to the emitter's plane (``fx_plane_point``, ``fx_plane_normal``); where the ray leaves that plane it is 1."""
+    from rc2016.pipeline.health_effect import _attribute, _math, _node, _vector
+    material = _new_material('Holocon glow')
+    tree = material.node_tree
+    uv = _node(tree, 'ShaderNodeTexCoord').outputs['UV']
+    r = _vector(tree, 'LENGTH', _vector(tree, 'SUBTRACT', uv, (0.5, 0.5, 0.0)).outputs['Vector']).outputs['Value']
+    shape = _math(tree, 'SUBTRACT', _math(tree, 'MULTIPLY', _math(tree, 'POWER', _math(tree, 'SUBTRACT', 1.0, r), 10.0), 1.001001),
+                  0.0010010011, clamp=True)
+    geometry = _node(tree, 'ShaderNodeNewGeometry')
+    normal = _attribute(tree, 'fx_plane_normal').outputs['Vector']
+    to_plane = _vector(tree, 'SUBTRACT', _attribute(tree, 'fx_plane_point').outputs['Vector'], geometry.outputs['Position'])
+    num = _vector(tree, 'DOT_PRODUCT', to_plane.outputs['Vector'], normal).outputs['Value']
+    den = _math(tree, 'MULTIPLY', _vector(tree, 'DOT_PRODUCT', geometry.outputs['Incoming'], normal).outputs['Value'], -1.0)
+    depth = _math(tree, 'DIVIDE', num, den)                        # along the ray beyond the glow, to the plane
+    soft = _math(tree, 'DIVIDE', _math(tree, 'MULTIPLY', depth, 2.5), _attribute(tree, 'fx_soft_size').outputs['Fac'], clamp=True)
+    toward = _math(tree, 'LESS_THAN', den, 0.0)                     # 1 where the ray continues toward the plane
+    soft = _math(tree, 'ADD', _math(tree, 'MULTIPLY', soft, toward), _math(tree, 'SUBTRACT', 1.0, toward))
+    alpha_in = _attribute(tree, 'fx_alpha').outputs['Fac']
+    alpha = _math(tree, 'MULTIPLY', alpha_in, _math(tree, 'MULTIPLY', shape, soft, clamp=True), clamp=True)
+    scale = _node(tree, 'ShaderNodeVectorMath', operation='SCALE')
+    tree.links.new(_attribute(tree, 'fx_emit').outputs['Vector'], scale.inputs[0])
+    tree.links.new(_math(tree, 'ADD', _math(tree, 'MULTIPLY', shape, 0.44999998807907104), 1.0), scale.inputs['Scale'])
+    _finish(tree, material, scale.outputs['Vector'], alpha)
+    return material
+
+
 def _ray_mesh():
     """A unit quad with its apex edge on the origin and its length along +Y (v = 0 at the apex)."""
     import bpy
@@ -297,7 +332,7 @@ def build(scene, anchor, description, texture_paths, camera=None):
     for role in sorted({row['laser'] for row in description['quads'] if row['kind'] == 'holo_rays'}):
         materials[role] = make_rays_material(images[role], int(role[-1]))
     if 'glow_soft' in kinds:
-        materials['glow_soft'] = he.make_material('glow_soft', images, 0.44999998807907104)
+        materials['glow_soft'] = make_glow_material()
     quad, ray = he._quad_mesh(), _ray_mesh()
     for mesh in (quad, ray):
         if not mesh.materials:
@@ -322,6 +357,10 @@ def build(scene, anchor, description, texture_paths, camera=None):
         obj['fx_emit'] = [float(v) for v in row['emit']]
         obj['fx_alpha'] = float(row['alpha'])
         obj['fx_discard'] = float(row['discard'])
+        if row.get('plane_normal'):
+            obj['fx_soft_size'] = float(row['soft_size'])
+            obj['fx_plane_point'] = list(world @ Vector(row['plane_point']))
+            obj['fx_plane_normal'] = list((rotation @ Vector(row['plane_normal'])).normalized())
         for flag in ('visible_shadow', 'visible_diffuse', 'visible_glossy', 'visible_transmission', 'visible_volume_scatter'):
             setattr(obj, flag, False)   # a sprite is seen by the camera only
         collection.objects.link(obj)

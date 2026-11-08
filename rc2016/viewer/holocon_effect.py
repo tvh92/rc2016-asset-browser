@@ -32,8 +32,8 @@ INFERRED STAND-INS (not decoded; named in PREVIEW_LIMITATIONS and docs/viewer.md
   screenshot; 0.37 in the vendor capture, cause unknown), and the tilt 5..19.5 degrees off the emitter axis (the captured
   range over 19 rays); width and length otherwise follow list entry 9 (0.52..1.0), the rate and life entries 4 and 5 and the
   apex radius section 0x3F03BE86 +0x54 (decoded, per effect);
-- the light's colour 0.112 x b2 x hue and radius b4 (the health crate's one captured light: b2 = 2, b4 = 1, colour 0.224 x
-  hue, radius stand-in 1 u);
+- the light's falloff (1 - d / R)^4 with R = b4 (the record's d61 is 5.0 = b4 on the teleporter; the curve is the health
+  crate's stand-in);
 - the device -> conduit pairing by folder name, and the normal (not locked) holocon as the one shown.
 """
 from __future__ import annotations
@@ -112,7 +112,9 @@ RAY_TILT_DEG = (5.0, 19.5)                       # the captured range over 19 ra
 RAY_APEX_RADIUS = 0.1                            # default; read per effect from RAY_SPREAD_SECTION +0x54
 RAY_SPREAD_SECTION = 0x3F03BE86
 SNAPSHOT_AGE, SNAPSHOT_SEED = 4.0, 2016
-LIGHT_SCALE = 0.112                              # INFERRED: the health crate's captured 0.224 x hue at b2 = 2
+# The light's colour (captured on the teleporter: light record dwords 52..54 = (0.0800, 0.2804, 0.4496) at fade 1, exactly
+# 0.4496 x the decoded hue b5; the same light component (b2 1, b4 5) on every holocon).
+LIGHT_MAGNITUDE = 0.44959
 
 PREVIEW_LIMITATIONS = (
     'Holocon hologram preview at the device locator: decoded icon and ray programs (checked against the weapon vendor '
@@ -120,7 +122,7 @@ PREVIEW_LIMITATIONS = (
     'Presentation values: frame time 0 (the trigger glitch and the scan-line scroll are frozen), CB0[107] 0.0763 and the '
     'icon seed 0.9059 (captured), CB0[115] = 0.277 (the vendor frame had 0.343), fog off, unlit particles (as captured).',
     'Inferred stand-ins: the ray length scale 1.18 per unit of icon distance (teleporter capture; 0.37 in the vendor '
-    'capture), tilt 5..19.5 deg (captured range), a still frame at effect age 4 s with seeded rays, the light colour 0.112 x b2 x hue with radius b4, the device '
+    'capture), tilt 5..19.5 deg (captured range), a still frame at effect age 4 s with seeded rays, the light falloff (1 - d / b4)^4, the device '
     '-> conduit pairing by folder name, and the unlocked holocon.',
 )
 
@@ -320,7 +322,7 @@ def holocon_preview(archive, model_path, data, locators):
     light = None
     if parts['light']:
         hue, b2 = parts['light']['hue'], parts['light']['b2']
-        light = dict(offset=parts['light']['offset'], hue=hue, colour=tuple(LIGHT_SCALE * b2 * c for c in hue),
+        light = dict(offset=parts['light']['offset'], hue=hue, colour=tuple(LIGHT_MAGNITUDE * c for c in hue),
                      radius=parts['light']['b4'], unit_scale=1.0)
     return dict(family='holocon', device=key, effect=effect_path, locator=locator_name, origin=origin, rows=rows,
                 icon=parts['icon'], icon_values=icon_values, glow=parts['glow'], ray_emitter=parts['rays'],

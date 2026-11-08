@@ -110,9 +110,15 @@ def check_shared_lighting(scene: Any, expected: Optional[Dict[str, Any]] = None)
             abs(view.exposure - float(expected["exposure"])) > 1e-5 or abs(view.gamma - float(expected["gamma"])) > 1e-5 or
             bool(scene.render.use_compositing) != bool(expected["use_compositing"])):
         problems.append("colour_management.shared_view")
-    if [o for o in scene.objects if o.type == "LIGHT" and not o.hide_render]:
+    if [o for o in scene.objects if o.type == "LIGHT" and not o.hide_render and not effect_light(o)]:
         problems.append("lighting.separate_lights")
     return problems
+def effect_light(obj):
+    """True for a holocon effect's point light (rc2016/pipeline/holocon_effect.py: custom property holocon_effect = 'light'),
+    which the scene audits accept beside the review lighting."""
+    return obj.get("holocon_effect") == "light"
+
+
 OUTPUT_WIDTH = 3840
 OUTPUT_HEIGHT = 2560
 
@@ -683,7 +689,7 @@ def audit_scene(scene: Any = None, check_gpu: bool = True,
             result["mismatches"].append("gpu.non_optix_device_enabled")
     if camera is None or camera.data.type != "PERSP":
         result["mismatches"].append("camera.perspective")
-    lights = [o for o in scene.objects if o.type == "LIGHT"]
+    lights = [o for o in scene.objects if o.type == "LIGHT" and not effect_light(o)]   # a holocon's own light is part of its effect
     authorised_novalis_sun = (scene.get("lighting_source") == "novalis_game_reflection_probe_plus_atmosphere_sun" and
         len(lights) == 1 and lights[0].data.type == "SUN" and
         lights[0].get("lighting_role") == "novalis_atmosphere_sun")

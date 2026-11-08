@@ -795,7 +795,7 @@ def process_model(key,index,args,code_hash,previous,log):
         holocon=None
     if holocon is not None:
         from rc2016.pipeline import holocon_effect
-        holocon_effect_job=dict(description=holocon_effect.effect_description(archive,holocon),
+        holocon_effect_job=dict(description=holocon_effect.effect_description(archive,holocon,light=True),
             textures=holocon_effect.prepare_textures(archive,holocon,model_root/'holocon_effect'))
     job=dict(schema=VERSION,fingerprint=fingerprint,model=model,geometry=geometry,native_geometry=native_geometry,native_parts=native_parts,health_effect=health_effect_job,
         holocon_effect=holocon_effect_job,
