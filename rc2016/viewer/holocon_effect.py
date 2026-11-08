@@ -28,8 +28,9 @@ CB0[107] = 0.0763 and the icon's per-particle seed attribute3.z = 0.9059 (both c
 (9 of its 256 texels are 1) is off; CB0[115] = idle_effect.AMPLITUDE (0.277; the vendor frame had 0.343).
 
 INFERRED STAND-INS (not decoded; named in PREVIEW_LIMITATIONS and docs/viewer.md):
-- the ray spread: tilt 9..19 degrees off the emitter axis, apex within 0.1 u of the origin, length 0.21..0.37 u, width
-  0.58..0.90 u (the captured ranges over nine rays); the emitter's own size parameters are not identified;
+- the ray length scale 1.18 (the teleporter capture, rays reaching the icon as in every screenshot; 0.37 in the vendor
+  capture, cause unknown), the tilt 5..19.5 degrees off the emitter axis and the apex within 0.1 u of the origin (the
+  captured ranges over 19 rays); width and length otherwise follow list entry 9 (0.52..1.0, decoded);
 - the light's colour 0.112 x b2 x hue and radius b4 (the health crate's one captured light: b2 = 2, b4 = 1, colour 0.224 x
   hue, radius stand-in 1 u);
 - the device -> conduit pairing by folder name, and the normal (not locked) holocon as the one shown.
@@ -99,10 +100,13 @@ RAY_LIFE = (0.9, 1.0)                            # list index 5: 1.0 - 0.1 rnd s
 RAY_ALPHA_MAX, RAY_ALPHA_RAMP = 0.532, 0.2       # list index 11: alpha 0 -> (0.532 - 0.532 rnd) over the first 0.2 of the life
 RAY_COLOUR_SCALE = 10.0                          # list index 7
 RAY_HUE, RAY_HUE_SPREAD = (0.2103, 0.7035, 1.0), (-0.161, -0.162, 0.0)   # list index 10, one random for R and G (captured)
-RAY_TILT_DEG = (9.0, 19.0)                       # INFERRED stand-ins: the captured ranges over the vendor's nine rays
+RAY_SIZE = (0.5226, 0.9966)                      # list index 9 y: 0.9966 - 0.474 rnd; the width, and the length times RAY_LENGTH_SCALE
+# INFERRED stand-ins. The length scale is a runtime factor: 1.18 in the teleporter capture, whose rays reach the icon as in
+# every game screenshot (lengths 0.62..1.17 = 1.18 x the list range), 0.37 in the vendor capture (0.21..0.37); what sets
+# it is not found (not the camera distance, the frame time or the effect data, which is the same for both devices).
+RAY_LENGTH_SCALE = 1.18
+RAY_TILT_DEG = (5.0, 19.5)                       # the captured range over 19 rays in two captures
 RAY_APEX_RADIUS = 0.1
-RAY_LENGTH = (0.21, 0.37)
-RAY_WIDTH = (0.58, 0.90)
 SNAPSHOT_AGE, SNAPSHOT_SEED = 4.0, 2016
 LIGHT_SCALE = 0.112                              # INFERRED: the health crate's captured 0.224 x hue at b2 = 2
 
@@ -111,8 +115,8 @@ PREVIEW_LIMITATIONS = (
     'capture), component sizes, offsets, colours, the emitter axis, blend and discard; game_equivalence false.',
     'Presentation values: frame time 0 (the trigger glitch and the scan-line scroll are frozen), CB0[107] 0.0763 and the '
     'icon seed 0.9059 (captured), CB0[115] = 0.277 (the vendor frame had 0.343), fog off, unlit particles (as captured).',
-    'Inferred stand-ins: the ray tilt 9..19 deg, apex radius 0.1 u, length 0.21..0.37 u, width 0.58..0.90 u (captured '
-    'ranges), a still frame at effect age 4 s with seeded rays, the light colour 0.112 x b2 x hue with radius b4, the device '
+    'Inferred stand-ins: the ray length scale 1.18 (teleporter capture; 0.37 in the vendor capture), tilt 5..19.5 deg and '
+    'apex radius 0.1 u (captured ranges), a still frame at effect age 4 s with seeded rays, the light colour 0.112 x b2 x hue with radius b4, the device '
     '-> conduit pairing by folder name, and the unlocked holocon.',
 )
 
@@ -254,7 +258,7 @@ def rays(seed=SNAPSHOT_SEED, age=SNAPSHOT_AGE):
         life = rng.uniform(*RAY_LIFE)
         tilt, azimuth = math.radians(rng.uniform(*RAY_TILT_DEG)), rng.uniform(0.0, 2.0 * math.pi)
         radius, angle = RAY_APEX_RADIUS * math.sqrt(rng.random()), rng.uniform(0.0, 2.0 * math.pi)
-        length, width = rng.uniform(*RAY_LENGTH), rng.uniform(*RAY_WIDTH)
+        length, width = RAY_LENGTH_SCALE * rng.uniform(*RAY_SIZE), rng.uniform(*RAY_SIZE)
         target = RAY_ALPHA_MAX * (1.0 - rng.random())
         hue = rng.random()
         laser = 1 + min(2, int(rng.random() * 3.0))

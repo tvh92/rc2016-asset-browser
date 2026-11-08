@@ -55,7 +55,9 @@ class RayTests(unittest.TestCase):
         self.assertEqual([r['t'] for r in rays], sorted((r['t'] for r in rays), reverse=True))   # oldest first
         for r in rays:
             self.assertTrue(0.0 <= r['alpha'] <= fx.RAY_ALPHA_MAX)
-            self.assertTrue(math.radians(9.0) <= r['tilt'] <= math.radians(19.0))
+            self.assertTrue(math.radians(5.0) <= r['tilt'] <= math.radians(19.5))
+            self.assertTrue(0.5226 <= r['width'] <= 0.9966)
+            self.assertTrue(0.5226 * fx.RAY_LENGTH_SCALE <= r['length'] <= 0.9966 * fx.RAY_LENGTH_SCALE)
             self.assertIn(r['laser'], (1, 2, 3))
             self.assertAlmostEqual(r['colour'][2], 10.0)
             self.assertLess(abs(r['colour'][1] - r['colour'][0] - 4.932), 0.02)   # one random for R and G (captured)
