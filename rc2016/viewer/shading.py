@@ -2428,6 +2428,20 @@ const float PI = 3.14159265;
 // @lighting
 uniform sampler2D uHdrColour; uniform sampler2D uHdrDepth; uniform vec2 uHdrSize; uniform bool uHdrStraight;
 uniform vec3 uHdrBackground;
+uniform sampler2D uBloom; uniform bool uBloomOn;
+// The composite's bloom (rc2016/viewer/bloom.py): added to the tone-curve output before the sRGB encode and the grade. The
+// other tonemaps are display-referred, so their bloom is added in linear light after undoing their encode (a stand-in).
+vec3 srgbDecode(vec3 c) { return mix(pow((c + 0.055) / 1.055, vec3(2.4)), c / 12.92, vec3(lessThanEqual(c, vec3(0.04045)))); }
+vec3 displayBloom(vec3 color, vec3 bloom) {
+    if (!uBloomOn) return display(color);
+    if (uTonemap == 2) {
+        color *= uExposure * GAME_EXPOSURE;
+        vec3 t = clamp(vec3(gameCurve(color.r), gameCurve(color.g), gameCurve(color.b)) + bloom, 0.0, 1.0);
+        return gameGrade(vec3(srgbEncode(t.r), srgbEncode(t.g), srgbEncode(t.b)));
+    }
+    vec3 t = clamp(srgbDecode(display(color)) + bloom, 0.0, 1.0);
+    return vec3(srgbEncode(t.r), srgbEncode(t.g), srgbEncode(t.b));
+}
 // The scene-linear grey that display() maps to the background level v in one channel (display is monotonic in a grey).
 float backdropLinear(float v, int channel) {
     if (v <= display(vec3(0.0))[channel]) return 0.0;
@@ -2443,21 +2457,22 @@ void main() {
     vec4 hdr = texture2D(uHdrColour, uv);
     float cover = texture2D(uHdrDepth, uv).r < 1.0 ? 1.0 : clamp(hdr.a, 0.0, 1.0);
     vec3 P = max(hdr.rgb, 0.0);
-    if (cover <= 0.0 && (uHdrStraight || max(P.r, max(P.g, P.b)) <= 0.0)) discard;
+    vec3 bloom = uBloomOn ? max(texture2D(uBloom, uv).rgb, 0.0) : vec3(0.0);
+    if (cover <= 0.0 && (uHdrStraight || max(P.r, max(P.g, P.b)) <= 0.0) && max(bloom.r, max(bloom.g, bloom.b)) <= 0.0) discard;
     if (!uHdrStraight) {
         vec3 B = cover < 1.0 ? vec3(backdropLinear(uHdrBackground.r, 0), backdropLinear(uHdrBackground.g, 1),
                                     backdropLinear(uHdrBackground.b, 2)) : vec3(0.0);
-        gl_FragColor = vec4(display(P + (1.0 - cover) * B), 1.0);
+        gl_FragColor = vec4(displayBloom(P + (1.0 - cover) * B, bloom), 1.0);
         return;
     }
-    vec3 rgb = max(display(P) - display(vec3(0.0)) * (1.0 - cover), 0.0);
+    vec3 rgb = max(displayBloom(P, bloom) - displayBloom(vec3(0.0), vec3(0.0)) * (1.0 - cover), 0.0);
     // Straight alpha cannot hold light added over a thin coverage (an emissive pane at alpha 19/255): the alpha is raised to
     // the brightest channel so that the image composites to the same colour over black (rgb / a' times a' = rgb).
     float straightCover = clamp(max(cover, max(rgb.r, max(rgb.g, rgb.b))), 1e-6, 1.0);
     gl_FragColor = vec4(min(rgb / straightCover, 1.0), straightCover);
 }
 """.replace("// @lighting\n", LIGHTING)
-HDR_RESOLVE_UNIFORMS = (*LIGHTING_UNIFORMS, "uHdrColour", "uHdrDepth", "uHdrSize", "uHdrStraight", "uHdrBackground")
+HDR_RESOLVE_UNIFORMS = (*LIGHTING_UNIFORMS, "uHdrColour", "uHdrDepth", "uHdrSize", "uHdrStraight", "uHdrBackground", "uBloom", "uBloomOn")
 
 
 # Level viewer scorch-mark decals (rc2016.levels.decals): the zone's pre-clipped `wpn_explosion_scorchmark` meshes, drawn after the
@@ -2753,6 +2768,15 @@ class Shading:
         if "hdr_resolve" not in self.programs:
             self.programs["hdr_resolve"] = self._link(HDR_RESOLVE_VERTEX, HDR_RESOLVE_FRAGMENT, {}, HDR_RESOLVE_UNIFORMS)
         return self.programs["hdr_resolve"]
+
+    def bloom_program(self, kind):
+        """Model viewer bloom passes (rc2016/viewer/bloom.py PROGRAMS): down13, prefilter, down or up."""
+        key = "bloom_" + kind
+        if key not in self.programs:
+            from rc2016.viewer import bloom
+            fragment, uniforms = bloom.PROGRAMS[kind]
+            self.programs[key] = self._link(bloom.VERTEX, fragment, {}, uniforms)
+        return self.programs[key]
 
     def scorch_program(self):
         """Level viewer scorch-mark decals (SCORCH_FRAGMENT)."""

@@ -69,7 +69,8 @@ class HdrResolveBackgroundTests(unittest.TestCase):
         from rc2016.viewer.shading import HDR_RESOLVE_FRAGMENT, HDR_RESOLVE_UNIFORMS
         self.assertIn('uHdrBackground', HDR_RESOLVE_UNIFORMS)
         # Partly covered pixels: the background enters before the tonemap, not added on top of it.
-        self.assertIn('display(P + (1.0 - cover) * B)', HDR_RESOLVE_FRAGMENT)
+        self.assertIn('displayBloom(P + (1.0 - cover) * B, bloom)', HDR_RESOLVE_FRAGMENT)
+        self.assertIn('uBloom', HDR_RESOLVE_UNIFORMS)
         self.assertIn('display(vec3(exp2(mid)))[channel] < v', HDR_RESOLVE_FRAGMENT)
 
 

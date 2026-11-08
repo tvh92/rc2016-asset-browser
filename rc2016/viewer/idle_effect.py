@@ -35,7 +35,7 @@ INFERRED STAND-INS (not decoded; every one is named in PREVIEW_LIMITATIONS and d
 
 Round flares 1 to 4 are drawn at close range: the Gaspar streak (d = 8 u) is components 3 + 1 + 5 (captured-derived from
 pixels); what removes them in the far captures (60+ u) is unknown. Not reproduced: that gate, the per-frame slots b0 / b3
-beyond the spin, the break effect and bloom (not decoded; the Gaspar core is larger than the HDR-composited preview).
+beyond the spin and the break effect. Bloom is drawn by the viewport (rc2016/viewer/bloom.py).
 Research/captures/2026-11-05_gaspar-crates/nanotech_verify/README.md, nanotech_full/README.md and nanotech_glow/README.md
 (local).
 """
@@ -130,7 +130,7 @@ PREVIEW_LIMITATIONS = (
     'Inferred stand-ins: spawn rate 10/s, orb life 0.75..1.0 s, ring life 1.0..2.0 s, drift 0.35..0.5 u/s, spin 360 deg/s, '
     'a still frame at effect age 4 s with seeded directions, light radius 1 u with (1 - d/R)^4 falloff, light units x 1.',
     'Round flares 1 to 4 are drawn at close range: the Gaspar streak (d = 8 u) is components 3 + 1 + 5 (captured-derived '
-    'from pixels); what removes them in the far captures (60+ u) is unknown. Bloom is not decoded and not drawn.',
+    'from pixels); what removes them in the far captures (60+ u) is unknown. Bloom is drawn by the viewport (rc2016/viewer/bloom.py).',
 )
 
 

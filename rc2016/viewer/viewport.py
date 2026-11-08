@@ -835,6 +835,8 @@ class ModelViewport(_TkFrame):
             self._release_effect_textures()
         if self.__dict__.get('_hdr_target') and self._make_current():
             self._hdr_release()
+        if self.__dict__.get('_bloom') and self._make_current():
+            self._bloom_release()
         if self._gl_textures and self._make_current():
             ids = list({entry[role][0] for entry in self._gl_textures.values()
                         for role in ("_c", "_g", "_n", "_pick", "_h", "_bng_detail", "_vehicle_p2", "_tint_detail",
@@ -1432,6 +1434,8 @@ class ModelViewport(_TkFrame):
                 self._apply_lighting(u)
             for slot, first, count in opaque:
                 entry = (self._gl_textures or {}).get(slot) or {}
+                if hdr and entry.get('alpha_pane'):
+                    self._bloom_before(hdr)   # the scene before the transparent pass, for the bloom
                 next_program, next_u = self._surface_program(entry, level)
                 if next_program != program:
                     program, u = next_program, next_u
@@ -1471,10 +1475,12 @@ class ModelViewport(_TkFrame):
             program, u = base_program, base_u
             sh.glUseProgram(program)
             if glass:
+                self._bloom_before(hdr)
                 self._draw_glass(index_array, glass, skin)
                 sh.glUseProgram(program)
             gl.glDisable(self.GL_POLYGON_OFFSET_FILL)
             if level == 2 and effect_quads:
+                self._bloom_before(hdr)
                 self._draw_effect_preview(effect_quads)
                 sh.glUseProgram(program)
             if hdr:
@@ -1581,6 +1587,7 @@ class ModelViewport(_TkFrame):
     # (uTonemap 3, LINEAR_TONEMAP), and shading.HDR_RESOLVE_FRAGMENT tonemaps it over the background. Every other frame
     # draws display-referred straight into the window, as before (its glass still tonemaps per fragment).
     LINEAR_TONEMAP = 3
+    BLOOM = True   # the decoded bloom (rc2016/viewer/bloom.py) over frames that use the float scene target
     # Emission-only forward programs whose colour is far above display white at a small alpha (the turret barrier and its
     # targeting display: alpha 19/255 over HDR emission). Tonemapped per fragment they would clip to white before blending
     # and show as a faint pane; the game blends them in its HDR target, so their frames use the float target too.
@@ -1660,6 +1667,7 @@ class ModelViewport(_TkFrame):
         getattr(self, '_gl_direct', gl).glClearColor(0.0, 0.0, 0.0, 0.0)
         gl.glClear(self.GL_COLOR_BUFFER_BIT | self.GL_DEPTH_BUFFER_BIT)
         self._linear_output, self._hdr_previous = True, previous.value
+        self._bloom_before_done = False
         return dict(target, previous=previous.value)
 
     def _blend_over(self):
@@ -1675,6 +1683,7 @@ class ModelViewport(_TkFrame):
         """Tonemap the float scene target once into the framebuffer it replaced (shading.HDR_RESOLVE_FRAGMENT)."""
         gl, sh = self._gl, self._shading
         self._linear_output = False
+        bloom = self._bloom_texture(target)   # runs the bloom chain into its own targets (None without one)
         self._hdr_fns['glBindFramebuffer'](self.GL_FRAMEBUFFER, target['previous'])
         program, u = sh.hdr_resolve_program()
         sh.glUseProgram(program)
@@ -1683,6 +1692,10 @@ class ModelViewport(_TkFrame):
             sh.glActiveTexture(self.GL_TEXTURE0 + unit)
             gl.glBindTexture(self.GL_TEXTURE_2D, target[name])
             sh.glUniform1i(u['uHdr' + name.title()], unit)
+        sh.glActiveTexture(self.GL_TEXTURE0 + 2)
+        gl.glBindTexture(self.GL_TEXTURE_2D, bloom or 0)
+        sh.glUniform1i(u['uBloom'], 2)
+        sh.glUniform1i(u['uBloomOn'], int(bool(bloom)))
         sh.glActiveTexture(self.GL_TEXTURE0)
         sh.glUniform2f(u['uHdrSize'], float(target['size'][0]), float(target['size'][1]))
         straight = bool(getattr(self, 'transparent', False))   # thumbnail renderer: transparent target read as straight alpha
@@ -1706,9 +1719,163 @@ class ModelViewport(_TkFrame):
             for matrix in (self.GL_PROJECTION, self.GL_MODELVIEW):
                 gl.glMatrixMode(matrix); gl.glPopMatrix()
             gl.glEnable(self.GL_DEPTH_TEST); gl.glDepthMask(1); gl.glDisable(self.GL_BLEND)
-            for unit in (1, 0):
+            for unit in (2, 1, 0):
                 sh.glActiveTexture(self.GL_TEXTURE0 + unit)
                 gl.glBindTexture(self.GL_TEXTURE_2D, 0)
+
+    # Bloom (rc2016/viewer/bloom.py) ----------------------------------------------
+    # The float scene target is copied (13-tap downsample) before the first transparent draw and again at the resolve; the
+    # decoded pass list turns the two into the bloom texture that HDR_RESOLVE_FRAGMENT adds before its sRGB encode.
+    def _bloom_image(self, functions, width, height):
+        """One RGBA16F bilinear clamp-to-edge image with a framebuffer: {'w', 'h', 'tex', 'fbo'}."""
+        gl = self._gl
+        name = ctypes.c_uint(0)
+        gl.glGenTextures(1, ctypes.byref(name))
+        self._shading.glActiveTexture(self.GL_TEXTURE0)
+        gl.glBindTexture(self.GL_TEXTURE_2D, name.value)
+        for parameter, value in ((self.GL_TEXTURE_MIN_FILTER, self.GL_LINEAR), (self.GL_TEXTURE_MAG_FILTER, self.GL_LINEAR),
+                                 (self.GL_TEXTURE_WRAP_S, 0x812F), (self.GL_TEXTURE_WRAP_T, 0x812F)):
+            gl.glTexParameteri(self.GL_TEXTURE_2D, parameter, value)
+        gl.glTexImage2D(self.GL_TEXTURE_2D, 0, 0x881A, width, height, 0, 0x1908, self.GL_FLOAT, None)
+        gl.glBindTexture(self.GL_TEXTURE_2D, 0)
+        frame = ctypes.c_uint(0)
+        functions['glGenFramebuffers'](1, ctypes.byref(frame))
+        functions['glBindFramebuffer'](self.GL_FRAMEBUFFER, frame.value)
+        functions['glFramebufferTexture2D'](self.GL_FRAMEBUFFER, 0x8CE0, self.GL_TEXTURE_2D, name.value, 0)
+        if functions['glCheckFramebufferStatus'](self.GL_FRAMEBUFFER) != self.GL_FRAMEBUFFER_COMPLETE:
+            raise RuntimeError('bloom framebuffer incomplete')
+        return dict(w=width, h=height, tex=name.value, fbo=frame.value)
+
+    def _bloom_images(self, size):
+        """The bloom images for a viewport size (before, after, the pyramid D0..D10 and the bloom texture), cached."""
+        from rc2016.viewer import bloom
+        cached = self.__dict__.get('_bloom')
+        if cached is None or cached['size'] != size:
+            self._bloom_release()
+            functions = self._hdr_functions()
+            half = bloom.padded_half(*size)
+            sizes = {'before': half, 'after': half, 'bloom': bloom.bloom_size(*size)}
+            sizes.update({'D%d' % i: s for i, s in enumerate(bloom.level_sizes(*size))})
+            cached = self._bloom = dict(size=size, images={})
+            for name, (w, h) in sizes.items():
+                cached['images'][name] = self._bloom_image(functions, w, h)
+        return cached['images']
+
+    def _bloom_release(self):
+        cached = self.__dict__.pop('_bloom', None)
+        if cached:
+            images = list(cached['images'].values())
+            self._gl.glDeleteTextures(len(images), (ctypes.c_uint * len(images))(*(i['tex'] for i in images)))
+            for image in images:
+                self._hdr_fns['glDeleteFramebuffers'](1, ctypes.byref(ctypes.c_uint(image['fbo'])))
+
+    def _bloom_pass(self, p, images, source=None, source_size=None):
+        """Draw one pass of bloom.passes (or a 'down13' dict) into its image; `source` is the scene colour texture of a 13-tap pass."""
+        gl, sh = self._gl, self._shading
+        dst = images[p['dst']]
+        self._hdr_fns['glBindFramebuffer'](self.GL_FRAMEBUFFER, dst['fbo'])
+        gl.glViewport(0, 0, dst['w'], dst['h'])
+        program, u = sh.bloom_program(p['kind'])
+        sh.glUseProgram(program)
+        sh.glUniform2f(u['uSize'], float(dst['w']), float(dst['h']))
+        if p['kind'] == 'down13':
+            sources, names = [source], ('uSrc',)
+            sh.glUniform2f(u['uSrcSize'], float(source_size[0]), float(source_size[1]))
+        elif p['kind'] == 'prefilter':
+            sources, names = [images[name]['tex'] for name in p['src']], ('uBefore', 'uAfter')
+            sh.glUniform1f(u['uGain'], float(p['gain']))
+            sh.glUniform1f(u['uWeight'], float(p['weight']))
+            sh.glUniform1i(u['uDiff'], int(p['diff']))
+        else:
+            sources, names = [images[p['src'][0]]['tex']], ('uSrc',)
+            sh.glUniform2f(u['uOffset'], float(p['offset'][0]), float(p['offset'][1]))
+            if p['kind'] == 'up':
+                sh.glUniform1f(u['uAlpha'], float(p['alpha']))
+        for unit, (name, texture) in enumerate(zip(names, sources)):
+            sh.glActiveTexture(self.GL_TEXTURE0 + unit)
+            gl.glBindTexture(self.GL_TEXTURE_2D, texture)
+            sh.glUniform1i(u[name], unit)
+        if p.get('blend'):
+            gl.glEnable(self.GL_BLEND)
+            gl.glBlendFunc(self.GL_SRC_ALPHA, self.GL_ONE_MINUS_SRC_ALPHA if p['blend'] == 'lerp' else self.GL_ONE)
+        else:
+            gl.glDisable(self.GL_BLEND)
+        gl.glBegin(0x0007)   # GL_QUADS
+        for x, y in ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)):
+            gl.glVertex2f(x, y)
+        gl.glEnd()
+        for unit in range(len(sources)):
+            sh.glActiveTexture(self.GL_TEXTURE0 + unit)
+            gl.glBindTexture(self.GL_TEXTURE_2D, 0)
+
+    def _bloom_state(self):
+        """The GL state the bloom passes change: viewport, program, framebuffer, texture unit, depth, blend and cull."""
+        gl = self._gl
+        gl.glGetIntegerv.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+        gl.glIsEnabled.restype = ctypes.c_ubyte
+        gl.glGetBooleanv.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+        viewport, program, frame, unit, mask = (ctypes.c_int * 4)(), ctypes.c_int(0), ctypes.c_int(0), ctypes.c_int(0), ctypes.c_ubyte(1)
+        gl.glGetIntegerv(0x0BA2, viewport)
+        gl.glGetIntegerv(0x8B8D, ctypes.byref(program))   # GL_CURRENT_PROGRAM
+        gl.glGetIntegerv(self.GL_FRAMEBUFFER_BINDING, ctypes.byref(frame))
+        gl.glGetIntegerv(0x84E0, ctypes.byref(unit))      # GL_ACTIVE_TEXTURE
+        gl.glGetBooleanv(0x0B72, ctypes.byref(mask))      # GL_DEPTH_WRITEMASK
+        return dict(viewport=tuple(viewport), program=program.value, frame=frame.value, unit=unit.value, mask=mask.value,
+                    depth=gl.glIsEnabled(self.GL_DEPTH_TEST), blend=gl.glIsEnabled(self.GL_BLEND), cull=gl.glIsEnabled(self.GL_CULL_FACE))
+
+    def _bloom_restore(self, saved):
+        gl, sh = self._gl, self._shading
+        gl.glDepthMask.argtypes = [ctypes.c_ubyte]
+        self._hdr_fns['glBindFramebuffer'](self.GL_FRAMEBUFFER, saved['frame'])
+        gl.glViewport(*saved['viewport'])
+        sh.glUseProgram(saved['program'])
+        sh.glActiveTexture(saved['unit'])
+        gl.glDepthMask(saved['mask'])
+        for capability, was in ((self.GL_DEPTH_TEST, saved['depth']), (self.GL_BLEND, saved['blend']), (self.GL_CULL_FACE, saved['cull'])):
+            (gl.glEnable if was else gl.glDisable)(capability)
+
+    def _bloom_prepare(self):
+        gl = self._gl
+        gl.glBlendFunc.argtypes = [ctypes.c_uint, ctypes.c_uint]
+        gl.glVertex2f.argtypes = [ctypes.c_float] * 2
+        gl.glDisable(self.GL_DEPTH_TEST)
+        gl.glDisable(self.GL_CULL_FACE)
+
+    def _bloom_before(self, hdr):
+        """Copy the float scene target (half resolution, 13 taps) before the first transparent draw of the frame."""
+        if not hdr or not self.BLOOM or self.__dict__.get('_bloom_before_done') or self.__dict__.get('_bloom_error'):
+            return
+        self._bloom_before_done = True
+        saved = self._bloom_state()
+        try:
+            self._bloom_prepare()
+            images = self._bloom_images(hdr['size'])
+            self._bloom_pass(dict(kind='down13', dst='before'), images, hdr['colour'], hdr['size'])
+        except Exception as exc:   # a driver that refuses the float targets or programs keeps the frame without bloom
+            self._bloom_error = repr(exc)
+        finally:
+            self._bloom_restore(saved)
+
+    def _bloom_texture(self, target):
+        """Run the bloom chain for this frame; the GL texture of the bloom image, or None."""
+        if not self.BLOOM or not self.__dict__.get('_bloom_before_done') or self.__dict__.get('_bloom_error'):
+            return None
+        from rc2016.levels.display import EXPOSURE_MULTIPLIER
+        from rc2016.viewer import bloom
+        saved = self._bloom_state()
+        try:
+            self._bloom_prepare()
+            images = self._bloom_images(target['size'])
+            self._bloom_pass(dict(kind='down13', dst='after'), images, target['colour'], target['size'])
+            exposure = self._lighting_state()['exposure'] * EXPOSURE_MULTIPLIER
+            for p in bloom.passes(*target['size'], exposure):
+                self._bloom_pass(p, images)
+            return images['bloom']['tex']
+        except Exception as exc:
+            self._bloom_error = repr(exc)
+            return None
+        finally:
+            self._bloom_restore(saved)
 
     def _hdr_abort(self):
         """After a failed shaded draw: back to the framebuffer the float target replaced, without a resolve."""
