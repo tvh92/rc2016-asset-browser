@@ -55,8 +55,9 @@ class IonTubesRuleTests(unittest.TestCase):
         self.assertEqual((c['fade'], c['fade_input']), (0.0, 'CB0 dword 107'))
         self.assertEqual(c['frozen_inputs'], dict(fog_blend=1.0, vertex_alpha=1.0, cb2_4_power=0.0,
                                                   cutoff='discard predicate not translated'))
-        # Captured frame values (Veldin): amp 0.01 every frame; c re-drawn each 30 Hz frame. Neither is Victor's arena value.
+        # Captured frame values: Veldin amp 0.01 every frame, c re-drawn each 30 Hz frame; Victor tubes frame amp 0.1003.
         self.assertEqual((c['amplitude_captured'], c['fade_frame_rate']), (0.01, 30.0))
+        self.assertAlmostEqual(c['amplitude_captured_victor'], 0.10032396, places=8)
 
     def test_uniform_packing(self):
         kind, a, b, c, d = glass_uniforms(forward())
@@ -76,7 +77,8 @@ class IonTubesRuleTests(unittest.TestCase):
 
     def test_glsl_branch_carries_the_decoded_equations(self):
         branch = GLASS_FRAGMENT.split('uKind == 12')[1].split('uKind == 7')[0]
-        for text in ('vec2(1.0 - 2.0 * vUV.y + uB.y, 0.25 * vUV.x - uB.y)).g', 'vec2(2.0 * vUV.x + 0.3, 0.5 * vUV.y - uB.y)).r',
+        for text in ('vec2(1.0 - 2.0 * vUV.y + uB.y, 0.25 * vUV.x + uB.z - uB.y)).g',
+                     'vec2(2.0 * vUV.x + sat(0.3 - 0.6 * uB.z), 0.5 * vUV.y + uB.z - uB.y)).r',
                      'float m = sat((t5 + t6 - uB.z) / max(0.00001, 1.0 - uB.z))', 'max(ndv - 0.00100004673, 0.0)', 'F2 * F2 * F',
                      '2.0 * uB.x * (1.0 + m) * (uC.rgb + uD.rgb * (F2 * F2 * F) + m * uA.w * uA.rgb)', 'alpha = 1.0'):
             self.assertIn(text, branch)
@@ -108,6 +110,8 @@ class IonTubesRuleTests(unittest.TestCase):
             self.assertIn(node, body)
         self.assertIn("use_backface_culling = not f.get('two_sided')", body)
         self.assertIn("P.m('MAXIMUM', P.m('SUBTRACT', ndv, 0.00100004673), 0.0)", body)
+        self.assertIn("shift = P.m('SUBTRACT', fade, t)", body)   # c - t offsets both bolt samples
+        self.assertIn("P.sat(P.m('SUBTRACT', 0.3, P.m('MULTIPLY', fade, 0.6)))", body)
 
 
 class EffectClockTests(unittest.TestCase):

@@ -193,12 +193,12 @@ NUMBER_DISPLAY_QWARK = dict(_NUMBER_DISPLAY_COMMON, variant='qwark', writer='37C
 # consecutive captured frames t advances by the frame time in seconds (30 Hz steps), c is a fresh value in [0, 1) each frame
 # (0.018 to 0.965, uncorrelated: the bolts flicker per frame) and amp is 0.01 in every frame. The static t = 0 and c = 0, the
 # viewer's per-frame c (a hash of the 30 Hz frame index, generator unknown) and amp = 0.5 (as bright_glow; 0.01 is the Veldin
-# value, Victor's arena is not captured) are labelled presentation values.
+# value; the Victor tubes capture has 0.1003 for that frame) are labelled presentation values.
 ION_TUBES_GRAPH_SHA256 = '8cdc2c05c2e934ecc56e6765992ee8734ada8af530dc9d42c1265578ff21b901'
 ION_TUBES_SLOTS = (0x49A7866B4AC18E9F, 0x49A7866B39DBF715)
 ION_TUBES_POWER_KEY = 0xEC98DCA7
 ION_TUBES_CONSTANTS = dict(amplitude=0.5, amplitude_input='CB0 dword 115', presentation=True, writer='86DDE345',
-    amplitude_captured=0.01, fade=0.0, fade_input='CB0 dword 107', fade_frame_rate=30.0,
+    amplitude_captured=0.01, amplitude_captured_victor=0.10032396018505096, fade=0.0, fade_input='CB0 dword 107', fade_frame_rate=30.0,
     base=(0.0074990298599004745, 0.012286489829421043, 0.019382359459996223),
     rim=(0.030705338343977928, 0.12897680699825287, 0.19647814333438873),
     time=0.0, time_input='CB0 dword 99',

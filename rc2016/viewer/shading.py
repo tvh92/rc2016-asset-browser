@@ -1267,7 +1267,8 @@ void main() {
 #   rgb = 2 amp (1 + m) (base + rim F^5 + m C g), m = sat(API6.R + API5.G) from the one electricity image, F = max(N.V - 0.001, 0);
 #   uB.y = t = CB0[99] scrolls both bolt samples (game time in seconds: 0 for static renders, the viewer clock when animating);
 #   uB.z = c = CB0[107], the dissolve threshold: m = sat((t5 + t6 - c) / max(1e-5, 1 - c)) (a new value each game frame:
-#   0 = full streaks for static renders, frame_fade(t) when animating);
+#   0 = full streaks for static renders, frame_fade(t) when animating). The captured runtime program (971ff304) also adds c to the
+#   sample coordinates: API5 (1 - 2v + t, u/4 + c - t), API6 (2u + sat(0.3 - 0.6c), v/2 + c - t);
 #   fog blend 1, CB2[4] = 0, vertex alpha 1 (opaque, back faces culled).
 # uKind 4 with uE.z = 1, pok_uniq_water F4D47ECE decoded closure (docs/material-decoding/novalis-water.md; water_surface_uniforms):
 #   uA = shallow colour A (CB2[0..2]), opacity (per-instance, labelled 0.4); uB = body colour B (CB2[4..6]), crest colour weight CB2[39];
@@ -1722,8 +1723,8 @@ void main() {
         if (uScreenSrgbB) nb = screenLinear(nb);
         color = (1.0 + mix(uB.w, uA.w, h)) * (1.0 - (1.0-na)*(1.0-nb)*(1.0-tint));
     } else if (uKind == 12) { // 86DDE345 Victor von Ion tubes forward colour (see the uKind 12 comment)
-        float t5 = uHasP ? texture2D(uTexP, vec2(1.0 - 2.0 * vUV.y + uB.y, 0.25 * vUV.x - uB.y)).g : 0.0;   // API5 .G
-        float t6 = uHasP ? texture2D(uTexP, vec2(2.0 * vUV.x + 0.3, 0.5 * vUV.y - uB.y)).r : 0.0;    // API6 .R
+        float t5 = uHasP ? texture2D(uTexP, vec2(1.0 - 2.0 * vUV.y + uB.y, 0.25 * vUV.x + uB.z - uB.y)).g : 0.0;   // API5 .G
+        float t6 = uHasP ? texture2D(uTexP, vec2(2.0 * vUV.x + sat(0.3 - 0.6 * uB.z), 0.5 * vUV.y + uB.z - uB.y)).r : 0.0;    // API6 .R
         if (uSrgbP) { t5 = screenLinear(t5); t6 = screenLinear(t6); }
         float m = sat((t5 + t6 - uB.z) / max(0.00001, 1.0 - uB.z));
         float F = max(ndv - 0.00100004673, 0.0), F2 = F * F;
