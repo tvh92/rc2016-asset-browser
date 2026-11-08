@@ -6,8 +6,9 @@ conduit starts a `*_UI_Holocon.visualeffect` at one of its model locators. The d
 with the conduit of the same folder name (the pairing is by name, not decoded; the weapon vendor's is confirmed by capture).
 
 An effect is up to four components, read from the effect file (rc2016.levels.effects):
-- the icon: a camera-facing quad of full size b4 at the component's local position (+0x24, decoded and captured: (0, 1, 0)
-  on the vendor), drawn with the shared graph `gbl_icon_hologram` (runtime program 7628b331, stored 5FD7AB22); the icon
+- the icon: a quad of full size b4 at the component's local position (+0x24, decoded and captured: (0, 1, 0) on the
+  vendor), facing the camera (captured on the vendor) or, when the component's byte +0x101 is 1 (the Hydrodisplacer and
+  Trespasser icons), held in the effect's local XY plane facing +Z (from the data, not captured), drawn with the shared graph `gbl_icon_hologram` (runtime program 7628b331, stored 5FD7AB22); the icon
   image is the material's, the hue is the material key 0xC7438245 (0 cyan, 1 red on `lockout`);
 - the rays: a particle emitter (kind 1, material `gdgt_holocon_rays`, runtime program c5646808) whose quads are axial
   billboards: the apex edge on the emitter, the length along a direction tilted off the emitter axis, the width
@@ -83,6 +84,11 @@ KEY_OFFSET_R, KEY_OFFSET_B, KEY_OFFSET_G, KEY_HUE = 0x4BAF03EF, 0x371432C4, 0x7F
 EMITTER_SECTION = 0xC3CC2AB5                     # +0x00: the emitter's 3 x 3 orientation in effect space (rows = local axes)
 COMPONENT_POSITION = 0x24                        # float3 local position of a component (decoded; captured on the vendor)
 COMPONENT_MATERIAL = 0x4C                        # u64 CRC-64 of the component's material path
+# Orientation bytes: +0x101 = 1 holds the component in the effect frame (the Hydrodisplacer and Trespasser icons; across the
+# corpus the mesh components and lights), +0x102 = 1 faces the camera (the vendor's icon, captured; the other sprites).
+# A fixed icon lies in the effect's local XY plane, facing +Z (its emitter axis). Read from the data, not captured.
+COMPONENT_FIXED = 0x101
+IDENTITY_ROWS = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
 FADE_DISTANCE, FADE_RANGE = 150.0, 25.0          # component +0xD8 = 150 on every holocon component; the range as idle_effect
 DISCARD = 4.0 / 255.0                            # attribute0.z of the icon and of every ray (captured)
 FRAME_TIME, FRAME_RANDOM, ICON_SEED = 0.0, 0.0763, 0.9059   # CB0[99] (presentation), CB0[107] and attribute3.z (captured)
@@ -231,7 +237,7 @@ def decode_holocon(archive, effect_path):
         elif component['kind'] == 0 and name.startswith('gbl_icon_hologram'):
             size = slot(component, 4)
             result['icon'] = dict(component=n, offset=position, size=(size[0], size[1]), alpha=slot(component, 6)[0],
-                                  material=material)
+                                  material=material, fixed=record[COMPONENT_FIXED] == 1)
         elif component['kind'] == 0 and name == GLOW_MATERIAL:
             size, a, b = slot(component, 4), slot(component, 2), slot(component, 5)
             result['glow'] = dict(component=n, offset=position, size=(size[0], size[1]), colour=tuple(x * y for x, y in zip(a, b)),
@@ -348,10 +354,15 @@ def billboards(preview, modelview):
     quads = []
     icon = preview.get('icon')
     if icon:
-        centre = view(effect_point(preview, icon['offset']))
         hw, hh = icon['size'][0] * 0.5, icon['size'][1] * 0.5
-        corners = [((centre[0] + x, centre[1] + y, centre[2]), (s, t))   # v = 0 at the top (captured)
-                   for (x, y), (s, t) in (((-hw, -hh), (0.0, 1.0)), ((hw, -hh), (1.0, 1.0)), ((hw, hh), (1.0, 0.0)), ((-hw, hh), (0.0, 0.0)))]
+        layout = (((-hw, -hh), (0.0, 1.0)), ((hw, -hh), (1.0, 1.0)), ((hw, hh), (1.0, 0.0)), ((-hw, hh), (0.0, 0.0)))   # v = 0 at the top (captured)
+        if icon.get('fixed'):   # in the effect's local XY plane, front face toward local +Z
+            ox, oy, oz = icon['offset']
+            corners = [(view(effect_point(preview, (ox + x, oy + y, oz))), uv) for (x, y), uv in layout]
+            centre = view(effect_point(preview, icon['offset']))
+        else:
+            centre = view(effect_point(preview, icon['offset']))
+            corners = [((centre[0] + x, centre[1] + y, centre[2]), uv) for (x, y), uv in layout]
         quads.append(dict(kind=HOLO_ICON, component=icon['component'], corners=corners, colour=(1.0, 1.0, 1.0),
                           alpha=icon['alpha'] * fade, discard=DISCARD, depth_test=True, cull=True, depth=-centre[2]))
     if preview.get('ray_emitter'):

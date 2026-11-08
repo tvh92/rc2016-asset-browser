@@ -86,6 +86,17 @@ class BillboardTests(unittest.TestCase):
         self.assertAlmostEqual(icon['discard'], 4.0 / 255.0)
         self.assertIsNotNone(light)
 
+    def test_fixed_icon_holds_the_effect_frame(self):
+        preview = _preview(rows=[(-1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, -1.0)])   # the Trespasser's locator turn
+        preview['icon'] = dict(component=2, offset=(0.0, 0.0, 0.75), size=(1.0, 1.0), alpha=1.0, fixed=True)
+        quads, _light = fx.billboards(preview, IDENTITY_VIEW)
+        corners = [c[0] for c in quads[0]['corners']]
+        ys = {round(c[1], 6) for c in corners}                     # native y is display z = view z here
+        self.assertEqual(len({round(c[2], 6) for c in corners}), 2)   # not in a plane facing the view
+        self.assertEqual(len(ys), 1)
+        # first corner (u 0, v 1) is at local (-x, -y): native x +0.5 after the turn
+        self.assertAlmostEqual(corners[0][0], 0.5)
+
     def test_rays_are_axial_billboards(self):
         quads, _light = fx.billboards(_preview(), IDENTITY_VIEW)
         for q in (q for q in quads if q['kind'] == fx.HOLO_RAYS):
@@ -136,6 +147,10 @@ class GameFileTests(unittest.TestCase):
     def test_hydrodisplacer_icon_is_in_front_and_rays_aim_at_it(self):
         parts = fx.decode_holocon(self.archive, fx.EFFECTS['hydrodisplacer'])
         self.assertEqual(tuple(round(v, 6) for v in parts['icon']['offset']), (0.0, 0.0, 0.75))
+        self.assertTrue(parts['icon']['fixed'])
+        self.assertTrue(fx.decode_holocon(self.archive, fx.EFFECTS['trespasser'])['icon']['fixed'])
+        for key in ('vendor', 'teleporter', 'turret', 'jetpack', 'hologuise', 'bolt_crank'):
+            self.assertFalse(fx.decode_holocon(self.archive, fx.EFFECTS[key])['icon']['fixed'], key)
         self.assertEqual([tuple(round(v, 6) for v in row) for row in parts['rays']['axis_rows']][2], (0.0, 0.0, 1.0))
         self.assertIsNone(parts['glow'])
 

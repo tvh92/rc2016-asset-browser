@@ -74,9 +74,12 @@ def effect_description(archive, preview, light=False):
         icon_constants = dict(offset_r=values['offset_r'], offset_g=values['offset_g'], offset_b=values['offset_b'],
                               hue=values['hue'], trigger=trigger, glitch=0.01 if frame['random'] * frame['seed'] < 0.001 else 0.0,
                               time=frame['time'], random=frame['random'], seed=frame['seed'], amplitude=amplitude)
-        quads.append(dict(kind='holo_icon', name='icon (component %d)' % icon['component'],
-                          position=list(fx.effect_point(preview, icon['offset'])), size=list(icon['size']), alpha=icon['alpha'],
-                          discard=fx.DISCARD, emit=[1.0, 1.0, 1.0]))
+        row = dict(kind='holo_icon', name='icon (component %d)' % icon['component'],
+                   position=list(fx.effect_point(preview, icon['offset'])), size=list(icon['size']), alpha=icon['alpha'],
+                   discard=fx.DISCARD, emit=[1.0, 1.0, 1.0])
+        if icon.get('fixed'):   # held in the effect frame: its native local axes (x, y, z), front face toward z
+            row['axes'] = [list(fx._rows_apply(preview['rows'], axis)) for axis in fx.IDENTITY_ROWS]
+        quads.append(row)
     for number, ray in enumerate(preview.get('rays') or ()):
         apex, direction = fx.ray_geometry(preview, ray)
         quads.append(dict(kind='holo_rays', name='ray %d (component %d)' % (number, preview['ray_emitter']['component']),
@@ -128,8 +131,13 @@ def _channel(tree, colour, name):
 
 
 def _sample(tree, image, vector, channel):
-    from rc2016.pipeline.health_effect import _image
-    return _channel(tree, _image(tree, image, vector), channel)
+    """One channel of ``image`` at a game texture coordinate (u, v), v = 0 at the image's first row. Blender puts the
+    first row of a loaded image at v = 1, so the lookup is at (u, 1 - v)."""
+    from rc2016.pipeline.health_effect import _image, _math, _node
+    split = _node(tree, 'ShaderNodeSeparateXYZ')
+    tree.links.new(vector, split.inputs['Vector'])
+    flipped = _uv(tree, split.outputs['X'], _math(tree, 'SUBTRACT', 1.0, split.outputs['Y']))
+    return _channel(tree, _image(tree, image, flipped), channel)
 
 
 def _uv(tree, u, v):
@@ -221,7 +229,9 @@ def make_icon_material(images, k):
     discard = _attribute(tree, 'fx_discard').outputs['Fac']
     alpha = _math(tree, 'MULTIPLY', _math(tree, 'MULTIPLY', alpha_in, m, clamp=True),
                   _math(tree, 'GREATER_THAN', m, _math(tree, 'SUBTRACT', discard, 1e-6)))
-    _finish(tree, material, combine.outputs['Color'], alpha)
+    # The game culls the icon's back faces (captured); Cycles has no culling, so the back face is transparent.
+    front = _math(tree, 'SUBTRACT', 1.0, _node(tree, 'ShaderNodeNewGeometry').outputs['Backfacing'])
+    _finish(tree, material, combine.outputs['Color'], _math(tree, 'MULTIPLY', alpha, front))
     return material
 
 
@@ -321,14 +331,22 @@ def build(scene, anchor, description, texture_paths, camera=None):
             axis = (rotation @ Vector(row['direction'])).normalized()
             obj.rotation_mode = 'QUATERNION'
             obj.rotation_quaternion = axis.to_track_quat('Y', 'Z')
+        elif row.get('axes'):   # a fixed icon: the quad's x, y, z are the effect frame's
+            from mathutils import Matrix
+            columns = [(rotation @ Vector(a)).normalized() for a in row['axes']]
+            obj.rotation_mode = 'QUATERNION'
+            obj.rotation_quaternion = Matrix([[c[i] for c in columns] for i in range(3)]).to_quaternion()
         if camera is not None:
             if rays:   # an axial billboard: turned about its length toward the camera
                 constraint = obj.constraints.new('LOCKED_TRACK')
                 constraint.target, constraint.lock_axis, constraint.track_axis = camera, 'LOCK_Y', 'TRACK_Z'
-            else:
+            elif not row.get('axes'):
                 constraint = obj.constraints.new('COPY_ROTATION')
                 constraint.target = camera
-            constraint.name = 'Face camera'
+            else:
+                constraint = None
+            if constraint is not None:
+                constraint.name = 'Face camera'
             if fade:
                 he._drive(obj, '["fx_alpha"]', he._fade_expression(row['alpha'], fade), [('d', camera, pivot)])
         created.append(obj)
