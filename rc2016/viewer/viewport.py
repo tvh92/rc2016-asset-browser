@@ -1867,7 +1867,8 @@ class ModelViewport(_TkFrame):
             self._bloom_prepare()
             images = self._bloom_images(target['size'])
             self._bloom_pass(dict(kind='down13', dst='after'), images, target['colour'], target['size'])
-            exposure = self._lighting_state()['exposure'] * EXPOSURE_MULTIPLIER
+            state = self._lighting_state()
+            exposure = bloom.gate_exposure(state['exposure'], state['tonemap'] == self.GAME_TONEMAP, EXPOSURE_MULTIPLIER)
             for p in bloom.passes(*target['size'], exposure):
                 self._bloom_pass(p, images)
             return images['bloom']['tex']

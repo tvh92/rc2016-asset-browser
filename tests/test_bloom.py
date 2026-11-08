@@ -33,6 +33,16 @@ class BloomPlanTests(unittest.TestCase):
                 self.assertEqual((w % 32, h % 32), (0, 0))
             self.assertGreaterEqual(min(min(s) for s in bloom.level_sizes(width, height)), 1)
 
+    def test_gate_takes_the_display_exposure(self):
+        # The game display exposes the scene by its captured multiplier; ACES and Neutral by the lighting exposure alone.
+        self.assertEqual(bloom.gate_exposure(2.0, True, 4.55), 9.1)
+        self.assertEqual(bloom.gate_exposure(2.0, False, 4.55), 2.0)
+        # A lit pane of luma 0.9 opens the gate at the game exposure but not under the other tonemaps at exposure 1.
+        pane = np.full((64, 64, 3), 0.9, np.float32)
+        empty = np.zeros_like(pane)
+        self.assertGreater(float(bloom.reference(empty, pane, bloom.gate_exposure(1.0, True, 4.55)).max()), 0.0)
+        self.assertEqual(float(bloom.reference(empty, pane, bloom.gate_exposure(1.0, False, 4.55)).max()), 0.0)
+
     def test_kernels_are_normalised(self):
         self.assertAlmostEqual(2 * bloom.DOWN_SIDE + bloom.DOWN_CENTRE, 1.0, places=4)
         self.assertAlmostEqual(2 * (bloom.UP_W0 + bloom.UP_W1 + bloom.UP_W2), 1.0, places=4)

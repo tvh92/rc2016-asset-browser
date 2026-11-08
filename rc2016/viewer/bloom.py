@@ -25,8 +25,8 @@ captured target to within its R11G11B10 quantisation, the final bloom texture to
    not replay), so neither is drawn.
 
 Not decoded: the second bloom layer's chain, the lens-dirt image, the film grain (3 % of a noise texture) and, in the model
-viewer, the exposure (the game's runtime value is 3.71 in the captured frame; the viewer uses the exposure of its captured
-display table, shading.GAME_EXPOSURE). The viewer's scene is the model alone, so only the model and its effects bloom.
+viewer, the exposure (the game's runtime value is 3.71 in the captured frame; the viewer's Game tonemap uses the exposure of its
+captured display table, shading.GAME_EXPOSURE, and its other tonemaps the lighting exposure alone: gate_exposure). The viewer's scene is the model alone, so only the model and its effects bloom.
 Research/captures/2026-11-08_nanotech-crate/README.md (local) has the stage-by-stage comparison.
 """
 from __future__ import annotations
@@ -68,6 +68,13 @@ def bloom_size(width, height):
     """Size of the bloom texture: half of the padded half resolution in each direction."""
     w, h = padded_half(width, height)
     return w // 2, h // 2
+
+
+def gate_exposure(lighting_exposure, game_display, game_exposure):
+    """The exposure the bright-pass gate takes: the one the display applies to the scene. The game display multiplies by its
+    captured exposure (`game_exposure`); the viewer's other tonemaps by the lighting exposure alone, so gating them at the
+    game exposure would let surfaces that display mid-grey (the lit health crate panes) bloom."""
+    return lighting_exposure * (game_exposure if game_display else 1.0)
 
 
 def passes(width, height, exposure):
