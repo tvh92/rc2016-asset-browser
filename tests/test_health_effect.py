@@ -38,8 +38,45 @@ class EffectDescriptionTests(unittest.TestCase):
 
     def test_limitations_name_what_is_not_built(self):
         text = ' '.join(health_effect.effect_description()['limitations'])
-        self.assertIn('flares', text)
+        self.assertIn('depth-test-off', text)
         self.assertIn('bloom', text.lower())
+
+
+class FlareAndLightTests(unittest.TestCase):
+    def test_flares_follow_the_viewer_sprites(self):
+        d = health_effect.effect_description()
+        flares = [q for q in d['quads'] if q.get('flare')]
+        rows = [r for r in fx.SPRITES if r['flare']]
+        self.assertEqual([q['kind'] for q in flares], ['flare_round'] * 4 + ['flare_square'])
+        for q, r in zip(flares, rows):
+            self.assertAlmostEqual(q['size'][0], r['size'][0])
+            self.assertAlmostEqual(q['emit'][2], 2 * fx.AMPLITUDE * r['colour'][2])
+            self.assertAlmostEqual(q['alpha'], r['alpha'])
+            self.assertGreaterEqual(q['offset'][2], fx.FLARE_PULL)   # pulled toward the camera, layers a gap apart
+        self.assertEqual([q['offset'][2] for q in flares], sorted(q['offset'][2] for q in flares))
+        self.assertEqual(d['mask_weights']['flare_square'], fx.MASK_WEIGHT[fx.FLARE_SQUARE])
+        self.assertEqual(d['flare_pull'], fx.FLARE_PULL)
+        self.assertEqual(flares[-1]['kind'], d['quads'][-1]['kind'])   # drawn after the particles, as in the viewer
+
+    def test_flares_and_light_can_be_left_out(self):
+        d = health_effect.effect_description(flares=False, light=False)
+        self.assertFalse([q for q in d['quads'] if q.get('flare')])
+        self.assertIsNone(d['light'])
+
+    def test_light_and_fade_carry_the_viewer_values(self):
+        d = health_effect.effect_description()
+        self.assertEqual(tuple(d['light']['colour']), fx.LIGHT_COLOUR)
+        self.assertEqual(d['light']['radius'], fx.LIGHT_RADIUS)
+        self.assertEqual((d['fade']['distance'], d['fade']['range']), (fx.FADE_DISTANCE, fx.FADE_RANGE))
+
+    def test_coplanar_glows_are_layered_in_draw_order(self):
+        d = health_effect.effect_description()
+        spin, soft = d['quads'][:2]
+        self.assertTrue(spin['layer'] and soft['layer'])
+        self.assertGreater(soft['offset'][2], spin['offset'][2])
+
+    def test_fade_expression(self):
+        self.assertEqual(health_effect._fade_expression(0.5, dict(distance=100, range=25)), '0.5 * max(0.0, min(1.0, (100.0 - d) / 25.0))')
 
 
 class Bc4Tests(unittest.TestCase):

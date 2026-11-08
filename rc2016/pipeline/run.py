@@ -782,7 +782,7 @@ def process_model(key,index,args,code_hash,previous,log):
         effect_at=None
     if effect_at is not None:
         from rc2016.pipeline import health_effect
-        health_effect_job=dict(description=health_effect.effect_description(effect_at),
+        health_effect_job=dict(description=health_effect.effect_description(effect_at,flares=False,light=False,raise_bounces=False),
             textures=health_effect.prepare_textures(archive,model_root/'health_effect'))
     job=dict(schema=VERSION,fingerprint=fingerprint,model=model,geometry=geometry,native_geometry=native_geometry,native_parts=native_parts,health_effect=health_effect_job,
         animation_selection=selection_identity,active_clip_index=active_clip_index,clip_catalog=entries,

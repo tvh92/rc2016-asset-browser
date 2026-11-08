@@ -2,7 +2,7 @@
 
 Reproduces rc_game_view/ocio/config.ocio's view chain inside the .blend:
     exposure 2^E -> lg2 allocation [-8, +5] -> rc_tonemap.spi1d (linear)
-    -> clamp 0..1 -> sRGB encode -> rc_grade.cube (or, with grade "identity", no grade: the model viewer's
+    -> + bloom (the "Bloom" input, black unless a bloom is wired in) -> clamp 0..1 -> sRGB encode -> rc_grade.cube (or, with grade "identity", no grade: the model viewer's
        "Game (captured)" tonemap, used by run.py --tonemap game)
 The 1D and 3D tables are packed float images sampled with Map UV (bilinear at texel
 centres = linear / trilinear interpolation).  The game samples its grade as a 3D
@@ -21,7 +21,7 @@ GROUP_NAME = "RC PS4 Game View (compositor)"
 TREE_NAME = "RC PS4 Game compositor"
 LUT1D_NAME = "RC PS4 tonemap 1D LUT"
 LUT3D_NAME = "RC PS4 grade 3D LUT (tiled)"
-VERSION = 1
+VERSION = 2
 
 
 def read_spi1d(path):
@@ -126,10 +126,12 @@ def build_group(view_dir=VIEW_DIR, grade="captured"):
     g["rc_grade"] = grade
     g.interface.new_socket("Image", in_out="INPUT", socket_type="NodeSocketColor")
     e = g.interface.new_socket("Exposure (stops)", in_out="INPUT", socket_type="NodeSocketFloat")
+    g.interface.new_socket("Bloom", in_out="INPUT", socket_type="NodeSocketColor")   # added to the tone-curve output (the game's composite); black by default
     g.interface.new_socket("Image", in_out="OUTPUT", socket_type="NodeSocketColor")
     N, L = g.nodes, g.links
     gi, go = N.new("NodeGroupInput"), N.new("NodeGroupOutput")
     sep = N.new("CompositorNodeSeparateColor"); L.new(gi.outputs["Image"], sep.inputs[0])
+    bloom_sep = N.new("CompositorNodeSeparateColor"); L.new(gi.outputs["Bloom"], bloom_sep.inputs[0])
     gain = _math(N, L, "POWER", 2.0, gi.outputs["Exposure (stops)"])
     encoded = []
     for ch in range(3):
@@ -143,6 +145,7 @@ def build_group(view_dir=VIEW_DIR, grade="captured"):
         tu = _math(N, L, "MULTIPLY_ADD", u, (n1 - 1) / n1); tu.node.inputs[2].default_value = 0.5 / n1
         half = N.new("ShaderNodeValue"); half.outputs[0].default_value = 0.5
         t = _map_uv(N, L, img1, tu, half.outputs[0])[ch]
+        t = _math(N, L, "ADD", t, bloom_sep.outputs[ch])   # the game adds its bloom to the curve output, before the sRGB encode
         t = _math(N, L, "MINIMUM", _math(N, L, "MAXIMUM", t, 0.0), 1.0)
         lin = _math(N, L, "MULTIPLY", t, 12.92)
         pw = _math(N, L, "MULTIPLY_ADD", _math(N, L, "POWER", t, 1 / 2.4), 1.055)

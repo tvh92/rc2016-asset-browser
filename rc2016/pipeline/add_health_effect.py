@@ -27,7 +27,11 @@ def main(argv=None):
     parser.add_argument('--blender', required=True)
     parser.add_argument('--work')
     parser.add_argument('--no-bloom', action='store_true', help='leave out the health crate bloom (compositor nodes)')
-    parser.add_argument('--game-tonemap', action='store_true', help="use the game's captured exposure and tone curve (compositor nodes) instead of the file's view transform")
+    parser.add_argument('--game-tonemap', action=argparse.BooleanOptionalAction, default=True,
+                        help="the game's captured exposure and tone curve as compositor nodes (default), with the bloom added after the curve as the game does; --no-game-tonemap keeps the file's view transform")
+    parser.add_argument('--keep-file-exposure', action='store_true', help="add the file's own exposure stops (its HDRI review lighting) on top of the game's exposure multiplier; the default is the game's multiplier alone")
+    parser.add_argument('--no-flares', action='store_true', help='leave out the anamorphic flares')
+    parser.add_argument('--no-light', action='store_true', help='leave out the effect light')
     parser.add_argument('--no-pack-environment', action='store_true', help='keep the shared HDRI as an external file')
     args = parser.parse_args(argv)
     if Path(args.output).resolve() == Path(args.blend).resolve():
@@ -37,8 +41,8 @@ def main(argv=None):
     from rc2016.pipeline import health_effect
     work = Path(args.work) if args.work else Path(tempfile.mkdtemp(prefix='health_effect_'))
     textures = health_effect.prepare_textures(open_archive(args.extracted_root), work)
-    job = dict(description=health_effect.effect_description(), textures=textures, output=str(Path(args.output).resolve()),
-               bloom=not args.no_bloom, game_tonemap=args.game_tonemap, pack_environment=not args.no_pack_environment,
+    job = dict(description=health_effect.effect_description(flares=not args.no_flares, light=not args.no_light), textures=textures, output=str(Path(args.output).resolve()),
+               bloom=not args.no_bloom, game_tonemap=args.game_tonemap, keep_file_exposure=args.keep_file_exposure, pack_environment=not args.no_pack_environment,
                repo_hdri=str(REPO / 'assets/lighting/golden_gate_hills_1k.exr'))
     job_path = work / 'health_effect_job.json'
     job_path.write_text(json.dumps(job, indent=1), encoding='utf-8')
