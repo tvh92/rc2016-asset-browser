@@ -435,7 +435,8 @@ class PipelineBatchRunner:
                  skip_verified: bool = True, event: Callable[..., None] | None = None,
                  blend_only: bool = False, group_blend: str = "",
                  skeleton: bool = True, animations: bool = True,
-                 clip_choices: dict[str, tuple[str, ...]] | None = None, game_tonemap: bool = False):
+                 clip_choices: dict[str, tuple[str, ...]] | None = None, game_tonemap: bool = False,
+                 cinematic: bool = False):
         self.selectors = tuple(dict.fromkeys(s.strip() for s in selectors if s.strip()))
         # (archive path -> viewer clip labels to keep): a model absent from it keeps every clip; [] keeps none.
         self.clip_choices = dict(clip_choices or {})
@@ -448,6 +449,7 @@ class PipelineBatchRunner:
         self.group_blend = group_blend.strip()
         self.skeleton = skeleton      # False: static meshes, so no animations either
         self.animations = animations  # False: joints and skin weights, without the clips
+        self.cinematic = cinematic    # True: also the real-time cutscene shots (--cinematic-clips)
         self.game_tonemap = game_tonemap  # the game's tone curve in place of the shared view transform (--tonemap game)
         self.event = event or (lambda *_args, **_kwargs: None)
         self.cancel_requested = threading.Event()
@@ -492,6 +494,8 @@ class PipelineBatchRunner:
             command.append("--no-skeleton")
         elif not self.animations:
             command.append("--no-animations")
+        if self.cinematic and self.skeleton and self.animations:
+            command.append("--cinematic-clips")
         if self.group_blend:
             command.extend(("--group-blend", self.group_blend))
         if self.game_tonemap:

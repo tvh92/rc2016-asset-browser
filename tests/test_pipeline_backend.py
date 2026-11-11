@@ -145,6 +145,11 @@ class PipelineGuiBackendTests(unittest.TestCase):
             skeleton_off = command(skeleton=False)
             self.assertIn("--no-skeleton", skeleton_off)
             self.assertNotIn("--no-animations", skeleton_off)
+            # Cutscene shots: only with animations and a skeleton, since run.py rejects them otherwise.
+            self.assertNotIn("--cinematic-clips", full)
+            self.assertIn("--cinematic-clips", command(cinematic=True))
+            self.assertNotIn("--cinematic-clips", command(cinematic=True, animations=False))
+            self.assertNotIn("--cinematic-clips", command(cinematic=True, skeleton=False))
 
     def test_blend_only_keeps_deliveries_and_removes_everything_else(self):
         from rc2016.pipeline.run import keep_only_blends
