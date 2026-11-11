@@ -200,6 +200,35 @@ def run_selected_models(selection, manifest, process, checkpoint, save_manifest,
         save_manifest()
 
 
+def imported_sources(root,relatives):
+    """Every rc2016 module the given sources import, transitively (static ``import`` / ``from`` statements, also those
+    inside functions), so a build's fingerprint follows code outside formats/shaders/pipeline that it runs."""
+    import ast
+    root=Path(root);package=root/'rc2016'
+    def module_file(name):
+        base=root.joinpath(*name.split('.'))
+        for candidate in (base.with_suffix('.py'),base/'__init__.py'):
+            if candidate.is_file():return candidate
+        return None
+    pending=[root/r for r in relatives if str(r).endswith('.py')];seen={p.resolve() for p in pending};found=[]
+    while pending:
+        try:tree=ast.parse((pending.pop()).read_bytes())
+        except (OSError,SyntaxError,ValueError):continue
+        for node in ast.walk(tree):
+            names=[]
+            if isinstance(node,ast.Import):names=[a.name for a in node.names]
+            elif isinstance(node,ast.ImportFrom) and node.level==0 and node.module:
+                names=[node.module]+[node.module+'.'+a.name for a in node.names]
+            for name in names:
+                if name!='rc2016' and not name.startswith('rc2016.'):continue
+                path=module_file(name)
+                if path is None or package not in path.resolve().parents:continue
+                path=path.resolve()
+                if path not in seen:
+                    seen.add(path);pending.append(path);found.append(path)
+    return sorted(found)
+
+
 def verified_cache_hit(old, fingerprint, final, validation_path):
     """Check the blend and validation report (and any preview hash an older report recorded)."""
     if (old.get('fingerprint') != fingerprint
@@ -1200,6 +1229,8 @@ def main():
         # the viewer's per-graph material reading (materials.viewer_graph_rule), profiles and data.
         code={p.relative_to(ROOT).as_posix():file_hash(p) for folder in ('formats','shaders','pipeline')
               for p in sorted((ROOT/'rc2016'/folder).rglob('*.py'))}
+        for path in imported_sources(ROOT,code):   # viewer/levels modules the build imports (holocon, idle effect, ...)
+            code.setdefault(path.relative_to(ROOT).as_posix(),file_hash(path))
         for relative in ('rc2016/common.py','rc2016/viewer/textures.py','third_party/opengnm/gcn_types.h',
                          'rc2016/pipeline/material_flags.json.gz'):
             code[relative]=file_hash(ROOT/relative)
