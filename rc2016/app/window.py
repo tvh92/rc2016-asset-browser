@@ -1292,7 +1292,7 @@ class AssetBrowserApp:
                 return None
             return {}
         cancel = threading.Event()
-        found = []   # (record, clip labels, clip notes) in the order the models were read
+        found = []   # (record, clip labels, clip notes, clip lengths) in the order the models were read
         errors = []  # (record, error) of the models that could not be read
 
         def read() -> None:
@@ -1300,11 +1300,12 @@ class AssetBrowserApp:
                 if cancel.is_set():
                     return
                 try:
-                    labels, notes = reader.clip_labels(record.model_id, record.archive_path, options, notes=True)
+                    labels, notes, seconds = reader.clip_labels(record.model_id, record.archive_path, options,
+                                                                notes=True, seconds=True)
                 except Exception as error:   # a model that cannot be read has no clips to choose from
-                    labels, notes = [], []
+                    labels, notes, seconds = [], [], []
                     errors.append((record, error))
-                found.append((record, labels, notes))
+                found.append((record, labels, notes, seconds))
 
         worker = threading.Thread(target=read, daemon=True)
         progress = tk.Toplevel(self.root)

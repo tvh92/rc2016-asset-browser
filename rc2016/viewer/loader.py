@@ -385,7 +385,7 @@ class SourcePreviewLoader:
 
     def load_animation(self, source_root, model_id, source_path, output_root=None, borrowed=False):
         """Build (or reuse) the selected model's clip library: {model_id, source_path, clips, clip_notes, animsets,
-        animation_note}; ``clip_notes`` is ``AnimationLibrary.clip_notes`` (copies, additive layers, unplayable clips).
+        clip_seconds, animation_note}; ``clip_notes`` is ``AnimationLibrary.clip_notes`` (copies, additive layers, unplayable clips).
 
         ``borrowed`` also offers the animsets the game pairs with another model of the same rest rig (opt-in)."""
         with self.lock:
@@ -402,7 +402,8 @@ class SourcePreviewLoader:
             if self.identity==identity:self.current,self.animation=cached['decoded'],library
             decoded=cached['decoded']
             return dict(model_id=model_id,source_path=source_path,animsets=decoded['animsets'],
-                        clips=library.labels() if library else [],clip_notes=notes,animation_note=decoded['animation_note'])
+                        clips=library.labels() if library else [],clip_notes=notes,
+                        clip_seconds=library.clip_seconds() if library else [],animation_note=decoded['animation_note'])
 
     def _build_animation(self, cached, output_root, borrowed=False, model_id=None):
         with cached['build_lock']:
@@ -514,6 +515,7 @@ class SourcePreviewLoader:
             looks=current['looks'],lod=lod,look=look,mesh_record_count=current['mesh_record_count'],
             animsets=current['animsets'],clips=animation.labels() if animation else [],
             clip_notes=animation.clip_notes() if animation and purpose=='view' else [],
+            clip_seconds=animation.clip_seconds() if animation else [],
             animation_note='Loading animations…' if pending else current['animation_note'],animation_pending=pending)
         if purpose=='export':
             info.update(purpose='export',materials=[dict(index=m.get('index',i),name=m.get('name'),path=m.get('path'))

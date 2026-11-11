@@ -687,13 +687,15 @@ class ModelExporter:
             return None
         return self.index_root
 
-    def clip_labels(self, model_id, source_path, options: ExportOptions, notes=False):
+    def clip_labels(self, model_id, source_path, options: ExportOptions, notes=False, seconds=False):
         """Animation clip labels that ``export`` offers for this model with these options (the same load, without
         writing anything). Empty when the export writes no animations. With ``notes``, (labels, clip notes):
-        ``AnimationLibrary.clip_notes``, which marks copies, additive layers and clips that do not play."""
+        ``AnimationLibrary.clip_notes``, which marks copies, additive layers and clips that do not play. With
+        ``seconds`` as well, (labels, notes, lengths): ``AnimationLibrary.clip_seconds``."""
+        empty = ([], [], []) if notes and seconds else ([], []) if notes else []
         gltf_based = any(f in options.formats for f in ('glb', 'gltf', 'fbx', 'usd'))
         if options.animations == 'none' or not (options.skeleton and gltf_based):
-            return ([], []) if notes else []
+            return empty
         index_root = self.animation_index()
         borrowed = options.borrowed and index_root is not None
         self.loader.load(self.source_root, model_id, source_path, options.lod, options.look,
@@ -702,7 +704,9 @@ class ModelExporter:
         if library is not None and library.rows and options.cinematic:
             library = library.with_cinematic(self.loader.archive, self.loader.current['_archive_path'])   # as export() does
         if library is None or not library.rows:
-            return ([], []) if notes else []
+            return empty
+        if notes and seconds:
+            return library.labels(), library.clip_notes(), library.clip_seconds()
         return (library.labels(), library.clip_notes()) if notes else library.labels()
 
     def export(self, model_id, source_path, options: ExportOptions, cinematic_sources=None):

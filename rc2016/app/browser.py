@@ -213,6 +213,40 @@ def count_clips(tree):
     return sum(1 if isinstance(node, int) else count_clips(node) for _text, node in tree)
 
 
+def clip_leaves(nodes):
+    """Clip positions of a ``group_clips`` tree, in the order the list shows them."""
+    for _text, node in nodes:
+        if isinstance(node, int):
+            yield node
+        else:
+            yield from clip_leaves(node)
+
+
+# Clip lists play the row the arrow keys stop on, this long after the last key, so a held key loads only one clip.
+PREVIEW_DELAY_MS = 250
+STEP_KEYS = ('Up', 'Down', 'Prior', 'Next', 'Home', 'End')
+
+
+def clip_length(seconds):
+    """A clip's length for a list column: '1.3 s', '1:05' from a minute up, '' when unknown."""
+    if seconds is None or not seconds >= 0:   # also NaN
+        return ''
+    if seconds < 60:
+        return f'{seconds:.1f} s'
+    minutes, rest = divmod(round(seconds), 60)
+    return f'{minutes}:{rest:02d}'
+
+
+def step_clip(order, current, offset):
+    """The entry ``offset`` (-1 or 1) places from ``current`` in ``order``, wrapping round; from an entry not in
+    ``order`` (the rest pose), 1 gives the first and -1 the last. None for an empty ``order``."""
+    if not order:
+        return None
+    if current not in order:
+        return order[0] if offset > 0 else order[-1]
+    return order[(order.index(current) + offset) % len(order)]
+
+
 def normalize_details(details):
     d=asdict(details)
     blend=d.get('blend') or {}
@@ -382,28 +416,39 @@ class AssetBrowser:
         self.clip_button.bind('<Configure>',lambda _e:self._show_clip_choice(),add='+')
         self.clip_choice.trace_add('write',lambda *_a:self._show_clip_choice())
         clip_holder.grid(row=0,column=1,columnspan=2,sticky='ew')
+        # Previous and next clip, in the list's order; [ and ] do the same over the viewport and these controls.
+        self.clip_steps=[]
+        for column,(text,offset) in enumerate((('\u25c0',-1),('\u25b6',1)),start=3):
+            step=ttk.Button(anim,text=text,width=3,state='disabled',command=lambda offset=offset:self._step_clip(offset))
+            step.grid(row=0,column=column,padx=(4 if column==3 else 2,0));self.clip_steps.append(step)
+            tip('Previous clip in the list ([).' if offset<0 else 'Next clip in the list (]).',step)
+        for widget in (self.viewport,self.clip_button,*self.clip_steps):
+            widget.bind('<bracketleft>',lambda _e:self._step_clip(-1))
+            widget.bind('<bracketright>',lambda _e:self._step_clip(1))
+        self.viewport.bind('<ButtonPress-1>',lambda _e:self.viewport.focus_set(),add='+')   # so [ and ] reach it
         self.clip_labels=[];self.clip_notes=[];self.clip_cutscene=[];self.clip_index=-1;self.clip_popup=None
         self.clip_open_folders=set();self.clip_search=''   # what the Animation list shows again when reopened
+        self.clip_seconds=[]
         self.play_button=ttk.Button(anim,text='Pause',width=7,state='disabled')
         self.play_button.grid(row=1,column=0,sticky='ew',padx=(0,6),pady=(4,0))
         self.frame_pos=tk.DoubleVar(value=0)
         self.frame_slider=ttk.Scale(anim,from_=0,to=1,variable=self.frame_pos,state='disabled')
-        self.frame_slider.grid(row=1,column=1,columnspan=2,sticky='ew',pady=(4,0))
+        self.frame_slider.grid(row=1,column=1,columnspan=4,sticky='ew',pady=(4,0))
         self.hide_clips_var=remember_var(self.tk.BooleanVar(value=True),'model.hide_extra_clips')
         self.hide_clips_check=ttk.Checkbutton(anim,text='Hide copies and layers',variable=self.hide_clips_var,
                                               command=self._clip_filter_changed)
-        self.hide_clips_check.grid(row=3,column=0,columnspan=3,sticky='w',pady=(2,0))
+        self.hide_clips_check.grid(row=3,column=0,columnspan=5,sticky='w',pady=(2,0))
         tip('Leave out of the clip list the clips that add nothing on their own: copies of a clip another animset also holds, '
             'additive layers (aim offsets, head looks, leans and twitches, shown here on the rest pose) and clips that do not '
             'drive this skeleton. The animation picker of an export starts them unticked.',self.hide_clips_check)
         self.borrowed_var=remember_var(self.tk.BooleanVar(value=False),'model.borrowed_animsets')
         self.borrowed_check=ttk.Checkbutton(anim,text='Borrowed animsets',variable=self.borrowed_var,command=self._reload_clips)
-        self.borrowed_check.grid(row=4,column=0,columnspan=3,sticky='w',pady=(2,0))
+        self.borrowed_check.grid(row=4,column=0,columnspan=5,sticky='w',pady=(2,0))
         tip('Also offer animsets the game pairs with another model whose rest rig matches this one (the Blender build\'s --borrow-animset rule). The first use reads every actor, so it is slow.',self.borrowed_check)
         self._fill_clip_menu([])
         self.anim_box.grid_remove()   # shown only for a model with clips (_show_animation)
         self.frame_text=tk.StringVar(value='')
-        ttk.Label(anim,textvariable=self.frame_text,anchor='e').grid(row=2,column=0,columnspan=3,sticky='e',pady=(2,0))
+        ttk.Label(anim,textvariable=self.frame_text,anchor='e').grid(row=2,column=0,columnspan=5,sticky='e',pady=(2,0))
         tip('Play or pause the clip.',self.play_button)
         tip('Drag to scrub through the clip frame by frame.',self.frame_slider)
         tip('Pick a clip to play on the rest pose. Skinned models only.',self.clip_button)
@@ -668,11 +713,11 @@ class AssetBrowser:
     # Animation playback -------------------------------------------------
     def _set_clips(self,payload):
         clips=payload.get('clips') or []
-        self._fill_clip_menu(clips,payload.get('animsets') or [],payload.get('clip_notes') or [])
+        self._fill_clip_menu(clips,payload.get('animsets') or [],payload.get('clip_notes') or [],payload.get('clip_seconds') or [])
         self.clip_choice.set(REST_POSE)
         self._show_animation(bool(clips))
         usable=bool(clips) and self.viewport.can_animate
-        self.clip_button.configure(state='normal' if usable else 'disabled')
+        self._enable_clip_controls(usable)
         if not clips:
             self.frame_text.set(payload.get('animation_note') or ('Static model' if payload.get('kind')=='static' else ''))
         elif not self.viewport.can_animate:
@@ -718,7 +763,8 @@ class AssetBrowser:
         """Clips that finished loading after the mesh: only for the model still shown."""
         payload=self.source_payload
         if not payload or (payload['model_id'],payload['source_path'])!=(clips['model_id'],clips['source_path']):return
-        payload.update(clips=clips['clips'],clip_notes=clips.get('clip_notes') or [],animsets=clips['animsets'],
+        payload.update(clips=clips['clips'],clip_notes=clips.get('clip_notes') or [],
+                       clip_seconds=clips.get('clip_seconds') or [],animsets=clips['animsets'],
                        animation_note=clips['animation_note'],animation_pending=False)
         self._set_clips(payload)
         self.source_text=source_details(payload,getattr(self.selected_record,'used_by','') or '',self.viewport.native_translation)
@@ -729,13 +775,31 @@ class AssetBrowser:
         if shown:self.anim_box.grid()
         else:self.anim_box.grid_remove()
 
-    def _fill_clip_menu(self,clips,animsets=(),notes=()):
-        """Clip labels for the picker: rest pose, then folders by animset -> action prefix. ``notes``: clip_notes."""
+    def _fill_clip_menu(self,clips,animsets=(),notes=(),seconds=()):
+        """Clip labels for the picker: rest pose, then folders by animset -> action prefix. ``notes``: clip_notes;
+        ``seconds``: clip_seconds."""
         self._close_clip_picker()
         self.clip_labels=list(clips)
         self.clip_notes=list(notes)
+        self.clip_seconds=list(seconds)
         self.clip_cutscene=cutscene_clips(self.clip_labels,list(animsets))
         self.clip_open_folders=set();self.clip_search=''   # a new clip list starts with every folder closed
+
+    def _enable_clip_controls(self,usable):
+        for widget in (self.clip_button,*self.clip_steps):widget.configure(state='normal' if usable else 'disabled')
+
+    def _clip_order(self):
+        """Clip indices in the order the Animation list shows them (folders open, no search)."""
+        shown=self._shown_clips();cutscene=set(self.clip_cutscene)
+        nodes=group_clips([self.clip_labels[i] for i in shown],[n for n,i in enumerate(shown) if i in cutscene])
+        return [shown[n] for n in clip_leaves(nodes)]
+
+    def _step_clip(self,offset):
+        """Play the clip before (-1) or after (1) the one playing, in the Animation list's order."""
+        if self.clip_button.instate(['disabled']) or self.clip_popup is not None:return 'break'
+        index=step_clip(self._clip_order(),self.clip_index,offset)
+        if index is not None:self._choose_clip(index,self.clip_labels[index])
+        return 'break'
 
     def _open_clip_picker(self,_event=None):
         """Drop-down list under the Animation button: a search box over a folder tree of clips. Choosing a clip plays
@@ -750,7 +814,8 @@ class AssetBrowser:
         frame=ttk.Frame(top,padding=4,relief='solid',borderwidth=1);frame.pack(fill='both',expand=True)
         search=tk.StringVar(value=self.clip_search)
         entry=ttk.Entry(frame,textvariable=search);entry.pack(fill='x',pady=(0,4))
-        tree=ttk.Treeview(frame,show='tree',selectmode='browse')
+        tree=ttk.Treeview(frame,show='tree',selectmode='browse',columns=('length',))
+        tree.column('#0',stretch=True);tree.column('length',width=56,minwidth=44,stretch=False,anchor='e')
         scroll=ttk.Scrollbar(frame,orient='vertical',command=tree.yview);tree.configure(yscrollcommand=scroll.set)
         scroll.pack(side='right',fill='y');tree.pack(side='left',fill='both',expand=True)
 
@@ -760,7 +825,9 @@ class AssetBrowser:
             return f'▶  {names[item]}' if item==f'clip:{self.clip_index}' else names[item]
 
         def add_clip(parent,item,text):
-            names[item]=text;tree.insert(parent,'end',iid=item,text=mark(item))
+            index=int(item[5:])
+            length=clip_length(self.clip_seconds[index]) if 0<=index<len(self.clip_seconds) else ''
+            names[item]=text;tree.insert(parent,'end',iid=item,text=mark(item),values=(length,))
 
         def fill(*_args):
             tree.delete(*tree.get_children());names.clear()
@@ -816,6 +883,17 @@ class AssetBrowser:
             if event.widget is tree and row and row==tree.identify_row(event.y) and tree.identify_element(event.x,event.y)!='Treeitem.indicator':
                 choose(row)
 
+        preview=[None]   # the pending arrow-key play
+
+        def preview_later(_event=None):
+            if preview[0] is not None:top.after_cancel(preview[0])
+            preview[0]=top.after(PREVIEW_DELAY_MS,preview_focus)
+
+        def preview_focus():
+            preview[0]=None
+            item=tree.focus()
+            if self.clip_popup is top and item.startswith('clip:') and item!=f'clip:{self.clip_index}':choose(item)
+
         def first_match(_event=None):
             leaves=[i for i in tree.get_children() if i.startswith('clip:') and i!='clip:-1']
             if search.get().strip():
@@ -836,8 +914,8 @@ class AssetBrowser:
         from tkinter import font as tkfont
         tree_font=tkfont.nametofont(ttk.Style(top).lookup('Treeview','font') or 'TkDefaultFont',root=top)
         longest=max([tree_font.measure(REST_POSE),*(tree_font.measure(label) for label in self.clip_labels)])
-        # The longest name plus three folder indents, the scrollbar and the frame padding, within the screen.
-        width=min(max(button.winfo_width(),380,longest+110),top.winfo_screenwidth()-40)
+        # The longest name plus three folder indents, the length column, the scrollbar and the frame padding.
+        width=min(max(button.winfo_width(),380,longest+170),top.winfo_screenwidth()-40)
         x=max(0,min(button.winfo_rootx(),top.winfo_screenwidth()-width))
         below=button.winfo_rooty()+button.winfo_height()
         max_height=top.winfo_screenheight()//2
@@ -879,6 +957,7 @@ class AssetBrowser:
         tree.bind('<Double-ButtonPress-1>',lambda _e:'break')
         tree.bind('<ButtonRelease-1>',release)
         tree.bind('<Return>',lambda _e:choose(tree.focus()))
+        for key in STEP_KEYS:tree.bind(f'<KeyRelease-{key}>',preview_later,add='+')
         entry.bind('<Return>',first_match)
         entry.bind('<Down>',into_list)
         top.bind('<Escape>',lambda _e:self._close_clip_picker())
@@ -908,7 +987,7 @@ class AssetBrowser:
         self.playback.pause()
         self.anim_work.submit(lambda:None)   # drop a pending decode for the old model
         if reset:
-            self._fill_clip_menu([]);self.clip_button.configure(state='disabled');self.clip_choice.set(REST_POSE)
+            self._fill_clip_menu([]);self._enable_clip_controls(False);self.clip_choice.set(REST_POSE)
             self._show_animation(False)
             self.clip_index=-1
             self.playback.clear()

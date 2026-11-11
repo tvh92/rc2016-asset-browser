@@ -177,7 +177,7 @@ class AnimationLibrary:
                             file_names = crc_string_names(data)
                         name = file_names.get(int(metadata['name_hash'], 16)) or name
                     self.clips.append(dict(animset=animset, offset=container['offset'], size=container['declared_size'],
-                                           name=name))
+                                           name=name, seconds=metadata.get('duration_seconds')))
 
     def _source_retarget(self, archive, source, model_bytes):
         """``translation_retarget`` from the model ``source`` names to this one; None for the same rig or no such model."""
@@ -212,7 +212,7 @@ class AnimationLibrary:
                 continue
             other.animset_data[source['path']] = archive.asset_data(source['asset_id'])
             other.clips.extend(dict(animset=source['path'], offset=c['offset'], size=c['declared_size'], name=c['name'],
-                                    source=CINEMATIC_SOURCE) for c in clips)
+                                    seconds=c.get('duration_seconds'), source=CINEMATIC_SOURCE) for c in clips)
         return other
 
     def labels(self):
@@ -224,6 +224,11 @@ class AnimationLibrary:
             prefix = several and not (c.get('source') == 'cinematic2' and plain.count(c['name']) == 1)
             labels.append((f"{Path(c['animset']).stem}: " if prefix else '') + c['name'])
         return labels
+
+    def clip_seconds(self):
+        """Per clip, in ``clips`` order: its length in seconds as the clip header records it, or None when unknown.
+        Read with the clip directory, so nothing is decoded."""
+        return [clip.get('seconds') for clip in self.clips]
 
     def clip_notes(self):
         """Per clip, in ``clips`` order: None for a clip that plays on its own, else a HIDDEN_NOTES key: 'duplicate'

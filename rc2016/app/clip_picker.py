@@ -1,7 +1,7 @@
 """Animation picker for a batch export: shown when a model has more clips than the threshold set under Options."""
 from __future__ import annotations
 
-from rc2016.app.browser import group_clips
+from rc2016.app.browser import PREVIEW_DELAY_MS, STEP_KEYS, clip_length, group_clips, step_clip
 from rc2016.app.clip_viewer import ClipViewer
 from rc2016.app.theme import CHECK_GAP, CHECK_SIZE, _draw_check_box, apply_titlebar, current_palette
 
@@ -18,7 +18,7 @@ def needs_picker(listed, threshold: int | None = CLIP_PICKER_THRESHOLD) -> bool:
 class ClipSelection:
     """Which clips of each model are ticked. Holds no Tk state, so the rules are testable.
 
-    ``listed`` holds (record, clip labels) or (record, clip labels, clip notes) per model. The notes are
+    ``listed`` holds (record, clip labels), optionally followed by clip notes and clip lengths, per model. The notes are
     AnimationLibrary.clip_notes: a clip with a note (a copy of another clip, an additive layer, or one that does not
     play on the model) starts unticked, every other clip ticked. ``previous`` ({model_id: ticked labels}, from an
     export that did not finish) gives the models it names their earlier ticks instead."""
@@ -26,6 +26,7 @@ class ClipSelection:
     def __init__(self, listed, previous=None):
         self.models = [(entry[0], list(entry[1])) for entry in listed]
         self.notes = [list(entry[2]) if len(entry) > 2 else [None] * len(entry[1]) for entry in listed]
+        self.seconds = [list(entry[3]) if len(entry) > 3 else [None] * len(entry[1]) for entry in listed]
         self.restored = 0   # models that start with the ticks of ``previous``
         self.ticked = []
         for (record, labels), notes in zip(self.models, self.notes):
@@ -105,6 +106,7 @@ class ClipPickerDialog:
         self.opened = {f"m{model}" for model in range(len(listed))}   # models start open, folders closed
         self.confirmed = False
         self.playing = None   # (model, clip index) the viewport is playing, marked in the list
+        self.preview_job = None   # arrow keys play the row they stop on, after PREVIEW_DELAY_MS
         self.search = tk.StringVar()
         self.mode = tk.StringVar(value="all")
         self.show_noted = tk.BooleanVar(value=False)
@@ -134,14 +136,15 @@ class ClipPickerDialog:
         if self.selection.restored:
             hint += " The ticks of the export that did not finish are restored."
         if source_root:
-            hint += " Click an animation's name or press Enter to play it in the viewport."
+            hint += (" Click an animation's name or press Enter to play it in the viewport; the arrow keys play the "
+                     "row they stop on.")
         ttk.Label(left, text=hint, style="Muted.TLabel", wraplength=560, padding=(12, 12, 12, 6)).grid(row=0, column=0,
                                                                                                         sticky="ew")
         self.viewer = None
         if source_root:
             pane = ttk.Frame(split, padding=(0, 12, 12, 12))
             split.add(pane, weight=0)
-            self.viewer = ClipViewer(tk, ttk, pane, source_root, index_root, borrowed, cinematic)
+            self.viewer = ClipViewer(tk, ttk, pane, source_root, index_root, borrowed, cinematic, step=self._step)
 
         bar = ttk.Frame(left, padding=(12, 0, 12, 6))
         bar.grid(row=1, column=0, sticky="ew")
@@ -160,7 +163,9 @@ class ClipPickerDialog:
         body.grid(row=2, column=0, sticky="nsew")
         body.rowconfigure(0, weight=1)
         body.columnconfigure(0, weight=1)
-        self.tree = ttk.Treeview(body, show="tree", selectmode="browse")
+        self.tree = ttk.Treeview(body, show="tree", selectmode="browse", columns=("length",))
+        self.tree.column("#0", stretch=True)
+        self.tree.column("length", width=64, minwidth=48, stretch=False, anchor="e")
         scrollbar = ttk.Scrollbar(body, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
         self.tree.grid(row=0, column=0, sticky="nsew")
@@ -180,7 +185,10 @@ class ClipPickerDialog:
         ttk.Button(buttons, text="Untick shown", command=lambda: self._tick_shown(False)).pack(side="left", padx=(6, 0))
         ttk.Button(buttons, text="Cancel", command=self._close).pack(side="left", padx=(18, 0))
         ttk.Button(buttons, text="OK", command=self._ok).pack(side="left", padx=(6, 0))
-        ttk.Label(footer, text="Ctrl+F search   ·   Space tick   ·   Esc clears the search, else cancels   ·   Ctrl+Enter OK",
+        keys = "Ctrl+F search   ·   Space tick   ·   Esc clears the search, else cancels   ·   Ctrl+Enter OK"
+        if source_root:
+            keys += "   ·   [ ] previous / next"
+        ttk.Label(footer, text=keys,
                   style="Muted.TLabel").grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         self.search.trace_add("write", self.rebuild)
@@ -191,6 +199,12 @@ class ClipPickerDialog:
         self.tree.bind("<<TreeviewClose>>", lambda _event: self._remember_open(False))
         self.tree.bind("<space>", lambda _event: self._toggle_focus())
         self.tree.bind("<Return>", lambda _event: self._enter_focus())
+        if self.viewer is not None:
+            for key in STEP_KEYS:   # held keys repeat; only the row they stop on loads
+                self.tree.bind(f"<KeyRelease-{key}>", self._preview_later, add="+")
+            for widget in (self.tree, self.viewer.viewport):
+                widget.bind("<bracketleft>", lambda _event: self._step(-1))
+                widget.bind("<bracketright>", lambda _event: self._step(1))
         self.search_entry.bind("<Down>", self._focus_tree)
         self.search_entry.bind("<Return>", self._focus_tree)
         top.bind("<Control-f>", lambda _event: self.search_entry.focus_set())
@@ -228,7 +242,7 @@ class ClipPickerDialog:
                 iid = f"c{model}.{index}"
                 note = self.selection.notes[model][index]
                 self.targets[iid] = (model, [index], f"{text}   ({NOTE_TEXT[note]})" if note else text, True)
-                self.tree.insert(parent, "end", iid=iid)
+                self.tree.insert(parent, "end", iid=iid, values=(clip_length(self.selection.seconds[model][index]),))
                 continue
             iid = f"{parent}/{text}"
             while self.tree.exists(iid):
@@ -311,6 +325,31 @@ class ClipPickerDialog:
                 self.tree.item(row, text=self._clip_text(row_model, row_indices[0], row_text))
         self.viewer.show(record, labels[indices[0]])
 
+    def _preview_later(self, _event=None) -> None:
+        if self.preview_job is not None:
+            self.top.after_cancel(self.preview_job)
+        self.preview_job = self.top.after(PREVIEW_DELAY_MS, self._preview_focus)
+
+    def _preview_focus(self) -> None:
+        """Play the clip row the arrow keys stopped on, unless it is already playing."""
+        self.preview_job = None
+        item = self.tree.focus()
+        entry = self.targets.get(item)
+        if entry and entry[3] and self.playing != (entry[0], entry[1][0]):
+            self._show_clip(item)
+
+    def _step(self, offset: int) -> str:
+        """Play the clip before (-1) or after (1) the one playing, in the list's order; folders open to show it."""
+        rows = [iid for iid, entry in self.targets.items() if entry[3]]
+        current = f"c{self.playing[0]}.{self.playing[1]}" if self.playing else self.tree.focus()
+        item = step_clip(rows, current, offset)
+        if item is not None:
+            self.tree.see(item)
+            self.tree.focus(item)
+            self.tree.selection_set(item)
+            self._show_clip(item)
+        return "break"
+
     def _enter_focus(self) -> str:
         """Enter shows the focused clip, or ticks the focused folder or model."""
         item = self.tree.focus()
@@ -366,6 +405,9 @@ class ClipPickerDialog:
 
     def _close(self) -> None:
         """Stop the preview while its Tk widgets still exist, then close the picker."""
+        if self.preview_job is not None:
+            self.top.after_cancel(self.preview_job)
+            self.preview_job = None
         if self.viewer is not None:
             self.viewer.close()
             self.viewer = None

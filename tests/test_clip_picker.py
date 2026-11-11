@@ -312,7 +312,8 @@ class ClipViewerPlayback(unittest.TestCase):
         """Wait for the queued reads, then let the Tk loop apply them."""
         deadline = time.time() + 5
         while self.viewer.pending and time.time() < deadline:
-            self.viewer.pending[0].exception(timeout=5)
+            if not self.viewer.pending[0].cancelled():
+                self.viewer.pending[0].exception(timeout=5)
             self.root.update()
         self.root.update()
 
@@ -343,6 +344,17 @@ class ClipViewerPlayback(unittest.TestCase):
         self.settle()
         self.assertEqual(self.loader.loads, 2)
         self.assertEqual(self.viewport.meshes, ["mesh:hero", "mesh:npc"])
+
+    def test_a_newer_clip_replaces_one_still_waiting(self):
+        import threading
+        gate = threading.Event()
+        self.viewer.executor.submit(gate.wait, 5)   # the worker is busy, so both requests wait
+        self.viewer.show(self.hero, "Run")
+        self.viewer.show(self.hero, "Jump")
+        gate.set()
+        self.settle()
+        self.assertEqual(self.viewport.poses, [2])
+        self.assertEqual(self.viewer.title.get(), "Jump")
 
     def test_pause_stops_the_frame_clock_and_scrubbing_moves_the_frame(self):
         self.viewer.show(self.hero, "Run")
@@ -413,6 +425,48 @@ class DialogViewer(unittest.TestCase):
         self.assertEqual(dialog.tree.item("c0.5", "text"), "▶  Run05")
         dialog._toggle("c0.5")   # a tick refreshes every row and keeps the mark
         self.assertEqual(dialog.tree.item("c0.5", "text"), "▶  Run05")
+
+    def viewer_dialog(self, listed):
+        dialog = ClipPickerDialog(self.tk, self.ttk, self.root, listed, source_root="source")
+        self.addCleanup(lambda: dialog.top.winfo_exists() and dialog.top.destroy())
+        self.addCleanup(dialog.viewer.close)
+        shown = []
+        dialog.viewer.show = lambda record, label: shown.append(label)
+        dialog.rebuild()
+        return dialog, shown
+
+    def test_each_clip_row_shows_its_length(self):
+        record, labels = listed_model("hero", 12, prefix="Run")
+        dialog, _shown = self.viewer_dialog([(record, labels, [None] * 12, [0.5 * index for index in range(12)])])
+        self.assertEqual(dialog.tree.set("c0.3", "length"), "1.5 s")
+        self.assertEqual(dialog.tree.set("m0", "length"), "")
+
+    def test_previous_and_next_step_through_the_listed_clips_and_wrap(self):
+        dialog, shown = self.viewer_dialog([listed_model("hero", 3, prefix="Run"), listed_model("npc", 2, prefix="Wave")])
+        dialog._step(1)
+        dialog._step(1)
+        dialog._step(-1)
+        dialog._step(-1)
+        self.assertEqual(shown, ["Run00", "Run01", "Run00", "Wave01"])
+        self.assertEqual(dialog.tree.focus(), "c1.1")
+
+    def test_the_arrow_keys_play_the_row_they_stop_on_once(self):
+        dialog, shown = self.viewer_dialog([listed_model("hero", 12, prefix="Run")])
+        dialog.tree.focus("c0.2")
+        dialog._preview_later()
+        dialog.tree.focus("c0.4")
+        dialog._preview_later()
+        # One timer is waiting, for the last row; run it now rather than through the event loop.
+        jobs = [job for job in self.root.tk.splitlist(self.root.tk.call("after", "info"))
+                if "_preview_focus" in self.root.tk.call("after", "info", job)[0]]
+        self.assertEqual(jobs, [dialog.preview_job])
+        dialog.top.after_cancel(dialog.preview_job)
+        dialog._preview_focus()
+        self.assertEqual(shown, ["Run04"])
+        dialog._preview_focus()   # already playing: not loaded again
+        dialog.tree.focus("m0")
+        dialog._preview_focus()   # a model row is not a clip
+        self.assertEqual(shown, ["Run04"])
 
 
 if __name__ == "__main__":

@@ -9,6 +9,8 @@ from rc2016.app.clip_playback import ClipPlayback
 from rc2016.viewer.loader import SourcePreviewLoader
 from rc2016.viewer.viewport import ModelViewport
 
+STEP_BACK, STEP_NEXT = "◀", "▶"   # previous and next clip buttons
+
 
 class ClipViewer:
     """Plays one clip of a model in a ModelViewport of its own. It loads through its own SourcePreviewLoader, so the
@@ -17,7 +19,7 @@ class ClipViewer:
 
     POLL_MS = 40
 
-    def __init__(self, tk, ttk, parent, source_root, index_root=None, borrowed=False, cinematic=False):
+    def __init__(self, tk, ttk, parent, source_root, index_root=None, borrowed=False, cinematic=False, step=None):
         self.tk, self.ttk, self.parent = tk, ttk, parent
         self.source_root = str(source_root)
         self.index_root = str(index_root) if index_root else None
@@ -46,6 +48,10 @@ class ClipViewer:
         play_button.grid(row=0, column=0)
         slider = ttk.Scale(controls, from_=0, to=1, variable=self.position)
         slider.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        if step is not None:   # ``step(-1 | 1)`` plays the clip before or after the one shown, in the caller's list
+            for column, (text, offset) in enumerate(((STEP_BACK, -1), (STEP_NEXT, 1)), start=2):
+                ttk.Button(controls, text=text, width=3, command=lambda offset=offset: step(offset)).grid(
+                    row=0, column=column, padx=(8 if column == 2 else 2, 0))
         ttk.Label(parent, textvariable=self.status, style="Muted.TLabel", wraplength=340).grid(row=3, column=0, sticky="w",
                                                                                               pady=(6, 0))
         self.playback = ClipPlayback(self.viewport, parent, play_button, slider, self.position, self.status)
@@ -59,6 +65,8 @@ class ClipViewer:
 
     def show(self, record, label) -> None:
         """Play ``label`` on ``record``'s model. The model loads first when it is not the one shown."""
+        for future in self.pending:   # a newer request replaces the ones not started yet
+            future.cancel()
         self.pending.append(self.executor.submit(self._read, (record.model_id, record.archive_path), label))
         self.status.set("Loading the animation…")
 
@@ -107,6 +115,8 @@ class ClipViewer:
         self.poll_job = None
         while self.pending and self.pending[0].done():
             future = self.pending.popleft()
+            if future.cancelled():
+                continue
             try:
                 self._apply(*future.result())
             except Exception as error:   # a model that cannot be loaded says why, in place of the pose
