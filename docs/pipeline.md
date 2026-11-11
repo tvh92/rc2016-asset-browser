@@ -280,7 +280,7 @@ A holocon device's hologram (the weapon vendor, the Hydrodisplacer and Trespasse
 - Every quad's `fx_alpha` is a scripted driver with the viewer's distance fade sat((150 - d) / 25). The effect light is built too (`Holocon | light`, custom property `holocon_effect` = `light`): a Cycles point light at its component's position with the viewer's values, colour 0.4496 x hue (the captured light record) and radius b4 with the falloff (1 - d / R)^4 (the falloff curve inferred, as for the health crate), built like the health crate's. The scene audit accepts it beside the review lighting (`scene_defaults.effect_light`); it is what lights the floor around the emitter, as in the game.
 - The icon, background and scan-line images and the laser cones a ray uses are written as PNGs under the model's `holocon_effect` folder and packed; only images a material reads are loaded, because an image without users is dropped on save and the reopen check would see it.
 - The quads stack on every view ray, and Cycles ends a ray that runs out of transparent bounces black (black blocks across the rays), so the build raises the scene's transparent bounce limit to the larger of 64 and the quad count + 8 (never lowers it).
-- Not built: the scan-line scroll, the trigger glitch and ray motion over time, the soft-particle depth term and mip filtering.
+- Not built: the scan-line scroll, the trigger glitch and ray motion over time, and mip filtering. The soft-particle depth is measured to the emitter plane, not the scene.
 
 ## Shader node layout
 

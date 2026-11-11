@@ -1593,6 +1593,9 @@ class ModelViewport(_TkFrame):
                 sh.glUniform1f(u['uEffectAlpha'], quad['alpha'])
                 sh.glUniform1f(u['uEffectDiscard'], quad['discard'])
                 sh.glUniform1f(u['uEffectMaskWeight'], MASK_WEIGHT.get(quad['kind'], 0.0))
+                soft = quad.get('soft')   # holocon glow: soft-particle plane and size; 0 keeps the term at 1
+                sh.glUniform4f(u['uEffectSoftPlane'], *(soft[:4] if soft else (0.0, 0.0, 0.0, 0.0)))
+                sh.glUniform1f(u['uEffectSoftSize'], float(soft[4]) if soft else 0.0)
                 gl.glBegin(0x0007)   # GL_QUADS
                 for (x, y, z), (s, t) in quad['corners']:
                     gl.glTexCoord2f(s, t); gl.glVertex3f(x, y, z)

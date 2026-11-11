@@ -2358,18 +2358,21 @@ BEAM_UNIFORMS = (*LIGHTING_UNIFORMS, "uBeamNoise", "uBeamDepth", "uBeamViewport"
 # 3 glow_spin 41E80E53, 4 shockwave 094D0CAE; and the holocon holograms (rc2016/viewer/holocon_effect.py, runtime programs
 # captured on the weapon vendor): 5 icon 7628b331, 6 rays c5646808. P2 = uEffectColour, a = uEffectAlpha (with the distance fade),
 # attribute0.z = uEffectDiscard, A = uEffectAmplitude (CB0[115], a presentation value). Taken as 1 (labelled): fog
-# transmittance Tf, the lit-path factor L (unlit particles), the soft-depth term and the shockwave depth term (no scene
-# depth here) and the shockwave instance colour rec[44..46]; the frame time CB0[99] is 0.
+# transmittance Tf, the lit-path factor L (unlit particles), the shockwave depth term (no scene depth here) and the
+# shockwave instance colour rec[44..46]; the frame time CB0[99] is 0. The soft-depth term sat(2.5 dz / s) is 1 for the
+# health crate; on a holocon glow (uEffectSoftSize s > 0) dz is the depth along the view ray from the glow to the plane
+# uEffectSoftPlane (view space n, -n.p), the emitter plane standing in for scene depth as in the Blender glow material.
 EFFECT_VERTEX = """
 #version 120
-varying vec2 vUV;
-void main() { vUV = gl_MultiTexCoord0.xy; gl_Position = gl_ProjectionMatrix * gl_Vertex; }
+varying vec2 vUV; varying vec3 vPos;
+void main() { vUV = gl_MultiTexCoord0.xy; vPos = gl_Vertex.xyz; gl_Position = gl_ProjectionMatrix * gl_Vertex; }
 """
 EFFECT_FRAGMENT = """
 #version 120
 const float PI = 3.14159265;
-varying vec2 vUV;
+varying vec2 vUV; varying vec3 vPos;
 // @lighting
+uniform vec4 uEffectSoftPlane; uniform float uEffectSoftSize;
 uniform int uEffectKind; uniform vec3 uEffectColour; uniform float uEffectAlpha; uniform float uEffectDiscard;
 uniform float uEffectAmplitude; uniform float uEffectMaskWeight;
 uniform sampler2D uEffectNoise; uniform sampler2D uEffectSpin; uniform sampler2D uEffectRing;
@@ -2379,6 +2382,10 @@ uniform vec4 uHoloOffsetsRB; uniform vec2 uHoloOffsetG; uniform float uHoloHue; 
 void main() {
     vec2 c = vUV - 0.5; float r = length(c);
     float A = uEffectAmplitude, L = 1.0, soft = 1.0;
+    if (uEffectSoftSize > 0.0) {     // dz along the view ray (view space, eye at 0) to the plane; 1 where the ray leaves it
+        vec3 dir = normalize(vPos); float den = dot(dir, uEffectSoftPlane.xyz);
+        if (den < 0.0) soft = clamp(2.5 * (-(dot(uEffectSoftPlane.xyz, vPos) + uEffectSoftPlane.w) / den) / uEffectSoftSize, 0.0, 1.0);
+    }
     float g = clamp(1.001001 * pow(abs(1.0 - r), 10.0) - 0.0010010011, 0.0, 1.0);
     vec3 rgb; float alpha;
     if (uEffectKind == 0) {          // EBC94A93: discard g < 1e-5; rgb = 2A P2 (0.45 g + L)
@@ -2433,7 +2440,8 @@ void main() {
 """.replace("// @lighting\n", LIGHTING)
 EFFECT_UNIFORMS = (*LIGHTING_UNIFORMS, "uEffectKind", "uEffectColour", "uEffectAlpha", "uEffectDiscard", "uEffectAmplitude",
                    "uEffectMaskWeight", "uEffectNoise", "uEffectSpin", "uEffectRing", "uHoloIcon", "uHoloBackground", "uHoloScan",
-                   "uHoloTrigger", "uHoloLaser", "uHoloOffsetsRB", "uHoloOffsetG", "uHoloHue", "uHoloFrame")
+                   "uHoloTrigger", "uHoloLaser", "uHoloOffsetsRB", "uHoloOffsetG", "uHoloHue", "uHoloFrame", "uEffectSoftPlane",
+                   "uEffectSoftSize")
 
 
 # Tonemap of the model viewer's float scene target (ModelViewport._hdr_begin / _hdr_resolve), used for frames with health

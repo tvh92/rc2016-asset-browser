@@ -15,7 +15,8 @@ An effect is up to four components, read from the effect file (rc2016.levels.eff
   perpendicular to that direction and to the view; the emitter axis is local Z of the 3 x 3 at +0x00 of section 0xC3CC2AB5
   (decoded, captured: the vendor's points up, the Hydrodisplacer's forward at its icon);
 - a soft glow (the health crate's glow_simp_soft program, rc2016/viewer/idle_effect.py GLOW_SOFT) of size b4 and colour
-  b2 x b5 at the origin, on the vendor, teleporter, turret, jetpack and crank effects;
+  b2 x b5 at the origin, on the vendor, teleporter, turret, jetpack and crank effects, with its soft-particle term
+  alpha x sat(2.5 dz / s), s = the glow size (captured on the vendor);
 - a light (kind 2) at its local position, hue b5.
 
 Captured on the weapon vendor (Research/captures/2026-11-08_holocon-hologram/README.md, local): the icon program's output
@@ -32,6 +33,7 @@ INFERRED STAND-INS (not decoded; named in PREVIEW_LIMITATIONS and docs/viewer.md
   screenshot; 0.37 in the vendor capture, cause unknown), and the tilt 5..19.5 degrees off the emitter axis (the captured
   range over 19 rays); width and length otherwise follow list entry 9 (0.52..1.0), the rate and life entries 4 and 5 and the
   apex radius section 0x3F03BE86 +0x54 (decoded, per effect);
+- the glow's soft-particle depth dz, measured along the view ray to the emitter's plane (glow_plane) instead of the scene;
 - the light's falloff (1 - d / R)^4 with R = b4 (the record's d61 is 5.0 = b4 on the teleporter; the curve is the health
   crate's stand-in);
 - the device -> conduit pairing by folder name, and the normal (not locked) holocon as the one shown.
@@ -122,8 +124,9 @@ PREVIEW_LIMITATIONS = (
     'Presentation values: frame time 0 (the trigger glitch and the scan-line scroll are frozen), CB0[107] 0.0763 and the '
     'icon seed 0.9059 (captured), CB0[115] = 0.277 (the vendor frame had 0.343), fog off, unlit particles (as captured).',
     'Inferred stand-ins: the ray length scale 1.18 per unit of icon distance (teleporter capture; 0.37 in the vendor '
-    'capture), tilt 5..19.5 deg (captured range), a still frame at effect age 4 s with seeded rays, the light falloff (1 - d / b4)^4, the device '
-    '-> conduit pairing by folder name, and the unlocked holocon.',
+    'capture), tilt 5..19.5 deg (captured range), a still frame at effect age 4 s with seeded rays, the light falloff (1 - d / b4)^4, the glow '
+    'soft-particle depth measured to the emitter plane (no scene depth), the device -> conduit pairing by folder name, '
+    'and the unlocked holocon.',
 )
 
 
@@ -343,6 +346,14 @@ def emitter_axes(preview):
     return [_rows_apply(preview['rows'], row) for row in rows]
 
 
+def glow_plane(preview):
+    """Native point and unit normal of the surface the soft glow fades into: the emitter's own plane (normal = the emitter
+    axis, through the origin: the pad floor, the vendor's top), the stand-in for the game's scene depth (inferred). Effects
+    without a ray emitter use the effect's local Y."""
+    normal = emitter_axes(preview)[2] if preview.get('ray_emitter') else _rows_apply(preview['rows'], (0.0, 1.0, 0.0))
+    return tuple(preview['origin']), tuple(normal)
+
+
 def ray_geometry(preview, ray):
     """Native apex point and unit direction of one ray."""
     ex, ey, ez = emitter_axes(preview)
@@ -411,8 +422,14 @@ def billboards(preview, modelview):
         hw, hh = glow['size'][0] * 0.5, glow['size'][1] * 0.5
         corners = [((centre[0] + x, centre[1] + y, centre[2]), (s, t))
                    for (x, y), (s, t) in (((-hw, -hh), (0.0, 0.0)), ((hw, -hh), (1.0, 0.0)), ((hw, hh), (1.0, 1.0)), ((-hw, hh), (0.0, 1.0)))]
+        point, normal = glow_plane(preview)
+        p0, p1 = view(point), view(tuple(p + n for p, n in zip(point, normal)))
+        n = _normalise(tuple(b - a for a, b in zip(p0, p1)))
+        # soft-particle plane in view space (n, -n.p0) and the glow size s = attribute4.x, as the Blender glow material
+        soft = (n[0], n[1], n[2], -sum(a * b for a, b in zip(n, p0)), glow['size'][0])
         quads.append(dict(kind=GLOW_SOFT, component=glow['component'], corners=corners, colour=glow['colour'],
-                          alpha=glow['alpha'] * fade, discard=glow['discard'], depth_test=True, cull=False, depth=-centre[2]))
+                          alpha=glow['alpha'] * fade, discard=glow['discard'], depth_test=True, cull=False, depth=-centre[2],
+                          soft=soft))
     light = preview.get('light')
     if light:
         position = view(effect_point(preview, light['offset']))

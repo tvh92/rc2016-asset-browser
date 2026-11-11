@@ -20,7 +20,8 @@ What is built (every value is the viewer's, see holocon_effect.py there for what
 
 The images are written next to the output (``prepare_textures``): the icon, the background, the scan lines, the trigger curve
 and the three laser cones, as 8-bit PNGs of the decoded top mips (Non-Color). Not built: the scan-line scroll and the trigger
-glitch over time (the frame is still), particle motion, the soft-particle depth term, mip filtering. ``bpy`` is imported
+glitch over time (the frame is still), particle motion, mip filtering; the glow's soft-particle depth is measured to the
+emitter plane, not the scene. ``bpy`` is imported
 inside the functions that need it, so the data helpers import anywhere.
 """
 from __future__ import annotations
@@ -88,13 +89,12 @@ def effect_description(archive, preview, light=False):
                           discard=fx.DISCARD, emit=[amplitude * c for c in ray['colour']], laser='laser%d' % ray['laser']))
     if preview.get('glow'):
         glow = preview['glow']
-        # The soft-particle term needs the surface behind the glow: the emitter's own plane (normal = the emitter axis,
-        # through the origin: the pad floor, the vendor's top), the stand-in for the game's scene depth.
-        normal = fx.emitter_axes(preview)[2] if preview.get('ray_emitter') else fx._rows_apply(preview['rows'], (0.0, 1.0, 0.0))
+        # The soft-particle term needs the surface behind the glow (fx.glow_plane, shared with the viewer).
+        plane_point, normal = fx.glow_plane(preview)
         quads.append(dict(kind='glow_soft', name='soft glow (component %d)' % glow['component'],
                           position=list(fx.effect_point(preview, glow['offset'])), size=list(glow['size']), alpha=glow['alpha'],
                           discard=glow['discard'], emit=[2.0 * amplitude * c for c in glow['colour']],
-                          soft_size=glow['size'][0], plane_point=list(preview['origin']), plane_normal=list(normal)))
+                          soft_size=glow['size'][0], plane_point=list(plane_point), plane_normal=list(normal)))
     effect_light = None
     if light and preview.get('light'):
         spec = preview['light']
@@ -103,8 +103,7 @@ def effect_description(archive, preview, light=False):
     return dict(effect=preview['effect'], device=preview['device'], locator=preview['locator'], origin=list(preview['origin']),
                 icon=icon_constants, quads=quads, fade=dict(distance=fx.FADE_DISTANCE, range=fx.FADE_RANGE), light=effect_light,
                 limitations=list(fx.PREVIEW_LIMITATIONS) + [
-                    "Blender: a still frame (no scan-line scroll, trigger glitch or ray motion); the glow's soft-particle depth is "
-                    "measured to the emitter plane, not the scene; no mip filtering; the light's magnitude and radius are inferred."])
+                    "Blender: a still frame (no scan-line scroll, trigger glitch or ray motion); no mip filtering; the light's magnitude and radius are inferred."])
 
 
 def prepare_textures(archive, preview, directory):
