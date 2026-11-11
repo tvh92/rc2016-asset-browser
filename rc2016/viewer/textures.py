@@ -394,6 +394,47 @@ BRAIN_CASE_CONSTANTS = dict(
 # so in three frames out of four); the rule draws that state. Read through the standard grey reading with the three slots bound
 # by hash: the generic suffix reading took default_pink_shader_c (flat grey) as the albedo.
 BRAIN_GRAPH_SHA256 = '46c6c154732117c62abe9fe9f92ba34e7cc54335bc4aec5d5fe9829f0fbe8654'
+# Deplanetizer exterior (gbl_prop_uiobject_deplanetizer_01; docs/material-decoding/deplanetizer-exterior.md). No draw of these
+# three materials is captured; the rules rest on the shadPS4 IR of their forward programs (compiled in game), checked numerically
+# against the IR for the dome glass. Dome glass dep_arch_glass_panels_01, pass-0 forward program 39FDC0B9 (taken as the in-view
+# pass: only it can produce the green the game shows). CB2 by key: tint T, rim bias P3, gloss, F0 base P8, UV scale s_uv; _n
+# (API 6, BC5) and _g (API 8) are read at UV0 s_uv. rim = (1.001 - sat(N'.V))^0.65, alpha = sat(sat(P3 + rim) attr0.w), E = rim^1.678,
+# gloss = sat(lerp(gloss, _g.r, E)), F0 = grey lerp(P8, _g.g, E); rgb = T * (engine specular light loop), no diffuse. N' is the
+# taxi glass frame (T = -dP/du, B on the +dP/dv side) with xy = 2 CB0[95] (1 - fade) (_n.rg - 0.5), z = 1 - x^2 - y^2.
+DEPLANETIZER_GLASS_GRAPH_SHA256 = '5cf25d6c0899f68a5e5a2b663e3d3ea56dc9d10731df0af1355d29afe0b0b62c'
+DEPLANETIZER_GLASS_SLOTS = dict(_n=0x49A7866B7AE34E7A, _window_g=0x49A7866B1576D848)
+DEPLANETIZER_GLASS_CONSTANTS = dict(
+    normal_scale=1.0, alpha_test=0.0156863, presentation=True, game_equivalence=False, writer='39FDC0B9',
+    frozen_inputs=dict(CB0_95=1.0, instance_fade=0.0, geometric_aa=0.0, alpha_test='4/255, borrowed from the taxi glass capture',
+                       instance_flags='0x61 (light and specular gates on, 0x80 clear), as on captured glass draws',
+                       program_variant='39FDC0B9 (pass 0; 0740DDCC is pass 1, untinted and without _n)', ssr=False, fog=1.0))
+# Dwarf star sphere dep_gp_dwarf_star_surface_calm_01, forward program 05C96D48 (passes 0 and 3; the G-buffer passes write zero
+# albedo and specular). Opaque, two-sided (flags 0x20C). Five graph-slot noise images, in the program's image-unit order:
+# unit 0 fx_noisetile04_n (BC5, x and z, z reads 0), 1 fx_noise_3channel_01 (x, y), 2 hydro_noise_flame_05_sm, 3 hydro_noise_flame_03_sm,
+# 4 sun_base_noise_ao_01 (x). The viewer reads them on the four window roles and the _pick unit. k = CB2[0] (key 0xE994800B).
+# t = CB0[99] (0, or the viewer's effect clock), A = CB0[115] (not captured for this frame: presentation value 1/12, so that
+# 3 A (3 g + 4) = 1 at t = 0), the record colour (instance record vec4 11) is unknown and taken as white; dissolve P = 1, cut 0,
+# attr0.w = 1 and fog transmittance 1 (nothing is discarded, no fog).
+DWARF_STAR_GRAPH_SHA256 = '5e0fcc3095eea11a8761bddadacf8c18bde55c82011a55981336074db259091f'
+DWARF_STAR_SLOTS = dict(_window_mask=0x49A7866B734CB25A, _window_n1=0x49A7866B4AC18E9F, _window_n2=0x49A7866BABDAD780,
+                        _window_c=0x49A7866B6437A619, _pick=0x49A7866B2EA0E356)
+DWARF_STAR_CONSTANTS = dict(
+    amplitude=1.0 / 12.0, amplitude_input='CB0[115]', amplitude_source='presentation value (not captured for this frame)',
+    time=0.0, time_input='CB0 dword 99', record_colour=(1.0, 1.0, 1.0), record_colour_source='inferred: instance record vec4 11 unknown',
+    fog_transmittance=1.0, dissolve=1.0, alpha_cut=0.0, alpha_scale=1.0, presentation=True, game_equivalence=False, writer='05C96D48',
+    frozen_inputs=dict(attribute2_x='dissolve P = 1 (fully formed)', attribute0_z=0.0, attribute0_w=1.0, attribute3_w=1.0,
+                       bc5_third_channel=0.0, samplers='wrap (inferred)', record_index=0))
+# Hangar glow strips (dep_arch_hangar_glow) on basic_flat_color_incandescent, forward programs E16F8FC0 (pass 0, F0 constant 0.1)
+# and FDF7FDFB (pass 3, F0 = CB2[4]). CB2: 0..2 colour C (0x7F058428), 3 K3 (0x600B83DC), 4 F0 (0x62835AF9), 5 K5 (0x77591534),
+# 6 gloss (0x24F4CA4C, used as sqrt(sat(gloss))). rgb = specular light loop (no diffuse) + E, E = C (K3 C.r + K5); alpha = attr0.w.
+# Blend and cull from the flags word (0x239: SRC_ALPHA / ONE, back faces culled). Which pass draws in game is not known; the
+# rule takes the CB2[4] F0 of FDF7FDFB.
+FLAT_INCANDESCENT_GRAPH_SHA256 = '960498e0647f65882b7e00f21512ae78ea613633d1dba426469f6d1227ff74a4'
+FLAT_INCANDESCENT_KEYS = dict(colour=0x7F058428, k3=0x600B83DC, f0=0x62835AF9, k5=0x77591534, gloss=0x24F4CA4C)
+FLAT_INCANDESCENT_CONSTANTS = dict(
+    alpha_scale=1.0, presentation=True, game_equivalence=False, writer='FDF7FDFB',
+    frozen_inputs=dict(attribute0_w=1.0, fog=1.0, ssr=False, instance_flags='0x61 (light loop on), 0x80 clear',
+                       program_variant='FDF7FDFB (pass 3, F0 = CB2[4]); E16F8FC0 (pass 0) uses F0 0.1'))
 # Novalis window glass, forward program 8DF14766 of jn_glass_parallax_mask (pass contract 0; docs/material-decoding/
 # novalis-window-glass.md, evidence Research/2026-10-29_novalis-window-glass/WINDOW_GLASS_DECODE.md). Slots in API order
 # (API = 5 + resource index): 5 mask (R), 6 window normal (world UV), 7 glass _g (world UV), 8 detail normal (UV1),
@@ -655,6 +696,19 @@ GRAPH_RULES = (
     # Telepathipus brain FBA51F6C: exact graph + SHA, the grey reading with _c/_g/_n bound by slot (see BRAIN_GRAPH_SHA256).
     ('materialgraph/character/enemy/enm_telepathipus_brain/enm_telepathipus_brain.',
      dict(g_mode='grey', self_lit_key=None, slot_cgn=True, _graph_sha256=BRAIN_GRAPH_SHA256)),
+    # Deplanetizer exterior (docs/material-decoding/deplanetizer-exterior.md): dome glass 39FDC0B9, dwarf star 05C96D48 and the
+    # incandescent flat colour FDF7FDFB, exact graph + SHA. Values are read by key, so every material of each graph uses its rule.
+    ('materialgraph/environment/deplanetizer/architecture/dep_arch_glass_panels_01/dep_arch_glass_panels_01.',
+     dict(forward='glass_tinted_spec', writer='39FDC0B9', constants=DEPLANETIZER_GLASS_CONSTANTS,
+          _graph_sha256=DEPLANETIZER_GLASS_GRAPH_SHA256, slots=DEPLANETIZER_GLASS_SLOTS, params=(
+         ('tint', 0x4B4DAB19, 3), ('rim_bias', 0x42170E5E, 1), ('gloss', 0x24F4CA4C, 1), ('f0_base', 0x62835AF9, 1),
+         ('uv_scale', 0x9C3D1E95, 1)))),
+    ('materialgraph/visualeffect/environment/deplanetizer/gameplay/dep_gp_dwarf_star_surface_calm_01/dep_gp_dwarf_star_surface_calm_01.',
+     dict(forward='dwarf_star', writer='05C96D48', constants=DWARF_STAR_CONSTANTS, _graph_sha256=DWARF_STAR_GRAPH_SHA256,
+          slots=DWARF_STAR_SLOTS, params=(('k', 0xE994800B, 1),))),
+    ('materialgraph/global/basic_flat_color/basic_flat_color_incandescent.',
+     dict(forward='flat_incandescent', writer='FDF7FDFB', constants=FLAT_INCANDESCENT_CONSTANTS,
+          _graph_sha256=FLAT_INCANDESCENT_GRAPH_SHA256, params=())),
     # Novalis window glass 8DF14766 (pass contract 0): exact graph + SHA only (docs/material-decoding/novalis-window-glass.md).
     # Opaque; diffuse light x albedo plus the reflection term, with the engine lighting replaced by the viewer's.
     ('materialgraph/global/basic_glass/jn_glass_parallax_mask.',
@@ -1683,6 +1737,24 @@ def material_texture_paths(archive, material_path: str) -> dict:
         tube_paths = {tube_slots.get(slot) or slots.get(slot) for slot in ION_TUBES_SLOTS}
         if len(tube_paths) != 1 or None in tube_paths or value(ION_TUBES_POWER_KEY, 0.0) != 0.0:
             rule = {}
+    if rule.get('forward') in ('glass_tinted_spec', 'dwarf_star'):
+        # Every image the program reads must be bound by slot (material binding, else the graph's); roles are never guessed.
+        dep_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
+        if any(not (dep_slots.get(slot) or slots.get(slot)) for slot in rule['slots'].values()):
+            rule = {}
+        elif rule['forward'] == 'glass_tinted_spec' and blend_state(material_flags(data))['blend'] == 'opaque':
+            # 39FDC0B9 is decoded for the blended materials of the graph; its opaque material (tb_nov_window_glass_01_opaque) keeps
+            # the grey _g reading the graph's lowered deferred writer gives (F0 = _g.G, gloss = _g.R).
+            rule = {}
+            result['g_mode'] = 'grey'
+    incandescent = None
+    if rule.get('forward') == 'flat_incandescent':
+        # Strict reads as for basic_flat_color: malformed explicit data is unsupported, never replaced by a graph default.
+        try:
+            incandescent = {name: strict_flat_value(key, 12 if name == 'colour' else 4) for name, key in FLAT_INCANDESCENT_KEYS.items()}
+        except ValueError as error:
+            result['unsupported_flat_surface'] = str(error)
+            rule = {}
     window_slots = None
     if rule.get('forward') == 'window_glass':
         # Every decoded slot must resolve (material binding, else the graph's); the interior height (API 10) and colour
@@ -1717,7 +1789,7 @@ def material_texture_paths(archive, material_path: str) -> dict:
         params.update(rule.get('constants', {}))  # graph constants, not read from the material
         if rule['forward'] == 'glass_taxi' and (params['rotation_phase'] or params['rotation_rate']):
             raise ValueError('Taxi glass rotation words must be 0: the decoded offset formula assumes no rotation')
-        if rule['forward'] in ('glass_basic', 'glass_jn', 'glass_taxi'):
+        if rule['forward'] in ('glass_basic', 'glass_jn', 'glass_taxi', 'glass_tinted_spec'):
             # attr0.w is the per-instance record's opacity product: material render-state byte 22 / 255 times the
             # per-draw opacity (1 here). The 4FC5703F captured draw has byte 22 = 255 and attr0.w = 1.0.
             flags_offset, flags_size = _sections(data).get(MATERIAL_FLAGS_SECTION, (0, 0))
@@ -1745,6 +1817,19 @@ def material_texture_paths(archive, material_path: str) -> dict:
             params['alpha_scale'] = data[flags_offset + 22] / 255.0 if flags_size >= 23 else 1.0
             for role in ('_c', '_g', '_h', '_n', '_pick'):   # the four images are on the window roles
                 result.pop(role, None)
+        if rule['forward'] in ('glass_tinted_spec', 'dwarf_star', 'flat_incandescent'):
+            # The programs sample only their slot-bound images (dome glass _n and _g, the star's five noise images) or none.
+            dropped = {'glass_tinted_spec': ('_c', '_g', '_h', '_pick'), 'dwarf_star': ('_c', '_g', '_h', '_n'),
+                       'flat_incandescent': ('_c', '_g', '_h', '_n', '_pick')}[rule['forward']]
+            for role in dropped:
+                result.pop(role, None)
+        if incandescent is not None:   # E = C (K3 C.r + K5): the emission scale multiplies the colour
+            params.update(incandescent)
+            # attribute0.w is taken as 1 (the static preview of the decode). The flags block's byte 22 is kept for reference: if
+            # attribute0.w carried byte 22 / 255 as for basic_glass, the strips would add half as much.
+            flags_offset, flags_size = _sections(data).get(MATERIAL_FLAGS_SECTION, (0, 0))
+            params['opacity_byte_22'] = data[flags_offset + 22] if flags_size >= 23 else None
+            params['emission_scale'] = incandescent['k3'] * incandescent['colour'][0] + incandescent['k5']
         if rule['forward'] == 'water':
             params.update(WATER_PRESENTATION)
         if rule.get('water_sampling'):

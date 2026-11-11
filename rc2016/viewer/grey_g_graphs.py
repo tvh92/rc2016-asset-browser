@@ -11,8 +11,6 @@ GREY_G_GRAPHS = {
         '1face496e9ffa35dbb71b7bc6307991e3950cc2403c192033b959038de900a5a',
     'materialgraph/environment/batalia/rock/bat_rock_snow_blend_rock_01/rb_bat_rock_snow_blend_rock_01.materialgraph':
         'e100811722eab8ef2c3b9b5e40edf31289ff1d53a9672eea2cb1532b4a76d172',
-    'materialgraph/environment/deplanetizer/architecture/dep_arch_glass_panels_01/dep_arch_glass_panels_01.materialgraph':
-        '5cf25d6c0899f68a5e5a2b663e3d3ea56dc9d10731df0af1355d29afe0b0b62c',
     'materialgraph/environment/deplanetizer/architecture/dep_arch_hangar_metal_nows_01/dep_arch_hangar_metal_nows_01.materialgraph':
         '0a0f22323ab5ab19511271956b50a1f6c275ec4f188dee654c441e0fb3436da0',
     'materialgraph/environment/deplanetizer/ground/dep_gnd_plain_metal_01/dep_gnd_plain_metal_01.materialgraph':

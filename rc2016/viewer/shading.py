@@ -1293,6 +1293,27 @@ void main() {
 #   linear depth behind the fragment, W its own depth. rgb = albedo Ld + A specular. With the frame copies bound (uHasSceneColour,
 #   uHasSceneDepth: the model viewer's float-target frames) this is the program's composition; without them k = 1 when no depth is
 #   bound, and the blend supplies Bg (alpha = opacity (1 - wbg), wbg = (1 - k)(1 - s)(1 - _c.a), Ld taken as 1 for Bg).
+# uKind 21, glass_tinted_spec 39FDC0B9 (dep_arch_glass_panels_01 pass 0, the Deplanetizer dome; docs/material-decoding/
+#   deplanetizer-exterior.md), a labelled PREVIEW: uA = tint T.rgb (CB2[0..2]), rim bias P3 (CB2[3]); uB = gloss (CB2[4]), F0 base
+#   P8 (CB2[5]), UV scale s (CB2[6]), normal strength CB0[95] (1); uC = attribute0.w (byte 22 / 255), alpha cut-off (attribute0.z,
+#   4/255 borrowed from the taxi capture), instance fade (0). _n on the _n unit and _g on the window mask unit (as uKind 17), both at
+#   UV0 s. N' = f normalize(T x + B y + n z) in the uKind 17 frame, (x, y) = 2 CB0[95] (1 - fade) (_n.rg - 0.5), z = 1 - x^2 - y^2;
+#   rim = (1.001 - sat(N'.V))^0.65, a0 = sat(P3 + rim), discard a0 < cut-off, alpha = sat(attr0.w a0); E = rim^1.678,
+#   gloss = sat(lerp(CB2[4], _g.r, E)), F0 = grey lerp(P8, _g.g, E); rgb = T * specular(N', F0, gloss): no diffuse or body term.
+#   The specular light loop (light list, sun, probe weighted by F0) is the viewer rig; no SSR, fog t = 1.
+# uKind 22, dwarf_star 05C96D48 (dep_gp_dwarf_star_surface_calm_01; same doc), a labelled PREVIEW, opaque and unlit: uA = (A, t, k, 0)
+#   with A = CB0[115] (presentation 1/12), t = CB0[99], k = CB2[0]; uB = encoded record colour s.rgb (white), fog transmittance F (1);
+#   uC = dissolve P (attribute2.x, 1), cut (attribute0.z, 0), attribute0.w (1). Images: mask unit = T0 fx_noisetile04_n (x, z; z reads 0
+#   on the two-channel format), n1 = T1 fx_noise_3channel_01 (x, y), n2 = T2 hydro_noise_flame_05_sm, c = T3 hydro_noise_flame_03_sm,
+#   _pick = T4 sun_base_noise_ao_01 (x). s0 = T0(2u + 0.01t, v - 0.03t), s1 = T1(5u + 0.025t, 4v + 0.025t), U = u + 0.04 (s1.x +
+#   0.2746773 (s0.x - s1.x)), V = v + 0.04 (s1.y + 0.2746773 (s0.z - s1.y)); n2 = T2(7U - 0.14 + 0.03t, 4.5V - 0.09 - 0.002t),
+#   n3 = T3(8U - 0.16 + 0.02t, 5V - 0.1 + 0.005t), n4 = T4(4U - 0.08 + 0.015t, 3V - 0.06 + 0.005t); m = min(1, |min(1, |n3 - n2|) -
+#   (0.9 n4 - 0.7)|), b = sat(0.95 - 0.25 m), d = sat(5 (b - (1 - P)) / max(1e-5, P)), discard d < 1 or d < cut; g = sat(|k|^0.4) +
+#   0.05 sin(t (5k + 3)); f = (1.001 - sat(N.V))^3; Nc = ((1-m)^(4 - 2.5g), (1-m)^(20 - 15g), (1-m)^(100 - 70g)); Rm = (0.4072402 f^0.1,
+#   0.06847817 f^3, 0); E = lerp(Nc, lerp(Rm, Nc, 0.16202937), f); rgb = 3 A (3g + 4) F s E (the fog term (1 - F) fog is the viewer's).
+# uKind 23, flat_incandescent FDF7FDFB (basic_flat_color_incandescent, the Deplanetizer hangar glow strips; same doc): uA = colour C
+#   (CB2[0..2]), emission scale K3 C.r + K5 (CB2[3], CB2[5]); uB = grey F0 (CB2[4]), gloss (CB2[6]), attribute0.w. rgb = specular(N, F0,
+#   alpha 2^(-5.5 sqrt(sat(gloss)))) + C (K3 C.r + K5), no diffuse; alpha = attribute0.w; blend and cull from the flags word (additive).
 GLASS_FRAGMENT = """
 #version 120
 #extension GL_ARB_shader_texture_lod : enable
@@ -1894,6 +1915,58 @@ void main() {
             alpha = sat(uE.x) * (1.0 - wbg);
             color = (rest * Ld + S) / max(1.0 - wbg, 1e-4);
         }
+    } else if (uKind == 21) { // 39FDC0B9 Deplanetizer dome glass (see the uKind 21 comment)
+        vec2 uvs = vUV * uB.z;
+        vec3 dp1 = dFdx(vPos), dp2 = dFdy(vPos); vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
+        float det = du1.x * du2.y - du1.y * du2.x;
+        float idet = abs(det) > 1e-20 ? 1.0 / det : 0.0;
+        vec3 Pu = (dp1 * du2.y - dp2 * du1.y) * idet, Pv = (dp2 * du1.x - dp1 * du2.x) * idet;
+        Pu *= inversesqrt(max(dot(Pu, Pu), 1e-20)); Pv *= inversesqrt(max(dot(Pv, Pv), 1e-20));
+        float face = gl_FrontFacing ? 1.0 : -1.0;
+        // Shaded normal N' (API 6, linear z) in the uKind 17 frame: T = -dP/du, B = sign normalize(n x T) on the +dP/dv side.
+        vec3 n = normalize(vNrm), T = -Pu, B = cross(n, T);
+        B *= (dot(B, Pv) < 0.0 ? -1.0 : 1.0) * inversesqrt(max(dot(B, B), 1e-20));
+        vec2 xy = uHasN ? 2.0 * uB.w * (1.0 - uC.z) * (texture2D(uTexN, uvs).rg - 0.5) : vec2(0.0);
+        vec3 Ns = face * normalize(T * xy.x + B * xy.y + n * (1.0 - dot(xy, xy)));
+        float rim = pow(abs(1.001 - sat(dot(Ns, V))), 0.65);
+        float a0 = sat(uA.w + rim);
+        if (a0 < uC.y) discard;   // attribute0.z
+        alpha = sat(a0 * uC.x);   // attribute0.w
+        float E = pow(rim, 1.678);
+        vec2 g8 = uHasWindowMask ? texture2D(uTexWindowMask, uvs).rg : vec2(0.0);   // _g (API 8) on the mask unit
+        if (uSrgbWindowMask) g8 = linear(vec3(g8, 0.0)).rg;
+        float a = pow(2.0, -5.5 * sqrt(sat(mix(uB.x, g8.r, E))));
+        vec3 F0 = vec3(mix(uB.y, g8.g, E));
+        color = uA.rgb * glassSpec(Ns, V, L1, L2, C1, C2, F0, a, ambientLight(Ns));
+    } else if (uKind == 22) { // 05C96D48 Deplanetizer dwarf star, unlit (see the uKind 22 comment)
+        float t = uA.y, u = vUV.x, v = vUV.y;
+        float s0x = uHasWindowMask ? texture2D(uTexWindowMask, vec2(2.0 * u + 0.01 * t, v - 0.03 * t)).r : 0.0;
+        vec2 s1 = uHasWindowN1 ? texture2D(uTexWindowN1, vec2(5.0 * u + 0.025 * t, 4.0 * v + 0.025 * t)).rg : vec2(0.0);
+        if (uSrgbWindowMask) s0x = linear(vec3(s0x)).r;
+        float s0z = 0.0;   // the program reads s0.z; the BC5 image has two channels, so the third reads 0
+        float U = u + 0.04 * (s1.x + 0.2746773 * (s0x - s1.x));
+        float Vs = v + 0.04 * (s1.y + 0.2746773 * (s0z - s1.y));
+        float n2 = uHasWindowN2 ? texture2D(uTexWindowN2, vec2(7.0 * U - 0.14 + 0.03 * t, 4.5 * Vs - 0.09 - 0.002 * t)).r : 0.0;
+        float n3 = uHasWindowC ? texture2D(uTexWindowC, vec2(8.0 * U - 0.16 + 0.02 * t, 5.0 * Vs - 0.1 + 0.005 * t)).r : 0.0;
+        float n4 = uHasP ? texture2D(uTexP, vec2(4.0 * U - 0.08 + 0.015 * t, 3.0 * Vs - 0.06 + 0.005 * t)).r : 0.0;
+        if (uSrgbWindowC) n3 = linear(vec3(n3)).r;
+        if (uSrgbP) n4 = linear(vec3(n4)).r;
+        float m = min(1.0, abs(min(1.0, abs(n3 - n2)) - (0.9 * n4 - 0.7)));
+        float b = sat(0.95 - 0.25 * m);
+        float d = sat(5.0 * (b - (1.0 - uC.x)) / max(1e-5, uC.x));
+        if (d < 1.0 || d < uC.y) discard;   // dissolve (attribute2.x) and cut (attribute0.z)
+        alpha = sat(uC.z * d);
+        float k = uA.z;
+        float g = (k == 0.0 ? 0.0 : sat(pow(abs(k), 0.4))) + 0.05 * sin(t * (5.0 * k + 3.0));
+        float f = pow(1.001 - ndv, 3.0);
+        float q = max(1.0 - m, 0.0);
+        vec3 Nc = vec3(pow(q, 4.0 - 2.5 * g), pow(q, 20.0 - 15.0 * g), pow(q, 100.0 - 70.0 * g));
+        vec3 Rm = vec3(0.4072402 * pow(f, 0.1), 0.06847817 * f * f * f, 0.0);
+        color = 3.0 * uA.x * (3.0 * g + 4.0) * uB.w * uB.rgb * mix(Nc, mix(Rm, Nc, 0.16202937), f);
+    } else if (uKind == 23) { // FDF7FDFB incandescent flat colour (see the uKind 23 comment)
+        float a = pow(2.0, -5.5 * sqrt(sat(uB.y)));
+        color = glassSpec(N, V, L1, L2, C1, C2, vec3(uB.x), a, ambientLight(N)) + uA.rgb * uA.w;
+        alpha = sat(uB.z);
     } else {
         alpha = sat(pow(1.001 - ndv, uC.x) * (uC.z + sat(uC.w + sat(4.0 * pow(om, uD.y)))));
         vec3 tint = clamp(uB.w * clamp(uB.rgb / max(dot(vec3(0.2126, 0.7152, 0.0722), uB.rgb), 1e-6), 0.0, 1.0), 0.0, 1.0);
@@ -1962,7 +2035,8 @@ GLASS_FRAGMENT = GLASS_FRAGMENT.replace("// @lighting\n", LIGHTING+FOG)
 GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water": 4, "bright_glow": 5,
                "eye_cornea": 6, "number_display": 7, "glass_basic": 8, "glass_cg02": 9, "glass_jn": 10, "glass_thumper": 11,
                "ion_tubes": 12, "glass_liquid": 13, "window_glass": 14, "glass_tank": 15, "warmonger_reticle": 16, "glass_taxi": 17,
-               "turret_shield": 18, "turret_hud": 19, "brain_case": 20}
+               "turret_shield": 18, "turret_hud": 19, "brain_case": 20, "glass_tinted_spec": 21, "dwarf_star": 22,
+               "flat_incandescent": 23}
 
 
 def frame_fade(time, rate):
@@ -1973,6 +2047,11 @@ def frame_fade(time, rate):
     for _ in range(2):
         n = ((n ^ (n >> 16)) * 0x45D9F3B) & 0xFFFFFFFF
     return (n ^ (n >> 16)) / 4294967296.0
+
+
+def record_colour_encode(colour):
+    """The dwarf star's encode of its instance record colour (05C96D48): max(0, 1.055 c^(1/2.4) - 0.055) per channel, no linear segment."""
+    return tuple(max(0.0, 1.055 * abs(float(c)) ** (1.0 / 2.4) - 0.055) for c in colour)
 
 
 def glass_uniforms(forward, time=None):
@@ -2040,6 +2119,16 @@ def glass_uniforms(forward, time=None):
         return (GLASS_KINDS["brain_case"], (*p["body"], p["time"] if time is None else time), (*p["tint_grazing"], p["tint_exp"]),
                 (*p["tint_facing"], p["tint_scale"]), (p["gloss_open"], p["gloss_painted"], p["f0_open"], p["f0_painted"]),
                 (p["alpha_scale"], p["normal_scale"], 0.0, 0.0))
+    if forward["kind"] == "glass_tinted_spec":
+        return (GLASS_KINDS["glass_tinted_spec"], (*p["tint"], p["rim_bias"]), (p["gloss"], p["f0_base"], p["uv_scale"], p["normal_scale"]),
+                (p["alpha_scale"], p["alpha_test"], 0.0, 0.0), (0.0,) * 4, (0.0,) * 4)
+    if forward["kind"] == "dwarf_star":
+        return (GLASS_KINDS["dwarf_star"], (p["amplitude"], p["time"] if time is None else time, p["k"], 0.0),
+                (*record_colour_encode(p["record_colour"]), p["fog_transmittance"]), (p["dissolve"], p["alpha_cut"], p["alpha_scale"], 0.0),
+                (0.0,) * 4, (0.0,) * 4)
+    if forward["kind"] == "flat_incandescent":
+        return (GLASS_KINDS["flat_incandescent"], (*p["colour"], p["emission_scale"]), (p["f0"], p["gloss"], p["alpha_scale"], 0.0),
+                (0.0,) * 4, (0.0,) * 4, (0.0,) * 4)
     if forward["kind"] == "turret_hud":
         return (GLASS_KINDS["turret_hud"], (p["variant"], p["amplitude"], p["time"] if time is None else time, 0.0),
                 (p["alpha_cut"], p["alpha_scale"], p["fog_transmittance"], 0.0), (0.0,) * 4, (0.0,) * 4, (0.0,) * 4)

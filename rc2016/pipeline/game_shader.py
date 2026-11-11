@@ -1517,13 +1517,14 @@ def _viewer_skin_spec(P, skin, gR, gG, f, tinted):
     rgb = P.comb(*(P.sat(P.m('MULTIPLY', grey, ch)) for ch in P.sep(tinted))) if qwark else None
     return grey, gloss_in, rgb
 
-GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_patterned_add', 'glass_patterned', 'glass_liquid', 'glass_tank', 'glass_taxi', 'warmonger_reticle', 'turret_shield', 'turret_hud', 'brain_case', 'window_glass')
+GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_patterned_add', 'glass_patterned', 'glass_liquid', 'glass_tank', 'glass_taxi', 'warmonger_reticle', 'turret_shield', 'turret_hud', 'brain_case', 'glass_tinted_spec', 'dwarf_star', 'flat_incandescent', 'window_glass')
 
 
 def _viewer_rule_glass(mat, rule, key, img):
     """Forward glass writers basic_glass 4FC5703F, character_glass_02 4DF1D438, jn_glass E7118623,
     wpn_thumper_glove_glass 5226F404, blarg_saucer_glass FEEC00CE, the Hydrodisplacer liquid F0F45D78, the hydro harvester
-    tank glass 7EB73491, the Warmonger sight 4C184DCC and the taxi glass 4E9B2CB3 (gl_shading.GLASS_FRAGMENT uKind 8, 9, 10, 11, 2, 13, 15, 16, 17).
+    tank glass 7EB73491, the Warmonger sight 4C184DCC, the taxi glass 4E9B2CB3 and the Deplanetizer dome glass 39FDC0B9, dwarf star
+    05C96D48 and incandescent flat colour FDF7FDFB (gl_shading.GLASS_FRAGMENT uKind 8, 9, 10, 11, 2, 13, 15, 16, 17, 21, 22, 23).
     alpha comes from the rim (the sight: its self-lit screen term),
     the lit part is a diffuse term plus the writers' specular lobe (F0, F90 = sat(60 F0), Schlick), the blend
     from the flags word.
@@ -1960,6 +1961,99 @@ def _viewer_rule_glass(mat, rule, key, img):
                       'captured output) is not built; the normal map uses the Blender UV tangent and no distance fade; blend %s is the '
                       'captured draw state, not the flags word; attribute0.w = %g, attribute4.w = 0 as captured'
                       % (p['parallax_depth'], p['env_weight'], blend, p['alpha_scale']))
+    elif key == 'glass_tinted_spec':
+        # 39FDC0B9 (docs/material-decoding/deplanetizer-exterior.md), labelled preview of gl_shading.GLASS_FRAGMENT uKind 21: _n and _g at
+        # UV0 s_uv; N' from _n (x, y = CB0[95] (2 rg - 1), linear z); rim = (1.001 - sat(N'.V))^0.65, alpha = sat(attr0.w sat(P3 + rim));
+        # E = rim^1.678, gloss = sat(lerp(gloss, _g.r, E)), F0 = grey lerp(P8, _g.g, E); rgb = T * specular, no diffuse.
+        n_img, g_img = img('_n'), img('_window_g')
+        u, vb, _ = P.uv_split()
+        s_uv = P.const('glass uv scale', p['uv_scale'])
+        vec = P.comb(P.m('MULTIPLY', u, s_uv), P.m('SUBTRACT', 1.0, P.m('MULTIPLY', P.m('SUBTRACT', 1.0, vb), s_uv)))   # game (u s, v s)
+        if n_img is not None:
+            x, y = P.rg(P.tex(n_img, vec, 'glass dome normal map').outputs['Color'], P.const('glass normal scale', p['normal_scale']))
+            shade = P.v('NORMALIZE', P.tangent_normal(x, y, P.m('SUBTRACT', 1.0, P.dot2(x, y)), "glass dome normal N'"))
+        else:
+            limits.append('no dome glass _n texture bound: geometric normal')
+        rim = P.m('POWER', P.m('ABSOLUTE', P.m('SUBTRACT', 1.001, P.sat(P.v('DOT_PRODUCT', shade if shade is not None else Ng, Vv)))), 0.65)
+        cover = P.sat(P.m('ADD', P.const('glass rim bias', p['rim_bias']), rim))
+        keep = P.m('SUBTRACT', 1.0, P.m('LESS_THAN', cover, P.const('glass alpha test', p['alpha_test'])))   # attr0.z: discard below it
+        alpha = P.m('MULTIPLY', P.m('MULTIPLY', cover, P.const('glass alpha scale', p['alpha_scale'])), keep, clamp=True)
+        E = P.m('POWER', rim, 1.678)
+        g_r, g_g = 0.0, 0.0
+        if g_img is not None:
+            g_r, g_g, _ = P.sep(P.tex(g_img, vec, 'glass dome _g').outputs['Color'])
+        else:
+            limits.append('no dome glass _g texture bound: _g = 0')
+        gloss = P.sat(P.lerp(P.const('glass gloss', p['gloss']), g_r, E))
+        f0 = P.lerp(P.const('glass f0 base', p['f0_base']), g_g, E)
+        tint = P.const3('glass tint', p['tint'])
+        lobe, f90 = spec_lobe(P.v('MULTIPLY', tint, P.comb(f0, f0, f0)), gloss)
+        if 'Specular Tint' in lobe.node.inputs:   # T multiplies the whole specular, the Schlick edge included
+            P.L.new(tint, lobe.node.inputs['Specular Tint'])
+        lit = add(zero(), scaled(lobe, f90), 'VR glass lit')   # no diffuse or body term
+        limits.append('Deplanetizer dome glass 39FDC0B9 (labelled preview, game_equivalence False): the in-view pass (0, tinted, with _n) '
+                      'is inferred from compile timing and colour; the tint multiplies F0 and the Principled specular tint (edge) and F90 '
+                      '= sat(60 max(T F0)); the probe reflection weighted by F0 alone is the Principled split sum; the alpha cut-off %g is '
+                      'borrowed from the taxi glass capture; CB0[95] = 1, instance fade 0, the normal map uses the Blender UV tangent'
+                      % p['alpha_test'])
+    elif key == 'dwarf_star':
+        # 05C96D48 (docs/material-decoding/deplanetizer-exterior.md), labelled preview of gl_shading.GLASS_FRAGMENT uKind 22: opaque, unlit,
+        # two-sided. Five noise images (window roles mask, n1, n2, c and _pick) scrolled by t = CB0[99]; rgb = 3 A (3g + 4) F s E.
+        t0_img, t1_img, t2_img, t3_img, t4_img = (img('_window_mask'), img('_window_n1'), img('_window_n2'), img('_window_c'),
+                                                   img('_pick'))
+        u, vb, _ = P.uv_split(); v = P.m('SUBTRACT', 1.0, vb)   # game v counts from the top row
+        t = P.const('glass time', p['time'])                     # CB0[99]; key or drive this node to run the scrolls
+        mad = lambda a, b, c_: P.m('MULTIPLY_ADD', a, b, c_)
+
+        def sample(image, s_, t_, label):
+            if image is None:
+                limits.append('image for %s is not bound: 0' % label)
+                return (0.0,) * 3
+            return P.sep(P.tex(image, P.gl_coord(s_, t_), 'glass star ' + label).outputs['Color'])
+        s0x = sample(t0_img, mad(u, 2.0, P.m('MULTIPLY', t, 0.01)), P.m('SUBTRACT', v, P.m('MULTIPLY', t, 0.03)), 'noisetile04_n')[0]
+        s1x, s1y, _ = sample(t1_img, mad(u, 5.0, P.m('MULTIPLY', t, 0.025)), mad(v, 4.0, P.m('MULTIPLY', t, 0.025)), 'noise_3channel')
+        # U = u + 0.04 (s1.x + 0.2746773 (s0.x - s1.x)), V = v + 0.04 (s1.y + 0.2746773 (s0.z - s1.y)); s0.z reads 0 on the BC5 image
+        U = mad(P.m('ADD', s1x, P.m('MULTIPLY', P.m('SUBTRACT', s0x, s1x), 0.2746773)), 0.04, u)
+        Vs = mad(P.m('MULTIPLY', s1y, 1.0 - 0.2746773), 0.04, v)
+        n2 = sample(t2_img, mad(U, 7.0, mad(t, 0.03, -0.14)), mad(Vs, 4.5, mad(t, -0.002, -0.09)), 'flame_05')[0]
+        n3 = sample(t3_img, mad(U, 8.0, mad(t, 0.02, -0.16)), mad(Vs, 5.0, mad(t, 0.005, -0.1)), 'flame_03')[0]
+        n4 = sample(t4_img, mad(U, 4.0, mad(t, 0.015, -0.08)), mad(Vs, 3.0, mad(t, 0.005, -0.06)), 'sun_base_noise')[0]
+        m = P.m('MINIMUM', P.m('ABSOLUTE', P.m('SUBTRACT', P.m('MINIMUM', P.m('ABSOLUTE', P.m('SUBTRACT', n3, n2)), 1.0),
+                                                mad(n4, 0.9, -0.7))), 1.0)
+        k = P.const('glass k', p['k'])
+        g = P.m('ADD', P.sat(P.m('POWER', P.m('ABSOLUTE', k), 0.4)),
+                P.m('MULTIPLY', P.m('SINE', P.m('MULTIPLY', t, mad(k, 5.0, 3.0))), 0.05))
+        fr = P.m('POWER', P.m('SUBTRACT', 1.001, ndv), 3.0)                          # rim f
+        q = P.m('SUBTRACT', 1.0, m)
+        Nc = P.comb(P.m('POWER', q, mad(g, -2.5, 4.0)), P.m('POWER', q, mad(g, -15.0, 20.0)), P.m('POWER', q, mad(g, -70.0, 100.0)))
+        Rm = P.comb(P.m('MULTIPLY', P.m('POWER', fr, 0.1), 0.4072402), P.m('MULTIPLY', P.m('POWER', fr, 3.0), 0.06847817), 0.0)
+        inner = P.v('MULTIPLY_ADD', P.v('SUBTRACT', Nc, Rm), (0.16202937,) * 3, Rm)          # lerp(Rm, Nc, 0.16202937)
+        Ec = P.v('MULTIPLY_ADD', P.v('SUBTRACT', inner, Nc), P.comb(fr, fr, fr), Nc)       # lerp(Nc, inner, f)
+        rec = P.const3('glass record colour', p['record_colour'])
+        s_rec = P.comb(*(P.m('MAXIMUM', mad(P.m('POWER', P.m('ABSOLUTE', ch), 1.0 / 2.4), 1.055, -0.055), 0.0) for ch in P.sep(rec)))
+        gain = P.m('MULTIPLY', P.m('MULTIPLY', P.const('glass amplitude', p['amplitude']), P.const('glass fog transmittance', p['fog_transmittance'])),
+                   mad(g, 9.0, 12.0))                                                       # 3 A (3 g + 4) F
+        colour = P.v('SCALE', P.v('MULTIPLY', s_rec, Ec), gain)
+        em = P.N.new('ShaderNodeEmission'); em.name = 'VR glass emission'
+        P.L.new(colour, em.inputs['Color'])
+        lit = em.outputs[0]
+        alpha = 1.0
+        limits.append('Deplanetizer dwarf star 05C96D48 (frozen preview, game_equivalence False): t = CB0[99] = %g (drive "VR glass time" to '
+                      'run the scrolls); CB0[115] = %g is a labelled presentation value; the record colour %s is inferred (instance record '
+                      'vec4 11 unknown); dissolve P = 1, cut 0 and attribute0.w = 1 (nothing discarded); the BC5 third channel reads 0; '
+                      'the program reads no light list' % (p['time'], p['amplitude'], tuple(p['record_colour'])))
+    elif key == 'flat_incandescent':
+        # FDF7FDFB (docs/material-decoding/deplanetizer-exterior.md), gl_shading.GLASS_FRAGMENT uKind 23: rgb = specular (zero albedo, grey F0,
+        # gloss sqrt(sat(CB2[6]))) + C (K3 C.r + K5); alpha = attribute0.w; blend and cull from the flags word.
+        em = P.N.new('ShaderNodeEmission'); em.name = 'VR glass emission'
+        P.L.new(P.v('SCALE', P.const3('glass colour', p['colour']), P.const('glass emission scale', p['emission_scale'])), em.inputs['Color'])
+        f0 = P.const('glass f0', p['f0'])
+        lobe, f90 = spec_lobe(P.comb(f0, f0, f0), P.const('glass gloss', p['gloss']))
+        lit = add(em.outputs[0], scaled(lobe, f90), 'VR glass lit')
+        alpha = P.sat(P.const('glass alpha scale', p['alpha_scale']))
+        limits.append('Incandescent flat colour FDF7FDFB (labelled preview, game_equivalence False): E = C (K3 C.r + K5) is decoded; the '
+                      'specular light loop is Cycles lighting with F0 = CB2[4] (pass 3; pass 0 E16F8FC0 uses F0 0.1), and which pass draws '
+                      'in game is not known')
     elif key == 'window_glass':
         # 8DF14766 (docs/material-decoding/novalis-window-glass.md), labelled preview: opaque, rgb = (CB2[16] T11.b + L) Q
         # + k (lights + environment) F with Q = CB2[15] T11 (interior, _n slot) + CB2[12] C 0.5^5 T9 (painted glass _c,
@@ -2052,7 +2146,7 @@ def _viewer_rule_glass(mat, rule, key, img):
     mat.use_backface_culling = not f.get('two_sided')
     if hasattr(mat, 'surface_render_method'):
         mat.surface_render_method = 'DITHERED' if blend == 'opaque' else 'BLENDED'
-    if key in ('turret_shield', 'turret_hud'):
+    if key in ('turret_shield', 'turret_hud', 'dwarf_star'):
         return limits + ['Forward emission-only writer %s (blend %s from %s): Cycles lighting does not apply (the program draws no lit '
                          'term here); fog is the viewer fog (transmittance 1)' % (f.get('writer', key), blend, f.get('blend_source', 'the flags word'))]
     return limits + ['Forward glass writer %s (blend %s from %s): the engine light list, shadows, probes, SSR and fog '
