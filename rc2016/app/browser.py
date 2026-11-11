@@ -9,7 +9,7 @@ import traceback
 import uuid
 from rc2016.app import catalog
 from rc2016.common import remember_var
-from rc2016.app.clip_playback import ClipPlayback
+from rc2016.app.clip_playback import DEFAULT_SPEED, SPEEDS, ClipPlayback, playback_options
 from rc2016.app.layout import ScrollFrame, SplitLayout, Splitter, regrid
 from rc2016.app.theme import color, track
 from rc2016.viewer.loader import SourcePreviewLoader
@@ -213,6 +213,10 @@ def count_clips(tree):
     return sum(1 if isinstance(node, int) else count_clips(node) for _text, node in tree)
 
 
+# What a clip note means, shown beside the clip when copies and layers are listed (AnimationLibrary.clip_notes).
+NOTE_TEXT = {'duplicate': 'copy of another clip', 'layer': 'additive layer', 'unplayable': 'does not play on this model'}
+
+
 def clip_leaves(nodes):
     """Clip positions of a ``group_clips`` tree, in the order the list shows them."""
     for _text, node in nodes:
@@ -401,7 +405,7 @@ class AssetBrowser:
         self.anim_box=anim=ttk.Frame(side);anim.grid(row=4,column=0,sticky='ew',pady=(0,6))
         anim.columnconfigure(1,weight=1)
         # Row 0: the clip picker. Row 1: play/pause and the scrubber, which takes the whole width. Row 2: frame readout.
-        # Rows 3 and 4: what the clip list offers. One control per row, so a narrow column needs no more than its widest.
+        # Row 3: speed and loop. Rows 4 and 5: what the clip list offers. One control per row, so a narrow column needs no more than its widest.
         ttk.Label(anim,text='Animation').grid(row=0,column=0,sticky='w',padx=(0,6))
         self.clip_choice=tk.StringVar(value=REST_POSE)
         # A themed button that opens a searchable clip list (_open_clip_picker), not a Tk menu. It takes the column's
@@ -437,13 +441,13 @@ class AssetBrowser:
         self.hide_clips_var=remember_var(self.tk.BooleanVar(value=True),'model.hide_extra_clips')
         self.hide_clips_check=ttk.Checkbutton(anim,text='Hide copies and layers',variable=self.hide_clips_var,
                                               command=self._clip_filter_changed)
-        self.hide_clips_check.grid(row=3,column=0,columnspan=5,sticky='w',pady=(2,0))
+        self.hide_clips_check.grid(row=4,column=0,columnspan=5,sticky='w',pady=(2,0))
         tip('Leave out of the clip list the clips that add nothing on their own: copies of a clip another animset also holds, '
             'additive layers (aim offsets, head looks, leans and twitches, shown here on the rest pose) and clips that do not '
             'drive this skeleton. The animation picker of an export starts them unticked.',self.hide_clips_check)
         self.borrowed_var=remember_var(self.tk.BooleanVar(value=False),'model.borrowed_animsets')
         self.borrowed_check=ttk.Checkbutton(anim,text='Borrowed animsets',variable=self.borrowed_var,command=self._reload_clips)
-        self.borrowed_check.grid(row=4,column=0,columnspan=5,sticky='w',pady=(2,0))
+        self.borrowed_check.grid(row=5,column=0,columnspan=5,sticky='w',pady=(2,0))
         tip('Also offer animsets the game pairs with another model whose rest rig matches this one (the Blender build\'s --borrow-animset rule). The first use reads every actor, so it is slow.',self.borrowed_check)
         self._fill_clip_menu([])
         self.anim_box.grid_remove()   # shown only for a model with clips (_show_animation)
@@ -451,10 +455,19 @@ class AssetBrowser:
         ttk.Label(anim,textvariable=self.frame_text,anchor='e').grid(row=2,column=0,columnspan=5,sticky='e',pady=(2,0))
         tip('Play or pause the clip.',self.play_button)
         tip('Drag to scrub through the clip frame by frame.',self.frame_slider)
-        tip('Pick a clip to play on the rest pose. Skinned models only.',self.clip_button)
+        tip('Pick a clip to play on the rest pose. Skinned models only.\nOver the viewport: Space plays or pauses, '
+            'Left and Right step a frame, [ and ] change clip.',self.clip_button)
         self.anim_work=LatestWork()
         self.playback=ClipPlayback(self.viewport,self.app.root,self.play_button,self.frame_slider,self.frame_pos,self.frame_text)
         self.play_button.configure(command=self.playback.toggle);self.frame_slider.configure(command=self.playback.scrub)
+        self.clip_speed_var=remember_var(tk.StringVar(value=DEFAULT_SPEED),'model.clip_speed',tuple(SPEEDS))
+        self.clip_loop_var=remember_var(tk.BooleanVar(value=True),'model.clip_loop')
+        options=playback_options(tk,ttk,anim,self.playback,self.clip_speed_var,self.clip_loop_var)
+        options.grid(row=3,column=0,columnspan=5,sticky='w',pady=(2,0))
+        tip('Playback speed. Every source frame is still shown; only the frame clock changes.',options.speed_box)
+        tip('Play the clip round and round. Unticked, it stops on its last frame and Play starts it again.',options.loop_check)
+        # Over the viewport (click it first): Space plays or pauses, Left and Right step a frame, [ and ] change clip.
+        self.playback.bind_keys(self.viewport)
         # Load errors and shader warnings only; the model's counts and ID are in Details.
         self.model_info=self.tk.StringVar(value='Select one source model. It loads directly; no Blender is needed.')
         self.info_label=ttk.Label(side,textvariable=self.model_info,wraplength=400)
@@ -827,6 +840,8 @@ class AssetBrowser:
         def add_clip(parent,item,text):
             index=int(item[5:])
             length=clip_length(self.clip_seconds[index]) if 0<=index<len(self.clip_seconds) else ''
+            note=self.clip_notes[index] if 0<=index<len(self.clip_notes) else None
+            if note:text=f'{text}   ({NOTE_TEXT[note]})'   # listed only while copies and layers are shown
             names[item]=text;tree.insert(parent,'end',iid=item,text=mark(item),values=(length,))
 
         def fill(*_args):
@@ -913,7 +928,8 @@ class AssetBrowser:
         row_height=int(ttk.Style(top).lookup('Treeview','rowheight') or 20)
         from tkinter import font as tkfont
         tree_font=tkfont.nametofont(ttk.Style(top).lookup('Treeview','font') or 'TkDefaultFont',root=top)
-        longest=max([tree_font.measure(REST_POSE),*(tree_font.measure(label) for label in self.clip_labels)])
+        longest=max([tree_font.measure(REST_POSE),*(tree_font.measure(label+(f'   ({NOTE_TEXT[note]})' if note else ''))
+                                                    for label,note in zip(self.clip_labels,[*self.clip_notes,*[None]*len(self.clip_labels)]))])
         # The longest name plus three folder indents, the length column, the scrollbar and the frame padding.
         width=min(max(button.winfo_width(),380,longest+170),top.winfo_screenwidth()-40)
         x=max(0,min(button.winfo_rootx(),top.winfo_screenwidth()-width))

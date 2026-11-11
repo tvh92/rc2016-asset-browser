@@ -5,7 +5,7 @@ import copy
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
-from rc2016.app.clip_playback import ClipPlayback
+from rc2016.app.clip_playback import ClipPlayback, playback_options
 from rc2016.viewer.loader import SourcePreviewLoader
 from rc2016.viewer.viewport import ModelViewport
 
@@ -52,11 +52,15 @@ class ClipViewer:
             for column, (text, offset) in enumerate(((STEP_BACK, -1), (STEP_NEXT, 1)), start=2):
                 ttk.Button(controls, text=text, width=3, command=lambda offset=offset: step(offset)).grid(
                     row=0, column=column, padx=(8 if column == 2 else 2, 0))
-        ttk.Label(parent, textvariable=self.status, style="Muted.TLabel", wraplength=340).grid(row=3, column=0, sticky="w",
+        ttk.Label(parent, textvariable=self.status, style="Muted.TLabel", wraplength=340).grid(row=4, column=0, sticky="w",
                                                                                               pady=(6, 0))
         self.playback = ClipPlayback(self.viewport, parent, play_button, slider, self.position, self.status)
         play_button.configure(command=self.playback.toggle)
         slider.configure(command=self.playback.scrub)
+        playback_options(tk, ttk, parent, self.playback).grid(row=3, column=0, sticky="w", pady=(4, 0))
+        # Click the viewport, then Space plays or pauses and Left and Right step a frame.
+        self.playback.bind_keys(self.viewport)
+        self.viewport.bind("<ButtonPress-1>", lambda _event: self.viewport.focus_set(), add="+")
         self.playback.clear()
         self.viewport.clear("Click an animation's name to play it here.")
         self._poll()

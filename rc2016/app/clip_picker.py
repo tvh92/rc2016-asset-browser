@@ -1,13 +1,12 @@
 """Animation picker for a batch export: shown when a model has more clips than the threshold set under Options."""
 from __future__ import annotations
 
-from rc2016.app.browser import PREVIEW_DELAY_MS, STEP_KEYS, clip_length, group_clips, step_clip
+from rc2016.app.browser import NOTE_TEXT, PREVIEW_DELAY_MS, STEP_KEYS, clip_length, group_clips, step_clip
 from rc2016.app.clip_viewer import ClipViewer
 from rc2016.app.theme import CHECK_GAP, CHECK_SIZE, _draw_check_box, apply_titlebar, current_palette
 
 # Default threshold: models with this many clips or fewer export every clip without asking. Options… changes it.
 CLIP_PICKER_THRESHOLD = 10
-NOTE_TEXT = {"duplicate": "copy of another clip", "layer": "additive layer", "unplayable": "does not play on this model"}
 
 
 def needs_picker(listed, threshold: int | None = CLIP_PICKER_THRESHOLD) -> bool:

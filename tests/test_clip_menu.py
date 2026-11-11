@@ -114,6 +114,15 @@ class ClipMenuTests(unittest.TestCase):
         self.assertEqual(tree.set("clip:0", "length"), "1.2 s")
         self.assertEqual(tree.set("clip:-1", "length"), "")
 
+    def test_listed_copies_and_layers_say_what_they_are(self):
+        host = self.host()
+        host._fill_clip_menu(["Run_Fwd", "Run_Back", "Idle"], (), [None, "layer", "duplicate"])
+        host._open_clip_picker()
+        tree = self.tree(host)
+        self.assertEqual(tree.item("clip:1", "text"), "Run_Back   (additive layer)")
+        self.assertEqual(tree.item("clip:2", "text"), "Idle   (copy of another clip)")
+        self.assertEqual(tree.item("clip:0", "text"), "Run_Fwd")
+
     def test_the_arrow_keys_play_the_row_they_stop_on(self):
         host = self.host()
         host._open_clip_picker()
