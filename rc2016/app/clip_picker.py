@@ -104,6 +104,7 @@ class ClipPickerDialog:
         self.targets = {}   # tree item -> (model, clip indices, text, is_clip) for every row shown
         self.opened = {f"m{model}" for model in range(len(listed))}   # models start open, folders closed
         self.confirmed = False
+        self.playing = None   # (model, clip index) the viewport is playing, marked in the list
         self.search = tk.StringVar()
         self.mode = tk.StringVar(value="all")
         self.show_noted = tk.BooleanVar(value=False)
@@ -261,7 +262,7 @@ class ClipPickerDialog:
             box = self.boxes["on" if on == len(indices) else "off" if on == 0 else "part"]
             if is_clip:
                 shown_clips += 1
-                self.tree.item(iid, text=text, image=box)
+                self.tree.item(iid, text=self._clip_text(model, indices[0], text), image=box)
             else:
                 self.tree.item(iid, text=f"{text}  ({on} of {len(indices)})", image=box)
         ticked, total = self.selection.totals()
@@ -272,6 +273,9 @@ class ClipPickerDialog:
         if self.search.get().strip() or self.mode.get() != "all":
             line += f"   ·   {shown_clips} shown"
         self.status.set(line)
+
+    def _clip_text(self, model: int, index: int, text: str) -> str:
+        return f"▶  {text}" if self.playing == (model, index) else text
 
     # Actions
 
@@ -300,6 +304,11 @@ class ClipPickerDialog:
             return
         model, indices, _text, _is_clip = entry
         record, labels = self.selection.models[model]
+        before, self.playing = self.playing, (model, indices[0])
+        for row in {item, f"c{before[0]}.{before[1]}" if before else item}:   # move the playing mark
+            if row in self.targets:
+                row_model, row_indices, row_text, _clip = self.targets[row]
+                self.tree.item(row, text=self._clip_text(row_model, row_indices[0], row_text))
         self.viewer.show(record, labels[indices[0]])
 
     def _enter_focus(self) -> str:

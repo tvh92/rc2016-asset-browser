@@ -399,6 +399,21 @@ class DialogViewer(unittest.TestCase):
         dialog._show_clip("c0.3")
         self.assertEqual(shown, [("hero", "Run03")])
 
+    def test_the_playing_clip_is_marked_and_the_mark_moves_with_the_next_click(self):
+        listed = [listed_model("hero", 12, prefix="Run")]
+        dialog = ClipPickerDialog(self.tk, self.ttk, self.root, listed, source_root="source")
+        self.addCleanup(lambda: dialog.top.winfo_exists() and dialog.top.destroy())
+        self.addCleanup(dialog.viewer.close)
+        dialog.viewer.show = lambda record, label: None
+        dialog.rebuild()
+        dialog._show_clip("c0.3")
+        self.assertEqual(dialog.tree.item("c0.3", "text"), "▶  Run03")
+        dialog._show_clip("c0.5")
+        self.assertEqual(dialog.tree.item("c0.3", "text"), "Run03")
+        self.assertEqual(dialog.tree.item("c0.5", "text"), "▶  Run05")
+        dialog._toggle("c0.5")   # a tick refreshes every row and keeps the mark
+        self.assertEqual(dialog.tree.item("c0.5", "text"), "▶  Run05")
+
 
 if __name__ == "__main__":
     unittest.main()

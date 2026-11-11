@@ -383,6 +383,7 @@ class AssetBrowser:
         self.clip_choice.trace_add('write',lambda *_a:self._show_clip_choice())
         clip_holder.grid(row=0,column=1,columnspan=2,sticky='ew')
         self.clip_labels=[];self.clip_notes=[];self.clip_cutscene=[];self.clip_index=-1;self.clip_popup=None
+        self.clip_open_folders=set();self.clip_search=''   # what the Animation list shows again when reopened
         self.play_button=ttk.Button(anim,text='Pause',width=7,state='disabled')
         self.play_button.grid(row=1,column=0,sticky='ew',padx=(0,6),pady=(4,0))
         self.frame_pos=tk.DoubleVar(value=0)
@@ -734,38 +735,53 @@ class AssetBrowser:
         self.clip_labels=list(clips)
         self.clip_notes=list(notes)
         self.clip_cutscene=cutscene_clips(self.clip_labels,list(animsets))
+        self.clip_open_folders=set();self.clip_search=''   # a new clip list starts with every folder closed
 
     def _open_clip_picker(self,_event=None):
-        """Drop-down list under the Animation button: a search box over a folder tree of clips."""
+        """Drop-down list under the Animation button: a search box over a folder tree of clips. Choosing a clip plays
+        it and leaves the list open, so clips can be tried one after another; the playing clip is marked. The list
+        closes on a click outside it, on the Animation button or on Escape, and reopens with the folders and the
+        search it had."""
         if self.clip_button.instate(['disabled']):return 'break'
         if self.clip_popup is not None:
             self._close_clip_picker();return 'break'
         tk,ttk,button=self.tk,self.ttk,self.clip_button
         top=self.clip_popup=tk.Toplevel(button);top.wm_overrideredirect(True)
         frame=ttk.Frame(top,padding=4,relief='solid',borderwidth=1);frame.pack(fill='both',expand=True)
-        search=tk.StringVar()
+        search=tk.StringVar(value=self.clip_search)
         entry=ttk.Entry(frame,textvariable=search);entry.pack(fill='x',pady=(0,4))
         tree=ttk.Treeview(frame,show='tree',selectmode='browse')
         scroll=ttk.Scrollbar(frame,orient='vertical',command=tree.yview);tree.configure(yscrollcommand=scroll.set)
         scroll.pack(side='right',fill='y');tree.pack(side='left',fill='both',expand=True)
 
+        names={}   # clip row -> its text without the playing mark
+
+        def mark(item):
+            return f'▶  {names[item]}' if item==f'clip:{self.clip_index}' else names[item]
+
+        def add_clip(parent,item,text):
+            names[item]=text;tree.insert(parent,'end',iid=item,text=mark(item))
+
         def fill(*_args):
-            tree.delete(*tree.get_children())
-            tree.insert('','end',iid='clip:-1',text=REST_POSE)
+            tree.delete(*tree.get_children());names.clear()
+            add_clip('','clip:-1',REST_POSE)
             terms=search.get().casefold().split()
             shown=self._shown_clips()
             if terms:   # flat list of matches while searching
                 for i in sorted(shown,key=lambda i:self.clip_labels[i].lower()):
                     label=self.clip_labels[i]
-                    if all(t in label.casefold() for t in terms):tree.insert('','end',iid=f'clip:{i}',text=label)
+                    if all(t in label.casefold() for t in terms):add_clip('',f'clip:{i}',label)
             else:
                 def add(parent,nodes):
-                    for n,(text,node) in enumerate(nodes):
+                    for text,node in nodes:
                         if isinstance(node,int):
-                            tree.insert(parent,'end',iid=f'clip:{shown[node]}',text=text)
+                            add_clip(parent,f'clip:{shown[node]}',text)
                         else:
-                            iid=f'{parent or "group"}/{n}'
-                            tree.insert(parent,'end',iid=iid,text=f'{text}  ({count_clips(node)})')
+                            # Named by its path, so the folder stays the same one when the list is reopened.
+                            iid=f'{parent or "group"}/{text}'
+                            while tree.exists(iid):iid+="'"
+                            tree.insert(parent,'end',iid=iid,text=f'{text}  ({count_clips(node)})',
+                                        open=iid in self.clip_open_folders)
                             add(iid,node)
                 cutscene=set(self.clip_cutscene)
                 add('',group_clips([self.clip_labels[i] for i in shown],[n for n,i in enumerate(shown) if i in cutscene]))
@@ -775,8 +791,11 @@ class AssetBrowser:
 
         def choose(item):
             if item.startswith('clip:'):
-                index=int(item[5:]);self._close_clip_picker()
-                self._choose_clip(index,REST_POSE if index<0 else self.clip_labels[index])
+                index=int(item[5:]);before=f'clip:{self.clip_index}'
+                if index!=self.clip_index:self._choose_clip(index,REST_POSE if index<0 else self.clip_labels[index])
+                for row in {before,item}:   # move the playing mark; the list stays open and scrolled where it was
+                    if tree.exists(row):tree.item(row,text=mark(row))
+                tree.focus(item);tree.selection_set(item)
             elif item:
                 tree.item(item,open=not tree.item(item,'open'));place()
 
@@ -829,8 +848,13 @@ class AssetBrowser:
 
         pinned=[None]   # a flipped list keeps the top edge it opened with
 
+        def open_folders(parent=''):
+            for i in tree.get_children(parent):
+                if tree.item(i,'open'):yield i;yield from open_folders(i)
+
         def place(_event=None):
             if self.clip_popup is not top:return
+            if not search.get().strip():self.clip_open_folders=set(open_folders())
             top.update_idletasks()
             rows=max(4,min(18,visible_rows()))
             height=min(rows*row_height+entry.winfo_reqheight()+16,max_height)
@@ -843,7 +867,7 @@ class AssetBrowser:
             top.geometry(f'{width}x{height}+{x}+{y}')
 
         def refill(*_args):
-            fill();place()
+            self.clip_search=search.get();fill();place()
 
         # <<TreeviewOpen>> fires before the item opens: measure after it.
         tree.bind('<<TreeviewOpen>>',lambda _e:top.after_idle(place))
@@ -859,7 +883,7 @@ class AssetBrowser:
         entry.bind('<Down>',into_list)
         top.bind('<Escape>',lambda _e:self._close_clip_picker())
         place()
-        top.lift();top.grab_set();entry.focus_set()
+        top.lift();top.grab_set();entry.focus_set();entry.select_range(0,'end')   # typing replaces a kept search
         return 'break'
 
     def _close_clip_picker(self):
