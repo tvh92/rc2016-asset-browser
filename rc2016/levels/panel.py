@@ -483,6 +483,39 @@ def _load_models(archive, pool, workers, models, catalog, actor_groups, points, 
                                                   models=len(overrides["models"])))))
 
 
+def collapsible(ttk, parent, title, opened=True):
+    """(outer frame, body frame): a one-line clickable header that shows or hides the body."""
+    outer = ttk.Frame(parent)
+    outer.columnconfigure(0, weight=1)
+    header = ttk.Label(outer, cursor="hand2")
+    header.grid(row=0, column=0, sticky="ew")
+    body = ttk.Frame(outer, padding=(10, 1, 0, 2))
+    state = {"open": opened}
+
+    def show():
+        header.configure(text=("▼ " if state["open"] else "▶ ") + title)
+        if state["open"]:
+            body.grid(row=1, column=0, sticky="ew")
+        else:
+            body.grid_remove()
+
+    def toggle(_event=None):
+        state["open"] = not state["open"]
+        show()
+    header.bind("<Button-1>", toggle)
+    show()
+    return outer, body
+
+
+def set_note(label, text):
+    """Show a note line only while it has text, so an empty one takes no height."""
+    label.configure(text=text or "")
+    if text:
+        label.grid()
+    else:
+        label.grid_remove()
+
+
 def kept(remember, variable, key, allowed=None):
     """variable, restored from and saved to the settings file when remember is set."""
     return remember_var(variable, key, allowed) if remember else variable
@@ -524,12 +557,13 @@ class LevelPanel:
         else:
             self._build_level_list(list_parent, height=20)
         options = ttk.Frame(side); options.grid(row=3, column=0, sticky="ew")
-        ttk.Label(options, text="View").pack(side="left")
+        view_label = ttk.Label(options, text="View")
+        view_label.pack(side="left")
         self.mode_var = tk.StringVar(value=mode)
         box = ttk.Combobox(options, textvariable=self.mode_var, values=LevelViewport.MODES, state="readonly", width=17)
         box.pack(side="left", padx=4)
         box.bind("<<ComboboxSelected>>", lambda _e: (self.view.set_mode(self.mode_var.get()), self._update_lighting_controls()))
-        light = ttk.LabelFrame(side, text="Lighting", padding=(4, 2)); light.grid(row=4, column=0, sticky="ew", pady=(6, 0))
+        light_section, light = collapsible(ttk, side, "Lighting", True); light_section.grid(row=4, column=0, sticky="ew", pady=(6, 0))
         self.lighting_var = kept(remember, tk.StringVar(value=LevelViewport.LIGHTINGS[0]), "level.lighting", LevelViewport.LIGHTINGS)
         self.tonemap_var = kept(remember, tk.StringVar(value=LevelViewport.TONEMAPS[0]), "level.tonemap", LevelViewport.TONEMAPS)
         self.lighting_enabled_var = kept(remember, tk.BooleanVar(value=True), "level.lighting_enabled")
@@ -564,11 +598,12 @@ class LevelPanel:
         grid_check.grid(row=1, column=1, columnspan=2, sticky="w")
         scene_tips.append((grid_check, "The decoded light grid: baked ambient light that varies through the level. Off uses the reflection-probe ambient. Only used by the Level atmosphere lighting."))
         self.atmosphere_checks.append(grid_check)
-        self.scene_note=ttk.Label(light,text='Scene preview; game caster/probe allocation is unverified.',style='Muted.TLabel',wraplength=240)
+        self.scene_note=ttk.Label(light,text='',style='Muted.TLabel',wraplength=240)
         self.scene_note.grid(row=2,column=0,columnspan=2,sticky="w")
         self.lighting_note = ttk.Label(light, text="", style="Muted.TLabel", wraplength=240)
         self.lighting_note.grid(row=3, column=0, columnspan=2, sticky="w")
-        display = ttk.LabelFrame(side, text="Display", padding=(4, 2)); display.grid(row=5, column=0, sticky="ew", pady=(3, 0))
+        set_note(self.scene_note, ""); set_note(self.lighting_note, "")
+        display_section, display = collapsible(ttk, side, "Display", False); display_section.grid(row=5, column=0, sticky="ew", pady=(3, 0))
         ttk.Label(display, text="Tonemap").grid(row=0, column=0, sticky="w")
         tonemap_box = ttk.Combobox(display, textvariable=self.tonemap_var, values=LevelViewport.TONEMAPS, state="readonly", width=19)
         tonemap_box.grid(row=0, column=1, sticky="w", padx=4)
@@ -602,7 +637,7 @@ class LevelPanel:
         _Tooltip(tk, boost_label, "How much faster Shift moves than the normal fly speed. The mouse wheel over the view changes it; type a value if you have no wheel.")
         _Tooltip(tk, self.boost_box, "How much faster Shift moves than the normal fly speed. The mouse wheel over the view changes it; type a value if you have no wheel.")
         _Tooltip(tk, fine_check, "Holding Ctrl moves at 10% of the normal fly speed, for fine positioning.")
-        scene = ttk.LabelFrame(side, text="Scene", padding=(4, 2)); scene.grid(row=6, column=0, sticky="ew", pady=(3, 0))
+        scene_section, scene = collapsible(ttk, side, "Scene", True); scene_section.grid(row=6, column=0, sticky="ew", pady=(3, 0))
         self.overrides_var = kept(remember, tk.BooleanVar(value=material_overrides), "level.material_overrides")
         overrides_check = ttk.Checkbutton(scene, text="Material overrides", variable=self.overrides_var,
                                           command=lambda: self.view.set_material_overrides(self.overrides_var.get()))
@@ -629,7 +664,7 @@ class LevelPanel:
         animate_check.grid(row=2, column=1, sticky="w", padx=(8, 0))
         _Tooltip(tk, animate_check, "Runs the game clock for the time-driven surfaces with a decoded rule (river and sea "
                                     "water, light-cone noise). Off holds the current time.")
-        experimental = ttk.LabelFrame(side, text="Experimental", padding=(4, 2)); experimental.grid(row=7, column=0, sticky="ew", pady=(3, 0))
+        experimental_section, experimental = collapsible(ttk, side, "Experimental", False); experimental_section.grid(row=7, column=0, sticky="ew", pady=(3, 0))
         self.experimental_var = kept(remember, tk.BooleanVar(value=bool(spawn_preview or experimental_materials)), "level.experimental")
         enable_check = ttk.Checkbutton(experimental, text="Enable", variable=self.experimental_var,
                                        command=self._experimental_changed)
@@ -649,6 +684,7 @@ class LevelPanel:
         _Tooltip(tk, tonemap_box, "Maps the lit HDR result to screen colours.\nACES fit: filmic. Khronos PBR Neutral: keeps base colours accurate until highlights.\nGame (captured): the decoded Veldin display chain, for Level atmosphere lighting.")
         _Tooltip(tk, native_check, "Shade materials from their translated game shader program instead of the generic reading. Replaces the fallback rules only; exact hand-decoded rules stay.")
         _Tooltip(tk, enable_check, "Show the experimental previews. They are not game-equivalent; the options appear when this is on.")
+        _Tooltip(tk, view_label, HELP)
         _Tooltip(tk, box, "Shaded: the game BRDF under the chosen lighting. Textured: base colour only. Solid, Wireframe: geometry only.")
         _Tooltip(tk, lighting_enable_check, "Master switch for lighting. Off shows the unlit surface colour; self-lit emission stays.")
         _Tooltip(tk, lighting_box, "Viewer rig: fixed key, fill and sky light. Shared HDRI: the review HDRI. Level atmosphere: the level's own sun, ambient and fog, where decoded.")
@@ -660,9 +696,7 @@ class LevelPanel:
         _Tooltip(tk, decals_check, "Draw the zones' decals: scorch marks, dirt, moss, screws, icons, posters. Blend and alpha are inferred; decals with VFX graphs are not drawn.")
         _Tooltip(tk, actors_check, "Draw the actors (enemies, props) the level places, not only its static scenery.")
         _Tooltip(tk, spawn_check, "Mark where the level data places enemy spawns. A preview.")
-        _Tooltip(tk, previews_check, "Best-effort material previews (Novalis mountain, terrain, and a generic adapter). Matte lighting; inferred inputs; not game-equivalent.")
-        ttk.Label(body, text="Mountains: matte. Paint and UVs inferred. Empty blend mask: review value 1; game behavior unverified.",
-                  style="Muted.TLabel", wraplength=250).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        _Tooltip(tk, previews_check, "Best-effort material previews (Novalis mountain, terrain, and a generic adapter). Matte lighting; inferred inputs; not game-equivalent. Mountains: matte. Paint and UVs inferred. Empty blend mask: review value 1; game behavior unverified.")
         from rc2016.shaders.terrain_preview import DEFAULT_CONTROLS
         self.ground_controls = [tk.DoubleVar(value=value) for value in DEFAULT_CONTROLS]
         ground = ttk.Frame(body); ground.grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
@@ -682,7 +716,7 @@ class LevelPanel:
         for widget, text in scene_tips:
             _Tooltip(tk, widget, text)
         head = ttk.Frame(side); head.grid(row=8, column=0, sticky="ew", pady=(6, 2))
-        zones_label = ttk.Label(head, text="Zones")
+        zones_label = ttk.Label(head, text="▼ Zones", cursor="hand2")
         zones_label.pack(side="left")
         _Tooltip(tk, zones_label, "A level is made of zones. Untick one to hide it; the view updates at once.")
         for text, visible in (("None", False), ("All", True)):
@@ -698,10 +732,16 @@ class LevelPanel:
         self.zone_list = ttk.Frame(self.zone_canvas)
         self.zone_canvas.create_window((0, 0), window=self.zone_list, anchor="nw")
         self.zone_list.bind("<Configure>", lambda _e: self.zone_canvas.configure(scrollregion=self.zone_canvas.bbox("all")))
-        self.help_label = ttk.Label(side, text=HELP, wraplength=250, style="Muted.TLabel")
-        self.help_label.grid(row=10, column=0, sticky="ew", pady=(8, 0))
-        self._groups = dict(options=options, light=light, display=display, scene=scene, experimental=experimental,
-                            head=head, holder=holder, help=self.help_label)
+        def toggle_zones(_event=None):
+            if holder.winfo_manager():
+                holder.grid_remove()
+                zones_label.configure(text="▶ Zones")
+            else:
+                holder.grid()
+                zones_label.configure(text="▼ Zones")
+        zones_label.bind("<Button-1>", toggle_zones)
+        self._groups = dict(options=options, light=light_section, display=display_section, scene=scene_section,
+                            experimental=experimental_section, head=head, holder=holder)
         main.columnconfigure(0, weight=1); main.rowconfigure(0, weight=1)
         self.view = LevelViewport(main, width=420, height=300)
         self.view.grid(row=0, column=0, sticky="nsew")
@@ -740,7 +780,7 @@ class LevelPanel:
         self._right_press = None
         self.view.bind("<ButtonPress-3>", lambda e: setattr(self, "_right_press", (e.x, e.y)), add="+")
         self.view.bind("<ButtonRelease-3>", self._right_released, add="+")
-        self.view.on_lighting_changed = lambda: self.lighting_note.configure(text=self.view.lighting_note or "")
+        self.view.on_lighting_changed = lambda: set_note(self.lighting_note, self.view.lighting_note)
         self.status_var = tk.StringVar(value="")
         ttk.Label(main, textvariable=self.status_var, width=1, anchor="w", padding=(4, 3)).grid(row=1, column=0, sticky="ew")
         picked = ttk.Frame(main); picked.grid(row=2, column=0, sticky="ew")
@@ -761,9 +801,9 @@ class LevelPanel:
         side, g = self.controls, self._groups
         side.configure(padding=(4, 6, 4, 4) if stacked else (8, 4, 4, 4))
         places = ({"options": (0, 0), "light": (1, 0), "display": (2, 0), "scene": (0, 1), "experimental": (1, 1),
-                   "head": (0, 2), "holder": (1, 2), "help": (2, 2)} if stacked else
+                   "head": (0, 2), "holder": (1, 2)} if stacked else
                   {"options": (3, 0), "light": (4, 0), "display": (5, 0), "scene": (6, 0), "experimental": (7, 0),
-                   "head": (8, 0), "holder": (9, 0), "help": (10, 0)})
+                   "head": (8, 0), "holder": (9, 0)})
         for name, (row, column) in places.items():
             regrid(g[name], row=row, column=column, sticky="nsew" if name == "holder" else "ew", padx=(0, 12) if stacked and column < 2 else 0)
         for column in range(3):
@@ -979,7 +1019,7 @@ class LevelPanel:
             header.pack(anchor="w", pady=(4, 0))
             group = self.ttk.Frame(self.zone_list)   # collapsed until the header is clicked
             header.bind("<Button-1>", lambda _e, h=header, g=group, t=title, n=len(members): self._toggle_group(h, g, t, n))
-            header.configure(text=f"▸ {title} ({len(members)})")
+            header.configure(text=f"▶ {title} ({len(members)})")
             for zone in members:
                 var = self.tk.BooleanVar(value=True)
                 row = self.ttk.Checkbutton(group, text=names[zone] + " …", variable=var,
@@ -991,10 +1031,10 @@ class LevelPanel:
     def _toggle_group(self, header, group, title, count):
         if group.winfo_manager():
             group.pack_forget()
-            header.configure(text=f"▸ {title} ({count})")
+            header.configure(text=f"▶ {title} ({count})")
         else:
             group.pack(anchor="w", after=header)
-            header.configure(text=f"▾ {title} ({count})")
+            header.configure(text=f"▼ {title} ({count})")
 
     def _toggle_sidebar(self):
         self.frame.set_second_visible(not self.frame.second_visible)
@@ -1142,7 +1182,7 @@ class LevelPanel:
         scene=stats.get('scene_preview',{})
         source_note=self.progress.get('scene_lighting',{})
         unavailable=next((note for note in source_note.get('notes',[]) if isinstance(note,str) and note.startswith('Authored lighting unavailable:')),None)
-        self.scene_note.configure(text=scene.get('error') or unavailable or f"Scene preview: {scene.get('authored_lights',0)} authored points (nearest 32). Game caster/probe allocation is unverified.")
+        set_note(self.scene_note, scene.get('error') or unavailable)
         p = self.progress
         if not p:
             return
