@@ -21,7 +21,7 @@ GROUP_NAME = "RC PS4 Game View (compositor)"
 TREE_NAME = "RC PS4 Game compositor"
 LUT1D_NAME = "RC PS4 tonemap 1D LUT"
 LUT3D_NAME = "RC PS4 grade 3D LUT (tiled)"
-VERSION = 2
+VERSION = 3
 
 
 def read_spi1d(path):
@@ -177,9 +177,28 @@ def build_group(view_dir=VIEW_DIR, grade="captured"):
         d = _math(N, L, "SUBTRACT", a1, a0)
         out = _math(N, L, "MULTIPLY_ADD", d, f); L.new(a0, out.node.inputs[2])
         L.new(out, comb.inputs[ch])
-    L.new(sep.outputs["Alpha"], comb.inputs["Alpha"])
+    L.new(_bloom_alpha(N, L, sep.outputs["Alpha"], bloom_sep.outputs), comb.inputs["Alpha"])
     L.new(comb.outputs[0], go.inputs["Image"])
     return g
+
+
+def _bloom_alpha(N, L, alpha, bloom):
+    """Output alpha with the bloom's coverage: a + (1 - a) * min(1, sRGB(max bloom channel)).
+
+    The bloom is added light, but over a transparent film it lands on pixels with alpha 0, which a straight-alpha PNG
+    discards. Raising alpha by the encoded bloom keeps the halo in saved images: over black it reproduces the additive
+    result (the colour stays premultiplied and the tone curve is 0 at 0), over a lighter background it shows as a tinted
+    haze instead of added light (a stand-in, not the game's composite). Where the bloom is black the alpha is unchanged."""
+    peak = _math(N, L, "MAXIMUM", _math(N, L, "MAXIMUM", bloom[0], bloom[1]), bloom[2])
+    peak = _math(N, L, "MINIMUM", _math(N, L, "MAXIMUM", peak, 0.0), 1.0)
+    lin = _math(N, L, "MULTIPLY", peak, 12.92)
+    pw = _math(N, L, "MULTIPLY_ADD", _math(N, L, "POWER", peak, 1 / 2.4), 1.055)
+    pw.node.inputs[2].default_value = -0.055
+    low = _math(N, L, "LESS_THAN", peak, 0.0031308)
+    cover = _math(N, L, "MULTIPLY_ADD", low, _math(N, L, "SUBTRACT", lin, pw)); L.new(pw, cover.node.inputs[2])
+    out = _math(N, L, "MULTIPLY_ADD", _math(N, L, "SUBTRACT", 1.0, alpha), cover, clamp=True)
+    L.new(alpha, out.node.inputs[2])
+    return out
 
 
 def apply(scene=None, view_dir=VIEW_DIR, exposure_stops=None, grade="captured"):
