@@ -101,17 +101,20 @@ def _mesh_payload_arrays(decoded, meshes, selected):
 
 def _effect_preview(archive, data, source_path=''):
     """The labelled effect preview of a model, with its sprite textures loaded: the health crate's idle effect
-    (rc2016.viewer.idle_effect, a model with the igLoc_health_FX locator) or a holocon device's hologram
-    (rc2016.viewer.holocon_effect, by model name); None for other models or when the locator table, the effect or a
+    (rc2016.viewer.idle_effect, a model with the igLoc_health_FX locator), a holocon device's hologram
+    (rc2016.viewer.holocon_effect, by model name) or a holocard's glow (rc2016.viewer.holocard_effect, by model name); None
+    for other models or when the locator table, the effect or a
     texture cannot be read."""
     import struct
     try:
         from rc2016.formats.native_model import decode_locators
+        from rc2016.viewer.holocard_effect import holocard_preview
         from rc2016.viewer.holocon_effect import holocon_preview
         from rc2016.viewer.idle_effect import effect_preview
         from rc2016.viewer.textures import load_texture
         locators=decode_locators(data)
-        preview=effect_preview(locators) or holocon_preview(archive,source_path,data,locators)
+        preview=(effect_preview(locators) or holocon_preview(archive,source_path,data,locators)
+                 or holocard_preview(archive,source_path,data,locators))
         if preview:
             preview['textures']={role:load_texture(archive,path) for role,path in preview['texture_paths'].items()}
         return preview

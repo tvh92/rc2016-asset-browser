@@ -1516,8 +1516,8 @@ class ModelViewport(_TkFrame):
         sh.glUseProgram(0)
 
     def _effect_frame(self):
-        """This frame's effect quads in Shaded mode (the health crate's idle effect, rc2016/viewer/idle_effect.py, or a holocon
-        device's hologram, rc2016/viewer/holocon_effect.py), and the effect light for _apply_lighting; none for other models
+        """This frame's effect quads in Shaded mode (the health crate's idle effect, rc2016/viewer/idle_effect.py, a holocon
+        device's hologram, rc2016/viewer/holocon_effect.py, or a holocard's glow, rc2016/viewer/holocard_effect.py), and the effect light for _apply_lighting; none for other models
         or beyond the effect's fade distance."""
         self._preview_light = None
         preview = (self._payload or {}).get('effect_preview')
@@ -1525,6 +1525,8 @@ class ModelViewport(_TkFrame):
             return []
         if preview.get('family') == 'holocon':
             from rc2016.viewer.holocon_effect import billboards
+        elif preview.get('family') == 'holocard':
+            from rc2016.viewer.holocard_effect import billboards
         else:
             from rc2016.viewer.idle_effect import billboards
         modelview = (ctypes.c_float * 16)()
@@ -1534,14 +1536,17 @@ class ModelViewport(_TkFrame):
         return quads
 
     def _effect_textures_for(self, preview):
-        """GL textures of the effect's sprite images (noise, spin, ring), uploaded once per payload."""
+        """GL textures of the effect's sprite images (noise, spin, ring), uploaded once per payload. Roles in the preview's
+        ``srgb_roles`` decode sRGB in the sampler and those in ``mipmap_roles`` get a mip chain (the holocard glow's images,
+        sampled with an implicit LOD as in the game)."""
         cached = getattr(self, '_effect_textures', None)
         if cached is None or cached[0] is not preview:
             self._release_effect_textures()
             uploaded = {}
+            srgb, mipmapped = set(preview.get('srgb_roles') or ()), set(preview.get('mipmap_roles') or ())
             for role, texture in (preview.get('textures') or {}).items():
                 try:
-                    uploaded[role] = self._upload_texture(texture, mipmaps=False)
+                    uploaded[role] = self._upload_texture(texture, decode_srgb=role in srgb, mipmaps=role in mipmapped)
                 except Exception:   # a refused format draws that sprite kind without its image
                     uploaded[role] = 0
             cached = self._effect_textures = (preview, uploaded)
@@ -1556,9 +1561,9 @@ class ModelViewport(_TkFrame):
             self._gl.glDeleteTextures(len(ids), (ctypes.c_uint * len(ids))(*ids))
 
     def _draw_effect_preview(self, quads):
-        """The health crate's idle effect or a holocon hologram: view-space quads with the decoded sprite programs
-        (EFFECT_FRAGMENT), alpha-over, depth-tested without depth write (the flares with depth test off; the holocon icon
-        culls back faces, as captured), after the panes and glass, into the float scene target when there is one
+        """The health crate's idle effect, a holocon hologram or a holocard's glow: view-space quads with the decoded sprite
+        programs (EFFECT_FRAGMENT), alpha-over (the holocard's additive, SRC_ALPHA / ONE), depth-tested without depth write
+        (the flares and the holocard quads with depth test off; the holocon icon culls back faces, as captured), after the panes and glass, into the float scene target when there is one
         (_hdr_begin). A labelled preview: the module's PREVIEW_LIMITATIONS names the presentation values and inferred
         stand-ins."""
         from rc2016.viewer.idle_effect import MASK_WEIGHT
@@ -1569,7 +1574,9 @@ class ModelViewport(_TkFrame):
         sh.glUseProgram(program)
         self._apply_lighting(u)
         units = ((0, 'noise', 'uEffectNoise'), (1, 'spin', 'uEffectSpin'), (2, 'ring', 'uEffectRing'), (3, 'icon', 'uHoloIcon'),
-                 (4, 'background', 'uHoloBackground'), (5, 'scan', 'uHoloScan'), (6, 'trigger', 'uHoloTrigger'))
+                 (4, 'background', 'uHoloBackground'), (5, 'scan', 'uHoloScan'), (6, 'trigger', 'uHoloTrigger'),
+                 (8, 'holocard_glow', 'uCardGlow'), (9, 'holocard_noise', 'uCardNoise'), (10, 'ethereal', 'uCardSmoke'),
+                 (11, 'sparkle', 'uCardSparkle'))
         for unit, role, name in units:
             sh.glActiveTexture(self.GL_TEXTURE0 + unit)
             gl.glBindTexture(self.GL_TEXTURE_2D, textures.get(role, 0))
@@ -1577,6 +1584,7 @@ class ModelViewport(_TkFrame):
         sh.glUniform1i(u['uHoloLaser'], 7)
         sh.glActiveTexture(self.GL_TEXTURE0)
         sh.glUniform1f(u['uEffectAmplitude'], float(preview['amplitude']))
+        sh.glUniform1f(u['uEffectTime'], float(preview.get('frame_time', 0.0)))
         values, frame = preview.get('icon_values'), preview.get('frame')
         if values:
             sh.glUniform4f(u['uHoloOffsetsRB'], *values['offset_r'], *values['offset_b'])
@@ -1586,7 +1594,9 @@ class ModelViewport(_TkFrame):
             sh.glUniform3f(u['uHoloFrame'], float(frame['time']), float(frame['random']), float(frame['seed']))
         gl.glBlendFunc.argtypes = [ctypes.c_uint, ctypes.c_uint]; gl.glDepthMask.argtypes = [ctypes.c_ubyte]
         gl.glVertex3f.argtypes = [ctypes.c_float] * 3; gl.glTexCoord2f.argtypes = [ctypes.c_float] * 2
+        gl.glNormal3f.argtypes = [ctypes.c_float] * 3
         gl.glEnable(self.GL_BLEND); self._blend_over()
+        additive = False
         gl.glDepthMask(0); gl.glDisable(self.GL_CULL_FACE)
         gl.glMatrixMode(self.GL_MODELVIEW); gl.glPushMatrix(); gl.glLoadIdentity()   # quads are in view space
         try:
@@ -1611,14 +1621,26 @@ class ModelViewport(_TkFrame):
                 soft = quad.get('soft')   # holocon glow: soft-particle plane and size; 0 keeps the term at 1
                 sh.glUniform4f(u['uEffectSoftPlane'], *(soft[:4] if soft else (0.0, 0.0, 0.0, 0.0)))
                 sh.glUniform1f(u['uEffectSoftSize'], float(soft[4]) if soft else 0.0)
+                if bool(quad.get('additive')) != additive:   # the holocard glow: SRC_ALPHA / ONE, coverage unchanged
+                    additive = bool(quad.get('additive'))
+                    if not additive:
+                        self._blend_over()
+                    elif getattr(self, '_linear_output', False):
+                        self._hdr_fns['glBlendFuncSeparate'](self.GL_SRC_ALPHA, self.GL_ONE, 0, 1)   # ZERO, ONE
+                    else:
+                        gl.glBlendFunc(self.GL_SRC_ALPHA, self.GL_ONE)
+                sh.glUniform3f(u['uEffectFace'], *quad.get('face', (0.0, 0.0, 1.0)))
+                normals = quad.get('normals') or ((0.0, 0.0, 1.0),) * len(quad['corners'])
                 gl.glBegin(0x0007)   # GL_QUADS
-                for (x, y, z), (s, t) in quad['corners']:
-                    gl.glTexCoord2f(s, t); gl.glVertex3f(x, y, z)
+                for ((x, y, z), (s, t)), normal in zip(quad['corners'], normals):
+                    gl.glNormal3f(*normal); gl.glTexCoord2f(s, t); gl.glVertex3f(x, y, z)
                 gl.glEnd()
         finally:
             gl.glPopMatrix()
+            if additive:
+                self._blend_over()
             gl.glEnable(self.GL_DEPTH_TEST); gl.glDepthMask(1); gl.glDisable(self.GL_BLEND); gl.glDisable(self.GL_CULL_FACE)
-            for unit in (7, 6, 5, 4, 3, 2, 1, 0):
+            for unit in (11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0):
                 sh.glActiveTexture(self.GL_TEXTURE0 + unit)
                 gl.glBindTexture(self.GL_TEXTURE_2D, 0)
 

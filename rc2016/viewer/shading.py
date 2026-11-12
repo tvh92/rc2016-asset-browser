@@ -2479,15 +2479,17 @@ BEAM_UNIFORMS = (*LIGHTING_UNIFORMS, "uBeamNoise", "uBeamDepth", "uBeamViewport"
 # shockwave instance colour rec[44..46]; the frame time CB0[99] is 0. The soft-depth term sat(2.5 dz / s) is 1 for the
 # health crate; on a holocon glow (uEffectSoftSize s > 0) dz is the depth along the view ray from the glow to the plane
 # uEffectSoftPlane (view space n, -n.p), the emitter plane standing in for scene depth as in the Blender glow material.
+# The holocard glow (rc2016/viewer/holocard_effect.py, runtime programs captured on a holocard, drawn additive): 7 glow quad
+# cb954073 (vN = the quad's view-space corner normals), 8 ethereal cloud 06ceb217, 9 sparkle 59399868; uEffectTime = CB0[99].
 EFFECT_VERTEX = """
 #version 120
-varying vec2 vUV; varying vec3 vPos;
-void main() { vUV = gl_MultiTexCoord0.xy; vPos = gl_Vertex.xyz; gl_Position = gl_ProjectionMatrix * gl_Vertex; }
+varying vec2 vUV; varying vec3 vPos; varying vec3 vN;
+void main() { vUV = gl_MultiTexCoord0.xy; vPos = gl_Vertex.xyz; vN = gl_Normal; gl_Position = gl_ProjectionMatrix * gl_Vertex; }
 """
 EFFECT_FRAGMENT = """
 #version 120
 const float PI = 3.14159265;
-varying vec2 vUV; varying vec3 vPos;
+varying vec2 vUV; varying vec3 vPos; varying vec3 vN;
 // @lighting
 uniform vec4 uEffectSoftPlane; uniform float uEffectSoftSize;
 uniform int uEffectKind; uniform vec3 uEffectColour; uniform float uEffectAlpha; uniform float uEffectDiscard;
@@ -2496,6 +2498,8 @@ uniform sampler2D uEffectNoise; uniform sampler2D uEffectSpin; uniform sampler2D
 uniform sampler2D uHoloIcon; uniform sampler2D uHoloBackground; uniform sampler2D uHoloScan; uniform sampler2D uHoloTrigger;
 uniform sampler2D uHoloLaser;
 uniform vec4 uHoloOffsetsRB; uniform vec2 uHoloOffsetG; uniform float uHoloHue; uniform vec3 uHoloFrame;   // time, CB0[107], seed
+uniform sampler2D uCardGlow; uniform sampler2D uCardNoise; uniform sampler2D uCardSmoke; uniform sampler2D uCardSparkle;
+uniform float uEffectTime; uniform vec3 uEffectFace;
 void main() {
     vec2 c = vUV - 0.5; float r = length(c);
     float A = uEffectAmplitude, L = 1.0, soft = 1.0;
@@ -2545,6 +2549,21 @@ void main() {
         float r = clamp(texture2D(uHoloLaser, vUV).r, 0.0, 1.0);
         if (r < uEffectDiscard) discard;
         rgb = A * uEffectColour * (L + 5.0 * r); alpha = clamp(uEffectAlpha * r, 0.0, 1.0);
+    } else if (uEffectKind == 7 || uEffectKind == 8 || uEffectKind == 9) {   // holocard glow: rgb = 2A P2 m (1 + L), alpha sat(a m)
+        float m;
+        if (uEffectKind == 7) {      // cb954073: rim facing f x (glow.r + 0.5 glow.g sat(1.1111 n - 0.1111)), n polar noise rings
+            float n = texture2D(uCardNoise, vec2(0.15913431 * atan(c.y, c.x), r - 0.1 * uEffectTime)).r;
+            vec4 g = texture2D(uCardGlow, vUV);
+            vec3 E = normalize(-vPos);   // the normal turns toward the eye on the back face (uEffectFace: the quad's +Z)
+            float f = clamp(dot(normalize(vN) * (dot(uEffectFace, E) >= 0.0 ? 1.0 : -1.0), E), 0.0, 1.0);
+            m = clamp((1.0 - abs(1.001 - f)) * (g.r + 0.5 * g.g * clamp(1.1111112 * n - 0.11111112, 0.0, 1.0)), 0.0, 1.0);
+        } else if (uEffectKind == 8) {   // 06ceb217: smoke.r x the soft-depth term (1: no scene behind the card)
+            m = clamp(texture2D(uCardSmoke, vUV).r * soft, 0.0, 1.0);
+        } else {                         // 59399868: sparkle.r
+            m = clamp(texture2D(uCardSparkle, vUV).r, 0.0, 1.0);
+        }
+        if (m <= 0.001 || m < uEffectDiscard) discard;
+        rgb = 2.0 * A * uEffectColour * m * (1.0 + L); alpha = clamp(uEffectAlpha * m, 0.0, 1.0);
     } else {                         // 094D0CAE: ring texture; k = A C.r P2.r, R = 2k (2k + L), G/B = 2A P2 (2k + L)
         float m = clamp(texture2D(uEffectRing, vUV).r, 0.0, 1.0);
         if (m < uEffectDiscard) discard;
@@ -2558,7 +2577,7 @@ void main() {
 EFFECT_UNIFORMS = (*LIGHTING_UNIFORMS, "uEffectKind", "uEffectColour", "uEffectAlpha", "uEffectDiscard", "uEffectAmplitude",
                    "uEffectMaskWeight", "uEffectNoise", "uEffectSpin", "uEffectRing", "uHoloIcon", "uHoloBackground", "uHoloScan",
                    "uHoloTrigger", "uHoloLaser", "uHoloOffsetsRB", "uHoloOffsetG", "uHoloHue", "uHoloFrame", "uEffectSoftPlane",
-                   "uEffectSoftSize")
+                   "uEffectSoftSize", "uCardGlow", "uCardNoise", "uCardSmoke", "uCardSparkle", "uEffectTime", "uEffectFace")
 
 
 # Tonemap of the model viewer's float scene target (ModelViewport._hdr_begin / _hdr_resolve), used for frames with health

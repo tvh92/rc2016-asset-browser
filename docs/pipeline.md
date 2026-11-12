@@ -282,6 +282,17 @@ A holocon device's hologram (the weapon vendor, the Hydrodisplacer and Trespasse
 - The quads stack on every view ray, and Cycles ends a ray that runs out of transparent bounces black (black blocks across the rays), so the build raises the scene's transparent bounce limit to the larger of 64 and the quad count + 8 (never lowers it).
 - Not built: the scan-line scroll, the trigger glitch and ray motion over time, and mip filtering. The soft-particle depth is measured to the emitter plane, not the scene.
 
+## Holocard glow
+
+A holocard's glow (the single card, the RYNO card and the card pack) is built as scene objects (`rc2016/pipeline/holocard_effect.py`, called from `run.py` and `builder.py` before the structural baseline, so reopen validation covers it), from the same decoded values as the model viewer ([viewer](viewer.md#holocard-glow)).
+
+- The glow quad (`Holocard | glow quad ...`, custom property `holocard_effect`) is a mesh of its real size in the effect frame. Its 45-degree corner normals are custom split normals, which Cycles interpolates as the GPU does, and its material builds the program `cb954073` as nodes: the facing term on the shading normal (Cycles turns it toward the ray on the back face, as the game flips it), the noise rings at the still frame and the glow texture's red and green channels (sRGB).
+- The two cloud puffs and the 17 sparkles are camera-facing quads (Copy Rotation; a puff's captured turn about the view axis is in its mesh) with m = sat(image.r); the cloud's soft-depth term is 1, as in the viewer.
+- Every quad adds 2A C m (1 + L) x alpha sat(a m), with the 4/255 discard. Cycles gives purely added light no alpha on the transparent film, which would lose the halo beyond the card, so the light carries a coverage c = min(1, its brightest channel): emission added / c mixed over Transparent by c. Over transparency or black that is exactly the added light; over the card it darkens what is behind by c.
+- The glow quad and the cloud follow the camera 0.2 units toward it (location drivers, the viewer's +0x7C reading), which also keeps them in front of the opaque card, as in the game, where the card writes no depth. Every quad's `fx_alpha` is a driver with the distance fade sat((60 - d) / 25). A group build retargets the constraints and drivers to its own camera.
+- The four images are written as PNGs under the model's `holocard_effect` folder and packed; the transparent bounce limit is raised as for the holocon.
+- Not built: the rings' scroll over time, mip filtering, component 0 and the strip program `b6f67d16`.
+
 ## Shader node layout
 
 Before the candidate `.blend` is saved, every material's node tree and every node group is arranged in columns by `rc2016/pipeline/node_layout.py`: a node sits left of everything it feeds, and each column starts stacked top to bottom in creation order, then a few passes move every node toward the middle of the nodes it links to, so wires stay short and cross less. The layout is part of the pipeline, not a Blender add-on, so a file built on any machine opens the same way. Weapon merges and the group `.blend` keep the positions they set. Node positions carry no game data and are not validated.

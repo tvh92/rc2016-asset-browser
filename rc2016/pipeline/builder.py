@@ -584,6 +584,11 @@ def build(job):
         from rc2016.pipeline import holocon_effect
         anchors=[o for o in scene.objects if o.type=='MESH' and o.get('source_model_sha256')==job['model']['model_sha256']]
         if anchors:holocon_effect.build(scene,anchors[0],job['holocon_effect']['description'],job['holocon_effect']['textures'])
+    if job.get('holocard_effect'):
+        # A holocard's glow (rc2016/pipeline/holocard_effect.py), added before the structural baseline like the others.
+        from rc2016.pipeline import holocard_effect
+        anchors=[o for o in scene.objects if o.type=='MESH' and o.get('source_model_sha256')==job['model']['model_sha256']]
+        if anchors:holocard_effect.build(scene,anchors[0],job['holocard_effect']['description'],job['holocard_effect']['textures'])
     bpy.context.view_layer.update()
     # Columns in the shader editor (rc2016/pipeline/node_layout.py): built in, so no Blender add-on is needed.
     from rc2016.pipeline.node_layout import arrange_tree

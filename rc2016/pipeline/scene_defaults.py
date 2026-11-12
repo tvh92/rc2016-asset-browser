@@ -657,8 +657,9 @@ def audit_scene(scene: Any = None, check_gpu: bool = True,
     if cycles is None:
         result["mismatches"].append("cycles")
     else:
+        from rc2016.pipeline.holocard_effect import FAMILY as HOLOCARD_FAMILY
         from rc2016.pipeline.holocon_effect import FAMILY as HOLOCON_FAMILY
-        holocon_raised = scene.get(HOLOCON_FAMILY) is not None
+        holocon_raised = scene.get(HOLOCON_FAMILY) is not None or scene.get(HOLOCARD_FAMILY) is not None
         for key, value in {
             "device": "GPU", "samples": 96, "adaptive_threshold": 0.04,
             "use_adaptive_sampling": True, "use_denoising": True,
@@ -672,7 +673,8 @@ def audit_scene(scene: Any = None, check_gpu: bool = True,
             if key == "adaptive_threshold":
                 matches = actual is not None and abs(actual - value) < 1e-5
             elif key == "transparent_max_bounces" and holocon_raised:
-                # a holocon's stacked quads raise this limit (rc2016/pipeline/holocon_effect.py): accept it, never lower
+                # a holocon's or holocard's stacked quads raise this limit (rc2016/pipeline/holocon_effect.py,
+                # holocard_effect.py): accept it, never lower
                 matches = actual is not None and actual >= value
             else:
                 matches = actual == value

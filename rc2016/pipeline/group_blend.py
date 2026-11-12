@@ -394,9 +394,11 @@ def assemble(job):
     scene.collection.objects.link(camera)
     scene.camera = camera
     from rc2016.pipeline.health_effect import retarget_camera
+    from rc2016.pipeline.holocard_effect import retarget_camera as retarget_holocard
     from rc2016.pipeline.holocon_effect import retarget_camera as retarget_holocon
     retarget_camera(scene, camera)   # the health crate's effect quads face the group camera
     retarget_holocon(scene, camera)  # and so do a holocon device's hologram quads
+    retarget_holocard(scene, camera) # and a holocard's glow sprites
     points = visible_mesh_points(scene)
     if not len(points):
         raise RuntimeError("The group has no visible mesh to frame")

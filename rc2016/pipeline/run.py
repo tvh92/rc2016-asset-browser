@@ -826,8 +826,21 @@ def process_model(key,index,args,code_hash,previous,log):
         from rc2016.pipeline import holocon_effect
         holocon_effect_job=dict(description=holocon_effect.effect_description(archive,holocon,light=True),
             textures=holocon_effect.prepare_textures(archive,holocon,model_root/'holocon_effect'))
+    # A holocard's glow is the pup_holocard_glow effect at igLoc_fx_attach: built as additive emission quads.
+    holocard_effect_job=None
+    try:
+        from rc2016.formats.native_model import decode_locators
+        from rc2016.viewer.holocard_effect import holocard_preview
+        model_bytes=Path(model_path).read_bytes()
+        holocard=holocard_preview(archive,asset['path'],model_bytes,decode_locators(model_bytes))
+    except (ValueError,KeyError,IndexError,OSError):
+        holocard=None
+    if holocard is not None:
+        from rc2016.pipeline import holocard_effect
+        holocard_effect_job=dict(description=holocard_effect.effect_description(holocard),
+            textures=holocard_effect.prepare_textures(archive,holocard,model_root/'holocard_effect'))
     job=dict(schema=VERSION,fingerprint=fingerprint,model=model,geometry=geometry,native_geometry=native_geometry,native_parts=native_parts,health_effect=health_effect_job,
-        holocon_effect=holocon_effect_job,
+        holocon_effect=holocon_effect_job,holocard_effect=holocard_effect_job,
         animation_selection=selection_identity,active_clip_index=active_clip_index,clip_catalog=entries,
         texture_transport=texture_transport,
         experimental_ambiguous_inheritance=args.experimental_ambiguous_inheritance,
