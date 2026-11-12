@@ -1172,8 +1172,11 @@ void main() {
 #   X = B (1 + k P E S), P = (1.001 - N.V)^e, S = sat(4 sqrt(1 - N.V)); Q = clamp(m (C + X) (1.001 - sat(N'.V))^r + X, 0, cap);
 #   alpha = sat(sat(floor + sat(4 (1 - N.V)^x))); rgb = Q * L + specular with F0 = sat(scale sat(T / luma(T))).
 #   N' is the _n normal map (xy = 2t - 1, strength CB0[95] and fade taken as 1 and 0).
-# uKind 10, jn_glass E7118623: uA = tint.rgb, rim bias P3; uB = colour C.rgb, weight w; uC = P8, rim exponent P9, gloss.
-#   alpha = sat(P3 + rim); rgb = C + w * specular, F0 = sat(T / luma(T)) (P8 + rim^10); no body term in this table.
+# uKind 10, jn_glass E7118623 (read from the shadPS4 IR dump): uA = tint.rgb, rim bias P3; uB = colour C.rgb, weight w;
+#   uC = P8, rim exponent P9, gloss. alpha = sat(P3 + rim); rgb = (C + w Env(R)) Ld + sat(T / luma(T)) specular with a grey
+#   F0 = P8 + rim^10 inside the lobe (the tint multiplies the finished specular sum, not F0). Env(R) is the program's
+#   lod-0 reflection-probe lookup along the reflected view ray (local cubes blended with the global cube), here the viewer
+#   environment at its sharpest band; Ld is the diffuse light sum, gated in game by instance flag 0x20 (taken as set).
 # uKind 11, wpn_thumper_glove_glass 5226F404 (docs/material-decoding/thumper-glove-glass.md): uA = tint.rgb, rim bias P3;
 #   uB = body C.rgb, normal strength; uC = pattern tiling, P8, gloss, rim exponent P9; uD = glow colour K.rgb, amplitude.
 #   Patterns_cma (_n slot) at uv * tiling gives the normal (xy = sat(strength) (2t - 1), z weight 1 - x^2 - y^2) and S = its
@@ -1482,13 +1485,14 @@ void main() {
         float rim = sat(4.0 * pow(om, uC.y));
         alpha = sat(sat(uA.w + rim) * uD.x);   // attr0.w = material opacity byte 22 / 255
         float luma = max(dot(vec3(0.2126, 0.7152, 0.0722), uA.rgb), 1e-6);
-        vec3 F0 = clamp(uA.rgb / luma, 0.0, 1.0) * (uC.x + pow(rim, 10.0));
+        vec3 k = clamp(uA.rgb / luma, 0.0, 1.0);
+        vec3 F0 = (uKind == 8 ? k : vec3(1.0)) * (uC.x + pow(rim, 10.0));
         float gloss = uKind == 8 ? uB.w : uC.z;
         float a = pow(2.0, -5.5 * sqrt(sat(gloss)));
         vec3 ambient = ambientLight(N);
         vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
         vec3 S = glassSpec(N, V, L1, L2, C1, C2, F0, a, ambient);
-        color = uKind == 8 ? uB.rgb * Ld + S : uB.rgb + uB.w * S;
+        color = uKind == 8 ? uB.rgb * Ld + S : (uB.rgb + uB.w * waterEnvironment(reflect(-V, N))) * Ld + k * S;
     } else if (uKind == 11) { // wpn_thumper_glove_glass 5226F404 (see the uKind 11 comment)
         float rim = sat(4.0 * pow(om, uC.w));
         vec4 pat = uHasN ? texture2D(uTexN, vUV * uC.x) : vec4(0.5, 0.5, 0.0, 0.0);

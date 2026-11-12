@@ -162,7 +162,8 @@ class GlassRuleTests(unittest.TestCase):
             self.assertIn(text, lobe)
         basic = GLASS_FRAGMENT.split('uKind == 8 || uKind == 10')[1].split('uKind == 9')[0]
         for text in ('float rim = sat(4.0 * pow(om, uC.y))', 'alpha = sat(sat(uA.w + rim) * uD.x)', 'uC.x + pow(rim, 10.0)',
-                     'clamp(uA.rgb / luma, 0.0, 1.0)', 'uB.rgb * Ld + S : uB.rgb + uB.w * S'):
+                     'clamp(uA.rgb / luma, 0.0, 1.0)', '(uKind == 8 ? k : vec3(1.0)) * (uC.x + pow(rim, 10.0))',
+                     'uB.rgb * Ld + S : (uB.rgb + uB.w * waterEnvironment(reflect(-V, N))) * Ld + k * S'):
             self.assertIn(text, basic)
         cg02 = GLASS_FRAGMENT.split('uKind == 9')[1].split('uKind == 3')[0]
         for text in ('alpha = sat(uC.z + sat(4.0 * pow(om, uC.w)))', 'pow(1.001 - ndv, uC.y)', 'sat(4.0 * sqrt(om))',

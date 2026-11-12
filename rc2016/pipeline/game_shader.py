@@ -1600,10 +1600,18 @@ def _viewer_rule_glass(mat, rule, key, img):
         lobe, f90 = spec_lobe(f0, P.const('glass gloss', p['gloss']))
         if key == 'glass_basic':
             lit = add(diffuse(P.const3('glass body', p['body'])), scaled(lobe, f90), 'VR glass lit')
-        else:   # rgb = C + w * specular: the emission is C, unlit
-            em = P.N.new('ShaderNodeEmission'); em.name = 'VR glass emission'
-            P.L.new(P.const3('glass colour', p['colour']), em.inputs['Color'])
-            lit = add(em.outputs[0], scaled(lobe, P.m('MULTIPLY', f90, P.const('glass weight', p['weight']))), 'VR glass lit')
+        else:   # E7118623: rgb = (C + w Env(R)) Ld + k specular
+            env = P.N.new('ShaderNodeBsdfGlossy'); env.name = env.label = 'VR glass probe reflection'
+            env.inputs['Roughness'].default_value = 0.0
+            env.inputs['Color'].default_value = (1.0, 1.0, 1.0, 1.0)
+            body = add(diffuse(P.const3('glass colour', p['colour'])),
+                       scaled(env.outputs[0], P.const('glass weight', p['weight'])), 'VR glass body')
+            lit = add(body, scaled(lobe, f90), 'VR glass lit')
+            limits.append('jn_glass E7118623: the reflection-probe term w Env(R) is multiplied by the diffuse light in game; '
+                          'Cycles cannot multiply an environment lookup by the light, so it is drawn as w times a sharp white '
+                          'Glossy BSDF (diffuse light taken as 1); the tint multiplies F0 (the program multiplies the finished '
+                          'specular sum, which matters only at grazing angles) and the Principled F90 is collapsed to its '
+                          'maximum channel')
     elif key in ('glass_thumper', 'glass_patterned_add'):
         # 5226F404: rim from the geometry normal; Patterns_cma (_n slot) at uv * tiling gives the normal and S (its alpha);
         # fx_noisetile02 (_pick slot) at (u/2, v/2) and (u/2, v/2 + 1/2) gives X; rgb = k specular(F0, N') + K amp (L + X).

@@ -622,9 +622,10 @@ GRAPH_RULES = (
      dict(forward='glass_basic', writer='4FC5703F', params=(
          ('tint', 0x4B4DAB19, 3), ('rim_bias', 0x42170E5E, 1), ('body', 0x7C456482, 3), ('gloss', 0x24F4CA4C, 1),
          ('f0_base', 0x62835AF9, 1), ('rim_exp', 0xECE213A3, 1)))),
-    # jn_glass writer E7118623 (table 0), decoded from the native program against 4FC5703F in this repository: same alpha
-    # sat(sat(P3 + rim) attr0.w) without the instance fade, same F0 = sat(T / luma(T)) (P8 + rim^10) and 60-F0 Fresnel, final
-    # colour C + w X (C = 0x7F058428, w = 0xEBF9478B). Table 1 (3168242A) is not selected.
+    # jn_glass writer E7118623 (table 0), read from its shadPS4 IR dump: alpha sat(sat(P3 + rim) attr0.w) as 4FC5703F, grey
+    # F0 = P8 + rim^10 in the 60-F0 lobe, rgb = (C + w Env(R)) Ld + sat(T / luma(T)) specular (C = 0x7F058428, graph default
+    # black; w = 0xEBF9478B; Env(R) = the reflection-probe lookup along the reflected view ray). The Deplanetizer exterior dome
+    # (rv_dep_ext_arch_dome_glass_01) uses it; its captured hue follows the tint. Table 1 (3168242A, no tint) is not selected.
     ('materialgraph/global/basic_glass/jn_glass.',
      dict(forward='glass_jn', writer='E7118623', params=(
          ('tint', 0x4B4DAB19, 3), ('rim_bias', 0x42170E5E, 1), ('colour', 0x7F058428, 3), ('weight', 0xEBF9478B, 1),

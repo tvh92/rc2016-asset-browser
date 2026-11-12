@@ -10,6 +10,25 @@ The Deplanetizer exterior model (`environment/global/prop/gbl_prop_uiobject_depl
 
 No draw of these programs is in a capture. The equations below were read from the shadPS4 IR dumps of the programs (compiled in game, so the programs did run), the native code through `rc2016.shaders.translator` (sample order, channels) and the graph pass contracts. The dome glass terms were checked numerically against its IR (maximum error 4e-9 over 300 random inputs). Every rule is a labelled preview (`game_equivalence` False).
 
+## Level model and captured frames
+
+The model above is the UI object (`gbl_prop_uiobject_*`). The space-battle level (`levels/deplanetizer_exterior/deplanetizer_exterior.level`) builds the station from the `dep_exterior_set_01` pieces instead. Its dome, `rv_dep_ext_arch_top_dome_01`, uses `rv_dep_ext_arch_dome_glass_01` on `jn_glass` (`E7118623`, `uKind` 10; equations in [shading](../shading.md)), not the green star-chamber glass. The star is `visualeffect/environment/deplanetizer/gameplay/dwarfstar.model` with the same `dep_gp_dwarf_star_surface_calm_01` material as the UI object.
+
+| `rv_dep_ext_arch_dome_glass_01` key | Value |
+|---|---|
+| tint `4B4DAB19` | (0.0382, 0.8469, 0.1845) |
+| rim bias P3 `42170E5E` | 0.9 |
+| rim exponent P9 `ECE213A3` | 1.8 |
+| weight w `EBF9478B` | 0.298 |
+| gloss `24F4CA4C` | 0.35 |
+| colour C `7F058428`, P8 `62835AF9` | graph defaults (0, 0, 0) and 1.0 |
+
+Flags `0x236`: alpha-over, two-sided. With P3 = 0.9 the glass is at least 90 % opaque at every angle; the star shows through because it is far brighter than the glass.
+
+Two shadPS4 captures of the space battle hold only the post-process and HUD submits (no scene draw), but the second keeps the pre-tonemap scene target (R11G11B10 float, 1920 × 1080) and the depth buffer from before post-processing. In it the dome glass reads r/g 0.004 to 0.03 and b/g 0.12 to 0.46 in linear light, matching the tint factor `sat(T / luma(T))` = (0.061, 1, 0.295). The star is orange-gold with yellow veins, as the star rule draws it. In the first capture only the tonemapped R10G10B10A2 target survives; it is stored with red and blue swapped. Once they are swapped back, the deck strips show the decoded cyan of `dep_arch_hangar_glow`.
+
+The lower part of the level dome carries a grime decal (`rv_dep_ext_arch_grime_01`, `mo_decal_gnormal`), drawn in game by forward light-loop programs (`83652CC4`, `9C8E9B1D`). The viewer has no rule for it, so the grey-`_g` family reading paints it as a solid surface over the glass.
+
 ## Dome glass (`39FDC0B9`, `uKind` 21)
 
 The graph has two forward programs. Pass 0 (`39FDC0B9`) reads the `_n` map and multiplies the specular by the material tint; pass 1 (`0740DDCC`) has the geometric normal and no tint, so it can only draw grey. The game shows a saturated green dome, so the in-view draw is taken to be pass 0 (inferred; what selects a pass is not known).
