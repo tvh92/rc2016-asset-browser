@@ -236,7 +236,7 @@ class AssetBrowserApp:
         self.blend_scene_var = remember_var(tk.BooleanVar(value=False), "export.blend_scene")
         self.group_blend_var = remember_var(tk.BooleanVar(value=False), "export.group_blend")
         self.group_name_var = remember_var(tk.StringVar(value="Selected models"), "export.group_name")
-        self.game_tonemap_var = remember_var(tk.BooleanVar(value=False), "export.game_tonemap")
+        self.game_tonemap_var = remember_var(tk.BooleanVar(value=True), "export.game_tonemap")
         # Animation picker: opens when a model has more clips than the threshold; switched off, every clip is exported.
         self.picker_var = remember_var(tk.BooleanVar(value=True), "export.picker")
         self.picker_threshold_var = remember_var(tk.StringVar(value=str(CLIP_PICKER_THRESHOLD)), "export.picker_threshold")
