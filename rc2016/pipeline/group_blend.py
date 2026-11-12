@@ -509,8 +509,14 @@ def _placement_problems(scene, members, tolerance=1e-4):
                 continue
             expected = _native_placement(member["native_matrix"]) @ _native_placement(base["native_matrix"]).inverted()
             actual = roots[member["name"]].matrix_world @ roots[base["name"]].matrix_world.inverted()
-            if max(abs(expected[i][j] - actual[i][j]) for i in range(4) for j in range(4)) > tolerance:
-                problems.append("placement: " + member["name"])
+            # Blender stores matrices as float32: the translation column is checked relative to the distance of the
+            # two placements (a level placement hundreds of units out carries about 1e-4 of rounding), the rotation
+            # part absolutely.
+            placed = (_native_placement(member["native_matrix"]), _native_placement(base["native_matrix"]))
+            reach = max(1.0, *(abs(m[i][3]) for m in placed for i in range(3)))
+            error = max(abs(expected[i][j] - actual[i][j]) / (reach if j == 3 else 1.0) for i in range(4) for j in range(4))
+            if error > tolerance:
+                problems.append("placement: %s (%.3g)" % (member["name"], error))
     return problems
 
 
