@@ -7,7 +7,8 @@ overlaps the model it belongs to exactly.  Each member keeps the animation it wa
 Actions), so the timeline plays every member's clips; ``bind_pose`` on a member clears it instead.  A member with a
 ``native_matrix`` (``run.py --group-actors``, or a rack copy of ``projectile_mounts.RACKS``) is placed by that matrix,
 and the same .blend may then appear in several members; a ``mount`` parents a member to a joint of another member's
-armature.  The scene then uses the shared review lighting, one camera dollied to fit the whole group and one
+armature, and a pilot's mount (``pilot_mounts.PILOTS``) also puts its origin on that joint and starts each of its clips
+with the owner's clip of the same name.  The scene then uses the shared review lighting, one camera dollied to fit the whole group and one
 Render Region around it, exactly as a single-model build does.
 """
 import argparse
@@ -78,17 +79,88 @@ def _native_placement(rows):
     return PRESENTATION @ column @ PRESENTATION.inverted()
 
 
-def _mount_on_joint(objects, rig, joint):
+def _joint_origin(rig, joint):
+    """Presentation-space move from the owner's origin to joint ``joint``'s rest frame: the game's rest joint frames
+    of these rigs are pure translations, and the armature's own space is the native frame."""
+    head = rig.matrix_basis @ rig.data.bones[joint].head_local
+    return Matrix.Translation(head - rig.matrix_basis.translation)
+
+
+def _mount_on_joint(objects, rig, joint, at_joint=False):
     """Parent a placed member's root objects to bone ``joint`` of ``rig``, so they follow its clips; at the rest pose
-    they keep the matrix they were placed at (the parent inverse is the bone's rest tail frame)."""
+    they keep the matrix they were placed at (the parent inverse is the bone's rest tail frame). ``at_joint`` first
+    moves them from the owner's origin to the joint, so their origin rides on the joint's posed frame (a pilot)."""
     bone = rig.data.bones[joint]
     rest = rig.matrix_basis @ bone.matrix_local @ Matrix.Translation((0.0, bone.length, 0.0))
+    origin = _joint_origin(rig, joint) if at_joint else Matrix.Identity(4)
     for obj in objects:
         if obj.parent is None:
-            placed = obj.matrix_basis.copy()
+            placed = origin @ obj.matrix_basis
             obj.parent, obj.parent_type, obj.parent_bone = rig, "BONE", joint
             obj.matrix_parent_inverse = rest.inverted()
             obj.matrix_basis = placed
+
+
+def _clip_key(name, suffix):
+    """A clip strip's name without the timeline number (``0012 | ``) and the model's clip suffix, case-insensitively."""
+    name = re.sub(r"^\d+ \| ", "", name)
+    return name[:-len(suffix)] if suffix and name.casefold().endswith(suffix.casefold()) else name
+
+
+PILOT_ONLY_TRACK = "Pilot clips without a vehicle clip (muted)"
+
+
+def _follow_owner_clips(rig, owner_rig, clips):
+    """Start each clip strip of ``rig`` with the strip of ``owner_rig`` whose clip has the same name (suffixes
+    ``clips["suffix"]`` / ``clips["owner_suffix"]``), so a pilot plays the clip that goes with the vehicle's. A pilot
+    clip longer than the gap to the owner's next clip is cut there. Clips with no owner clip move to a muted track
+    after the owner's last clip. Returns {pilot strip name: owner strip name}."""
+    owner = {}
+    for track in owner_rig.animation_data.nla_tracks if owner_rig.animation_data else ():
+        for strip in track.strips:
+            owner.setdefault(_clip_key(strip.name, clips["owner_suffix"]), strip)
+    starts = sorted(strip.frame_start for strip in owner.values())
+    tracks = list(rig.animation_data.nla_tracks) if rig.animation_data else []
+    specs = [dict(name=s.name, action=s.action, slot=s.action_slot, first=s.action_frame_start, last=s.action_frame_end,
+                  scale=s.scale, key=_clip_key(s.name, clips["suffix"])) for track in tracks for s in track.strips]
+    if not specs or not owner:
+        return {}
+    for track in tracks:
+        rig.animation_data.nla_tracks.remove(track)
+
+    def add(track, spec, start, limit=None):
+        strip = track.strips.new(spec["name"], int(start), spec["action"])
+        strip.name, strip.action_slot = spec["name"], spec["slot"]
+        strip.use_sync_length = False
+        strip.action_frame_start, strip.action_frame_end = spec["first"], spec["last"]
+        strip.scale = spec["scale"]
+        if limit is not None and strip.frame_end > limit:
+            strip.action_frame_end = spec["first"] + (limit - start) / spec["scale"]
+        strip.frame_start = start
+        strip.repeat, strip.blend_type, strip.extrapolation = 1, "REPLACE", "HOLD_FORWARD"
+        strip.blend_in = strip.blend_out = 0
+        strip.use_auto_blend = False
+        return strip
+
+    paired = sorted(((owner[spec["key"]].frame_start, spec) for spec in specs if spec["key"] in owner),
+                    key=lambda pair: pair[0])
+    track = rig.animation_data.nla_tracks.new()
+    track.name = "All Source Clips | following " + owner_rig.name
+    pairs = {}
+    for start, spec in paired:
+        later = [frame for frame in starts if frame > start]
+        add(track, spec, start, later[0] - 1 if later else None)
+        pairs[spec["name"]] = owner[spec["key"]].name
+    alone = [spec for spec in specs if spec["key"] not in owner]
+    if alone:
+        spare = rig.animation_data.nla_tracks.new()
+        spare.name, spare.mute = PILOT_ONLY_TRACK, True
+        frame = int(math.ceil(max(strip.frame_end for strip in owner.values()))) + 1
+        for spec in alone:
+            frame = int(math.ceil(add(spare, spec, frame).frame_end)) + 1
+    print("GROUP pilot clips", rig.name, "paired:", len(pairs), "without a vehicle clip:", [s["name"] for s in alone],
+          flush=True)
+    return pairs
 
 
 def _bake_track(obj, base, matrices):
@@ -298,6 +370,14 @@ def _layout(members, right):
     return layout
 
 
+def _mount_rig(objects, joint):
+    """The armature of ``objects`` that carries ``joint``: the one their meshes deform with, else the first."""
+    rig, _mesh = _deforming_rig(objects)
+    if rig is not None and joint in rig.data.bones:
+        return rig
+    return next((obj for obj in objects if obj.type == "ARMATURE" and joint in obj.data.bones), None)
+
+
 def _timeline(scene, members):
     """Span the scene's frame range over every kept NLA strip, so the timeline plays the members' clips; a group
     with no animation keeps the default range. Frame 1 of that range is the frame the camera is fitted to."""
@@ -307,6 +387,8 @@ def _timeline(scene, members):
             if obj.type != "ARMATURE" or obj.animation_data is None:
                 continue
             for track in obj.animation_data.nla_tracks:
+                if track.mute:
+                    continue
                 for strip in track.strips:
                     starts.append(strip.frame_start)
                     ends.append(strip.frame_end)
@@ -371,17 +453,22 @@ def assemble(job):
                     obj.matrix_basis = place @ obj.matrix_basis
         members.append(objects)
         print("GROUP member", index + 1, len(job["members"]), job["members"][index]["name"], flush=True)
-    # ``mount`` (projectile_mounts.RACKS): a rack copy rides on a joint of another member's armature.
+    # ``mount`` (projectile_mounts.RACKS, pilot_mounts.PILOTS): a rack copy or a pilot rides on a joint of another
+    # member's armature, the one its meshes deform with when that has the joint.
     labels = [m["name"] for m in job["members"]]
+    clip_pairs = {}
     for index, member in enumerate(job["members"]):
         mount = member.get("mount")
         if not mount:
             continue
-        rig = next((obj for obj in loaded[labels.index(mount["owner"])]
-                    if obj.type == "ARMATURE" and mount["joint"] in obj.data.bones), None)
+        rig = _mount_rig(loaded[labels.index(mount["owner"])], mount["joint"])
         if rig is None:
-            raise RuntimeError("Rack joint %s not found on %s" % (mount["joint"], mount["owner"]))
-        _mount_on_joint(loaded[index], rig, mount["joint"])
+            raise RuntimeError("Mount joint %s not found on %s" % (mount["joint"], mount["owner"]))
+        _mount_on_joint(loaded[index], rig, mount["joint"], at_joint=mount.get("origin") == "joint")
+        if mount.get("clips"):
+            own, _mesh = _deforming_rig(loaded[index])
+            if own is not None:
+                clip_pairs[member["name"]] = _follow_owner_clips(own, rig, mount["clips"])
     _timeline(scene, members)
     tracked = [m for m in job["members"] if m.get("native_track")]
     if tracked:
@@ -418,12 +505,15 @@ def assemble(job):
     _embed("Camera zoom.json", camera_receipt)
     _embed("Render region.json", region_receipt)
     placed = any("native_matrix" in m for m in job["members"])
-    racked = any("mount" in m for m in job["members"])
+    racked = any("mount" in m and "native_matrix" in m for m in job["members"])
+    piloted = any(m.get("mount", {}).get("origin") == "joint" for m in job["members"])
     _embed("Group members.json", dict(members=[dict(name=m["name"], sha256=m["sha256"],
-                                                    **{k: m[k] for k in ("native_matrix", "placement", "mount") if k in m})
+                                                    **{k: m[k] for k in ("native_matrix", "placement", "mount") if k in m},
+                                                    **({"clip_pairs": clip_pairs[m["name"]]} if m["name"] in clip_pairs else {}))
                                                for m in job["members"]],
                                       layout=layout,
-                                      placement="weapon rack" if racked else "zone actors" if placed else "original",
+                                      placement="weapon rack" if racked else "zone actors" if placed else
+                                      "pilot seat" if piloted else "original",
                                       camera_right_axis=list(right)))
     bpy.data.orphans_purge(do_local_ids=True, do_linked_ids=False, do_recursive=True)
     pack_scene_images(scene)   # the shared HDRI too: the group file opens wherever it is moved
@@ -455,6 +545,7 @@ def validate(job):
         bpy.context.view_layer.update()
     problems.extend(_placement_problems(scene, job["members"]))
     problems.extend(_mount_problems(scene, job["members"]))
+    problems.extend(_pilot_problems(scene, job["members"]))
     for member in job["members"]:
         track = member.get("native_track")
         if not track:
@@ -499,7 +590,34 @@ def _mount_problems(scene, members):
         root = roots.get(member["name"])
         if (root is None or root.parent is None or root.parent_type != "BONE" or root.parent_bone != mount["joint"]
                 or root.parent.get(MEMBER_KEY) != mount["owner"]):
-            problems.append("rack mount: " + member["name"])
+            problems.append("mount: " + member["name"])
+    return problems
+
+
+def _pilot_problems(scene, members, tolerance=1e-4):
+    """Every pilot's armature sits on its joint's rest frame at the rest pose (the caller sets it), and each of its
+    unmuted clip strips starts with the owner's strip of the same clip name."""
+    problems = []
+    for member in members:
+        mount = member.get("mount") or {}
+        if mount.get("origin") != "joint":
+            continue
+        owner = _mount_rig([obj for obj in scene.objects if obj.get(MEMBER_KEY) == mount["owner"]], mount["joint"])
+        own, _mesh = _deforming_rig([obj for obj in scene.objects if obj.get(MEMBER_KEY) == member["name"]])
+        if owner is None or own is None:
+            problems.append("pilot rig: " + member["name"])
+            continue
+        head = owner.matrix_world @ owner.data.bones[mount["joint"]].head_local
+        if (own.matrix_world.translation - head).length > tolerance:
+            problems.append("pilot origin: " + member["name"])
+        clips = mount.get("clips")
+        if not clips:
+            continue
+        starts = {_clip_key(s.name, clips["owner_suffix"]): s.frame_start
+                  for t in owner.animation_data.nla_tracks for s in t.strips}
+        strips = [s for t in own.animation_data.nla_tracks if not t.mute for s in t.strips]
+        if not strips or any(starts.get(_clip_key(s.name, clips["suffix"])) != s.frame_start for s in strips):
+            problems.append("pilot clips: " + member["name"])
     return problems
 
 

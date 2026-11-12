@@ -23,6 +23,7 @@ from rc2016.pipeline.clip_selection import ClipSelectionError, resolve_clip_sele
 from rc2016.common import dump,ensure_separate,extended,file_hash,load,read,safe_name,sha,unzip_json,write,promote
 from rc2016.formats.index import AssetIndex
 from rc2016.pipeline.projectile_mounts import idle_offsets,rack_placements
+from rc2016.pipeline.pilot_mounts import pilot_mounts
 from rc2016.pipeline.lighting import NOVALIS_REGION,inventory_lighting,prepare_game_lighting
 from rc2016.formats.skeleton import inspect_model,rest_inheritance_rule
 from rc2016.formats.native_model import UnsupportedModelError,inspect_native_model
@@ -1028,11 +1029,19 @@ def assemble_group_blend(selection,manifest,args,log,archive=None):
     mounts=idle_offsets([path for path,_ in delivered])
     racks=rack_placements([path for path,_ in delivered])
     owners=attach_owners([path for path,_ in delivered])
+    pilots=pilot_mounts([path for path,_ in delivered])
     label_of={path:label for label,(path,_) in zip(labels,delivered)}
     members=[]
     for label,(path,final) in zip(labels,delivered):
         member=dict(name=label,blend=final,sha256=file_hash(final),**({'native_offset':list(mounts[path])} if path in mounts else {}),
             **({'rig_of':label_of[owners[path]]} if path in owners else {}))
+        if path in pilots:
+            # A pilot rides on its vehicle's joint with its origin there and plays the vehicle's clips in step
+            # (rc2016/pipeline/pilot_mounts.py).
+            pilot=pilots[path]
+            member.update(mount=dict(joint=pilot['joint'],owner=label_of[pilot['owner']],origin='joint',clips=pilot['clips']),
+                placement=dict(pilot=pilot['name'],evidence=pilot['evidence']))
+            log('group_pilot',pilot=path,vehicle=pilot['owner'],joint=pilot['joint'])
         path_racks=racks.get(path)
         if not path_racks:
             members.append(member);continue
