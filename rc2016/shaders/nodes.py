@@ -211,12 +211,16 @@ def _frontend(translation,images):
                 socket=math_node('ADD',[math_node('MULTIPLY',[a[0],diff]),a[2]])
             else:raise ValueError('Unsupported emitter operation '+op)
         cache[i]=socket;return socket
-    def color(name,roots):
+    def color(name,roots,unorm=False):
         n=nodes.new('ShaderNodeCombineColor');n.mode='RGB';n.name=name
-        for j,i in enumerate(roots):links.new(emit(i),n.inputs[j])
+        for j,i in enumerate(roots):
+            socket=emit(i)
+            if unorm:socket=math_node('MINIMUM',[math_node('MAXIMUM',[socket],[(1,0)])],[(1,1)])
+            links.new(socket,n.inputs[j])
         return n.outputs[0]
     outputs=translation['outputs']
-    links.new(color('Native albedo',outputs['albedo']),out.inputs['Albedo'])
+    # Albedo is stored in the UNORM MRT1 (R8G8B8A8_SRGB): the lighting pass reads it clamped to [0, 1].
+    links.new(color('Native albedo',outputs['albedo'],unorm=True),out.inputs['Albedo'])
     links.new(color('Native specular F0',outputs['F0']),out.inputs['F0'])
     links.new(emit(outputs['gloss']),out.inputs['Gloss'])
     links.new(emit(outputs['emission']),out.inputs['Emission multiplier'])

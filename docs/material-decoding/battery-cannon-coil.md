@@ -21,7 +21,7 @@ emission = 3 (h + min(1, K^2)) + 2
 gloss    = flat-surface value -log2(1 - 0.99928) / 11 = 0.94868 (= sqrt(0.9))
 ```
 
-At `K = 0` the albedo is `h + a (0, 0.552, 1)`: a cyan whose brightness follows the noise, and the emission `3h + 2` (1.94 to 2.84) lights it by its own albedo. The emission output is the engine's `exp2(5 · 0.2 log2(x)) - 1` encoding, which folds to `x - 1`. `K` above 0 turns the coil towards a warmer colour; nothing in the material or the model sets it, so a runtime charge state may drive it, which is not decoded.
+At `K = 0` the albedo is `h + a (0, 0.552, 1)`: a cyan whose brightness follows the noise, and the emission `3h + 2` (1.94 to 2.84) lights it by its own albedo. As for every native translation, the albedo is clamped to [0, 1], the range of the UNORM target the game stores it in: this lifts the slightly negative red where `s` is below 0.067. `cloud_noise_01` peaks at 0.686, so the blue never reaches 1. The emission output is the engine's `exp2(5 · 0.2 log2(x)) - 1` encoding, which folds to `x - 1`. `K` above 0 turns the coil towards a warmer colour; nothing in the material or the model sets it, so a runtime charge state may drive it, which is not decoded.
 
 The gloss output has the same form as the gauge needle writer, `-log2(1 - C (2 - R)) / 11` with `R = 1 / max(0.5, 1 - S^2 / 4)`. Here `S = CB0[139] · POS_W · attribute1.2 / max(0.1, -N·D)`, with `N` the normalised interpolant `attribute2.xyz` and `D` the normalised camera ray built from `CB0[92..106]`, `POS_X`, `POS_Y` and `POS_W`. `CB0[139]` is a factor of `S`, so freezing it at 0 makes `S = 0`, `R = 1` and gloss the flat-surface value. The real specular-AA widening is not modelled.
 
@@ -33,6 +33,5 @@ The Batalia capture of the cannon (local research, 2026-11-12) holds only the pa
 
 - `CB0[99]` (time) is frozen at 0, so the noise does not scroll.
 - The specular-AA widening (`CB0[139]`, `attribute1.2`) is neutral.
-- The albedo above 1 (blue for `s` above 0.76) and the negative red at `s` below 0.067 are passed on unclamped. The game's albedo target is UNORM and clamps both; the native translation path does not clamp albedo.
 - `K` stays at its graph default 0.
 - The forward light-loop and discard programs are not drawn.

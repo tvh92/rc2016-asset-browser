@@ -37,7 +37,7 @@ The equations below were read from the SPIR-V of a RenderDoc capture of the game
 G-buffer writer:
 - `_g` RGB (sRGB-decoded, times a material constant) goes to MRT2 RGB as linear F0.
 - Gloss: `t = sqrt(saturate(gloss² × K_gloss))`, `e = 2^(-11 t)`, then a geometric specular anti-aliasing widening `w`, `alpha_out = -log2(1 - w(1 - e)) / 11`. On flat surfaces `w = 1` and `alpha_out = t`.
-- `_c` goes to MRT1 RGB as albedo. MRT1 is `R8G8B8A8_SRGB`, so albedo is stored clamped to [0, 1]. MRT1 alpha stores the self-lit term as `0.2 × log2(1 + x)`; lighting decodes `x = 2^(5a) - 1`.
+- `_c` goes to MRT1 RGB as albedo. MRT1 is `R8G8B8A8_SRGB`, so albedo is stored clamped to [0, 1]. Native translations apply the same clamp to the albedo output of the translated writer, in the viewer (`native_glsl.emit_surface`) and in the Blender front-end (`shaders.nodes`). MRT1 alpha stores the self-lit term as `0.2 × log2(1 + x)`; lighting decodes `x = 2^(5a) - 1`.
 
 Deferred lighting, with `s = 2^(-11 × gloss)` (GGX α² = s):
 

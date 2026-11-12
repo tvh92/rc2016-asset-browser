@@ -12,7 +12,7 @@ from rc2016.shaders.bindings import PORTABLE_OPS, VERTEX_TANGENT_FRAME
 from rc2016.shaders.ir import DAG, compute
 from rc2016.viewer.textures import TextureDiskCache
 
-EMITTER_VERSION = 9
+EMITTER_VERSION = 10
 # Reserve vertex bone matrices (3) and shared environment lighting (6).
 TEXTURE_UNITS = (0, 1, 2, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15)
 
@@ -140,6 +140,8 @@ def emit_surface(translation, srgb=None, *, experimental=False, rule_preview=Fal
     for label in ('albedo', 'F0'):
         values = [visit(i) for i in outputs[label]]
         lines.append(f'    vec3 {label} = vec3({", ".join(values)});')
+    # The game stores albedo in the UNORM MRT1 (R8G8B8A8_SRGB), so the lighting pass reads it clamped to [0, 1].
+    lines.append('    albedo = clamp(albedo, 0.0, 1.0);')
     for label in ('gloss', 'emission'):
         value = visit(outputs[label]); lines.append(f'    float {label} = {value};')
     if translation.get('normal'):
@@ -282,6 +284,7 @@ def evaluate_surface(translation, uv, sample, *, preview_inputs=None):
         values[i] = value; return value
     o = translation['outputs']
     result = {label: [visit(i) for i in o[label]] for label in ('albedo', 'F0')}
+    result['albedo'] = [min(1., max(0., v)) for v in result['albedo']]   # UNORM MRT1, as emit_surface
     result.update((label, visit(o[label])) for label in ('gloss', 'emission'))
     normal = translation.get('normal')
     xyz = [visit(i) for i in normal['xyz']] if normal else None

@@ -26,7 +26,7 @@ CASES = (
      dict(albedo=(.25, .5, .75), F0=(0.0999755859375, 0.0999755859375, 0.10000000149011612),
           gloss=math.sqrt(.9), emission=0.0)),
     (MAP_O_MATIC_SCREEN_SOURCE_PREVIEW, 0, (5, 6),
-     dict(albedo=(0.0, 0.4969329833984375 * MAP_X, 0.6583748459815979 * MAP_X),
+     dict(albedo=(0.0, min(1.0, 0.4969329833984375 * MAP_X), min(1.0, 0.6583748459815979 * MAP_X)),   # UNORM albedo
           F0=(0.239990234375, 0.239990234375, 0.23999999463558197), gloss=1.0, emission=2.0 * MAP_X)),
 )
 

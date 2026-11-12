@@ -19,7 +19,8 @@ TIME_MEANING = 'time/phase-like source input; runtime upload/value unverified'
 def expected_surface(s):
     """The decoded writer at K = CB2[0] = 0 (graph default)."""
     h, a = 0.3 * s - 0.02, 0.5 + 0.5 * s
-    return dict(albedo=(h, h + 0.5520114302635193 * a, h + a), F0=(0.199951171875, 0.199951171875, 0.20000000298023224),
+    sat = lambda x: min(1.0, max(0.0, x))   # the UNORM albedo target
+    return dict(albedo=(sat(h), sat(h + 0.5520114302635193 * a), sat(h + a)), F0=(0.199951171875, 0.199951171875, 0.20000000298023224),
                 gloss=math.sqrt(.9), emission=3 * h + 2)
 
 

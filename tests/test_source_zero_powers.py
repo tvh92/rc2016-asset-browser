@@ -8,9 +8,10 @@ from rc2016.viewer.native_glsl import evaluate_surface,emit_surface
 
 class SourceZeroPowerTests(unittest.TestCase):
     def surface(self,ir,root):
+        # The probe is the emission output: albedo is clamped to the UNORM range and would hide values above 1.
         z=ir.const(0.)
         return dict(status='ready',translation_sha256='probe',nodes=ir.nodes,
-            outputs=dict(albedo=[root]*3,F0=[z]*3,gloss=z,emission=z),normal=None,texture_bindings=[])
+            outputs=dict(albedo=[z]*3,F0=[z]*3,gloss=z,emission=root),normal=None,texture_bindings=[])
 
     def test_zero_and_positive_retain_source_chain(self):
         for exponent in (.01,.5,1.,2.,10.):
@@ -20,7 +21,7 @@ class SourceZeroPowerTests(unittest.TestCase):
             t=self.surface(ir,roots[0]);self.assertIn('log2(',emit_surface(t)['body'])
             for value in (0.,-0.,1e-20,.125,1.,2.,-2.):
                 expected=2**(math.log2(abs(value))*exponent) if value else 0.
-                self.assertEqual(evaluate_surface(t,(value,0),None)['albedo'][0],expected)
+                self.assertEqual(evaluate_surface(t,(value,0),None)['emission'],expected)
 
     def test_bound_zero_constant_eliminates_singular_chain(self):
         ir=DAG();root=ir.op('exp2',ir.op('mul',ir.op('log2',ir.const(0.)),ir.const(.25)))
