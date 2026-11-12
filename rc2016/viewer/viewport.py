@@ -206,6 +206,18 @@ def split_forward(batches, textures):
     return opaque, forward
 
 
+def self_lit_entry(entry, native_translation=True):
+    """True when a material emits light of its own: a self-lit gain (texture_preview 'k', the uK of every self-lit term), a
+    bright_center bulb, the additive antenna glow shell, or a native translation whose emission output is not constant 0."""
+    if float(entry.get('k') or 0.0) > 0.0 or entry.get('bright_center') or (entry.get('forward') or {}).get('kind') == 'bright_glow':
+        return True
+    translation = entry.get('native_translation') if native_translation else None
+    if not translation:
+        return False
+    node = translation['nodes'][translation['outputs']['emission']]
+    return not (node.get('op') == 'const' and float(node.get('value', 0.0)) <= 0.0)
+
+
 def batch_centres(vertices, triangles, batches):
     """{(first, count): centroid} of each batch's triangle vertices (rest pose)."""
     centres = {}
@@ -1430,7 +1442,9 @@ class ModelViewport(_TkFrame):
             # (_hdr_begin); other models keep drawing display-referred straight into the window.
             hdr_forward = any((((self._gl_textures or {}).get(b[0]) or {}).get('forward') or {}).get('kind') in self.HDR_FORWARD_KINDS
                               for b in glass)
-            hdr = self._hdr_begin() if level == 2 and (panes or effect_quads or hdr_forward) else None
+            emitters = self.BLOOM and self.BLOOM_EMITTERS and any(
+                self_lit_entry(((self._gl_textures or {}).get(b[0]) or {}), self.native_translation) for b in batches)
+            hdr = self._hdr_begin() if level == 2 and (panes or effect_quads or hdr_forward or emitters) else None
             if hdr:   # the program in use took its tonemap uniform before the float target was bound
                 self._apply_lighting(u)
             for slot, first, count in opaque:
@@ -1621,6 +1635,10 @@ class ModelViewport(_TkFrame):
     # The Telepathipus brain case (uKind 20) mixes the scene colour behind it into its own colour, so its frames need the
     # scene-linear colour of the float target to copy (_scene_copies).
     HDR_FORWARD_KINDS = frozenset({'turret_shield', 'turret_hud', 'brain_case'})
+    # Frames with a self-lit material (self_lit_entry: the Clank bots' eyes, antenna bulbs) also use the float target, so the
+    # decoded bloom glows around their emission as in the game (gadgebot capture: eye glow reproduced to 0.5 %). Without a
+    # transparent pass the bloom's 'before' copy is the resolve copy, as in the game's chain.
+    BLOOM_EMITTERS = True
     GL_FRAMEBUFFER, GL_FRAMEBUFFER_BINDING, GL_FRAMEBUFFER_COMPLETE = 0x8D40, 0x8CA6, 0x8CD5
     _HDR_FUNCTIONS = {'glGenFramebuffers': (None, 'ip'), 'glBindFramebuffer': (None, 'uu'),
                       'glFramebufferTexture2D': (None, 'uuuui'), 'glCheckFramebufferStatus': ('u', 'u'),
@@ -1885,6 +1903,7 @@ class ModelViewport(_TkFrame):
 
     def _bloom_texture(self, target):
         """Run the bloom chain for this frame; the GL texture of the bloom image, or None."""
+        self._bloom_before(target)   # a frame without a transparent pass: 'before' is the scene at the resolve
         if not self.BLOOM or not self.__dict__.get('_bloom_before_done') or self.__dict__.get('_bloom_error'):
             return None
         from rc2016.levels.display import EXPOSURE_MULTIPLIER
