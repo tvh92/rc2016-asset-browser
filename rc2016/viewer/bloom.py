@@ -48,6 +48,18 @@ SPRITE_LEVELS = 4    # downsample steps of the sprite chain
 CHANNEL_FLOOR = 1.5258789e-05
 
 
+def self_lit(k=0.0, bright_center=False, glow_shell=False, translation=None):
+    """Whether a material emits light of its own, so its frame blooms (the viewer's self_lit_entry and the Blender front-end's
+    emitter bloom both use this): a self-lit gain k above 0 (the uK of every self-lit term), a bright_center bulb, the additive
+    antenna glow shell, or a native translation whose emission output is not constant 0."""
+    if float(k or 0.0) > 0.0 or bright_center or glow_shell:
+        return True
+    if not translation:
+        return False
+    node = translation['nodes'][translation['outputs']['emission']]
+    return not (node.get('op') == 'const' and float(node.get('value', 0.0)) <= 0.0)
+
+
 def padded_half(width, height):
     """The half-resolution size of a (width, height) viewport, padded up to a multiple of 32 (960 x 544 for 1920 x 1080)."""
     up = lambda n: max(PAD, -(-((n + 1) // 2) // PAD) * PAD)

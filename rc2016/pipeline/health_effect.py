@@ -496,6 +496,40 @@ def _game_view_node(tree):
     return node if node is not None and 'Bloom' in node.inputs else None
 
 
+def bright_pass_blur(scene, tree, image, index, pass_index, exposure, weight, sigma):
+    """One decoded bloom chain as compositor nodes: the pixels whose `index` pass (Object or Material Index) is `pass_index`,
+    through the game's bright pass (channel clamp 10.891, gate sat(exposure L / 8 - 0.5), chroma c / L, times `weight`) and one
+    Gaussian of `sigma` px at 1080p that follows the output height (drivers). Returns the blurred image socket."""
+    height = scene.render.resolution_y * scene.render.resolution_percentage / 100.0
+    luma_weights = (0.2126, 0.7152, 0.0722)
+    mask = _node(tree, 'CompositorNodeIDMask')
+    mask.inputs['Index'].default_value = pass_index
+    mask.inputs['Anti-Alias'].default_value = True
+    tree.links.new(index, mask.inputs['ID value'])
+    masked = _mix(tree, 'MULTIPLY', image, mask.outputs[0])
+    clamped = _vector(tree, 'MINIMUM', masked, (CHANNEL_CLAMP,) * 3).outputs['Vector']   # the game's channel clamp before the gate
+    colour = _vector(tree, 'SCALE', clamped, None)
+    luma = _vector(tree, 'DOT_PRODUCT', clamped, luma_weights).outputs['Value']
+    luma = _math(tree, 'MAXIMUM', luma, 1.0 / 1024.0)
+    gate = _math(tree, 'MULTIPLY_ADD', luma, exposure * 0.125, clamp=True)
+    gate.node.inputs[2].default_value = -0.5
+    factor = _math(tree, 'MULTIPLY', _math(tree, 'DIVIDE', gate, luma), weight)
+    tree.links.new(factor, colour.inputs['Scale'])
+    blur = _node(tree, 'CompositorNodeBlur')
+    size = 3.0 * sigma * height / GAME_HEIGHT        # Blender's Gaussian: sigma = size / 3 (measured)
+    blur.inputs['Size'].default_value = (size, size)
+    for axis in (0, 1):   # follow the output height, so a resolution percentage change keeps the bloom's screen size
+        driver = blur.inputs['Size'].driver_add('default_value', axis).driver
+        driver.type = 'SCRIPTED'
+        for name, path in (('h', 'render.resolution_y'), ('p', 'render.resolution_percentage')):
+            variable = driver.variables.new()
+            variable.name, variable.type = name, 'SINGLE_PROP'
+            variable.targets[0].id_type, variable.targets[0].id, variable.targets[0].data_path = 'SCENE', scene, path
+        driver.expression = '%r * h * p / 100' % (3.0 * sigma / GAME_HEIGHT)
+    tree.links.new(colour.outputs['Vector'], blur.inputs['Image'])
+    return blur.outputs[0]
+
+
 def add_bloom(scene, exposure=None):
     """Add the health crate's bloom to the scene compositor (see the module docstring); returns the receipt dict.
     With the game tonemap (``apply_game_tonemap``) the bloom feeds its Bloom input, after the tone curve, and the gate uses its
@@ -527,38 +561,14 @@ def add_bloom(scene, exposure=None):
         for link in list(image.links):
             tree.links.remove(link)
     height = scene.render.resolution_y * scene.render.resolution_percentage / 100.0
-    luma_weights = (0.2126, 0.7152, 0.0722)
     total = None
     nodes_before = set(tree.nodes)
     for pass_index, weight, sigma in ((EFFECT_PASS_INDEX, SPRITE_WEIGHT, SIGMA_SPRITE_PX),):
-        mask = _node(tree, 'CompositorNodeIDMask')
-        mask.inputs['Index'].default_value = pass_index
-        mask.inputs['Anti-Alias'].default_value = True
-        tree.links.new(index, mask.inputs['ID value'])
-        masked = _mix(tree, 'MULTIPLY', image, mask.outputs[0])
-        clamped = _vector(tree, 'MINIMUM', masked, (CHANNEL_CLAMP,) * 3).outputs['Vector']   # the game's channel clamp before the gate
-        colour = _vector(tree, 'SCALE', clamped, None)
-        luma = _vector(tree, 'DOT_PRODUCT', clamped, luma_weights).outputs['Value']
-        luma = _math(tree, 'MAXIMUM', luma, 1.0 / 1024.0)
-        gate = _math(tree, 'MULTIPLY_ADD', luma, exposure * 0.125, clamp=True)
-        gate.node.inputs[2].default_value = -0.5
-        factor = _math(tree, 'MULTIPLY', _math(tree, 'DIVIDE', gate, luma), weight)
-        tree.links.new(factor, colour.inputs['Scale'])
-        blur = _node(tree, 'CompositorNodeBlur')
-        size = 3.0 * sigma * height / GAME_HEIGHT        # Blender's Gaussian: sigma = size / 3 (measured)
-        blur.inputs['Size'].default_value = (size, size)
-        for axis in (0, 1):   # follow the output height, so a resolution percentage change keeps the bloom's screen size
-            driver = blur.inputs['Size'].driver_add('default_value', axis).driver
-            driver.type = 'SCRIPTED'
-            for name, path in (('h', 'render.resolution_y'), ('p', 'render.resolution_percentage')):
-                variable = driver.variables.new()
-                variable.name, variable.type = name, 'SINGLE_PROP'
-                variable.targets[0].id_type, variable.targets[0].id, variable.targets[0].data_path = 'SCENE', scene, path
-            driver.expression = '%r * h * p / 100' % (3.0 * sigma / GAME_HEIGHT)
-        tree.links.new(colour.outputs['Vector'], blur.inputs['Image'])
-        total = blur.outputs[0] if total is None else _mix(tree, 'ADD', total, blur.outputs[0])
+        blurred = bright_pass_blur(scene, tree, image, index, pass_index, exposure, weight, sigma)
+        total = blurred if total is None else _mix(tree, 'ADD', total, blurred)
     if game is not None:
-        tree.links.new(total, game.inputs['Bloom'])   # added to the tone-curve output before the sRGB encode, as the game's composite does
+        feeding = game.inputs['Bloom'].links[0].from_socket if game.inputs['Bloom'].links else None   # another bloom (emitter_bloom)
+        tree.links.new(total if feeding is None else _mix(tree, 'ADD', feeding, total), game.inputs['Bloom'])   # added to the tone-curve output before the sRGB encode, as the game's composite does
     else:
         summed = _mix(tree, 'ADD', image, total)
         split = _node(tree, 'CompositorNodeSeparateColor')

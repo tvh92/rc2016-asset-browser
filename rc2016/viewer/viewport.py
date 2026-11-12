@@ -207,15 +207,10 @@ def split_forward(batches, textures):
 
 
 def self_lit_entry(entry, native_translation=True):
-    """True when a material emits light of its own: a self-lit gain (texture_preview 'k', the uK of every self-lit term), a
-    bright_center bulb, the additive antenna glow shell, or a native translation whose emission output is not constant 0."""
-    if float(entry.get('k') or 0.0) > 0.0 or entry.get('bright_center') or (entry.get('forward') or {}).get('kind') == 'bright_glow':
-        return True
-    translation = entry.get('native_translation') if native_translation else None
-    if not translation:
-        return False
-    node = translation['nodes'][translation['outputs']['emission']]
-    return not (node.get('op') == 'const' and float(node.get('value', 0.0)) <= 0.0)
+    """True when a material emits light of its own (rc2016.viewer.bloom.self_lit, shared with the Blender front-end)."""
+    from rc2016.viewer.bloom import self_lit
+    return self_lit(entry.get('k'), bool(entry.get('bright_center')), (entry.get('forward') or {}).get('kind') == 'bright_glow',
+                    entry.get('native_translation') if native_translation else None)
 
 
 def batch_centres(vertices, triangles, batches):

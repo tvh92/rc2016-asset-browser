@@ -589,6 +589,9 @@ def build(job):
         from rc2016.pipeline import holocard_effect
         anchors=[o for o in scene.objects if o.type=='MESH' and o.get('source_model_sha256')==job['model']['model_sha256']]
         if anchors:holocard_effect.build(scene,anchors[0],job['holocard_effect']['description'],job['holocard_effect']['textures'])
+    # The game's bloom around self-lit materials (rc2016/pipeline/emitter_bloom.py): only with the game tonemap's compositor.
+    from rc2016.pipeline import emitter_bloom
+    emitter_bloom.add_emitter_bloom(scene)
     bpy.context.view_layer.update()
     # Columns in the shader editor (rc2016/pipeline/node_layout.py): built in, so no Blender add-on is needed.
     from rc2016.pipeline.node_layout import arrange_tree
@@ -765,6 +768,14 @@ def validate(job):
     assert presented,'No source objects use the game-to-Blender presentation basis'
     for obj in presented:
         assert max(abs(a-b) for actual,expected in zip(obj.matrix_world,SOURCE_TO_BLENDER) for a,b in zip(actual,expected))<1e-7,('Presentation basis changed',obj.name)
+    if 'emitter_bloom' in scene:   # rc2016/pipeline/emitter_bloom.py: tags and the Bloom link survive the reopen
+        from rc2016.pipeline import emitter_bloom
+        receipt=json.loads(scene['emitter_bloom'])
+        for name,kind in receipt['materials'].items():
+            expected=emitter_bloom.LIT_PASS_INDEX if kind=='lit' else emitter_bloom.SPRITE_PASS_INDEX
+            assert bpy.data.materials[name].pass_index==expected,('Emitter bloom tag',name)
+        game=scene.compositing_node_group.nodes.get('RC PS4 Game View (compositor)')
+        assert game and game.inputs['Bloom'].links and scene.view_layers[0].use_pass_material_index,'Emitter bloom is not wired after reopen'
     assert len(bpy.data.actions)==len(job['clips'])+(1 if rig else 0),'Action count'
     ns={}
     if rig:
