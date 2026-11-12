@@ -100,8 +100,12 @@ class TextTests(unittest.TestCase):
         self.assertEqual(g.elide('abc', lambda s: 99, 5), '…')
 
     def test_display_name(self):
-        self.assertEqual(g.display_name(Rec('1', 'x/y/npc_qwark_robot.model', 'Qwark, Other')), 'Qwark')
+        self.assertEqual(g.display_name(Rec('1', 'x/y/npc_qwark_robot.model', 'Qwark, Other')), 'npc_qwark_robot')
         self.assertEqual(g.display_name(Rec('1', 'rc1/mobys/moby0/moby-0_lod0.model')), 'moby-0_lod0')
+        # A model referenced by several actors keeps its own name (springbot is used by the bridgebot actor too).
+        self.assertEqual(g.display_name(Rec('1', 'equipment/gadget/gdgt_clank_springbot/gdgt_clank_springbot.model',
+                                            'gdgt_clank_bridgebot, gdgt_clank_springbot')), 'gdgt_clank_springbot')
+        self.assertEqual(g.display_name(Rec('1', 'rc1/mobys/moby12/moby-12.model', 'Qwark')), 'Qwark')
 
 
 class SelectionTests(unittest.TestCase):

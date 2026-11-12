@@ -119,10 +119,22 @@ def elide(text, measure, width):
     return text[:low].rstrip() + '…' if low else '…'
 
 
+NUMBERED_STEM = re.compile(r'^(?:moby|tie|shrub)-?\d+(?:_lod\d+)?$')
+
+
+def used_by(record):
+    return [name.strip() for name in (getattr(record, 'used_by', '') or '').split(',') if name.strip()]
+
+
 def display_name(record):
-    """First named actor that uses the model, else the file stem."""
-    actors = [name.strip() for name in (getattr(record, 'used_by', '') or '').split(',') if name.strip()]
-    return actors[0] if actors else Path(record.archive_path).stem
+    """The model's file name, as in the list and Copy name.
+
+    Several actors often reference one model (each Clank bot actor lists all four bot models,
+    a chunk is referenced by its parent enemy), so an actor name would mislabel it. Only a
+    numbered moby/tie/shrub model, which has no name of its own, shows the first named actor."""
+    stem = Path(record.archive_path).stem
+    actors = used_by(record)
+    return actors[0] if actors and NUMBERED_STEM.match(stem) else stem
 
 
 CHUNK_BANGLE_FOLDER = re.compile(r'(?:^|_)(?:chunks?|bangles?)(?:_set)?(?:_?\d+)?$')
@@ -736,6 +748,8 @@ class Gallery:
         record = self.records[index]
         status, reason = self.status_of(record.model_id)
         lines = [display_name(record), record.archive_path, f'ID {record.model_id}']
+        if used_by(record):
+            lines.append('Used by: ' + ', '.join(used_by(record)))
         if status in ('unsupported', 'error'):
             lines.append(f'Thumbnail {status}: {reason}')
         elif status == 'queued':
