@@ -132,6 +132,56 @@ class GameFileTests(unittest.TestCase):
             self.assertGreater(holocard_effect.required_transparent_bounces(description), len(description['quads']))
 
 
+class BlenderDriverTests(unittest.TestCase):
+    """The Blender glow's driver expressions (rc2016/pipeline/holocard_effect.attach), evaluated here as Blender would."""
+
+    @staticmethod
+    def _quaternion(axis, degrees):
+        half = math.radians(degrees) / 2.0
+        return dict(q_w=math.cos(half), q_x=axis[0] * math.sin(half), q_y=axis[1] * math.sin(half), q_z=axis[2] * math.sin(half))
+
+    def _evaluate(self, turn, camera, anchor=(0.0, 0.0, 0.0), scale=1.0, along_normal=0):
+        """(camera in native space, side, toward, location, fade) for a card turned by ``turn`` (axis, degrees)."""
+        from rc2016.pipeline import holocard_effect as pipeline
+        centre, normal = (0.0, 1.195, 0.0), (1.0, 0.0, 0.0)
+        e = pipeline.attach_expressions(centre, normal, 0.2, centre, dict(distance=60.0, range=25.0), 0.5)
+        names = dict(self._quaternion(*turn), a_x=anchor[0], a_y=anchor[1], a_z=anchor[2], a_s=scale,
+                     cam_x=camera[0], cam_y=camera[1], cam_z=camera[2], sqrt=math.sqrt, max=max, min=min, abs=abs)
+        local = [eval(t, {}, names) for t in e['camera']]
+        names.update(l_x=local[0], l_y=local[1], l_z=local[2])
+        side = eval(e['side'], {}, names)
+        toward = [eval(t, {}, names) for t in e['toward']]
+        location = [eval(term, {}, dict(names, k=along_normal, side=side, t=t)) for t, term in zip(toward, e['location'])]
+        return local, side, toward, location, eval(e['fade'], {}, names)
+
+    def test_unturned_card(self):
+        local, side, toward, location, fade = self._evaluate(((0.0, 0.0, 1.0), 0.0), (5.0, 1.195, 0.0))
+        self.assertEqual([round(v, 6) for v in local], [5.0, 1.195, 0.0])
+        self.assertEqual(side, 1.0)
+        self.assertEqual([round(v, 6) for v in toward], [1.0, 0.0, 0.0])
+        self.assertEqual([round(v, 6) for v in location], [0.2, 1.195, 0.0])
+        self.assertAlmostEqual(fade, 0.5)
+
+    def test_turned_card_and_camera_behind(self):
+        # The card turned 90 degrees about world Z and moved; a camera on the -Y side is behind its (now +Y) normal.
+        turn, camera, anchor = ((0.0, 0.0, 1.0), 90.0), (2.0 - 1.195 + 3.0, -4.0, 0.0), (2.0, 0.0, 0.0)
+        local, side, toward, location, fade = self._evaluate(turn, camera, anchor)
+        self.assertEqual([round(v, 6) for v in local], [-4.0, 1.195 - 3.0, 0.0])   # native = R^T (camera - anchor)
+        self.assertEqual(side, -1.0)
+        self.assertEqual([round(v, 6) for v in location], [round(0.2 * -0.8, 6), round(1.195 + 0.2 * -0.6, 6), 0.0])   # toward
+        self.assertEqual([round(v, 6) for v in self._evaluate(turn, camera, anchor, along_normal=1)[3]], [-0.2, 1.195, 0.0])
+        self.assertAlmostEqual(fade, 0.5)
+        far = self._evaluate(turn, (2.0 - 2.0 * 1.195, -50.0, 0.0), anchor, scale=2.0)[4]
+        self.assertAlmostEqual(far, 0.5 * (60.0 - 50.0) / 25.0, places=6)   # world distance: native x scale
+
+    def test_expressions_fit_in_blender(self):
+        from rc2016.pipeline import holocard_effect as pipeline
+        e = pipeline.attach_expressions((0.3, 1.2, -0.4), (0.6, 0.48, 0.64), 0.2, (0.3, 1.2, -0.4), dict(distance=60.0, range=25.0), 0.9725490196)
+        for value in e['camera'] + e['toward'] + e['location'] + [e['side'], e['fade']]:
+            self.assertLessEqual(len(value), pipeline.EXPRESSION_LIMIT)
+            self.assertNotIn('**', value)   # not in Blender's simple expressions (they run without Python auto-execution)
+
+
 @unittest.skipUnless((CAPTURE / 'eid_2622/postvs_i0.bin').exists(), 'Research holocard capture not present')
 class CaptureTests(unittest.TestCase):
     def test_captured_quad_has_the_decoded_size_and_corner_normals(self):

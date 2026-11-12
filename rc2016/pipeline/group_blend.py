@@ -148,6 +148,12 @@ def _copy_member(objects, label):
         for modifier in copy.modifiers:
             if modifier.type == "ARMATURE" and modifier.object in copies:
                 modifier.object = copies[modifier.object]
+        animation = copy.animation_data  # drivers that read a member object (a holocard glow reads its card) follow the copies
+        for fcurve in (animation.drivers if animation else ()):
+            for variable in fcurve.driver.variables:
+                for target in variable.targets:
+                    if target.id in copies:
+                        target.id = copies[target.id]
         copy[MEMBER_KEY] = label
         collection.objects.link(copy)
     return list(copies.values())

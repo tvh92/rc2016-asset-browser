@@ -15,9 +15,11 @@ What is built (every value is the viewer's, see holocard_effect.py there for wha
 - every quad adds 2A C m (1 + L) times alpha sat(a m) (the game's SRC_ALPHA / ONE), with the 4/255 discard; the added
   light carries a coverage of its brightest channel (capped at 1) so that it shows on the transparent film, exact over
   transparency or black and darkening what is behind by that coverage (``_finish_additive``); the camera-distance fade sat((60 - d) / 25) is a driver on
-  every quad's ``fx_alpha``; the glow quad and the cloud follow the camera 0.2 u toward it (location drivers, the viewer's
-  +0x7C reading), which also keeps them in front of the opaque card as in the game, where the card writes no depth. No
-  light: the effect has none.
+  every quad's ``fx_alpha``; the glow quad and the cloud move 0.2 u toward the camera (location drivers, the viewer's
+  +0x7C reading), which keeps them in front of the opaque card as in the game, where the card writes no depth, or with the
+  glow quad's ``fx_along_normal`` = 1 along the card normal on the camera's side, which keeps them on the card in a
+  viewport that looks from elsewhere. Every object is a child of the card mesh in native space and the drivers read the
+  card's world transform, so moving or turning the card carries the glow (``attach``). No light: the effect has none.
 
 The images are written next to the output (``prepare_textures``) as 8-bit PNGs of the decoded top mips: the glow texture
 tagged sRGB, the others Non-Color. Not built: the rings' scroll over time (the frame is still), mip filtering, component 0
@@ -212,10 +214,11 @@ def _sprite_mesh(name, size, angle=0.0):
 
 def build(scene, anchor, description, texture_paths, camera=None):
     """Add the glow for the object ``anchor`` (a card mesh whose matrix_world maps native model space to the scene). Returns
-    the new objects. A second call replaces the first (objects carry ``holocard_effect``)."""
+    the new objects. A second call replaces the first (objects carry ``holocard_effect``).
+
+    Every object is a child of ``anchor`` at its native position, so moving or turning the card carries the glow (``attach``)."""
     import bpy
     from mathutils import Matrix, Vector
-    from rc2016.pipeline import health_effect as he
     for old in [o for o in bpy.data.objects if o.get(FAMILY)]:
         data = old.data
         bpy.data.objects.remove(old, do_unlink=True)
@@ -234,16 +237,16 @@ def build(scene, anchor, description, texture_paths, camera=None):
                      sparkle=make_sprite_material('sparkle', images['sparkle']))
     collection = next((c for c in anchor.users_collection), scene.collection)
     camera = camera or scene.camera
-    world, rotation = anchor.matrix_world, anchor.matrix_world.to_3x3()
-    fade = description.get('fade')
     pivot = bpy.data.objects.new('Holocard | origin', None)
     pivot.empty_display_type, pivot.empty_display_size = 'PLAIN_AXES', 0.1
-    pivot.location = world @ Vector(description['origin'])
+    pivot.location = Vector(description['origin'])
     pivot[FAMILY] = 'pivot'
     collection.objects.link(pivot)
+    _parent(pivot, anchor)
     created = [pivot]
-    columns = [(rotation @ Vector(a)).normalized() for a in description['axes']]
-    frame = Matrix([[c[i] for c in columns] for i in range(3)]).to_quaternion()
+    axes = [Vector(a).normalized() for a in description['axes']]
+    frame = Matrix([[c[i] for c in axes] for i in range(3)]).to_quaternion()
+    glow = None
     for row in description['quads']:
         kind = row['kind']
         if kind == 'holocard_glow':
@@ -252,46 +255,162 @@ def build(scene, anchor, description, texture_paths, camera=None):
             mesh = _sprite_mesh('Holocard ' + row['name'], row['size'], row.get('angle', 0.0))
         mesh.materials.append(materials[kind])
         obj = bpy.data.objects.new('Holocard | ' + row['name'], mesh)
-        obj.location = world @ Vector(row['position'])
+        obj.location = Vector(row['position'])
         obj[FAMILY] = kind
         obj.pass_index = EFFECT_PASS_INDEX
         obj['fx_emit'] = [float(v) for v in row['emit']]
         obj['fx_alpha'] = float(row['alpha'])
         obj['fx_discard'] = float(row['discard'])
+        obj['fx_base'] = float(row['alpha'])
+        obj['fx_position'] = [float(v) for v in row['position']]
+        obj['fx_pull'] = float(row.get('pull', 0.0))
         for flag in ('visible_shadow', 'visible_diffuse', 'visible_glossy', 'visible_transmission', 'visible_volume_scatter'):
             setattr(obj, flag, False)   # a sprite is seen by the camera only
         collection.objects.link(obj)
+        _parent(obj, anchor)
         if kind == 'holocard_glow':   # held in the effect frame
             obj.rotation_mode = 'QUATERNION'
             obj.rotation_quaternion = frame
+            glow = obj
         elif camera is not None:
             constraint = obj.constraints.new('COPY_ROTATION')
             constraint.target = camera
             constraint.name = 'Face camera'
-        if camera is not None and fade:
-            he._drive(obj, '["fx_alpha"]', he._fade_expression(row['alpha'], fade), [('d', camera, pivot)])
-        if camera is not None and row.get('pull'):
-            _pull_toward(obj, camera, obj.location.copy(), float(row['pull']))
         created.append(obj)
+    attach(created, anchor, camera, glow, description['origin'], list(axes[2]), description.get('fade'))
     raise_transparent_bounces(scene, description)
     scene[FAMILY] = json.dumps(dict(effect=description['effect'], limitations=description['limitations']))
     return created
 
 
-def _pull_toward(obj, camera, base, distance):
-    """Drivers that keep ``obj`` at ``base`` moved ``distance`` toward the camera (the components' +0x7C offset, as the
-    viewer's billboards): location = base + distance (camera - base) / |camera - base|, simple expressions only."""
-    terms = ['(c%s - %r)' % (axis, float(base[i])) for i, axis in enumerate('xyz')]
-    length = 'max(1e-06, sqrt(%s))' % ' + '.join('%s * %s' % (t, t) for t in terms)
+def _parent(obj, anchor):
+    """Make ``obj`` a child of ``anchor`` with its location and rotation in the anchor's (native model) space."""
+    from mathutils import Matrix
+    obj.parent = anchor
+    obj.matrix_parent_inverse = Matrix.Identity(4)
+
+
+# Driver variables: the camera's world location, and the anchor's world location, scale and rotation (a unit quaternion).
+CAMERA_VARIABLES = (('cam_x', 'LOC_X'), ('cam_y', 'LOC_Y'), ('cam_z', 'LOC_Z'))
+ANCHOR_VARIABLES = (('a_x', 'LOC_X'), ('a_y', 'LOC_Y'), ('a_z', 'LOC_Z'), ('a_s', 'SCALE_AVG'),
+                    ('q_w', 'ROT_W'), ('q_x', 'ROT_X'), ('q_y', 'ROT_Y'), ('q_z', 'ROT_Z'))
+_ROTATION = (('1 - 2 * (q_y * q_y + q_z * q_z)', '2 * (q_x * q_y - q_w * q_z)', '2 * (q_x * q_z + q_w * q_y)'),
+             ('2 * (q_x * q_y + q_w * q_z)', '1 - 2 * (q_x * q_x + q_z * q_z)', '2 * (q_y * q_z - q_w * q_x)'),
+             ('2 * (q_x * q_z - q_w * q_y)', '2 * (q_y * q_z + q_w * q_x)', '1 - 2 * (q_x * q_x + q_y * q_y)'))
+EXPRESSION_LIMIT = 255   # Blender keeps a driver expression in 256 bytes
+
+
+def _number(value):
+    return '%.9g' % float(value)
+
+
+def attach_expressions(centre, normal, pull, position, fade=None, base=1.0):
+    """The driver expressions of ``attach`` (Blender simple expressions, which run without Python auto-execution, each
+    within Blender's length), all in the anchor's native
+    space: ``camera`` (the camera's native position from its world position and the anchor's world transform, three),
+    ``side`` (+1 with the camera on the ``normal`` side of the card plane through ``centre``, -1 behind it), ``toward`` (the
+    unit direction from ``centre`` to the camera, three), ``location`` (native ``position`` moved ``pull`` toward the camera,
+    or along the normal on the camera's side when ``k`` = 1, three) and ``fade`` (``base`` x sat((distance - d) / range) on
+    the camera's world distance d to the centre; None without ``fade``)."""
+    offset = ['(l_%s - %s)' % (axis, _number(c)) for axis, c in zip('xyz', centre)]
+    distance = 'sqrt(%s)' % ' + '.join('%s * %s' % (o, o) for o in offset)   # no **: not a simple expression
+    facing = ' + '.join('%s * %s' % (o, _number(n)) for o, n in zip(offset, normal) if abs(n) > 1e-9) or '0.0'
+    expressions = dict(
+        camera=['(%s) / a_s' % ' + '.join('(%s) * (cam_%s - a_%s)' % (_ROTATION[j][i], a, a) for j, a in enumerate('xyz'))
+                for i in range(3)],
+        side='(%s) / max(1e-06, abs(%s))' % (facing, facing),
+        toward=['%s / max(1e-06, %s)' % (o, distance) for o in offset],
+        location=['%s + %s * (k * side * %s + (1 - k) * t)' % (_number(p), _number(pull), _number(n)) for p, n in zip(position, normal)],
+        fade=None if not fade else '%s * max(0.0, min(1.0, (%s - a_s * %s) / %s))' % (
+            _number(base), _number(fade['distance']), distance, _number(fade['range'])))
+    for value in expressions['camera'] + expressions['toward'] + expressions['location'] + [expressions['side'], expressions['fade'] or '']:
+        if len(value) > EXPRESSION_LIMIT:
+            raise ValueError('driver expression longer than Blender keeps: %s' % value)
+    return expressions
+
+
+def _scripted(obj, path, expression, index=-1):
+    fcurve = obj.driver_add(path, index) if index >= 0 else obj.driver_add(path)
+    driver = fcurve.driver
+    driver.type = 'SCRIPTED'
+    for variable in list(driver.variables):
+        driver.variables.remove(variable)
+    driver.expression = expression
+    return driver
+
+
+def _transform_variable(driver, name, target, transform):
+    variable = driver.variables.new()
+    variable.name, variable.type = name, 'TRANSFORMS'
+    variable.targets[0].id = target
+    variable.targets[0].transform_type = transform
+    variable.targets[0].transform_space = 'WORLD_SPACE'
+    if transform.startswith('ROT_'):
+        variable.targets[0].rotation_mode = 'QUATERNION'
+
+
+def _property_variable(driver, name, target, path):
+    variable = driver.variables.new()
+    variable.name, variable.type = name, 'SINGLE_PROP'
+    variable.targets[0].id_type = 'OBJECT'
+    variable.targets[0].id = target
+    variable.targets[0].data_path = path
+
+
+def _camera_variables(driver, glow):
     for index, axis in enumerate('xyz'):
-        driver = obj.driver_add('location', index).driver
-        driver.type = 'SCRIPTED'
-        for name in 'xyz':
-            variable = driver.variables.new()
-            variable.name, variable.type = 'c' + name, 'TRANSFORMS'
-            target = variable.targets[0]
-            target.id, target.transform_type, target.transform_space = camera, 'LOC_' + name.upper(), 'WORLD_SPACE'
-        driver.expression = '%r + %r * %s / %s' % (float(base[index]), distance, terms[index], length)
+        _property_variable(driver, 'l_' + axis, glow, '["fx_camera"][%d]' % index)
+
+
+def attach(objects, anchor, camera, glow, centre, normal, fade):
+    """Drive the effect from the card's live world transform, in the anchor's native space (the objects are its children).
+    The glow quad carries the camera's native position (``fx_camera``), the side of the card it is on (``fx_side``), the
+    unit direction to it from the effect centre (``fx_toward``) and the switch ``fx_along_normal`` (0).
+
+    Each quad with an ``fx_pull`` sits that far from its native ``fx_position``: toward the camera, as the viewer moves it
+    (+0x7C), which keeps it in front of the card and exactly on it seen from the camera; with ``fx_along_normal`` = 1, along
+    the card normal on the camera's side instead, which stays on the card from any viewpoint (the viewport) but shifts it
+    by up to ``pull`` x sin(view angle) in a camera that sees the card at an angle. Every quad's ``fx_alpha`` fades with the
+    camera's distance to the effect centre."""
+    if glow is None or camera is None:
+        return
+    shared = attach_expressions(centre, normal, 0.0, centre)
+    glow['fx_camera'] = [0.0, 0.0, 0.0]
+    for index, term in enumerate(shared['camera']):
+        driver = _scripted(glow, '["fx_camera"]', term, index)
+        for name, transform in CAMERA_VARIABLES:
+            _transform_variable(driver, name, camera, transform)
+        for name, transform in ANCHOR_VARIABLES:
+            if name in term:
+                _transform_variable(driver, name, anchor, transform)
+    glow['fx_side'] = 1.0
+    _camera_variables(_scripted(glow, '["fx_side"]', shared['side']), glow)
+    glow['fx_toward'] = [0.0, 0.0, 1.0]
+    for index, term in enumerate(shared['toward']):
+        _camera_variables(_scripted(glow, '["fx_toward"]', term, index), glow)
+    if 'fx_along_normal' not in glow:
+        glow['fx_along_normal'] = 0
+        try:
+            glow.id_properties_ui('fx_along_normal').update(min=0, max=1, description=(
+                '0: the glow moves toward the camera as in the game (exact seen from the camera); 1: along the card normal '
+                '(stays on the card from any viewpoint)'))
+        except (AttributeError, TypeError):
+            pass
+    for obj in objects:
+        if obj.type != 'MESH' or not obj.get(FAMILY):
+            continue
+        own = attach_expressions(centre, normal, float(obj.get('fx_pull', 0.0)), [float(v) for v in obj['fx_position']],
+                                 fade, float(obj.get('fx_base', 1.0)))
+        if obj.get('fx_pull'):
+            for index, term in enumerate(own['location']):
+                driver = _scripted(obj, 'location', term, index)
+                _property_variable(driver, 'k', glow, '["fx_along_normal"]')
+                _property_variable(driver, 'side', glow, '["fx_side"]')
+                _property_variable(driver, 't', glow, '["fx_toward"][%d]' % index)
+        if own['fade']:
+            driver = _scripted(obj, '["fx_alpha"]', own['fade'])
+            _camera_variables(driver, glow)
+            _transform_variable(driver, 'a_s', anchor, 'SCALE_AVG')
 
 
 def required_transparent_bounces(description):
@@ -309,7 +428,7 @@ def raise_transparent_bounces(scene, description):
 
 
 def retarget_camera(scene, camera):
-    """Point every glow object's Face camera constraint and distance-fade driver at ``camera``."""
+    """Point every glow object's Face camera constraint and its drivers' camera variables at ``camera``."""
     for obj in scene.objects:
         if not obj.get(FAMILY):
             continue
@@ -319,5 +438,5 @@ def retarget_camera(scene, camera):
         animation = getattr(obj, 'animation_data', None)
         for fcurve in (animation.drivers if animation else ()):
             for variable in fcurve.driver.variables:
-                if variable.type in ('LOC_DIFF', 'TRANSFORMS'):   # the fade distance and the camera pull
+                if variable.name.startswith('cam_'):   # not the card's own variables (a_*, q_*)
                     variable.targets[0].id = camera
