@@ -464,7 +464,7 @@ class ModelViewport(_TkFrame):
         self._yaw, self._pitch, self._zoom = 0.0, -65.0, 1.0
         self._pan = [0.0, 0.0]
         self._drag = None
-        self.lighting, self.tonemap = self.LIGHTINGS[0], self.TONEMAPS[0]
+        self.lighting, self.tonemap = self.LIGHTINGS[0], self.TONEMAPS[self.GAME_TONEMAP]   # the captured game display by default
         self.lighting_note = None   # why the shared HDRI is not shown yet, if it is not
         self._environment = None   # lighting maps of `_environment_lighting` once read (False: unavailable)
         self._environment_lighting = None
