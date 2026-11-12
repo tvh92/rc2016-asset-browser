@@ -27,7 +27,7 @@ if str(ROOT) not in sys.path:
 
 from rc2016.common import file_hash  # noqa: E402
 from rc2016.pipeline.scene_defaults import (  # noqa: E402
-    CAMERA_EULER_DEGREES, OUTPUT_HEIGHT, OUTPUT_WIDTH, apply_new_scene_defaults, check_shared_lighting,
+    CAMERA_EULER_DEGREES, OUTPUT_HEIGHT, OUTPUT_WIDTH, apply_new_scene_defaults, check_shared_lighting, pack_scene_images,
     fit_render_region, fit_render_size, frame_camera_zoom, visible_mesh_points)
 
 MEMBER_KEY = "group_member"
@@ -418,7 +418,8 @@ def assemble(job):
                                       placement="weapon rack" if racked else "zone actors" if placed else "original",
                                       camera_right_axis=list(right)))
     bpy.data.orphans_purge(do_local_ids=True, do_linked_ids=False, do_recursive=True)
-    bpy.ops.wm.save_as_mainfile(filepath=job["candidate"], compress=True)
+    pack_scene_images(scene)   # the shared HDRI too: the group file opens wherever it is moved
+    bpy.ops.wm.save_as_mainfile(filepath=job["candidate"], compress=True, relative_remap=False)
     print("GROUP built", job["candidate"], flush=True)
 
 
@@ -436,6 +437,8 @@ def validate(job):
         if not meshes:
             problems.append("member missing: " + member["name"])
     problems.extend("lighting." + item for item in check_shared_lighting(scene))
+    problems.extend("unpacked image: " + image.name for image in bpy.data.images
+                    if image.source == "FILE" and not image.packed_file)
     if any(m.get("mount") for m in job["members"]):
         # Rack copies ride on a posed joint, which turns their world matrices with it: compare them at the rest pose
         # (the reopened file is never saved).

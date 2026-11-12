@@ -204,8 +204,10 @@ def _set_world_hdri(scene: Any, hdri_path: Optional[Path], strength: Optional[fl
     output.is_active_output = True
 
 
-def pack_scene_images_except_shared_hdri(scene: Any) -> Dict[str, Any]:
-    """Pack scene assets while preventing Blender's pack-all from embedding the EXR."""
+def pack_scene_images(scene: Any) -> Dict[str, Any]:
+    """Pack every scene image, the shared review HDRI included, so the .blend opens anywhere (a moved file once lost
+    its relative EXR path and rendered magenta). The HDRI keeps its absolute source path and the
+    ``shared_external_hdri_path`` record, and its packed bytes are checked against the shared EXR."""
     import bpy  # type: ignore
 
     try:
@@ -221,18 +223,14 @@ def pack_scene_images_except_shared_hdri(scene: Any) -> Dict[str, Any]:
     path = Path(bpy.path.abspath(image.filepath)).expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError("Shared HDRI not found: %s" % path)
-    image.filepath = ""
-    try:
-        bpy.ops.file.pack_all()
-    finally:
-        image.filepath = str(path)
-    if image.packed_file:
-        image.unpack(method="REMOVE")
-        raise RuntimeError("Blender packed the shared HDRI despite its path being cleared")
+    bpy.ops.file.pack_all()
+    if not image.packed_file:
+        image.pack()
+    if hashlib.sha256(bytes(image.packed_file.data)).hexdigest() != hashlib.sha256(path.read_bytes()).hexdigest():
+        raise RuntimeError("Packed HDRI differs from the shared EXR: %s" % path)
     image.filepath = str(path)
-    image.reload()
     image["shared_external_hdri_path"] = str(path)
-    return {"path": str(path), "packed": False}
+    return {"path": str(path), "packed": True}
 
 
 def apply_new_scene_defaults(scene: Any = None, hdri_path: Optional[str] = None, configure_world: bool = True,

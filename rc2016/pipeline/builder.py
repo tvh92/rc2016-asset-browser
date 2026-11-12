@@ -27,7 +27,7 @@ from rc2016.formats.texture_transport import validate_reopened_texture_bindings
 from rc2016.shaders.validation import validate_polygon_used_material_preflights
 from rc2016.pipeline.material_presentation_collector import collect_material_presentation_status
 from rc2016.pipeline.scene_defaults import (apply_new_scene_defaults,audit_scene,_configure_optix_gpu,check_shared_lighting,load_shared_lighting,
-    fit_render_region,fit_render_size,frame_camera_zoom,visible_mesh_points,pack_scene_images_except_shared_hdri)
+    fit_render_region,fit_render_size,frame_camera_zoom,visible_mesh_points,pack_scene_images)
 
 
 # The game stores assets in Y-up coordinates.  Keep source mesh/bone/action data in
@@ -81,8 +81,6 @@ def review_preview_lighting(scene):
             output=nodes.new('ShaderNodeOutputWorld');background=nodes.new('ShaderNodeBackground')
             environment=nodes.new('ShaderNodeTexEnvironment');environment.name='Shared Golden Gate Review HDRI'
             temporary_image=bpy.data.images.load(str(hdri),check_existing=True)
-            if temporary_image.packed_file:
-                raise RuntimeError('Shared preview HDRI unexpectedly loaded packed: '+str(hdri))
             temporary_image.filepath=str(hdri)
             temporary_image['shared_external_hdri_path']=str(hdri)
             environment.image=temporary_image
@@ -97,9 +95,9 @@ def review_preview_lighting(scene):
             environment=background.inputs['Color'].links[0].from_node
             image=environment.image
             current_path=Path(bpy.path.abspath(image.filepath)).resolve() if image else None
-            if (environment.type!='TEX_ENVIRONMENT' or image is None or image.packed_file or
+            if (environment.type!='TEX_ENVIRONMENT' or image is None or
                     current_path!=hdri or abs(background.inputs['Strength'].default_value-strength)>1e-5):
-                raise RuntimeError('Review previews require the shared external HDRI world')
+                raise RuntimeError('Review previews require the shared HDRI world')
         for light,_ in light_states:
             light.hide_render=True
         yield dict(source=source,path=str(hdri),sha256=file_hash(hdri),world_strength=strength,
@@ -593,11 +591,11 @@ def build(job):
         if material.use_nodes and material.node_tree:arrange_tree(material.node_tree)
     for group in bpy.data.node_groups:arrange_tree(group)
     assert not audit_scene(scene, selected_lighting=job.get('shared_lighting'))['mismatches'],audit_scene(scene, selected_lighting=job.get('shared_lighting'))['mismatches']
-    embed('Structural baseline.json',structural_snapshot(scene))
     if not (job.get('game_lighting') or job.get('veldin_look')):
-        pack_scene_images_except_shared_hdri(scene)
+        pack_scene_images(scene)
     else:
         bpy.ops.file.pack_all()
+    embed('Structural baseline.json',structural_snapshot(scene))   # after packing: the snapshot records packed images
     bpy.ops.wm.save_as_mainfile(filepath=str(candidate),compress=True,relative_remap=False)
     print('BUILT',candidate,flush=True)
 
@@ -879,18 +877,20 @@ def validate(job):
         environment=background.inputs['Color'].links[0].from_node
         image=environment.image
         hdri_path=Path(bpy.path.abspath(image.filepath)).resolve()
-        assert environment.type=='TEX_ENVIRONMENT' and image and not image.packed_file
+        assert environment.type=='TEX_ENVIRONMENT' and image and image.packed_file,'Shared HDRI is not packed'
         assert hdri_path.is_file() and image.get('shared_external_hdri_path')==str(hdri_path)
+        assert sha(bytes(image.packed_file.data))==file_hash(hdri_path),'Packed HDRI differs from the shared EXR'
+        packed_hdri=True
         assert image.size[0]>0 and image.size[0]==2*image.size[1],'HDRI is not a loaded equirectangular image'
         expected=job.get('shared_lighting') or load_shared_lighting()
         problems=check_shared_lighting(scene,expected)
         assert not problems,'Scene differs from its shared lighting: %s'%problems
         view=scene.view_settings
-        result['external_hdri']=dict(status='passed',path=str(hdri_path),packed=False,
+        result['external_hdri']=dict(status='passed',path=str(hdri_path),packed=packed_hdri,
             width=int(image.size[0]),height=int(image.size[1]),world_strength=float(expected['world_strength']),
             view_transform=view.view_transform,exposure=float(view.exposure),
             lighting_config=expected.get('config_path'),lighting_config_sha256=expected.get('config_sha256'),
-            portability='Requires the shared EXR at the recorded absolute path')
+            portability='The shared EXR is packed into the file (same bytes); its source path is recorded')
     if job.get('native_geometry'):
         source_hashes={d['sha256'] for d in [job['native_geometry'],*job.get('native_parts',[])]}
         native_objects=[o for o in scene.objects if o.type=='MESH' and o.get('source_model_sha256') in source_hashes]
