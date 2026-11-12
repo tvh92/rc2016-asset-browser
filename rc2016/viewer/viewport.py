@@ -815,7 +815,8 @@ class ModelViewport(_TkFrame):
             pane = entry.get('alpha_pane')
             if pane:
                 return self._shading.native_program(translation, srgb, instanced, scene=scene,
-                                                    alpha_api=pane['alpha_api'], alpha_discard=pane['discard'])
+                                                    alpha_api=pane['alpha_api'], alpha_discard=pane['discard'],
+                                                    alpha_opacity=pane.get('opacity', 1.0))
             if scene:
                 return self._shading.native_program(translation, srgb, instanced, scene=True)
             return self._shading.native_program(translation, srgb, instanced)
@@ -1459,7 +1460,7 @@ class ModelViewport(_TkFrame):
                 if pane:
                     gl.glBlendFunc.argtypes = [ctypes.c_uint, ctypes.c_uint]; gl.glDepthMask.argtypes = [ctypes.c_ubyte]
                     gl.glEnable(self.GL_BLEND); self._blend_over()
-                    gl.glDepthMask(0); gl.glEnable(self.GL_CULL_FACE)
+                    gl.glDepthMask(0); (gl.glDisable if pane.get('two_sided') else gl.glEnable)(self.GL_CULL_FACE)
                 # basic_flat_color keeps the flags word's back-face cull (inward-facing shells such as the Telepathipus brain
                 # case inside); other opaque materials draw both faces.
                 cull = bool((entry.get('flat_surface') or {}).get('cull_back'))
@@ -2116,7 +2117,12 @@ class ModelViewport(_TkFrame):
         sh.glUniform4f(u["uBrightP"], *(float(bc.get(key, 0.0)) for key in ("exponent", "weight", "f0", "gloss_sq")))
         sh.glUniform1i(u["uFoliage"], 1 if entry.get("foliage") else 0)
         # Leaf cut-out needs the bound `_c` alpha: Solid mode (level 0) binds no texture and draws whole.
-        sh.glUniform1f(u["uAlphaCut"], float(entry.get("alpha_cut", 0.0)) if level and entry.get("_c") else 0.0)
+        # Alpha panes (textures 'alpha_pane') discard below their cut-off and write sat(sat(_c.a) opacity) (uAlphaOut 2).
+        pane = entry.get("alpha_pane") if level and entry.get("_c") else None
+        sh.glUniform1f(u["uAlphaCut"], float(pane["discard"]) if pane else
+                       float(entry.get("alpha_cut", 0.0)) if level and entry.get("_c") else 0.0)
+        sh.glUniform1i(u["uAlphaOut"], 2 if pane else 0)
+        sh.glUniform1f(u["uPaneOpacity"], float(pane["opacity"]) if pane else 1.0)
         sh.glUniform1i(u["uLinearZ"], 1 if entry.get("linear_z") else 0)
         sh.glUniform1i(u["uZaFresnel"], 1 if "za_fresnel_power" in entry else 0)
         sh.glUniform1f(u["uZaFresnelPower"], float(entry.get("za_fresnel_power", 8.0)))

@@ -270,12 +270,16 @@ def apply_translated_material(material,source, *, experimental=False):
         if image is None:raise ValueError('Alpha pane source image missing')
         clamp=nodes.new('ShaderNodeMath');clamp.operation='ADD';clamp.use_clamp=True;clamp.name='VR pane alpha'
         links.new(image.outputs['Alpha'],clamp.inputs[0]);clamp.inputs[1].default_value=0.0
+        factor=clamp.outputs[0]
+        if float(pane.get('opacity',1.0))!=1.0:   # attribute0.w = material byte 22 / 255 (basic_normal_gloss alpha-over)
+            scale=nodes.new('ShaderNodeMath');scale.operation='MULTIPLY';scale.use_clamp=True;scale.name='VR pane opacity'
+            links.new(clamp.outputs[0],scale.inputs[0]);scale.inputs[1].default_value=float(pane['opacity']);factor=scale.outputs[0]
         clear=nodes.new('ShaderNodeBsdfTransparent');clear.name='VR pane transparent'
         mix=nodes.new('ShaderNodeMixShader');mix.name='VR pane blend alpha_over'
-        links.new(clamp.outputs[0],mix.inputs[0]);links.new(clear.outputs[0],mix.inputs[1]);links.new(brdf.outputs['Shader'],mix.inputs[2])
+        links.new(factor,mix.inputs[0]);links.new(clear.outputs[0],mix.inputs[1]);links.new(brdf.outputs['Shader'],mix.inputs[2])
         for link in list(out.inputs['Surface'].links):links.remove(link)
         links.new(mix.outputs[0],out.inputs['Surface'])
-        material.use_backface_culling=True
+        material.use_backface_culling=not pane.get('two_sided')
         if hasattr(material,'surface_render_method'):material.surface_render_method='BLENDED'
         material['rc_alpha_pane']=json.dumps(pane,sort_keys=True)
     material['rc_shader_translation']=json.dumps(translation,sort_keys=True)
@@ -310,7 +314,12 @@ def validate_translated_material(source,material, *, experimental=False):
         mix=material.node_tree.nodes.get('VR pane blend alpha_over');alpha=material.node_tree.nodes.get('VR pane alpha')
         assert mix and alpha and alpha.use_clamp and alpha.inputs[0].links,'Alpha pane blend is not built'
         assert alpha.inputs[0].links[0].from_socket.name=='Alpha' and alpha.inputs[0].links[0].from_node.get('source_texture_path') in {r['path'] for r in expected['texture_bindings'] if r['api']==pane['alpha_api']},'Alpha pane is not fed by the _c alpha'
-        assert material.use_backface_culling,'Alpha pane must cull back faces'
+        assert material.use_backface_culling==(not pane.get('two_sided')),'Alpha pane cull differs from the flags word'
+        if float(pane.get('opacity',1.0))!=1.0:
+            scale=material.node_tree.nodes.get('VR pane opacity')
+            assert scale and scale.use_clamp and abs(scale.inputs[1].default_value-float(pane['opacity']))<1e-6 and \
+                scale.inputs[0].links and scale.inputs[0].links[0].from_node==alpha and mix.inputs[0].links[0].from_node==scale,\
+                'Alpha pane opacity is not applied'
     actual=[n for n in front.node_tree.nodes if n.type=='TEX_IMAGE']
     for binding in expected['texture_bindings']:
         textures=[b for b in source['textures'] if b['path']==binding['path']]

@@ -8,7 +8,7 @@ The Deplanetizer exterior model (`environment/global/prop/gbl_prop_uiobject_depl
 | `dep_gp_dwarf_star_surface_calm_01` | `dep_gp_dwarf_star_surface_calm_01` (`5e0fcc30…9091f`) | `05C96D48` (passes 0 and 3) | `dwarf_star` | 22 | `0x20C`: opaque, two-sided |
 | `dep_arch_hangar_glow` | `basic_flat_color_incandescent` (`960498e0…f74a4`) | `FDF7FDFB` (pass 3), `E16F8FC0` (pass 0) | `flat_incandescent` | 23 | `0x239`: additive (`SRC_ALPHA`, `ONE`), back faces culled |
 
-No draw of these programs is in a capture. The equations below were read from the shadPS4 IR dumps of the programs (compiled in game, so the programs did run), the native code through `rc2016.shaders.translator` (sample order, channels) and the graph pass contracts. The dome glass terms were checked numerically against its IR (maximum error 4e-9 over 300 random inputs). Every rule is a labelled preview (`game_equivalence` False).
+No draw of these programs is in a capture; the glow's colour and strength are checked against the space-battle frames ([Station parts in the space battle](#station-parts-in-the-space-battle)). The equations below were read from the shadPS4 IR dumps of the programs (compiled in game, so the programs did run), the native code through `rc2016.shaders.translator` (sample order, channels) and the graph pass contracts. The dome glass terms were checked numerically against its IR (maximum error 4e-9 over 300 random inputs). Every rule is a labelled preview (`game_equivalence` False).
 
 ## Level model and captured frames
 
@@ -26,6 +26,22 @@ The model above is the UI object (`gbl_prop_uiobject_*`). The space-battle level
 Flags `0x236`: alpha-over, two-sided. With P3 = 0.9 the glass is at least 90 % opaque at every angle; the star shows through because it is far brighter than the glass.
 
 Two shadPS4 captures of the space battle hold only the post-process and HUD submits (no scene draw), but the second keeps the pre-tonemap scene target (R11G11B10 float, 1920 × 1080) and the depth buffer from before post-processing. In it the dome glass reads r/g 0.004 to 0.03 and b/g 0.12 to 0.46 in linear light, matching the tint factor `sat(T / luma(T))` = (0.061, 1, 0.295). The star is orange-gold with yellow veins, as the star rule draws it. In the first capture only the tonemapped R10G10B10A2 target survives; it is stored with red and blue swapped. Once they are swapped back, the deck strips show the decoded cyan of `dep_arch_hangar_glow`.
+
+## Station parts in the space battle
+
+The level's art zone (`art_deplanetizer.zone`) places 38 models around the station origin: the `dep_exterior_set_01` pieces, the dwarf star, `dep_ext_arch_addon_01` to `_05`, a reused Aridia wall panel and the Veldin garage door panel. Their 23 materials (and the two override materials `rv_dep_arch_metal_trim_bumpy_dark_grey` and `_black`) all have a decoded reading:
+
+| Material | Graph | Reading | Checked against the captures |
+|---|---|---|---|
+| `dep_arch_hangar_glow` (large flaps, top base shell) | `basic_flat_color_incandescent` | `flat_incandescent`, additive, alpha = byte 22 / 255 = 127/255 | Pad strips in the pre-tonemap frame: (core - surface) / E = 0.499, 0.502, 0.494 per channel on three strips, so attribute0.w = 0.498; hue r/g 0.085, b/g 1.04 (E: 0.076, 1.054). Deck strips of the first capture (display values inverted through the decoded tone curve): b/g 1.05 to 1.07 |
+| `rv_dep_glow_mask_01_purple` (gun platforms, flags `0x38`) | `mo_gbl_arch_emissive_sequence_01` (`AAED778C`) | arch sequence: albedo `C (h^p + 0.5 L h)`, self-lit `5 q h^p I (bias + mask)` | Lights peak at (4.75, 1.42, 7.25) linear: r/g 3.34, b/g 5.10, the unclamped material colour (3.30, 5.07). The viewer's texel peak is 21 (blue); the captured spots are a few pixels wide, so mip filtering lowers them and the strength is not pinned down |
+| `rv_dep_arch_glow_bluegreen` (claws, arms, cannon supports, base shell) | same | same | Only at the frame edge of the second capture: r/g 0.14, b/g 0.82 (material 0.12, 0.78) |
+| `rv_dep_arch_ext_claw_paint_01`, `_paddle_paint_01` | `basic_normal_gloss` | alpha-over pane of the `5EBDECA4` surface (forward `37AF5B69`), opacity 112/255 | Not in either frame |
+| Metal panels, trims (`mo_gbl_color_tint_01` `BE8C3EE0`, `jn_gbl_color_tint_01_world_detail`), metal tile, cable (`basic_normal_gloss_fresnel_detail`), garage computer (`basic_incandescence`) | deferred writers | grey `_g` readings with the decoded tints | Lit by the engine light list and probes, which the viewer does not reproduce |
+
+Both sequence glows have rate `0xD7B41D33` = 0, so the sequence image is read at the phase (0.5, value 1.0) and does not pulse. `AAED778C`'s IR confirms the viewer's terms: RT1 rgb = `C (0.5 L h + h^p)` and RT1 alpha = `0.2 log2(1 + 5 I q h^p (bias + mask))`, with `q` read at `CB0[99] rate + phase` (plus `|attribute3.w|` and `attribute1.x` when enabled).
+
+The emblem paint is a shell about 0.25 % of the model size above the claw and paddle panels. Its `_c` alpha holds the emblem (65 % of the claw texture is 0) and its flags word is alpha-over (`0x23a`), so the viewer drew it opaque as a dark red skin over the panels. `basic_normal_gloss` has one blended program, the forward light loop `37AF5B69` (IR dump): the same surface as `5EBDECA4`, alpha = `sat(sat(_c.a) attribute0.w)`, discarded below attribute0.z. The viewer now draws it as such (see [viewer](../viewer.md), "basic_normal_gloss alpha-over"); the emblem is at most 44 % opaque.
 
 The lower part of the level dome carries a grime decal (`rv_dep_ext_arch_grime_01`, `mo_decal_gnormal`, flags `0x23a`: alpha-over, back faces culled), drawn in game by forward light-loop programs: `83652CC4` (pass 0) and `9C8E9B1D` (pass 3, the same form without the G-buffer normal read). Its rule (`uKind` 24, `decal_gnormal`) is in [shading](../shading.md). `mo_neb_dirt_decal_01_c` is a flat dark grey (sRGB 0.22) carrying the dirt mask in alpha (mean 0.24), `_g` is flat (0.216), and the material's opacity byte is 38, so the dirt is at most 15 % opaque. This matches the clean lower dome in the captured frames. The grey-`_g` family reading drew it solid, because it took `_c.a` as a self-lit mask and ignored the blend.
 
@@ -109,24 +125,24 @@ The viewer draws it opaque and two-sided in the forward pass, with the five imag
 ```
 E     = C (K3 C.r + K5)                              = (0.06206, 0.82200, 0.86632) for this material: cyan
 rgb   = T' (L' + E) + (1 - T') fog,  L' the specular light loop (zero albedo, no diffuse)
-alpha = sat(x attribute0.w),  x = 1 unless the instance's engine dissolve image is on
+alpha = sat(x attribute0.w),  x = 1 unless the instance's engine dissolve image is on; attribute0.w = byte 22 / 255
 F     = F0 + (sat(60 F0) - F0) Fc with F0 = CB2[4] in FDF7FDFB;  E16F8FC0 uses 0.9 Fc + 0.1
 ```
 
-The values are read strictly, as for `basic_flat_color`: a malformed explicit value is rejected, never replaced by the graph default. The viewer draws `glassSpec(N, V, ..., F0, gloss) + E` with the flags word's additive blend, back-face cull and no depth write. The glow has no time term and no `CB0[115]` amplitude.
+The values are read strictly, as for `basic_flat_color`: a malformed explicit value is rejected, never replaced by the graph default. The viewer draws `glassSpec(N, V, ..., F0, gloss) + E` with the flags word's additive blend at alpha = byte 22 / 255 (127/255 for this material: the strips add half of `E`, as captured), back-face cull and no depth write. The glow has no time term and no `CB0[115]` amplitude.
 
 ## Decoded and inferred
 
 Decoded (IR, native code and archive data):
 - the dome glass `N'`, rim, alpha and its cut, `E`, F0, gloss and the tint on the whole specular (checked numerically against the IR);
 - every arithmetic step of the star program, its UV transforms and scroll rates, the image units, slots and channels, the dissolve and cut discards, the pulse, the record-colour encode and the `3 A (3g + 4)` scale;
-- the glow emission `C (K3 C.r + K5)`, the CB2 layouts and values, the F0 of both glow programs and the gloss form;
+- the glow emission `C (K3 C.r + K5)`, the CB2 layouts and values, the F0 of both glow programs and the gloss form; its alpha, attribute0.w = byte 22 / 255, and `E` itself, measured in the pre-tonemap frame to 1 % in each channel;
 - the flags words (blend and cull) and the material values.
 
 Inferred or presentation values, kept visible in each rule's constants and the Blender limitation:
 - dome glass: that pass 0 draws in view; the cut-off `attribute0.z = 4/255` (borrowed from the taxi glass capture), `attribute0.w` = material byte 22 / 255, `CB0[95] = 1`, instance fade 0, geometric AA 0;
 - star: `A = CB0[115] = 1/12` (not captured for this frame; with it `3 A (3g + 4) = 1` at `t = 0`), the record colour taken as white, dissolve `P = 1`, cut 0, `attribute0.w = 1`, fog transmittance 1, wrap samplers, the BC5 third channel read as 0, the API order of the indirect texture table;
-- glow: which of the two programs draws in game (the rule takes `FDF7FDFB`'s F0); `attribute0.w` is taken as 1 although the material's byte 22 is 127 (with the `basic_glass` reading of that byte the strips would add half as much); that the G-buffer passes are not drawn for the additive material.
+- glow: which of the two programs draws in game (the rule takes `FDF7FDFB`'s F0); that the G-buffer passes are not drawn for the additive material.
 
 Engine terms the viewer does not reproduce: the light list, sun with its cascade shadow, reflection probes and local cubes, screen-space reflection and fog. The viewer lighting stands in for them, and colour is tonemapped before blending.
 

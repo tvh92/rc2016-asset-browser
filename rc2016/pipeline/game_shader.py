@@ -3155,6 +3155,25 @@ def apply_viewer_graph_rule(mat, source):
         limits.append('leaf cut-out: _c.a < %g is transparent; the game reads this threshold from a per-instance '
                       'engine record; uses the decoded material baseline (inferred 0.5 only if state is missing); '
                       'runtime draw cut/fade and flag-8 override omitted' % float(terms['alpha_cut']))
+    pane = terms.get('alpha_pane') if on('alpha_pane') and c is not None else None
+    if pane:
+        # basic_normal_gloss alpha-over (forward 37AF5B69; viewer textures 'alpha_pane'): the same surface blended over by
+        # alpha = sat(sat(_c.a) opacity), transparent where sat(_c.a) is below the cut-off (the program discards).
+        cover = P.sat(c.outputs['Alpha'])
+        kept = P.ge(cover, P.const('pane alpha cut', pane['discard']))
+        alpha = P.m('MULTIPLY', P.m('MULTIPLY', cover, P.const('pane opacity', pane['opacity']), clamp=True), kept)
+        clear = nt.nodes.new('ShaderNodeBsdfTransparent'); clear.name = clear.label = 'VR pane transparent'
+        mix = nt.nodes.new('ShaderNodeMixShader'); mix.name = mix.label = 'VR pane blend alpha_over'; mix.location = (1150, 0)
+        L.new(alpha, mix.inputs[0]); L.new(clear.outputs[0], mix.inputs[1])
+        L.new(out.inputs['Surface'].links[0].from_socket, mix.inputs[2]); L.new(mix.outputs[0], out.inputs['Surface'])
+        out.location = (1350, 0)
+        mat.use_backface_culling = not pane.get('two_sided')
+        if hasattr(mat, 'surface_render_method'): mat.surface_render_method = 'BLENDED'
+        elif hasattr(mat, 'blend_method'): mat.blend_method = 'BLEND'
+        mat['blend_state'] = 'alpha_over (material flags word); forward %s' % ', '.join(pane.get('writers') or ())
+        limits.append('alpha-over: alpha = sat(sat(_c.a) x %g) (attribute0.w = material byte 22 / 255), cut below %g '
+                      '(attribute0.z, the material cut-off); the forward light loop and fog are Cycles lighting'
+                      % (float(pane['opacity']), float(pane['discard'])))
     if view_terms:
         limits.append('view-dependent terms (%s) use the Cycles Incoming vector, which is the camera direction only for camera rays'
                       % ', '.join(view_terms))

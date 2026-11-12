@@ -295,7 +295,8 @@ uniform vec4 uMetalP; // tint power, rim-gloss power, C texture scale, normal st
 uniform bool uParallax; uniform bool uParallaxNormal; uniform bool uHasParallaxHeight;
 uniform sampler2D uTexParallaxHeight; uniform vec4 uParallaxP; // H, face/grazing steps, fade
 uniform bool uFoliage; // FE32FE79/1E0AE45A close-range normal z weight
-uniform int uAlphaOut; // level decals: write _c.a as the fragment alpha (blend set by the caller); 0 = 1.0
+uniform int uAlphaOut; // 1 (level decals): write _c.a as the fragment alpha; 2 (alpha panes): sat(sat(_c.a) uPaneOpacity); 0 = 1.0
+uniform float uPaneOpacity; // alpha panes: attribute0.w, the material opacity byte 22 / 255 (textures 'alpha_pane')
 uniform float uAlphaCut; // leaf cut-out: discard when _c.a < threshold (0 = off); threshold inferred, see textures.FOLIAGE_ALPHA_CUTOFF
 // Novalis tree leaf colour, rp_nov pass-0 writer 0476D929. uLeafP = (E, S, mapped-normal Fresnel, unused);
 // palette U is a frozen preview input (textures.LEAF_PALETTE_U_PLACEHOLDER).
@@ -1128,7 +1129,7 @@ void main() {
             color += uFacingGlowP.x * vec3(2.0 * a * (1.0 + a), uFacingGlowQ.y * f * (1.0 + a), 0.0);
         }
     }
-    gl_FragColor = vec4(displayFog(color), (uAlphaOut != 0 && uHasC) ? c.a : 1.0);
+    gl_FragColor = vec4(displayFog(color), (uAlphaOut != 0 && uHasC) ? (uAlphaOut == 2 ? clamp(clamp(c.a, 0.0, 1.0) * uPaneOpacity, 0.0, 1.0) : c.a) : 1.0);
 }
 """
 
@@ -2223,7 +2224,7 @@ OPAQUE_UNIFORMS = (
     "uSrgbC", "uSrgbG", "uGMode", "uSpecScale", "uGlossScale", "uSelfLitG", "uK",
     "uTwoColorMetal", "uMetalDiffuseA", "uMetalDiffuseB", "uMetalSpecA", "uMetalSpecB", "uMetalP",
     "uParallax", "uParallaxNormal", "uHasParallaxHeight", "uTexParallaxHeight", "uParallaxP",
-    "uFoliage", "uAlphaCut", "uAlphaOut", "uLeafColour", "uLeafP", "uLeafPalette", "uTexCma", "uHasCma", "uSrgbCma",
+    "uFoliage", "uAlphaCut", "uAlphaOut", "uPaneOpacity", "uLeafColour", "uLeafP", "uLeafPalette", "uTexCma", "uHasCma", "uSrgbCma",
     "uFresnelTint", "uFresnelC", "uFresnelE", "uCrateTint", "uCrateC", "uLiquidFlow", "uLiquidUV", "uFlatSurface", "uFlatColour", "uFlatSpec", "uFlatF0", "uBasicFlatColor", "uBasicFlatEmissionScale", "uVictorReticle", "uTexReticle", "uHasReticle", "uReticleP", "uReticleF0",
     "uHair", "uHairA", "uHairB", "uHairP",
     "uSkinKind", "uSkinA", "uSkinB", "uSkinC",
@@ -2858,19 +2859,22 @@ class Shading:
             self.programs[size] = (*self._link(VERTEX, FRAGMENT, dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE, aGroundBlend=GROUND_BLEND_ATTRIBUTE, aStaticPackedVector=STATIC_VECTOR_ATTRIBUTE, aTangent=TANGENT_ATTRIBUTE, aUV1=UV1_ATTRIBUTE), OPAQUE_UNIFORMS), size)
         return self.programs[size]
 
-    def native_program_key(self, translation, srgb, instanced=False, scene=False, experimental=False, rule_preview=False, alpha_api=None):
+    def native_program_key(self, translation, srgb, instanced=False, scene=False, experimental=False, rule_preview=False, alpha_api=None,
+                           alpha_discard=0.0, alpha_opacity=1.0):
         """The ``programs`` key native_program links under; present once that program is linked."""
         from rc2016.viewer.native_glsl import EMITTER_VERSION
-        return ('native', EMITTER_VERSION, instanced, scene, experimental, rule_preview, alpha_api, translation['translation_sha256'],
+        pane = (alpha_api, float(alpha_discard), float(alpha_opacity)) if alpha_api is not None else None
+        return ('native', EMITTER_VERSION, instanced, scene, experimental, rule_preview, pane, translation['translation_sha256'],
                 tuple(sorted(srgb.items())), FRAGMENT, INSTANCED_VERTEX if instanced else VERTEX)
 
-    def native_program(self, translation, srgb, instanced=False, scene=False, experimental=False, rule_preview=False, alpha_api=None, alpha_discard=0.0):
+    def native_program(self, translation, srgb, instanced=False, scene=False, experimental=False, rule_preview=False, alpha_api=None,
+                       alpha_discard=0.0, alpha_opacity=1.0):
         from rc2016.viewer.native_glsl import fragment_source
         vertex = INSTANCED_VERTEX if instanced else VERTEX
-        key = self.native_program_key(translation, srgb, instanced, scene, experimental, rule_preview, alpha_api)
+        key = self.native_program_key(translation, srgb, instanced, scene, experimental, rule_preview, alpha_api, alpha_discard, alpha_opacity)
         if key not in self.programs:
             surface = fragment_source(translation, srgb, experimental=experimental, rule_preview=rule_preview,
-                                      alpha_api=alpha_api, alpha_discard=alpha_discard)
+                                      alpha_api=alpha_api, alpha_discard=alpha_discard, alpha_opacity=alpha_opacity)
             names = (*OPAQUE_UNIFORMS, *(s['uniform'] for s in surface['samplers']))
             attributes = INSTANCE_ATTRIBUTES if instanced else dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE, aGroundBlend=GROUND_BLEND_ATTRIBUTE, aStaticPackedVector=STATIC_VECTOR_ATTRIBUTE, aTangent=TANGENT_ATTRIBUTE, aUV1=UV1_ATTRIBUTE)
             source=surface['source'].replace('#version 120', '#version 120\n#define RC_SCENE_EFFECTS 1',1) if scene else surface['source']

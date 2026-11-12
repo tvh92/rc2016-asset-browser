@@ -96,7 +96,8 @@ class RuleBindingTests(unittest.TestCase):
         self.assertEqual((star['dissolve'], star['alpha_cut'], star['alpha_scale'], star['fog_transmittance']), (1.0, 0.0, 1.0, 1.0))
         glass = tp.DEPLANETIZER_GLASS_CONSTANTS
         self.assertEqual((glass['alpha_test'], glass['normal_scale'], glass['game_equivalence']), (0.0156863, 1.0, False))
-        self.assertEqual((tp.FLAT_INCANDESCENT_CONSTANTS['alpha_scale'], tp.FLAT_INCANDESCENT_CONSTANTS['game_equivalence']), (1.0, False))
+        self.assertNotIn('alpha_scale', tp.FLAT_INCANDESCENT_CONSTANTS)   # read from the material's byte 22
+        self.assertFalse(tp.FLAT_INCANDESCENT_CONSTANTS['game_equivalence'])
 
 
 class UniformTests(unittest.TestCase):
@@ -307,6 +308,7 @@ class ArchiveRuleTests(unittest.TestCase):
         self.assertEqual((p['k3'], p['k5'], round(p['f0'], 6), p['gloss']), (5.0, 1.0, 0.01, 0.5))
         self.assertEqual([round(x, 5) for x in glow_emission(p['colour'], p['k3'], p['k5'])], [0.06206, 0.822, 0.86632])
         self.assertAlmostEqual(p['emission_scale'], 1.248533, places=6)
+        self.assertEqual(p['alpha_scale'], 127 / 255)   # attribute0.w = byte 22 / 255, as captured (0.499 E over the pad)
         self.assertNotIn('flat_surface', paths)
 
     def test_blender_rule(self):

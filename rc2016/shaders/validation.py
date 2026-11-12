@@ -583,6 +583,8 @@ def _viewer_expected_constants(rule):
                   "facing glow amplitude": f["amplitude"], "facing glow g scale": f["g_scale"]})
     if "alpha_cut" in ported:
         e["alpha cut threshold"] = terms["alpha_cut"]
+    if "alpha_pane" in ported:
+        e.update({"pane alpha cut": terms["alpha_pane"]["discard"], "pane opacity": terms["alpha_pane"]["opacity"]})
     if "bright_glow" in ported:
         p = terms["bright_glow"]["params"]
         e.update({"bright glow colour": p["colour"], "bright glow colour lo": p["colour_lo"], "bright glow dist_k": p["dist_k"],
@@ -771,6 +773,8 @@ def _viewer_required(rule, has_n):
                   "facing glow a offset", "facing glow amplitude", "facing glow g scale"]
     if "alpha_cut" in ported:
         names.append("alpha cut threshold"); req("_c")
+    if "alpha_pane" in ported:
+        names += ["pane alpha cut", "pane opacity"]; req("_c")
     if "bright_glow" in ported:
         names += ["bright glow colour", "bright glow colour lo", "bright glow dist_k", "bright glow dist0", "bright glow gain",
                   "bright glow weight", "bright glow exponent", "bright glow amplitude"]
@@ -1266,6 +1270,16 @@ def _validate_viewer_rule_material(source, material):
     brdf = _from_node(output.inputs["Surface"])
     facing = "facing_glow" in ported
     extra = ()
+    pane = rule["terms"].get("alpha_pane") if "alpha_pane" in ported else None
+    if pane:   # Surface = Mix(sat(sat(_c.a) opacity) (_c.a >= cut), Transparent, shader)
+        mix = brdf
+        assert mix and mix.type == "MIX_SHADER" and mix.name == "VR pane blend alpha_over", "Alpha pane is not the surface mix"
+        clear = _from_node(mix.inputs[1])
+        assert clear and clear.type == "BSDF_TRANSPARENT" and clear.name == "VR pane transparent", "Alpha pane is not over a transparent shader"
+        assert mix.inputs[0].is_linked and any(node.type == "TEX_IMAGE" and str(node.get("source_texture_path", "")).lower() ==
+            (rule["textures"].get("_c") or "").lower() for node in _viewer_upstream(mix.inputs[0])), "Alpha pane factor does not read the _c alpha"
+        assert material.use_backface_culling == (not pane.get("two_sided")), "Alpha pane cull differs from the flags word"
+        brdf, extra = _from_node(mix.inputs[2]), (mix.inputs[0],)
     if "alpha_cut" in ported:   # Surface = Mix(Transparent, shader, _c.a >= threshold)
         mix = brdf
         assert mix and mix.type == "MIX_SHADER" and mix.name == "VR alpha cut mix", "Leaf cut-out is not the surface mix"

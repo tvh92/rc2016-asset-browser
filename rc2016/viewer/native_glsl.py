@@ -213,7 +213,8 @@ float nativeFrameHandedness(vec3 T) {
 """
 
 
-def fragment_source(translation, srgb=None, *, experimental=False, rule_preview=False, alpha_api=None, alpha_discard=0.0):
+def fragment_source(translation, srgb=None, *, experimental=False, rule_preview=False, alpha_api=None, alpha_discard=0.0,
+                    alpha_opacity=1.0):
     from rc2016.viewer.shading import FRAGMENT
     surface = emit_surface(translation, srgb, experimental=experimental, rule_preview=rule_preview)
     # Reuse all shared lighting, tonemap and BRDF helpers. Unused hand-rule code
@@ -232,6 +233,8 @@ def fragment_source(translation, srgb=None, *, experimental=False, rule_preview=
             raise ValueError('Alpha pane texture is not bound to the translation')
         source += f'    float paneAlpha = clamp(texture2D({sampler}, vUV).a, 0.0, 1.0);\n'
         source += f'    if (paneAlpha < {_literal(float(alpha_discard))}) discard;\n'
+        if float(alpha_opacity) != 1.0:   # attribute0.w: sat(sat(_c.a) opacity), the cut applies to the cover
+            source += f'    paneAlpha = clamp(paneAlpha * {_literal(float(alpha_opacity))}, 0.0, 1.0);\n'
         source += '    sceneOutput(vec4(displayFog(color + albedo * emission), paneAlpha));\n}\n'
     surface['source'] = source
     # Includes current shared shader helpers, so lighting edits invalidate programs.

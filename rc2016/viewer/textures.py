@@ -90,6 +90,12 @@ GLASS_PATTERNED_ADD_CONSTANTS = dict(glow_colour=(0.0, 0.0, 0.0), amplitude=0.0,
 HEALTH_CRATE_GRAPH = 'required/materials/health_crate.materialgraph'
 HEALTH_CRATE_GRAPH_SHA256 = '40d111aa045c9d5c0fdb3ace0278c996a85e97996d277ca3c58470cb0e5df9f1'
 HEALTH_PANE_DISCARD = 4.0 / 255.0
+# basic_normal_gloss (deferred writer 5EBDECA4): its alpha-over materials are drawn by the graph's forward light-loop program
+# 37AF5B69 (shadPS4 IR dump): the same surface (_c albedo, _n 2 rg - 1, grey F0 = CB2[0] _g.G, gloss CB2[1] _g.R) lit and
+# fogged, alpha = sat(sat(_c.a) attribute0.w), discard when sat(_c.a) < attribute0.z (record flag 0x80, clear here, would
+# min the cover with an API33 mask at UV / 3). docs/viewer.md, "basic_normal_gloss alpha-over".
+BASIC_NORMAL_GLOSS_GRAPH = 'required/materials/basic_normal_gloss.materialgraph'
+BASIC_NORMAL_GLOSS_GRAPH_SHA256 = 'adf901e345f6eb3d336badd32215bb1f7cfd018450fc3169774d17423aaca1b9'
 HEALTH_PANE_OPACITY = 1.0
 HEALTH_PANE_CAPTURED = dict(program='EC04A1EB', pass_index=1, records=7, instance_flags=0x61, rec66=1.0, rec67=4.0 / 255.0,
                             blend='SRC_ALPHA/ONE_MINUS_SRC_ALPHA', depth_write=False, cull='back', view_depth=[60.0, 143.4])
@@ -440,8 +446,8 @@ DECAL_GNORMAL_CONSTANTS = dict(
                        instance_flags='0x61 (light and specular gates on, 0x80 clear)', ssr=False, fog=1.0,
                        program_variant='83652CC4 (pass 0); 9C8E9B1D (pass 3) is the same form without the G-buffer normal read'))
 FLAT_INCANDESCENT_CONSTANTS = dict(
-    alpha_scale=1.0, presentation=True, game_equivalence=False, writer='FDF7FDFB',
-    frozen_inputs=dict(attribute0_w=1.0, fog=1.0, ssr=False, instance_flags='0x61 (light loop on), 0x80 clear',
+    presentation=True, game_equivalence=False, writer='FDF7FDFB',
+    frozen_inputs=dict(attribute0_w='material byte 22 / 255 (capture-checked: 127 gives the captured 0.498 C (K3 C.r + K5))', fog=1.0, ssr=False, instance_flags='0x61 (light loop on), 0x80 clear',
                        program_variant='FDF7FDFB (pass 3, F0 = CB2[4]); E16F8FC0 (pass 0) uses F0 0.1'))
 # Novalis window glass, forward program 8DF14766 of jn_glass_parallax_mask (pass contract 0; docs/material-decoding/
 # novalis-window-glass.md, evidence Research/2026-10-29_novalis-window-glass/WINDOW_GLASS_DECODE.md). Slots in API order
@@ -1847,10 +1853,10 @@ def material_texture_paths(archive, material_path: str) -> dict:
                 result.pop(role, None)
         if incandescent is not None:   # E = C (K3 C.r + K5): the emission scale multiplies the colour
             params.update(incandescent)
-            # attribute0.w is taken as 1 (the static preview of the decode). The flags block's byte 22 is kept for reference: if
-            # attribute0.w carried byte 22 / 255 as for basic_glass, the strips would add half as much.
+            # attribute0.w is the opacity byte 22 / 255, as for basic_glass: the space-battle capture's pre-tonemap target has the
+            # pad strips at 0.499 E above the surface under them (byte 127 gives 0.498), the same in all three channels.
             flags_offset, flags_size = _sections(data).get(MATERIAL_FLAGS_SECTION, (0, 0))
-            params['opacity_byte_22'] = data[flags_offset + 22] if flags_size >= 23 else None
+            params['alpha_scale'] = data[flags_offset + 22] / 255.0 if flags_size >= 23 else 1.0
             params['emission_scale'] = incandescent['k3'] * incandescent['colour'][0] + incandescent['k5']
         if rule['forward'] == 'water':
             params.update(WATER_PRESENTATION)
@@ -2037,6 +2043,17 @@ def material_texture_paths(archive, material_path: str) -> dict:
             reason='alpha_over material of the health crate graph: the pass-0 body surface (5C03EF34, tangent normal) with '
                    'alpha = sat(_c.a) (close-range forward program BCE8624F); discard 4/255, opacity 1 and flags 0x61 are '
                    'captured on the crate panes (pass 1, EC04A1EB, at 60..143 u); light loop and fog are not applied')
+    state = blend_state(material_flags(data))
+    if (graph_hashes.get(BASIC_NORMAL_GLOSS_GRAPH) == BASIC_NORMAL_GLOSS_GRAPH_SHA256 and result.get('_c')
+            and state['blend'] == 'alpha_over'):
+        flags_offset, flags_size = _sections(data).get(MATERIAL_FLAGS_SECTION, (0, 0))
+        result['alpha_pane'] = dict(
+            graph_path=BASIC_NORMAL_GLOSS_GRAPH, graph_sha256=BASIC_NORMAL_GLOSS_GRAPH_SHA256, writers=['37AF5B69'],
+            surface_writer='5EBDECA4', alpha_api=5, discard=_foliage_alpha_cutoff(data),
+            opacity=data[flags_offset + 22] / 255.0 if flags_size >= 23 else 1.0, two_sided=state['two_sided'],
+            reason='alpha_over material of basic_normal_gloss: the 5EBDECA4 surface drawn by the forward program 37AF5B69 '
+                   '(IR dump) with alpha = sat(sat(_c.a) attribute0.w), attribute0.w = byte 22 / 255, discard below '
+                   'attribute0.z (the material cut-off); light loop and fog are not applied')
     return result
 
 

@@ -1675,11 +1675,17 @@ class LevelViewport(ModelViewport):
             sh.glUniform3f(u["uColor"], 0.72, 0.74, 0.78)
             current = None
             decal_on = culling = False
-            for item in sorted(self._draw_list, key=lambda item: bool(item[1].get("decal"))):   # decals last (stable order)
+            def blended(item):   # level decals and alpha panes (textures 'alpha_pane', textured modes) draw last
+                entry = self._materials.get(item[0][0]) or {}
+                return bool(item[1].get("decal") or (item[0][1] and entry.get("alpha_pane") and entry.get("_c")))
+            for item in sorted(self._draw_list, key=blended):   # stable order
                 key, model, span, groups = item
-                decal = model.get("decal")
                 entry = self._materials.get(key[0]) or {}
-                if decal and (shadow or geometry or not self.decals_enabled):
+                pane = None if model.get("decal") or not key[1] or not entry.get("_c") else entry.get("alpha_pane")
+                decal = model.get("decal") or (dict(blend="alpha_over", two_sided=bool(pane.get("two_sided"))) if pane else None)
+                if pane and (shadow or geometry):
+                    continue   # blended forward draws: no shadow or AO depth
+                if decal and not pane and (shadow or geometry or not self.decals_enabled):
                     continue   # projected marks cast no shadow and leave no depth
                 if shadow and entry.get("no_shadow_cast"):
                     continue   # not a sun caster in the captured frame (textures.NO_SHADOW_CAST_MATERIALS); still in the AO depth
@@ -1697,6 +1703,7 @@ class LevelViewport(ModelViewport):
                     blend = decal.get("blend")
                     (gl.glEnable if blend != "opaque" else gl.glDisable)(self.GL_BLEND)
                     gl.glBlendFunc(self.GL_SRC_ALPHA, self.GL_ONE if blend == "additive" else self.GL_ONE_MINUS_SRC_ALPHA)
+                    (gl.glEnable if pane and not pane.get("two_sided") else gl.glDisable)(self.GL_CULL_FACE)
                 self._static_vector_draw_eligible = self._static_vector_eligible_for_model(model)
                 next_program, next_u = self._surface_program(entry, key[1], instanced=True)
                 if next_program != program:
@@ -1719,7 +1726,7 @@ class LevelViewport(ModelViewport):
                         sh.glUniform1i(u["uMode"], key[1])
                     self._material_state(u, key, entry)
                     current = key
-                if decal and "uAlphaOut" in u:
+                if decal and not pane and "uAlphaOut" in u:
                     sh.glUniform1i(u["uAlphaOut"], 1)
                 self._draw_span(model, span, groups)
                 self._static_vector_draw_eligible = False
