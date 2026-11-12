@@ -839,8 +839,21 @@ def process_model(key,index,args,code_hash,previous,log):
         from rc2016.pipeline import holocard_effect
         holocard_effect_job=dict(description=holocard_effect.effect_description(holocard),
             textures=holocard_effect.prepare_textures(archive,holocard,model_root/'holocard_effect'))
+    # The Nefarious mech's rocket flame is the enm_nefarious_mech_rocket_flame effect at igLoc_thruster: two flame meshes.
+    mech_flame_effect_job=None
+    try:
+        from rc2016.formats.native_model import decode_locators
+        from rc2016.viewer.mech_flame_effect import mech_flame_preview
+        model_bytes=Path(model_path).read_bytes()
+        mech_flame=mech_flame_preview(archive,asset['path'],model_bytes,decode_locators(model_bytes))
+    except (ValueError,KeyError,IndexError,OSError):
+        mech_flame=None
+    if mech_flame is not None:
+        from rc2016.pipeline import mech_flame_effect
+        mech_flame_effect_job=dict(description=mech_flame_effect.effect_description(mech_flame),
+            textures=mech_flame_effect.prepare_textures(archive,mech_flame,model_root/'mech_flame_effect'))
     job=dict(schema=VERSION,fingerprint=fingerprint,model=model,geometry=geometry,native_geometry=native_geometry,native_parts=native_parts,health_effect=health_effect_job,
-        holocon_effect=holocon_effect_job,holocard_effect=holocard_effect_job,
+        holocon_effect=holocon_effect_job,holocard_effect=holocard_effect_job,mech_flame_effect=mech_flame_effect_job,
         animation_selection=selection_identity,active_clip_index=active_clip_index,clip_catalog=entries,
         texture_transport=texture_transport,
         experimental_ambiguous_inheritance=args.experimental_ambiguous_inheritance,

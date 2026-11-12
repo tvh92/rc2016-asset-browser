@@ -1522,6 +1522,8 @@ class ModelViewport(_TkFrame):
             from rc2016.viewer.holocon_effect import billboards
         elif preview.get('family') == 'holocard':
             from rc2016.viewer.holocard_effect import billboards
+        elif preview.get('family') == 'mech_flame':
+            from rc2016.viewer.mech_flame_effect import billboards
         else:
             from rc2016.viewer.idle_effect import billboards
         modelview = (ctypes.c_float * 16)()
@@ -1571,7 +1573,7 @@ class ModelViewport(_TkFrame):
         units = ((0, 'noise', 'uEffectNoise'), (1, 'spin', 'uEffectSpin'), (2, 'ring', 'uEffectRing'), (3, 'icon', 'uHoloIcon'),
                  (4, 'background', 'uHoloBackground'), (5, 'scan', 'uHoloScan'), (6, 'trigger', 'uHoloTrigger'),
                  (8, 'holocard_glow', 'uCardGlow'), (9, 'holocard_noise', 'uCardNoise'), (10, 'ethereal', 'uCardSmoke'),
-                 (11, 'sparkle', 'uCardSparkle'))
+                 (11, 'sparkle', 'uCardSparkle'), (12, 'mech_flame_noise', 'uFlameNoise'))
         for unit, role, name in units:
             sh.glActiveTexture(self.GL_TEXTURE0 + unit)
             gl.glBindTexture(self.GL_TEXTURE_2D, textures.get(role, 0))
@@ -1626,7 +1628,7 @@ class ModelViewport(_TkFrame):
                         gl.glBlendFunc(self.GL_SRC_ALPHA, self.GL_ONE)
                 sh.glUniform3f(u['uEffectFace'], *quad.get('face', (0.0, 0.0, 1.0)))
                 normals = quad.get('normals') or ((0.0, 0.0, 1.0),) * len(quad['corners'])
-                gl.glBegin(0x0007)   # GL_QUADS
+                gl.glBegin(0x0004 if quad.get('triangles') else 0x0007)   # GL_TRIANGLES (the mech flame mesh) or GL_QUADS
                 for ((x, y, z), (s, t)), normal in zip(quad['corners'], normals):
                     gl.glNormal3f(*normal); gl.glTexCoord2f(s, t); gl.glVertex3f(x, y, z)
                 gl.glEnd()
@@ -1635,7 +1637,7 @@ class ModelViewport(_TkFrame):
             if additive:
                 self._blend_over()
             gl.glEnable(self.GL_DEPTH_TEST); gl.glDepthMask(1); gl.glDisable(self.GL_BLEND); gl.glDisable(self.GL_CULL_FACE)
-            for unit in (11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0):
+            for unit in (12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0):
                 sh.glActiveTexture(self.GL_TEXTURE0 + unit)
                 gl.glBindTexture(self.GL_TEXTURE_2D, 0)
 

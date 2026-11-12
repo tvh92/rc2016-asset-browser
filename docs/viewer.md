@@ -199,7 +199,7 @@ Validation (agreement with the Blender review render, not game accuracy): a unit
 | Matte, albedo 0.47 (sRGB 0.72-0.78 grey) | 0.5/255 | 1/255 |
 | Glossy (diffuse 0.2 + GGX F0 0.039, gloss 0.6, added as the game BRDF) | 1.4/255 | 5/255 |
 
-The standalone model viewer has no shadowing, ambient occlusion or interreflection. The level viewer adds independently switchable [scene AO, key shadows and supported authored points](levels.md); these are bounded previews with unverified native runtime allocation. Cycles has them, so concave or occluded parts of real models differ. Forward and glass materials use the same lighting, with the tonemap applied per fragment before blending; only frames with health crate panes, an effect preview (the crate's idle effect, a holocon hologram, a holocard glow) or the turret barrier blend in HDR and tonemap once ([Health crate idle effect](#health-crate-idle-effect)). The shared HDRI mode predicts the Blender review render; it is not game lighting.
+The standalone model viewer has no shadowing, ambient occlusion or interreflection. The level viewer adds independently switchable [scene AO, key shadows and supported authored points](levels.md); these are bounded previews with unverified native runtime allocation. Cycles has them, so concave or occluded parts of real models differ. Forward and glass materials use the same lighting, with the tonemap applied per fragment before blending; only frames with health crate panes, an effect preview (the crate's idle effect, a holocon hologram, a holocard glow, the mech rocket flame) or the turret barrier blend in HDR and tonemap once ([Health crate idle effect](#health-crate-idle-effect)). The shared HDRI mode predicts the Blender review render; it is not game lighting.
 
 ### `_g` meaning per material graph
 
@@ -459,6 +459,19 @@ All three drawn parts share one output: rgb = 2A C m (1 + L), alpha sat(a m), di
 **Presentation values:** CB0[115] = 0.277088 as for the crate, frame time 0 (the rings are still), fog off, the cloud's soft fade 1.
 
 **Inferred stand-ins, not decoded:** the particles are the capture's still frame, not the emitters' spawn rules: two cloud puffs at the effect origin (1.9502 and 1.4756 units, alphas 23/255 and 248/255, turned 101.5 and 122.1 degrees about the view axis) and the 17 sparkles at their captured offsets in the effect frame. The glow quad and the cloud move 0.2 units toward the camera: their component +0x7C is -0.2, read as on the health crate's flares, where it is decoded. The capture has the quad about 0.1 units in front of the card's forward layer, consistent with a pull, but the magnitude is not checked. The 25-unit fade range is the health crate's. Not drawn: component 0 (kind 5, a material hash with no archive path) and the faint strip drawn after the cloud (program `b6f67d16`, 5 % of the glow's peak).
+### Nefarious mech rocket flame
+
+The blue flame under Nefarious's mech (`enm_nefarious_mech`, `enm_nefarious_mech_damaged`, `enm_nefarious_mech_damaged_dome`) is previewed in Shaded mode (`rc2016/viewer/mech_flame_effect.py`, `shading.EFFECT_FRAGMENT` kind 10). The mech's conduit `enm_nefarious_mech_fx` ("New Thruster VFX") starts `enm_nefarious_mech_rocket_flame.visualeffect` at the locator `igLoc_thruster` (joint 2, at the model origin in the rest pose, local Z pointing down). Its components 2 and 3 are mesh components that draw `enm_nefarious_mech_rocket_flame.model` (439 vertices, local z from -0.12 to 1.59, game v = 0 at the end by the nozzle; `decode_model`'s v is 1 - v); components 0 and 4 are blue lights. `game_equivalence` is false.
+
+- **Placement:** each flame is the locator frame, then the component's rotation rows (identity) and offset (z -0.15 and -0.35), a spin about local Z and the slot b4 scale ((0.8, 0.8, 1.5) and (1.1, 1.1, 2.0) plus a random fraction of their spread).
+- **Program** (graph `enm_nefarious_mech_rocket_flame`, archive `0x61e4c390`; the capture labels the same code `fde05ee2`): n = `hydro_noise_flame_03_sm`.r at (u, 0.5 v - 2t); s = 1 - v; q = sat((s - 0.15)^4) + (0.3 n - 0.15) s; m = sat(q), discard below 4/255; rgb = 93 A L (q^2, |q|^0.75, |q|^0.01), alpha = sat(a m), with L = slot b2 x b5 (2.5 and 1.0) and a = slot b6[0] clamped to 1. Blended SRC_ALPHA / ONE_MINUS_SRC_ALPHA, depth-tested without depth write, no culling. It is blue because q < 1.
+
+**Captured** (Deplanetizer boss arena, draw 8928): the program on the captured inputs reproduces the frame's change with correlation 0.9992 (837 pixels, median error 2.5 %); the two instances' vertices in the mech's model space are the placement above, the component offsets and intensities, alpha, discard and the render state.
+
+**Presentation values:** CB0[115] = 0.277088 as for the crate (0.2158 in the capture), frame time 0 (the noise is still), fog off.
+
+**Inferred stand-ins, not decoded:** the random terms are the capture's still frame (scale fraction 0.964 for both, spins -0.3 and -71.7 degrees; slot b3 is not played as a spin rate); the flame stays at the locator's rest pose (in the capture the posed locator was 0.217 units higher); the two blue lights are not added. In the rest pose the closed legs hide much of the flame from the front, as the centre leg does in the capture.
+
 
 ## Animation playback
 

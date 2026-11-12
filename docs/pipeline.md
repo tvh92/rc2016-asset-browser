@@ -301,6 +301,16 @@ A holocard's glow (the single card, the RYNO card and the card pack) is built as
 - The four images are written as PNGs under the model's `holocard_effect` folder and packed; the transparent bounce limit is raised as for the holocon.
 - Not built: the rings' scroll over time, mip filtering, component 0 and the strip program `b6f67d16`.
 
+## Nefarious mech rocket flame
+
+The rocket flame of Nefarious's mech is built as scene objects (`rc2016/pipeline/mech_flame_effect.py`, called from `run.py` and `builder.py` before the structural baseline), from the same decoded values as the model viewer ([viewer](viewer.md#nefarious-mech-rocket-flame)).
+
+- Two meshes (`Nefarious mech | rocket flame ...`, custom property `mech_flame_effect`), one per mesh component, with their vertices placed in native model space; seen by the camera only, Object Index 2 (the bloom mask).
+- The material builds the program `61e4c390` as nodes: the noise at (u, 0.5 v - 2t), q, the 4/255 discard and emission 93 A L (q^2, |q|^0.75, |q|^0.01) (`fx_emit`) over Transparent by sat(a m), the game's alpha-over.
+- The flames are children of the mech mesh, then mounted on the thruster joint's bone (`pelvis`, joint 2) with the bone's rest tail frame as parent inverse, so they keep their native placement at the rest pose and follow the bone in every clip.
+- The noise image is written as a PNG under the model's `mech_flame_effect` folder and packed.
+- Not built: the noise scroll over time, mip filtering, the effect's two blue lights.
+
 ## Shader node layout
 
 Before the candidate `.blend` is saved, every material's node tree and every node group is arranged in columns by `rc2016/pipeline/node_layout.py`: a node sits left of everything it feeds, and each column starts stacked top to bottom in creation order, then a few passes move every node toward the middle of the nodes it links to, so wires stay short and cross less. The layout is part of the pipeline, not a Blender add-on, so a file built on any machine opens the same way. Weapon merges and the group `.blend` keep the positions they set. Node positions carry no game data and are not validated.

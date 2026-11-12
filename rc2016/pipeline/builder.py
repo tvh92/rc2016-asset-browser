@@ -589,6 +589,14 @@ def build(job):
         from rc2016.pipeline import holocard_effect
         anchors=[o for o in scene.objects if o.type=='MESH' and o.get('source_model_sha256')==job['model']['model_sha256']]
         if anchors:holocard_effect.build(scene,anchors[0],job['holocard_effect']['description'],job['holocard_effect']['textures'])
+    if job.get('mech_flame_effect'):
+        # The Nefarious mech's rocket flame (rc2016/pipeline/mech_flame_effect.py), mounted on the thruster joint's bone.
+        from rc2016.pipeline import mech_flame_effect
+        anchors=[o for o in scene.objects if o.type=='MESH' and o.get('source_model_sha256')==job['model']['model_sha256']]
+        description=job['mech_flame_effect']['description'];rows=job['model'].get('skeleton') or []
+        joint=description.get('joint');bone=rows[joint]['name'] if joint is not None and joint<len(rows) else None
+        if anchors:mech_flame_effect.build(scene,anchors[0],description,job['mech_flame_effect']['textures'],
+                                           bpy.data.objects.get('Source animation rig'),bone)
     # The game's bloom around self-lit materials (rc2016/pipeline/emitter_bloom.py): only with the game tonemap's compositor.
     from rc2016.pipeline import emitter_bloom
     emitter_bloom.add_emitter_bloom(scene)

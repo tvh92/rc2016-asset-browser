@@ -109,12 +109,14 @@ def _effect_preview(archive, data, source_path=''):
     try:
         from rc2016.formats.native_model import decode_locators
         from rc2016.viewer.holocard_effect import holocard_preview
+        from rc2016.viewer.mech_flame_effect import mech_flame_preview
         from rc2016.viewer.holocon_effect import holocon_preview
         from rc2016.viewer.idle_effect import effect_preview
         from rc2016.viewer.textures import load_texture
         locators=decode_locators(data)
         preview=(effect_preview(locators) or holocon_preview(archive,source_path,data,locators)
-                 or holocard_preview(archive,source_path,data,locators))
+                 or holocard_preview(archive,source_path,data,locators)
+                 or mech_flame_preview(archive,source_path,data,locators))
         if preview:
             preview['textures']={role:load_texture(archive,path) for role,path in preview['texture_paths'].items()}
         return preview

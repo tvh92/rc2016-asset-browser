@@ -2479,6 +2479,8 @@ BEAM_UNIFORMS = (*LIGHTING_UNIFORMS, "uBeamNoise", "uBeamDepth", "uBeamViewport"
 # shockwave instance colour rec[44..46]; the frame time CB0[99] is 0. The soft-depth term sat(2.5 dz / s) is 1 for the
 # health crate; on a holocon glow (uEffectSoftSize s > 0) dz is the depth along the view ray from the glow to the plane
 # uEffectSoftPlane (view space n, -n.p), the emitter plane standing in for scene depth as in the Blender glow material.
+# The Nefarious mech rocket flame (rc2016/viewer/mech_flame_effect.py, archive program 61e4c390, captured as fde05ee2): 10, a
+# mesh drawn alpha-over and depth-tested, the noise at (u, 0.5 v - 2 CB0[99]), uEffectColour = the component's grey L.
 # The holocard glow (rc2016/viewer/holocard_effect.py, runtime programs captured on a holocard, drawn additive): 7 glow quad
 # cb954073 (vN = the quad's view-space corner normals), 8 ethereal cloud 06ceb217, 9 sparkle 59399868; uEffectTime = CB0[99].
 EFFECT_VERTEX = """
@@ -2499,6 +2501,7 @@ uniform sampler2D uHoloIcon; uniform sampler2D uHoloBackground; uniform sampler2
 uniform sampler2D uHoloLaser;
 uniform vec4 uHoloOffsetsRB; uniform vec2 uHoloOffsetG; uniform float uHoloHue; uniform vec3 uHoloFrame;   // time, CB0[107], seed
 uniform sampler2D uCardGlow; uniform sampler2D uCardNoise; uniform sampler2D uCardSmoke; uniform sampler2D uCardSparkle;
+uniform sampler2D uFlameNoise;
 uniform float uEffectTime; uniform vec3 uEffectFace;
 void main() {
     vec2 c = vUV - 0.5; float r = length(c);
@@ -2564,6 +2567,14 @@ void main() {
         }
         if (m <= 0.001 || m < uEffectDiscard) discard;
         rgb = 2.0 * A * uEffectColour * m * (1.0 + L); alpha = clamp(uEffectAlpha * m, 0.0, 1.0);
+    } else if (uEffectKind == 10) {  // Nefarious mech rocket flame 61e4c390: rgb = 93 A L (q^2, |q|^0.75, |q|^0.01), alpha sat(a m)
+        float n = texture2D(uFlameNoise, vec2(vUV.x, 0.5 * vUV.y - 2.0 * uEffectTime)).r;
+        float s = 1.0 - vUV.y, s0 = s - 0.15;
+        float q = clamp(s0 * s0 * s0 * s0, 0.0, 1.0) + (0.3 * n - 0.15) * s;
+        float m = clamp(q, 0.0, 1.0);
+        if (m < uEffectDiscard) discard;
+        float aq = max(abs(q), 1e-8);
+        rgb = 93.0 * A * uEffectColour * vec3(q * q, pow(aq, 0.75), pow(aq, 0.01)); alpha = clamp(uEffectAlpha * m, 0.0, 1.0);
     } else {                         // 094D0CAE: ring texture; k = A C.r P2.r, R = 2k (2k + L), G/B = 2A P2 (2k + L)
         float m = clamp(texture2D(uEffectRing, vUV).r, 0.0, 1.0);
         if (m < uEffectDiscard) discard;
@@ -2577,7 +2588,8 @@ void main() {
 EFFECT_UNIFORMS = (*LIGHTING_UNIFORMS, "uEffectKind", "uEffectColour", "uEffectAlpha", "uEffectDiscard", "uEffectAmplitude",
                    "uEffectMaskWeight", "uEffectNoise", "uEffectSpin", "uEffectRing", "uHoloIcon", "uHoloBackground", "uHoloScan",
                    "uHoloTrigger", "uHoloLaser", "uHoloOffsetsRB", "uHoloOffsetG", "uHoloHue", "uHoloFrame", "uEffectSoftPlane",
-                   "uEffectSoftSize", "uCardGlow", "uCardNoise", "uCardSmoke", "uCardSparkle", "uEffectTime", "uEffectFace")
+                   "uEffectSoftSize", "uCardGlow", "uCardNoise", "uCardSmoke", "uCardSparkle", "uEffectTime", "uEffectFace",
+                   "uFlameNoise")
 
 
 # Tonemap of the model viewer's float scene target (ModelViewport._hdr_begin / _hdr_resolve), used for frames with health
