@@ -1002,12 +1002,32 @@ TELEPORTER_RING_SOURCE_PREVIEW=dict(
     normal='geometry',preferred=True,
     label='Teleport pad ring')
 
+# Batalia battery cannon barrel coil (rb_bat_battery_cannon, rb_bat_battery_cannon_guns_01): only the deferred writer
+# 0x16c18bea (both pass contracts) binds. Its siblings are the forward light-loop program 0xf6673be1 and the exec-masked
+# 0x8f221e6e. CB0[99] (time) scrolls the cloud_noise_01 sample; CB0[139] multiplies the screen-space specular-AA width, as in
+# the gauge needle writer, so 0 gives the flat-surface gloss. CB2[0] (key 0x89F6E29E, graph default 0, the material sets
+# nothing) keeps the cyan branch: albedo = h + (0.5 + 0.5 s) (0, 0.552, 1), h = 0.3 s - 0.02, emission 3 h + 2.
+# docs/material-decoding/battery-cannon-coil.md; the cyan look matches Research/captures/2026-11-12_turret-barrel (local).
+BATTERY_CANNON_COIL_SOURCE_PREVIEW=dict(
+    graph_path='materialgraph/visualeffect/equipment/weapon/wpn_battery_cannon_coil/wpn_battery_cannon_coil.materialgraph',
+    graph_sha256='59cd94027e9da8e8794b910e50fae1225e3c4e3863fc53a588303500e8143f5b',
+    material_path='material/visualeffect/equipment/weapon/wpn_battery_cannon_coil/wpn_battery_cannon_coil.material',
+    material_sha256='e4fd7183a6705bcae0d76197c23c836e0f342966de9bcf5e9072a9984576bd53',
+    shader_id='0x16c18bea',
+    code_sha256='b67ace49125a078ba87e8b85ca46c69162b405efc91556090a68c78b68ab6495',
+    input=dict(kind='cb',api=0,dword=99,value=0.0,name='CB0[99]'),
+    extra_inputs=[dict(kind='cb',api=0,dword=139,value=0.0,name='CB0[139]',
+        meaning='specular-AA width scale; 0 selects the flat-surface gloss; runtime upload/value unverified',
+        limitation='CB0[139] is frozen at 0 so the screen-space specular-AA width term is neutral (flat-surface '
+            'gloss, width 1); the engine value and the vertex input attribute1.2 it multiplies are unverified and not read.')],
+    label='Battery cannon coil')
+
 SOURCE_PREVIEW_POLICIES={rule['graph_path']:rule for rule in
     (CONSTRUCTO_BUTTON_SOURCE_PREVIEW,WARBOT_V3_EYE_SOURCE_PREVIEW,EXTERMITANK_HOSES_SOURCE_PREVIEW,
      TRESPASSER_SCREEN_SOURCE_PREVIEW,PIXELIZER_BARREL_SOURCE_PREVIEW,PLASMA_STRIKER_SCOPE_SOURCE_PREVIEW,
      MAG_BOOT_FAN_SOURCE_PREVIEW,GAUGE_NEEDLE_SOURCE_PREVIEW,MAP_O_MATIC_SCREEN_SOURCE_PREVIEW,
      EXPLOSIVE_CRATE_LIGHT_SOURCE_PREVIEW,HEALTH_CRATE_PASS0_SOURCE_PREVIEW,
-     TELEPORTER_BODY_SOURCE_PREVIEW,TELEPORTER_RING_SOURCE_PREVIEW)}
+     TELEPORTER_BODY_SOURCE_PREVIEW,TELEPORTER_RING_SOURCE_PREVIEW,BATTERY_CANNON_COIL_SOURCE_PREVIEW)}
 
 
 def _policy_materials(rule):

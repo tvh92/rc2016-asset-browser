@@ -7,7 +7,7 @@ Two deferred writers bind through the native translator once their unbound engin
 | Gauge needle (Hydrodisplacer) | `gbl_prop_guage_needle_01` | `0x7d4cea47` (0) | 5 `gbl_prop_guage_needle_c` | `CB0[99]` = 0, `CB0[139]` = 0 |
 | Map-o-matic screen (`gbl_map_o_matic`) | `vel_prop_monitor_screen_03` | `0x4dd02bef` (0) | 5 `vel_prop_monitor_screen_03`, 6 `icon_holograms_background` | `CB0[99]` = 0, `CB0[115]` = 0.5, `CB0[139]` = 0 |
 
-The gadget material `gdgt_mapomatic` (graph `basic_normal_gloss`) is a different, already bound writer and is not part of this rule.
+The gadget material `gdgt_mapomatic` (graph `basic_normal_gloss`) is a different, already bound writer and is not part of this rule. The battery cannon coil writer has the same specular-AA term and the same two frozen words ([battery cannon coil](battery-cannon-coil.md)).
 
 ## What is decoded
 
