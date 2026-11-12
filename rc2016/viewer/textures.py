@@ -431,6 +431,14 @@ DWARF_STAR_CONSTANTS = dict(
 # rule takes the CB2[4] F0 of FDF7FDFB.
 FLAT_INCANDESCENT_GRAPH_SHA256 = '960498e0647f65882b7e00f21512ae78ea613633d1dba426469f6d1227ff74a4'
 FLAT_INCANDESCENT_KEYS = dict(colour=0x7F058428, k3=0x600B83DC, f0=0x62835AF9, k5=0x77591534, gloss=0x24F4CA4C)
+DECAL_GNORMAL_GRAPH_SHA256 = '7849348e0e69b686b28d581f271ec3441a4e914fb486243b7cdbd564462c31a8'
+DECAL_GNORMAL_SLOTS = dict(_window_c=0x49A7866BABDAD780, _window_g=0x49A7866B1576D848)
+DECAL_GNORMAL_CONSTANTS = dict(
+    record_colour=(1.0, 1.0, 1.0), presentation=True, game_equivalence=False, writer='83652CC4',
+    frozen_inputs=dict(record_colour='instance record vec4 11 taken as white', normal='geometric normal (pass 0 reads the '
+                       'G-buffer normal under the decal at the fragment, image 3, where its alpha is non-zero)',
+                       instance_flags='0x61 (light and specular gates on, 0x80 clear)', ssr=False, fog=1.0,
+                       program_variant='83652CC4 (pass 0); 9C8E9B1D (pass 3) is the same form without the G-buffer normal read'))
 FLAT_INCANDESCENT_CONSTANTS = dict(
     alpha_scale=1.0, presentation=True, game_equivalence=False, writer='FDF7FDFB',
     frozen_inputs=dict(attribute0_w=1.0, fog=1.0, ssr=False, instance_flags='0x61 (light loop on), 0x80 clear',
@@ -710,6 +718,12 @@ GRAPH_RULES = (
     ('materialgraph/global/basic_flat_color/basic_flat_color_incandescent.',
      dict(forward='flat_incandescent', writer='FDF7FDFB', constants=FLAT_INCANDESCENT_CONSTANTS,
           _graph_sha256=FLAT_INCANDESCENT_GRAPH_SHA256, params=())),
+    # mo_decal_gnormal mesh decals (the Deplanetizer dome grime): forward 83652CC4 (pass 0), read from its shadPS4 IR dump,
+    # exact graph + SHA. Alpha-over by _c.a times the opacity byte; albedo from _c, grey F0 and gloss from _g; viewer lighting.
+    ('materialgraph/environment/global/decal/mo_decal_gnormal.',
+     dict(forward='decal_gnormal', writer='83652CC4', constants=DECAL_GNORMAL_CONSTANTS,
+          _graph_sha256=DECAL_GNORMAL_GRAPH_SHA256, slots=DECAL_GNORMAL_SLOTS, params=(
+         ('f0', 0x62835AF9, 1), ('gloss', 0x24F4CA4C, 1), ('albedo_blend', 0xF0A64F9B, 1), ('albedo_power', 0x965B2DCD, 1)))),
     # Novalis window glass 8DF14766 (pass contract 0): exact graph + SHA only (docs/material-decoding/novalis-window-glass.md).
     # Opaque; diffuse light x albedo plus the reflection term, with the engine lighting replaced by the viewer's.
     ('materialgraph/global/basic_glass/jn_glass_parallax_mask.',
@@ -1738,7 +1752,7 @@ def material_texture_paths(archive, material_path: str) -> dict:
         tube_paths = {tube_slots.get(slot) or slots.get(slot) for slot in ION_TUBES_SLOTS}
         if len(tube_paths) != 1 or None in tube_paths or value(ION_TUBES_POWER_KEY, 0.0) != 0.0:
             rule = {}
-    if rule.get('forward') in ('glass_tinted_spec', 'dwarf_star'):
+    if rule.get('forward') in ('glass_tinted_spec', 'dwarf_star', 'decal_gnormal'):
         # Every image the program reads must be bound by slot (material binding, else the graph's); roles are never guessed.
         dep_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
         if any(not (dep_slots.get(slot) or slots.get(slot)) for slot in rule['slots'].values()):
@@ -1818,10 +1832,17 @@ def material_texture_paths(archive, material_path: str) -> dict:
             params['alpha_scale'] = data[flags_offset + 22] / 255.0 if flags_size >= 23 else 1.0
             for role in ('_c', '_g', '_h', '_n', '_pick'):   # the four images are on the window roles
                 result.pop(role, None)
-        if rule['forward'] in ('glass_tinted_spec', 'dwarf_star', 'flat_incandescent'):
-            # The programs sample only their slot-bound images (dome glass _n and _g, the star's five noise images) or none.
+        if rule['forward'] == 'decal_gnormal':
+            # attribute0.w (opacity, byte 22 / 255) and attribute0.z (the alpha cut-off) come from the flags block.
+            flags_offset, flags_size = _sections(data).get(MATERIAL_FLAGS_SECTION, (0, 0))
+            params['alpha_scale'] = data[flags_offset + 22] / 255.0 if flags_size >= 23 else 1.0
+            params['alpha_cut'] = _foliage_alpha_cutoff(data)
+        if rule['forward'] in ('glass_tinted_spec', 'dwarf_star', 'flat_incandescent', 'decal_gnormal'):
+            # The programs sample only their slot-bound images (dome glass _n and _g, the star's five noise images, the decal's
+            # _c and _g on the window roles) or none.
             dropped = {'glass_tinted_spec': ('_c', '_g', '_h', '_pick'), 'dwarf_star': ('_c', '_g', '_h', '_n'),
-                       'flat_incandescent': ('_c', '_g', '_h', '_n', '_pick')}[rule['forward']]
+                       'flat_incandescent': ('_c', '_g', '_h', '_n', '_pick'),
+                       'decal_gnormal': ('_c', '_g', '_h', '_n', '_pick')}[rule['forward']]
             for role in dropped:
                 result.pop(role, None)
         if incandescent is not None:   # E = C (K3 C.r + K5): the emission scale multiplies the colour

@@ -17,8 +17,6 @@ GREY_G_GRAPHS = {
         'e32b777f5cce0f4d7affdf83990d8a7e4e7661a8332ccaf9103974c6b6c8fa72',
     'materialgraph/environment/deplanetizer/ground/dep_gnd_world_space_stains_01/dep_gnd_world_space_stains_01.materialgraph':
         '1694d9c41a6bf4618b3dc3152cf78debd8ffa85276e0c1abbd195ab3aebd464b',
-    'materialgraph/environment/global/decal/mo_decal_gnormal.materialgraph':
-        '7849348e0e69b686b28d581f271ec3441a4e914fb486243b7cdbd564462c31a8',
     'materialgraph/environment/global/prop/gbl_prop_blarg_mercenary_bomb_01/gbl_prop_blarg_mercenary_bomb_01.materialgraph':
         '7b54c00bc1cd3ff9f43a90b87104d90387bc141842698cc41339157a9aa6b498',
     'materialgraph/environment/global/prop/gbl_prop_museum_teleport_pad_01/gbl_prop_museum_teleport_pad_01.materialgraph':

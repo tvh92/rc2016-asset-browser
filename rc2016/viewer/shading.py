@@ -1317,6 +1317,13 @@ void main() {
 # uKind 23, flat_incandescent FDF7FDFB (basic_flat_color_incandescent, the Deplanetizer hangar glow strips; same doc): uA = colour C
 #   (CB2[0..2]), emission scale K3 C.r + K5 (CB2[3], CB2[5]); uB = grey F0 (CB2[4]), gloss (CB2[6]), attribute0.w. rgb = specular(N, F0,
 #   alpha 2^(-5.5 sqrt(sat(gloss)))) + C (K3 C.r + K5), no diffuse; alpha = attribute0.w; blend and cull from the flags word (additive).
+# uKind 24, decal_gnormal 83652CC4 (mo_decal_gnormal mesh decals, the Deplanetizer dome grime; docs/material-decoding/
+#   deplanetizer-exterior.md), read from the shadPS4 IR dump: uA = grey F0 scale CB2 0x62835AF9, gloss scale 0x24F4CA4C, albedo
+#   blend K 0xF0A64F9B, albedo power p 0x965B2DCD; uB = record colour s.rgb (instance record vec4 11, white), attribute0.w (byte 22
+#   / 255); uC.x = attribute0.z (the alpha cut-off). _c on the window _c unit and _g on the window mask unit, both at UV0.
+#   cover = sat(_c.a), discard cover < cut, alpha = sat(cover attr0.w); A = lerp(_c.rgb, sat(|_c.rgb s|^p), K); F0 = grey F0 scale _g.G,
+#   gloss = sat(gloss scale _g.R); rgb = A Ld + specular. Pass 0 shades with the G-buffer normal under the decal where it is set;
+#   the geometric normal stands in. Light list, probes, shadows, SSR and fog are the viewer rig; blend and cull from the flags word.
 GLASS_FRAGMENT = """
 #version 120
 #extension GL_ARB_shader_texture_lod : enable
@@ -1971,6 +1978,19 @@ void main() {
         float a = pow(2.0, -5.5 * sqrt(sat(uB.y)));
         color = glassSpec(N, V, L1, L2, C1, C2, vec3(uB.x), a, ambientLight(N)) + uA.rgb * uA.w;
         alpha = sat(uB.z);
+    } else if (uKind == 24) { // 83652CC4 mo_decal_gnormal mesh decal (see the uKind 24 comment)
+        vec4 c = uHasWindowC ? texture2D(uTexWindowC, vUV) : vec4(0.0);
+        if (uSrgbWindowC) c.rgb = linear(c.rgb);
+        float cover = sat(c.a);
+        if (cover < uC.x) discard;   // attribute0.z
+        alpha = sat(cover * uB.w);   // attribute0.w
+        vec2 g = uHasWindowMask ? texture2D(uTexWindowMask, vUV).rg : vec2(0.0);
+        if (uSrgbWindowMask) g = linear(vec3(g, 0.0)).rg;
+        vec3 A = mix(c.rgb, clamp(pow(abs(c.rgb * uB.rgb), vec3(uA.w)), 0.0, 1.0), uA.z);
+        float a = pow(2.0, -5.5 * sqrt(sat(uA.y * g.r)));
+        vec3 ambient = ambientLight(N);
+        vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
+        color = A * Ld + glassSpec(N, V, L1, L2, C1, C2, vec3(uA.x * g.g), a, ambient);
     } else {
         alpha = sat(pow(1.001 - ndv, uC.x) * (uC.z + sat(uC.w + sat(4.0 * pow(om, uD.y)))));
         vec3 tint = clamp(uB.w * clamp(uB.rgb / max(dot(vec3(0.2126, 0.7152, 0.0722), uB.rgb), 1e-6), 0.0, 1.0), 0.0, 1.0);
@@ -2040,7 +2060,7 @@ GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water":
                "eye_cornea": 6, "number_display": 7, "glass_basic": 8, "glass_cg02": 9, "glass_jn": 10, "glass_thumper": 11,
                "ion_tubes": 12, "glass_liquid": 13, "window_glass": 14, "glass_tank": 15, "warmonger_reticle": 16, "glass_taxi": 17,
                "turret_shield": 18, "turret_hud": 19, "brain_case": 20, "glass_tinted_spec": 21, "dwarf_star": 22,
-               "flat_incandescent": 23}
+               "flat_incandescent": 23, "decal_gnormal": 24}
 
 
 def frame_fade(time, rate):
@@ -2133,6 +2153,9 @@ def glass_uniforms(forward, time=None):
     if forward["kind"] == "flat_incandescent":
         return (GLASS_KINDS["flat_incandescent"], (*p["colour"], p["emission_scale"]), (p["f0"], p["gloss"], p["alpha_scale"], 0.0),
                 (0.0,) * 4, (0.0,) * 4, (0.0,) * 4)
+    if forward["kind"] == "decal_gnormal":
+        return (GLASS_KINDS["decal_gnormal"], (p["f0"], p["gloss"], p["albedo_blend"], p["albedo_power"]),
+                (*p["record_colour"], p["alpha_scale"]), (p["alpha_cut"], 0.0, 0.0, 0.0), (0.0,) * 4, (0.0,) * 4)
     if forward["kind"] == "turret_hud":
         return (GLASS_KINDS["turret_hud"], (p["variant"], p["amplitude"], p["time"] if time is None else time, 0.0),
                 (p["alpha_cut"], p["alpha_scale"], p["fog_transmittance"], 0.0), (0.0,) * 4, (0.0,) * 4, (0.0,) * 4)

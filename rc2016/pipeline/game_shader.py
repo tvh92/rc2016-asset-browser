@@ -1517,7 +1517,7 @@ def _viewer_skin_spec(P, skin, gR, gG, f, tinted):
     rgb = P.comb(*(P.sat(P.m('MULTIPLY', grey, ch)) for ch in P.sep(tinted))) if qwark else None
     return grey, gloss_in, rgb
 
-GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_patterned_add', 'glass_patterned', 'glass_liquid', 'glass_tank', 'glass_taxi', 'warmonger_reticle', 'turret_shield', 'turret_hud', 'brain_case', 'glass_tinted_spec', 'dwarf_star', 'flat_incandescent', 'window_glass')
+GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_patterned_add', 'glass_patterned', 'glass_liquid', 'glass_tank', 'glass_taxi', 'warmonger_reticle', 'turret_shield', 'turret_hud', 'brain_case', 'glass_tinted_spec', 'dwarf_star', 'flat_incandescent', 'decal_gnormal', 'window_glass')
 
 
 def _viewer_rule_glass(mat, rule, key, img):
@@ -2062,6 +2062,34 @@ def _viewer_rule_glass(mat, rule, key, img):
         limits.append('Incandescent flat colour FDF7FDFB (labelled preview, game_equivalence False): E = C (K3 C.r + K5) is decoded; the '
                       'specular light loop is Cycles lighting with F0 = CB2[4] (pass 3; pass 0 E16F8FC0 uses F0 0.1), and which pass draws '
                       'in game is not known')
+    elif key == 'decal_gnormal':
+        # 83652CC4 (mo_decal_gnormal, docs/material-decoding/deplanetizer-exterior.md), gl_shading.GLASS_FRAGMENT uKind 24:
+        # cover = sat(_c.a), cut at attribute0.z, alpha = sat(cover attribute0.w); A = lerp(_c.rgb, sat(|_c.rgb s|^p), K);
+        # rgb = A Ld + specular with grey F0 = CB2 f0 _g.G and gloss sat(CB2 gloss _g.R).
+        c_img, g_img = img('_window_c'), img('_window_g')
+        if c_img is not None:
+            c_node = P.tex(c_img, P.game_uv(), 'glass decal colour map')
+            colour, cover = c_node.outputs['Color'], P.sat(c_node.outputs['Alpha'])
+        else:
+            colour, cover = (0.0, 0.0, 0.0), 0.0
+            limits.append('no decal _c image bound: albedo and coverage 0')
+        g_r, g_g = 0.0, 0.0
+        if g_img is not None:
+            g_r, g_g, _ = P.sep(P.tex(g_img, P.game_uv(), 'glass decal gloss map').outputs['Color'])
+        else:
+            limits.append('no decal _g image bound: F0 and gloss 0')
+        power, record = P.const('glass albedo power', p['albedo_power']), P.const3('glass record colour', p['record_colour'])
+        tinted = P.sep(P.v('MULTIPLY', colour, record))
+        powered = P.comb(*(P.sat(P.m('POWER', P.m('ABSOLUTE', ch), power)) for ch in tinted))
+        albedo = P.v('ADD', colour, P.v('SCALE', P.v('SUBTRACT', powered, colour), P.const('glass albedo blend', p['albedo_blend'])))
+        f0 = P.m('MULTIPLY', P.const('glass f0', p['f0']), g_g)
+        lobe, f90 = spec_lobe(P.comb(f0, f0, f0), P.m('MULTIPLY', P.const('glass gloss', p['gloss']), g_r))
+        lit = add(diffuse(albedo), scaled(lobe, f90), 'VR glass lit')
+        kept = P.ge(cover, P.const('glass alpha cut', p['alpha_cut']))
+        alpha = P.m('MULTIPLY', P.m('MULTIPLY', cover, P.const('glass alpha scale', p['alpha_scale']), clamp=True), kept)
+        limits.append('mo_decal_gnormal mesh decal 83652CC4 (labelled preview, game_equivalence False): the material terms are decoded; '
+                      'the instance record colour is taken as white, the geometric normal stands in for the G-buffer normal pass 0 '
+                      'reads under the decal, and the light loop, probes, shadows, SSR and fog are Cycles lighting')
     elif key == 'window_glass':
         # 8DF14766 (docs/material-decoding/novalis-window-glass.md), labelled preview: opaque, rgb = (CB2[16] T11.b + L) Q
         # + k (lights + environment) F with Q = CB2[15] T11 (interior, _n slot) + CB2[12] C 0.5^5 T9 (painted glass _c,

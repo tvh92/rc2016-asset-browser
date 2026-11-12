@@ -2375,7 +2375,7 @@ class ModelViewport(_TkFrame):
         window = forward.get("kind") == "window_glass"
         # The barrier rules, the brain case and the dwarf star read the four window roles as they are.
         turret = forward.get("kind") in ("turret_shield", "turret_hud", "brain_case", "dwarf_star")
-        taxi = ({unit: role for unit, role, *_ in TAXI_GLASS_TEXTURES} if forward.get("kind") in ("glass_taxi", "glass_tinted_spec")
+        taxi = ({unit: role for unit, role, *_ in TAXI_GLASS_TEXTURES} if forward.get("kind") in ("glass_taxi", "glass_tinted_spec", "decal_gnormal")
                 else None)
         sh.glUniform1i(u["uHasUV1"], 1 if window and has_uv1 else 0)
         sh.glUniform4f(u["uWindowP"], *window_glass_uniform(forward))
