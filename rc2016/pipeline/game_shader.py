@@ -1517,14 +1517,15 @@ def _viewer_skin_spec(P, skin, gR, gG, f, tinted):
     rgb = P.comb(*(P.sat(P.m('MULTIPLY', grey, ch)) for ch in P.sep(tinted))) if qwark else None
     return grey, gloss_in, rgb
 
-GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_patterned_add', 'glass_patterned', 'glass_liquid', 'glass_tank', 'glass_taxi', 'warmonger_reticle', 'turret_shield', 'turret_hud', 'brain_case', 'glass_tinted_spec', 'dwarf_star', 'flat_incandescent', 'decal_gnormal', 'window_glass')
+GLASS_VIEWER_KINDS = ('glass_basic', 'glass_cg02', 'glass_jn', 'glass_thumper', 'glass_patterned_add', 'glass_patterned', 'glass_liquid', 'glass_tank', 'glass_taxi', 'warmonger_reticle', 'turret_shield', 'turret_hud', 'brain_case', 'glass_tinted_spec', 'dwarf_star', 'energy_ball', 'flat_incandescent', 'decal_gnormal', 'window_glass')
 
 
 def _viewer_rule_glass(mat, rule, key, img):
     """Forward glass writers basic_glass 4FC5703F, character_glass_02 4DF1D438, jn_glass E7118623,
     wpn_thumper_glove_glass 5226F404, blarg_saucer_glass FEEC00CE, the Hydrodisplacer liquid F0F45D78, the hydro harvester
     tank glass 7EB73491, the Warmonger sight 4C184DCC, the taxi glass 4E9B2CB3 and the Deplanetizer dome glass 39FDC0B9, dwarf star
-    05C96D48 and incandescent flat colour FDF7FDFB (gl_shading.GLASS_FRAGMENT uKind 8, 9, 10, 11, 2, 13, 15, 16, 17, 21, 22, 23).
+    05C96D48 and incandescent flat colour FDF7FDFB, and the test dummy energy ball DB658C65 (gl_shading.GLASS_FRAGMENT uKind 8, 9, 10,
+    11, 2, 13, 15, 16, 17, 21, 22, 23, 25).
     alpha comes from the rim (the sight: its self-lit screen term),
     the lit part is a diffuse term plus the writers' specular lobe (F0, F90 = sat(60 F0), Schlick), the blend
     from the flags word.
@@ -2050,6 +2051,43 @@ def _viewer_rule_glass(mat, rule, key, img):
                       'run the scrolls); CB0[115] = %g is a labelled presentation value; the record colour %s is inferred (instance record '
                       'vec4 11 unknown); dissolve P = 1, cut 0 and attribute0.w = 1 (nothing discarded); the BC5 third channel reads 0; '
                       'the program reads no light list' % (p['time'], p['amplitude'], tuple(p['record_colour'])))
+    elif key == 'energy_ball':
+        # DB658C65 (docs/material-decoding/test-dummy-energy-ball.md), gl_shading.GLASS_FRAGMENT uKind 25: unlit, alpha-over.
+        # E = electricity_line_01 (mask unit) at (1 - 2v - r, u + r), channel floor(3r); S = E + n1 + 0.219 n2 + min(1, |1.001 - N.V|)
+        # with the ball noise n1 at (0.75u + 0.125, v - 0.25t) and n2 at (u, v - 0.5t + 0.474); rgb = A F (1 + S) (0.889, 5, 4.523).
+        e_img, n1_img, n2_img = img('_window_mask'), img('_window_n1'), img('_window_n2')
+        u, vb, _ = P.uv_split(); v = P.m('SUBTRACT', 1.0, vb)   # game v counts from the top row
+        t = P.const('glass time', p['time'])                     # CB0[99]; key or drive this node to run the scrolls
+        r = P.const('glass frame random', p['frame_random'])     # CB0[107]: bolt channel and offset, a new value each game frame
+        mad = lambda a, b, c_: P.m('MULTIPLY_ADD', a, b, c_)
+
+        def sample(image, s_, t_, label):
+            if image is None:
+                limits.append('image for %s is not bound: 0' % label)
+                return (0.0,) * 3
+            return P.sep(P.tex(image, P.gl_coord(s_, t_), 'glass ball ' + label).outputs['Color'])
+        er, eg, eb = sample(e_img, P.m('SUBTRACT', P.m('SUBTRACT', 1.0, P.m('MULTIPLY', v, 2.0)), r), P.m('ADD', u, r), 'electricity')
+        pick = P.m('FLOOR', P.m('MULTIPLY', r, 3.0))
+        below1, below2 = P.m('LESS_THAN', pick, 1.0), P.m('LESS_THAN', pick, 2.0)
+        e = P.m('ADD', P.m('MULTIPLY', er, below1),                                   # channel 0 R, 1 G, else B
+                P.m('ADD', P.m('MULTIPLY', eg, P.m('SUBTRACT', below2, below1)), P.m('MULTIPLY', eb, P.m('SUBTRACT', 1.0, below2))))
+        n1 = sample(n1_img, mad(u, 0.75, 0.125), P.m('SUBTRACT', v, P.m('MULTIPLY', t, 0.25)), 'noise 1')[0]
+        n2 = sample(n2_img, u, mad(t, -0.5, P.m('ADD', v, 0.474)), 'noise 2')[0]
+        rim = P.m('MINIMUM', P.m('ABSOLUTE', P.m('SUBTRACT', 1.001, ndv)), 1.0)
+        S = P.m('ADD', P.m('ADD', e, n1), P.m('ADD', P.m('MULTIPLY', n2, 0.219), rim))
+        cover = P.sat(S)
+        keep = P.m('SUBTRACT', 1.0, P.m('LESS_THAN', cover, P.const('glass alpha cut', p['alpha_cut'])))   # attribute0.z: discard below
+        alpha = P.m('MULTIPLY', P.m('MULTIPLY', cover, P.const('glass alpha scale', p['alpha_scale'])), keep, clamp=True)
+        gain = P.m('MULTIPLY', P.m('MULTIPLY', P.const('glass amplitude', p['amplitude']), P.const('glass fog transmittance', p['fog_transmittance'])),
+                   P.m('ADD', S, 1.0))                                                   # A F (1 + S)
+        em = P.N.new('ShaderNodeEmission'); em.name = 'VR glass emission'
+        P.L.new(P.v('SCALE', P.comb(0.8894421, 5.0, 4.523306), gain), em.inputs['Color'])
+        lit = em.outputs[0]
+        limits.append('Test dummy energy ball DB658C65 (game_equivalence False): t = CB0[99] = %g, r = CB0[107] = %g and A = CB0[115] = %g '
+                      'are the test-dummy capture frame\'s (drive "VR glass time" and "VR glass frame random" to animate; the engine '
+                      'draws a new r each frame), fog transmittance %g, attribute0.z/.w from the material flags block (%g, %g); the '
+                      'program reads no light list' % (p['time'], p['frame_random'], p['amplitude'], p['fog_transmittance'],
+                                                         p['alpha_cut'], p['alpha_scale']))
     elif key == 'flat_incandescent':
         # FDF7FDFB (docs/material-decoding/deplanetizer-exterior.md), gl_shading.GLASS_FRAGMENT uKind 23: rgb = specular (zero albedo, grey F0,
         # gloss sqrt(sat(CB2[6]))) + C (K3 C.r + K5); alpha = attribute0.w; blend and cull from the flags word.
@@ -2182,7 +2220,7 @@ def _viewer_rule_glass(mat, rule, key, img):
     mat.use_backface_culling = not f.get('two_sided')
     if hasattr(mat, 'surface_render_method'):
         mat.surface_render_method = 'DITHERED' if blend == 'opaque' else 'BLENDED'
-    if key in ('turret_shield', 'turret_hud', 'dwarf_star'):
+    if key in ('turret_shield', 'turret_hud', 'dwarf_star', 'energy_ball'):
         return limits + ['Forward emission-only writer %s (blend %s from %s): Cycles lighting does not apply (the program draws no lit '
                          'term here); fog is the viewer fog (transmittance 1)' % (f.get('writer', key), blend, f.get('blend_source', 'the flags word'))]
     return limits + ['Forward glass writer %s (blend %s from %s): the engine light list, shadows, probes, SSR and fog '

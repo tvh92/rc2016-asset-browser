@@ -436,6 +436,25 @@ DWARF_STAR_CONSTANTS = dict(
     fog_transmittance=1.0, dissolve=1.0, alpha_cut=0.0, alpha_scale=1.0, presentation=True, game_equivalence=False, writer='05C96D48',
     frozen_inputs=dict(attribute2_x='dissolve P = 1 (fully formed)', attribute0_z=0.0, attribute0_w=1.0, attribute3_w=1.0,
                        bc5_third_channel=0.0, samplers='wrap (inferred)', record_index=0))
+# Test dummy energy ball (enm_test_dummy_energy_ball, the sphere the enm_test_dummy rides on; docs/material-decoding/
+# test-dummy-energy-ball.md). Forward program DB658C65 (archive pass 0, read from its shadPS4 IR dump); the captured runtime
+# program 817D25E0 has the same terms with the view vector rebuilt from the screen position. Alpha-over, back faces culled (flags
+# 0xA), no CB2. Three graph-slot images in the program's image-unit order: unit 0 electricity_line_01 (BC7, a different bolt in
+# each of R, G, B), units 1 and 2 test_dummy_energy_ball (BC4, x). S = E + n1 + 0.219 n2 + min(1, |1.001 - N.V|) with
+# E = unit 0 at (1 - 2v - r, u + r), channel floor(3r) (0 R, 1 G, else B), n1 = unit 1 at (0.75u + 0.125, v - 0.25t),
+# n2 = unit 2 at (u, v - 0.5t + 0.474); discard sat(S) < attribute0.z, alpha = sat(attribute0.w sat(S));
+# rgb = lerp(fog CB0[112..114], A (1 + S) (0.8894421, 5, 4.523306), F). r = CB0[107] (a new value each game frame),
+# t = CB0[99], A = CB0[115], F = attribute2.w (fog transmittance). Checked per pixel on the captured draw (11069 of the
+# test-dummy capture: corr 0.99992 over 1196 pixels, mean colour within 0.7 %). The static values are that frame's.
+ENERGY_BALL_GRAPH_SHA256 = '8a7ed8e33dcdd3eeef03b9b13341cfdda4ab386a83a850bfde544b2fe3596cc3'
+ENERGY_BALL_SLOTS = dict(_window_mask=0x49A7866B2EA0E356, _window_n1=0x49A7866B0056CBD0, _window_n2=0x49A7866BABDAD780)
+ENERGY_BALL_CONSTANTS = dict(
+    amplitude=0.18306638300418854, amplitude_input='CB0[115]', time=117.06222534179688, time_input='CB0 dword 99',
+    frame_random=0.3619999885559082, frame_random_input='CB0 dword 107', frame_rate=30.0,
+    capture_source='test-dummy capture draw 11069 (CB0 of that frame; frame-varying values)',
+    fog_transmittance=1.0, presentation=False, game_equivalence=False, writer='DB658C65', captured_program='817D25E0',
+    frozen_inputs=dict(attribute2_w='fog transmittance 1, as captured', samplers='wrap (inferred)',
+                       animated_frame_random='frame_fade stand-in: the engine generator of CB0[107] is unknown'))
 # Hangar glow strips (dep_arch_hangar_glow) on basic_flat_color_incandescent, forward programs E16F8FC0 (pass 0, F0 constant 0.1)
 # and FDF7FDFB (pass 3, F0 = CB2[4]). CB2: 0..2 colour C (0x7F058428), 3 K3 (0x600B83DC), 4 F0 (0x62835AF9), 5 K5 (0x77591534),
 # 6 gloss (0x24F4CA4C, used as sqrt(sat(gloss))). rgb = specular light loop (no diffuse) + E, E = C (K3 C.r + K5); alpha = attr0.w.
@@ -471,6 +490,9 @@ WINDOW_GLASS_SLOTS = (('mask', 0x49A7866B0056CBD0), ('window_normal', 0x49A7866B
 # painted glass _c API 9 (world UV).
 WINDOW_GLASS_ROLES = (('_window_mask', 'mask'), ('_window_n1', 'window_normal'), ('_window_n2', 'detail_normal'),
                       ('_window_c', 'glass_c'))
+# Window-unit roles a forward rule binds by slot (window glass, turret barrier and HUD, brain case, taxi and Deplanetizer dome
+# glass, dwarf star, mesh decals, energy ball); the texture loader uploads every one a rule resolves.
+FORWARD_WINDOW_ROLES = ('_window_mask', '_window_n1', '_window_n2', '_window_c', '_window_g')
 WINDOW_GLASS_CONSTANTS = dict(
     presentation=True, game_equivalence=False, writer='8DF14766', world_uv_scale=0.075,
     # CB0[95] (normal strength) and the instance record dwords 2, 3 (detail-normal distance fade) as captured on the
@@ -732,6 +754,9 @@ GRAPH_RULES = (
     ('materialgraph/visualeffect/environment/deplanetizer/gameplay/dep_gp_dwarf_star_surface_calm_01/dep_gp_dwarf_star_surface_calm_01.',
      dict(forward='dwarf_star', writer='05C96D48', constants=DWARF_STAR_CONSTANTS, _graph_sha256=DWARF_STAR_GRAPH_SHA256,
           slots=DWARF_STAR_SLOTS, params=(('k', 0xE994800B, 1),))),
+    ('materialgraph/character/enemy/enm_test_dummy_energy_ball/enm_test_dummy_energy_ball.',
+     dict(forward='energy_ball', writer='DB658C65', constants=ENERGY_BALL_CONSTANTS, _graph_sha256=ENERGY_BALL_GRAPH_SHA256,
+          slots=ENERGY_BALL_SLOTS, params=())),
     ('materialgraph/global/basic_flat_color/basic_flat_color_incandescent.',
      dict(forward='flat_incandescent', writer='FDF7FDFB', constants=FLAT_INCANDESCENT_CONSTANTS,
           _graph_sha256=FLAT_INCANDESCENT_GRAPH_SHA256, params=())),
@@ -1771,7 +1796,7 @@ def material_texture_paths(archive, material_path: str) -> dict:
         tube_paths = {tube_slots.get(slot) or slots.get(slot) for slot in ION_TUBES_SLOTS}
         if len(tube_paths) != 1 or None in tube_paths or value(ION_TUBES_POWER_KEY, 0.0) != 0.0:
             rule = {}
-    if rule.get('forward') in ('glass_tinted_spec', 'dwarf_star', 'decal_gnormal'):
+    if rule.get('forward') in ('glass_tinted_spec', 'dwarf_star', 'decal_gnormal', 'energy_ball'):
         # Every image the program reads must be bound by slot (material binding, else the graph's); roles are never guessed.
         dep_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
         if any(not (dep_slots.get(slot) or slots.get(slot)) for slot in rule['slots'].values()):
@@ -1856,10 +1881,17 @@ def material_texture_paths(archive, material_path: str) -> dict:
             flags_offset, flags_size = _sections(data).get(MATERIAL_FLAGS_SECTION, (0, 0))
             params['alpha_scale'] = data[flags_offset + 22] / 255.0 if flags_size >= 23 else 1.0
             params['alpha_cut'] = _foliage_alpha_cutoff(data)
-        if rule['forward'] in ('glass_tinted_spec', 'dwarf_star', 'flat_incandescent', 'decal_gnormal'):
+        if rule['forward'] == 'energy_ball':
+            # attribute0.w (opacity, byte 22 / 255) and attribute0.z (the alpha cut-off) come from the flags block: the captured
+            # draw has 1.0 and 4/255, the values this material's block gives.
+            flags_offset, flags_size = _sections(data).get(MATERIAL_FLAGS_SECTION, (0, 0))
+            params['alpha_scale'] = data[flags_offset + 22] / 255.0 if flags_size >= 23 else 1.0
+            params['alpha_cut'] = _foliage_alpha_cutoff(data)
+        if rule['forward'] in ('glass_tinted_spec', 'dwarf_star', 'flat_incandescent', 'decal_gnormal', 'energy_ball'):
             # The programs sample only their slot-bound images (dome glass _n and _g, the star's five noise images, the decal's
-            # _c and _g on the window roles) or none.
+            # _c and _g on the window roles, the energy ball's three) or none.
             dropped = {'glass_tinted_spec': ('_c', '_g', '_h', '_pick'), 'dwarf_star': ('_c', '_g', '_h', '_n'),
+                       'energy_ball': ('_c', '_g', '_h', '_n', '_pick'),
                        'flat_incandescent': ('_c', '_g', '_h', '_n', '_pick'),
                        'decal_gnormal': ('_c', '_g', '_h', '_n', '_pick')}[rule['forward']]
             for role in dropped:
@@ -2586,7 +2618,7 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
             entry['alpha_cut'] = float(paths['alpha_cut'])
         if 'za_fresnel_power' in paths:
             entry['za_fresnel_power'] = paths['za_fresnel_power']
-        for role in (*ROLES, *(('_water_height_a', '_water_height_b') if paths.get('forward', {}).get('sampling') else ()), *(('_water_foam_a', '_water_foam_b') if paths.get('forward', {}).get('surface') else ()),*(('_reticle',) if paths.get('forward', {}).get('kind') == 'victor_reticle' and paths.get('_reticle') else ()), *(('_parallax_height',) if paths.get('parallax') else ()), *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') or paths.get('skin_detail') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ()), *(('_cma',) if paths.get('leaf_colour') else ()), *(tuple(role for role, _name in WINDOW_GLASS_ROLES) if paths.get('forward', {}).get('kind') in ('window_glass', 'turret_shield', 'turret_hud', 'brain_case') else ())):
+        for role in (*ROLES, *(('_water_height_a', '_water_height_b') if paths.get('forward', {}).get('sampling') else ()), *(('_water_foam_a', '_water_foam_b') if paths.get('forward', {}).get('surface') else ()),*(('_reticle',) if paths.get('forward', {}).get('kind') == 'victor_reticle' and paths.get('_reticle') else ()), *(('_parallax_height',) if paths.get('parallax') else ()), *(('_sequence',) if paths.get('arch_sequence') else ()), *(('_bng_detail',) if paths.get('bng') or paths.get('skin_detail') else ()), *(('_vehicle_p2',) if paths.get('vehicle') else ()), *(('_glow_parallax',) if paths.get('glow', {}).get('kind') == 1 else ()), *(('_cma',) if paths.get('leaf_colour') else ()), *(FORWARD_WINDOW_ROLES if paths.get('forward') else ())):
             path = paths.get(role)
             if not path:
                 continue

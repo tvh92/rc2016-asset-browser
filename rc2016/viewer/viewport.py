@@ -1652,8 +1652,9 @@ class ModelViewport(_TkFrame):
     # targeting display: alpha 19/255 over HDR emission). Tonemapped per fragment they would clip to white before blending
     # and show as a faint pane; the game blends them in its HDR target, so their frames use the float target too.
     # The Telepathipus brain case (uKind 20) mixes the scene colour behind it into its own colour, so its frames need the
-    # scene-linear colour of the float target to copy (_scene_copies).
-    HDR_FORWARD_KINDS = frozenset({'turret_shield', 'turret_hud', 'brain_case'})
+    # scene-linear colour of the float target to copy (_scene_copies). The test dummy's energy ball (uKind 25) blends HDR
+    # emission (G up to about 2 in its capture) alpha-over in the game's float target.
+    HDR_FORWARD_KINDS = frozenset({'turret_shield', 'turret_hud', 'brain_case', 'energy_ball'})
     # Frames with a self-lit material (self_lit_entry: the Clank bots' eyes, antenna bulbs) also use the float target, so the
     # decoded bloom glows around their emission as in the game (gadgebot capture: eye glow reproduced to 0.5 %). Without a
     # transparent pass the bloom's 'before' copy is the resolve copy, as in the game's chain.
@@ -2214,7 +2215,8 @@ class ModelViewport(_TkFrame):
             sh.glUniform1i(u[name], int(bool(texture and texture[1])))
         texture = entry.get('_n'); sh.glUniform1i(u['uScreenSrgbN'], int(bool(texture and texture[1])))
 
-    EFFECT_KINDS = frozenset({'ion_tubes', 'number_display', 'warmonger_reticle', 'turret_shield', 'turret_hud', 'dwarf_star'})   # forward rules with a per-frame term (CB0[99] or CB0[107])
+    EFFECT_KINDS = frozenset({'ion_tubes', 'number_display', 'warmonger_reticle', 'turret_shield', 'turret_hud', 'dwarf_star',
+                              'energy_ball'})   # forward rules with a per-frame term (CB0[99] or CB0[107])
     EFFECT_PERIOD = 1024.0                    # seconds; every decoded scroll has period 1, so the wrap is invisible
 
     def _effect_time(self, forward):
@@ -2411,14 +2413,14 @@ class ModelViewport(_TkFrame):
         """The window glass rule's extra images (shading.WINDOW_GLASS_TEXTURES: mask, window normal, detail normal,
         painted glass _c), the UV1 flag and uWindowP (GLASS_FRAGMENT uKind 14); the taxi glass (uKind 17) binds its window
         _g and _c on two of those units (shading.TAXI_GLASS_TEXTURES; the Deplanetizer dome glass, uKind 21, its _g the same way)
-        and the turret barrier kinds (18, 19), the brain case (20) and the dwarf star (22) bind the four roles as they are. Every
+        and the turret barrier kinds (18, 19), the brain case (20), the dwarf star (22) and the energy ball (25) bind the four roles as they are. Every
         other forward kind gets the flags cleared and
         no textures bound."""
         from rc2016.viewer.shading import TAXI_GLASS_TEXTURES, WINDOW_GLASS_TEXTURES, window_glass_uniform
         gl, sh = self._gl, self._shading
         window = forward.get("kind") == "window_glass"
-        # The barrier rules, the brain case and the dwarf star read the four window roles as they are.
-        turret = forward.get("kind") in ("turret_shield", "turret_hud", "brain_case", "dwarf_star")
+        # The barrier rules, the brain case, the dwarf star and the energy ball read the four window roles as they are.
+        turret = forward.get("kind") in ("turret_shield", "turret_hud", "brain_case", "dwarf_star", "energy_ball")
         taxi = ({unit: role for unit, role, *_ in TAXI_GLASS_TEXTURES} if forward.get("kind") in ("glass_taxi", "glass_tinted_spec", "decal_gnormal")
                 else None)
         sh.glUniform1i(u["uHasUV1"], 1 if window and has_uv1 else 0)

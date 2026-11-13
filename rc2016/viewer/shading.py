@@ -1325,6 +1325,14 @@ void main() {
 #   cover = sat(_c.a), discard cover < cut, alpha = sat(cover attr0.w); A = lerp(_c.rgb, sat(|_c.rgb s|^p), K); F0 = grey F0 scale _g.G,
 #   gloss = sat(gloss scale _g.R); rgb = A Ld + specular. Pass 0 shades with the G-buffer normal under the decal where it is set;
 #   the geometric normal stands in. Light list, probes, shadows, SSR and fog are the viewer rig; blend and cull from the flags word.
+# uKind 25, energy_ball DB658C65 (enm_test_dummy_energy_ball, the sphere under enm_test_dummy; docs/material-decoding/
+#   test-dummy-energy-ball.md), unlit, alpha-over: uA = (A, t, r, 0) with A = CB0[115], t = CB0[99], r = CB0[107]; uB = fog
+#   transmittance F (attribute2.w), cut (attribute0.z), attribute0.w. Images: mask unit = T0 electricity_line_01 (three bolts in R, G,
+#   B), n1 and n2 units = T1, T2 test_dummy_energy_ball (x). E = T0(1 - 2v - r, u + r) channel floor(3r) (0 R, 1 G, else B);
+#   S = E + T1(0.75u + 0.125, v - 0.25t) + 0.219 T2(u, v - 0.5t + 0.474) + min(1, |1.001 - N.V|); discard sat(S) < cut;
+#   alpha = sat(attribute0.w sat(S)); rgb = A F (1 + S) (0.8894421, 5, 4.523306) (the fog term (1 - F) fog is the viewer's).
+#   Static values are the test-dummy capture frame's (checked per pixel on its draw); animated, t is the effect clock and r
+#   the frame_fade stand-in.
 GLASS_FRAGMENT = """
 #version 120
 #extension GL_ARB_shader_texture_lod : enable
@@ -1992,6 +2000,19 @@ void main() {
         vec3 ambient = ambientLight(N);
         vec3 Ld = (max(dot(N, L1), 0.0) * C1 + max(dot(N, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
         color = A * Ld + glassSpec(N, V, L1, L2, C1, C2, vec3(uA.x * g.g), a, ambient);
+    } else if (uKind == 25) { // DB658C65 test dummy energy ball, unlit (see the uKind 25 comment)
+        float t = uA.y, r = uA.z, u = vUV.x, v = vUV.y;
+        vec3 e3 = uHasWindowMask ? texture2D(uTexWindowMask, vec2(1.0 - 2.0 * v - r, u + r)).rgb : vec3(0.0);
+        if (uSrgbWindowMask) e3 = linear(e3);
+        float pick = floor(3.0 * r);
+        float e = pick < 1.0 ? e3.r : (pick < 2.0 ? e3.g : e3.b);
+        float n1 = uHasWindowN1 ? texture2D(uTexWindowN1, vec2(0.75 * u + 0.125, v - 0.25 * t)).r : 0.0;
+        float n2 = uHasWindowN2 ? texture2D(uTexWindowN2, vec2(u, v - 0.5 * t + 0.474)).r : 0.0;
+        float S = e + n1 + 0.219 * n2 + min(1.0, abs(1.001 - ndv));
+        float s = sat(S);
+        if (s < uB.y) discard;   // attribute0.z
+        alpha = sat(uB.z * s);   // attribute0.w
+        color = uA.x * uB.x * (1.0 + S) * vec3(0.8894421, 5.0, 4.523306);
     } else {
         alpha = sat(pow(1.001 - ndv, uC.x) * (uC.z + sat(uC.w + sat(4.0 * pow(om, uD.y)))));
         vec3 tint = clamp(uB.w * clamp(uB.rgb / max(dot(vec3(0.2126, 0.7152, 0.0722), uB.rgb), 1e-6), 0.0, 1.0), 0.0, 1.0);
@@ -2061,7 +2082,7 @@ GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water":
                "eye_cornea": 6, "number_display": 7, "glass_basic": 8, "glass_cg02": 9, "glass_jn": 10, "glass_thumper": 11,
                "ion_tubes": 12, "glass_liquid": 13, "window_glass": 14, "glass_tank": 15, "warmonger_reticle": 16, "glass_taxi": 17,
                "turret_shield": 18, "turret_hud": 19, "brain_case": 20, "glass_tinted_spec": 21, "dwarf_star": 22,
-               "flat_incandescent": 23, "decal_gnormal": 24}
+               "flat_incandescent": 23, "decal_gnormal": 24, "energy_ball": 25}
 
 
 def frame_fade(time, rate):
@@ -2082,8 +2103,8 @@ def record_colour_encode(colour):
 def glass_uniforms(forward, time=None):
     """(uKind, uA, uB, uC, uD) for a texture_preview 'forward' entry.
 
-    ``time`` is the view's presentation clock for the time-driven kinds: it replaces the ion tubes', the Warmonger sight's
-    and the decoded water closure's static CB0[99], and for the ion tubes and the number displays the static CB0[107] by
+    ``time`` is the view's presentation clock for the time-driven kinds: it replaces the ion tubes', the Warmonger sight's,
+    the energy ball's and the decoded water closure's static CB0[99], and for the ion tubes, the energy ball and the number displays the static CB0[107] by
     the per-frame ``frame_fade``; None keeps the static values."""
     p = forward["params"]
     if forward["kind"] == "screen":
@@ -2151,6 +2172,10 @@ def glass_uniforms(forward, time=None):
         return (GLASS_KINDS["dwarf_star"], (p["amplitude"], p["time"] if time is None else time, p["k"], 0.0),
                 (*record_colour_encode(p["record_colour"]), p["fog_transmittance"]), (p["dissolve"], p["alpha_cut"], p["alpha_scale"], 0.0),
                 (0.0,) * 4, (0.0,) * 4)
+    if forward["kind"] == "energy_ball":
+        clock = (p["time"], p["frame_random"]) if time is None else (time, frame_fade(time, p["frame_rate"]))
+        return (GLASS_KINDS["energy_ball"], (p["amplitude"], *clock, 0.0), (p["fog_transmittance"], p["alpha_cut"], p["alpha_scale"], 0.0),
+                (0.0,) * 4, (0.0,) * 4, (0.0,) * 4)
     if forward["kind"] == "flat_incandescent":
         return (GLASS_KINDS["flat_incandescent"], (*p["colour"], p["emission_scale"]), (p["f0"], p["gloss"], p["alpha_scale"], 0.0),
                 (0.0,) * 4, (0.0,) * 4, (0.0,) * 4)
