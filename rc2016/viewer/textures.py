@@ -2834,5 +2834,9 @@ def material_textures(archive, materials: list[dict], cache: dict, translations:
                 entry['experimental_error'] = str(exc)
         if str(material.get('path') or '').replace('\\', '/').lower() in NO_SHADOW_CAST_MATERIALS:
             entry['no_shadow_cast'] = True
+        if material.get('path'):
+            from rc2016.pipeline import render_state
+            if render_state.shadow_only(material['path']):
+                entry['shadow_only'] = True   # flags bit 0x80: casts shadows, never drawn in the colour pass
         result[material['index']] = entry
     return result

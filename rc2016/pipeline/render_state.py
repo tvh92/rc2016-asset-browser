@@ -18,6 +18,9 @@ CENSUS = os.path.join(HERE, "material_flags.json.gz")
 
 MATERIAL_FLAGS_SECTION = 0xE1275683       # 36 bytes in every .material; flags = u32 at byte 16
 FLAG_SURFACE = {0: "opaque", 1: "additive_alpha", 2: "alpha_over", 3: None}
+# Bit 7: shadow caster only, never drawn in the colour pass. Of every .material in the archive census only
+# material/global/shadow_cast_only/shadow_cast_only.material sets it (flags 0xB0); inferred from that name, not captured.
+SHADOW_ONLY_FLAG = 0x80
 _census = None
 
 
@@ -35,8 +38,19 @@ def decode_flags(flags):
         notes.append("blend mode 3 not observed in the capture")
     if flags & 0x80000:
         notes.append("fur-shell material: engine draws extra alpha-over passes")
+    if flags & SHADOW_ONLY_FLAG:
+        notes.append("shadow-cast-only material: not drawn in the colour pass")
     return {"surface": surface, "surface_family": (surface or "unknown").split("_")[0],
-            "backface": "show" if flags & 4 else "cull", "mode": mode, "notes": notes}
+            "backface": "show" if flags & 4 else "cull", "mode": mode, "notes": notes,
+            "shadow_only": bool(flags & SHADOW_ONLY_FLAG)}
+
+
+def shadow_only(material_path=None, data=None):
+    """True for a material that only casts shadows (flags bit SHADOW_ONLY_FLAG); False when unknown."""
+    if material_path is None and data is None:
+        return False
+    flags = material_flags(material_path, data)
+    return flags is not None and bool(flags & SHADOW_ONLY_FLAG)
 
 
 def material_flags(material_path=None, data=None):

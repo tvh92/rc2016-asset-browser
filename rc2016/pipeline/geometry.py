@@ -10,6 +10,7 @@ from rc2016.common import asset_path,file_hash
 from rc2016.formats.texture_transport import image_interpretation_identity,image_interpretation_key
 from rc2016.pipeline.blender_support import targets,structural_snapshot,read_values,write_values
 from rc2016.pipeline.bulk_checks import per_loop,signed_int32,weight_batches
+from rc2016.pipeline import render_state
 from rc2016.formats.native_model import blender_safe_triangles,decode_model,validate_mesh_position_correction
 
 
@@ -595,6 +596,14 @@ def _import_native_descriptor(job,rig,descriptor):
         visible=descriptor.get('visible',True)
         obj.hide_set(not visible);obj.hide_render=not visible
         obj['source_part_role']=descriptor.get('role','primary')
+        material_path=materials[section['material_index']].get('source_material_path')
+        if render_state.shadow_only(material_path):
+            # Flags bit 0x80: the game draws this subset into shadow maps only. It stays a shadow caster but is
+            # invisible to camera and indirect rays, and hidden in the viewport, so it never covers the real surface.
+            for ray in ('camera','diffuse','glossy','transmission','volume_scatter'):
+                setattr(obj,'visible_'+ray,False)
+            obj.visible_shadow=True;obj.hide_set(True)
+            obj['source_shadow_cast_only']=True
     if weight_errors:raise ValueError('Native skin validation errors: '+repr(weight_errors[:20]))
     return dict(status='native_ps4_geometry_decoded',sha256=source['source_sha256'],mesh_count=len(objects),
         vertices=sum(len(x.data.vertices) for x in objects),triangles=sum(len(x.data.polygons) for x in objects),

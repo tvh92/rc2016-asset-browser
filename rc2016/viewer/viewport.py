@@ -869,7 +869,7 @@ class ModelViewport(_TkFrame):
         """One material's texture_preview entry with its textures uploaded: {role: (GL id, sRGB)} + parameters.
 
         ``by_path`` maps texture path -> (GL id, sRGB) or None and is shared across materials."""
-        uploaded = {key: entry[key] for key in ("k", "g_mode", "self_lit", "spec", "gloss", "pick", "tint", "spec_tint", "forward", "arch_sequence", "vehicle", "facing_glow", "bright_center", "flat_surface", "liquid_flow", "no_shadow_cast", "zurkon") if key in entry}
+        uploaded = {key: entry[key] for key in ("k", "g_mode", "self_lit", "spec", "gloss", "pick", "tint", "spec_tint", "forward", "arch_sequence", "vehicle", "facing_glow", "bright_center", "flat_surface", "liquid_flow", "no_shadow_cast", "shadow_only", "zurkon") if key in entry}
         if "two_color_metal" in entry:
             uploaded["two_color_metal"] = entry["two_color_metal"]
         if "puddles" in entry:
@@ -1240,6 +1240,9 @@ class ModelViewport(_TkFrame):
                 gl.glEnableClientState(self.GL_TEXTURE_COORD_ARRAY)
                 gl.glTexCoordPointer(2, self.GL_FLOAT, 0, self._vptr(uv_array))
             batches = (self._payload or {}).get("batches") or [(None, 0, len(index_array) // 3)]
+            # Shadow-cast-only slots (render_state.SHADOW_ONLY_FLAG) never reach the game's colour pass.
+            textures = (self._payload or {}).get("textures") or {}
+            batches = [b for b in batches if not (textures.get(b[0]) or {}).get("shadow_only")]
             if self._gl_textures is None and uv_array is not None:
                 self._upload_textures()
             drawn = False

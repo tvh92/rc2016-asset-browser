@@ -757,6 +757,12 @@ class ModelExporter:
                                              sources=cinematic_sources)
             self._check()
         meshes = selected_meshes(decoded, options.lod, options.look)
+        from rc2016.pipeline import render_state
+        material_paths = {m.get('index', i): m.get('path') for i, m in enumerate(decoded['materials'])}
+        casters = [m for m in meshes if render_state.shadow_only(material_paths.get((m.get('material') or {}).get('index')))]
+        if casters and len(casters) < len(meshes):
+            meshes = [m for m in meshes if not any(m is c for c in casters)]
+            notes.append(f'{len(casters)} shadow-cast-only mesh(es) left out: the game never draws them (material flags bit 0x80).')
         if not meshes:
             raise ValueError('The selected look/LOD has no geometry')
         need_gltf = any(f in options.formats for f in ('glb', 'gltf', 'fbx', 'usd'))

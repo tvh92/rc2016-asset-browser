@@ -1687,6 +1687,8 @@ class LevelViewport(ModelViewport):
                     continue   # blended forward draws: no shadow or AO depth
                 if decal and not pane and (shadow or geometry or not self.decals_enabled):
                     continue   # projected marks cast no shadow and leave no depth
+                if not shadow and entry.get("shadow_only"):
+                    continue   # shadow-cast-only material (render_state.SHADOW_ONLY_FLAG): sun cascades only
                 if shadow and entry.get("no_shadow_cast"):
                     continue   # not a sun caster in the captured frame (textures.NO_SHADOW_CAST_MATERIALS); still in the AO depth
                 if key[1] == 2 and entry.get("forward") and not decal:
