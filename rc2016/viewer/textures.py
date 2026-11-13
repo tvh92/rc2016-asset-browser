@@ -228,6 +228,12 @@ MRS_ZURKON_GLOW_GREEN = (0.28314873576164246, -0.1502804160118103)
 MRS_ZURKON_GLOW_GAIN = 20.0
 FLAT_SURFACE_GOO = dict(colour_key=0x34392B3C, f0_key=0x17DE448C, gloss_key=GLOSS_SCALE_KEY)
 BASIC_FLAT_COLOR_SHA256 = '6d9bcad5a9dab38dd5988195cc9e87514c08a90c6b8fa899c2d21f3e42c14f95'
+# rk_color_light deferred writers 7AFF8C69 / E17902BF (runtime 0x0d73c190 in the hoverboard-race capture, draw 3537 of the
+# hoverboard's enm_Space_Commando_Glass slot, material rk_env_gray). CB table 0: dw0..2 colour, dw3 self-lit x, dw4 grey F0,
+# dw5 gloss; MRT1 = (colour, 0.2 log2(1 + x)), MRT2 = (F0, gloss t = sqrt(sat(dw5)) with the geometric-AA widening), normal =
+# the vertex normal. No texture is sampled on this path (the BC1 binding is read only under the per-instance alpha-test flag).
+RK_COLOR_LIGHT_GRAPH_SHA256 = '53835d25d20f233cf0d032f5fa3029b443099539482fcc8b2a27af47ddaaa485'
+RK_COLOR_LIGHT_KEYS = dict(colour=0xBEAB84FA, self_lit=0xFF87F342, f0=0xFEE38525, gloss=0x6BA9C99C)
 GRASS_BLEND_GRAPH_SHA256 = '3634199da89150f03c56b21d855f83d840e4dd06eeb33b748f8e16df1bd7ba65'
 MUD_BLEND_GRAPH_SHA256 = 'f7cd132b3f0b99144c1551aca88371f1f20c5a96e7c088969e435ad2a7aebc12'
 # Materials whose draws cast no sun shadow (entry['no_shadow_cast']; the level viewer leaves them out of the cascade tiles). Observed in
@@ -557,6 +563,11 @@ GRAPH_RULES = (
     # gloss = sqrt(sat(key 0x4069EA80)), self-lit = albedo * K (key 0x06F19114). The graph's one texture is a default normal.
     ('materialgraph/global/basic_emissive/basic_emissive.',
      dict(self_lit_key=0x06F19114, flat_surface='emissive')),
+    # rk_color_light deferred writers 7AFF8C69 / E17902BF (see RK_COLOR_LIGHT_GRAPH_SHA256): constant albedo, self-lit, grey
+    # F0 and gloss by key. Opaque materials only: the alpha-over ones draw with the forward programs 0FF7AC39 / 8F078423.
+    ('materialgraph/global/rk_color_light/rk_color_light.',
+     dict(self_lit_key=RK_COLOR_LIGHT_KEYS['self_lit'], flat_surface='color_light', gated=True,
+          _graph_sha256=RK_COLOR_LIGHT_GRAPH_SHA256)),
     # PREVIEW floor, not a full decode: writer 4A73CC38 (pass 1 record 4) is a time-, noise- and depth-driven lava
     # shader. With every noise mask at 0 its albedo is sat(key 0x34392B3C); that floor is shown (FLAT_SURFACE_GOO).
     ('materialgraph/environment/nebula/ambient/neb_amb_lava_fissure_blast_01/enm_blarg_green_goo.',
@@ -1705,6 +1716,8 @@ def material_texture_paths(archive, material_path: str) -> dict:
             rule = {}
     if rule.get('forward') == 'glass_patterned_add' and blend_state(material_flags(data))['blend'] != 'additive':
         rule = {}   # the opaque material of this graph (Extermitank glass) is a deferred surface, not this forward program
+    if rule.get('flat_surface') == 'color_light' and blend_state(material_flags(data))['blend'] != 'opaque':
+        rule = {}   # alpha-over rk_color_light materials draw with the undecoded forward programs, not the deferred writer
     if rule.get('forward') == 'glass_liquid':
         # The normal map is the decoded program input only when the flow slot is bound.
         flow_slots = texture_slots(data, MATERIAL_SLOT_SECTION)
@@ -1957,6 +1970,13 @@ def material_texture_paths(archive, material_path: str) -> dict:
         elif rule['flat_surface'] == 'emissive':
             flat = dict(colour=vec3(0x7F058428, (1.0, 1.0, 1.0)), f0=value(SPECULAR_SCALE_KEY, 1.0),
                         gloss=value(0x4069EA80, 1.0), writer='452EDC8C', keys=dict(colour=0x7F058428, f0=SPECULAR_SCALE_KEY, gloss=0x4069EA80))
+        elif rule['flat_surface'] == 'color_light':
+            keys = RK_COLOR_LIGHT_KEYS
+            flat = dict(model='color_light', colour=[min(1.0, max(0.0, x)) for x in vec3(keys['colour'], (1.0, 1.0, 1.0))],
+                        f0=min(1.0, max(0.0, value(keys['f0'], 1.0))), gloss=value(keys['gloss'], 1.0),
+                        writer='7AFF8C69', keys=dict(keys),
+                        note='the writer\'s dissolve discard and per-instance alpha test are engine inputs and are not '
+                             'applied; the geometric-AA gloss widening is taken as 1')
         elif rule['flat_surface'] == 'goo_floor':
             goo = FLAT_SURFACE_GOO
             flat = dict(colour=[min(1.0, max(0.0, x)) for x in vec3(goo['colour_key'], (0.0, 0.38132601976394653, 0.0))],

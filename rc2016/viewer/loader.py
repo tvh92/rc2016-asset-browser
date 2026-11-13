@@ -205,7 +205,8 @@ def material_rules(archive, materials, translations=None):
         if native is None:   # a gated forward rule counts as the exact reading only for the materials it applies to
             try:
                 from rc2016.viewer.textures import material_texture_paths
-                forward=bool(material_texture_paths(archive,path).get('forward'))
+                found=material_texture_paths(archive,path)
+                forward=bool(found.get('forward')) or (found.get('flat_surface') or {}).get('model')=='color_light'
             except (ValueError,KeyError,IndexError,OSError):
                 forward=False
         kind,rule=rule_coverage(graphs, native, forward)

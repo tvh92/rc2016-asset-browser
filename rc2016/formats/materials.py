@@ -480,7 +480,8 @@ def final_shader_status(build_status, rule, bound_paths, shader_translation, pro
                   bool(rule.get('terms',{}).get('bright_center',{}).get('albedo_white'))))
     translated=(shader_translation.get('status')=='ready' and not profile and
         not any(p.get('family') in ('skin_emissive','basic_skin','character_glass') for p in shader_preflights))
-    exact=rule_coverage(list(graph_paths),forward=bool(rule.get('terms',{}).get('glass_patterned_add')))[0]==EXACT
+    gated=bool(rule.get('terms',{}).get('glass_patterned_add')) or (rule.get('terms',{}).get('flat_surface') or {}).get('model')=='color_light'
+    exact=rule_coverage(list(graph_paths),forward=gated)[0]==EXACT
     if viewer_ready and (not translated or (exact and _viewer_rule_wins_translation(translated, rule))):
         # Built in Blender by rc_game_shader.apply_viewer_graph_rule (same reading as the asset viewer).
         # A fully ported viewer rule wins over the native translation, which drops tint/pick/foliage

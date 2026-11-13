@@ -2455,7 +2455,8 @@ def apply_viewer_graph_rule(mat, source):
             view_terms.append('flat surface' + (' (goo noise-mask floor)' if flat.get('floor') else ''))
             limits.append('flat_surface: writer %s outputs constants for colour, F0 and gloss; its graph normal texture is a default '
                           'and is not applied' % flat['writer'] + ('; PREVIEW floor: the noise-, time- and depth-driven terms and the '
-                          'CB0[115]-scaled emission are not decoded' if flat.get('floor') else '; the pass-1 variant E921A79B writes F0 0.1'))
+                          'CB0[115]-scaled emission are not decoded' if flat.get('floor') else
+                          '; ' + flat['note'] if flat.get('note') else '; the pass-1 variant E921A79B writes F0 0.1'))
     g_rgb = g.outputs['Color'] if g is not None else None
     gR, gG, gB = P.sep(g_rgb) if g is not None else (0.0, 0.0, 0.0)
     f0 = gloss_in = None          # BRDF F0 colour / gloss input (the group squares gloss and scales it)
