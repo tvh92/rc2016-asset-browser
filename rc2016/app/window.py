@@ -1357,7 +1357,11 @@ class AssetBrowserApp:
         dialog = ClipPickerDialog(tk, ttk, self.root, listed, source_root=self.source_var.get(),
                                   index_root=reader.animation_index(), borrowed=options.borrowed,
                                   cinematic=options.cinematic, previous=previous)
-        picked = dialog.show()
+        self.clip_dialog = dialog
+        try:
+            picked = dialog.show()
+        finally:
+            self.clip_dialog = None
         if picked is not None:
             self.batch_clips = dialog.selection.ticked_labels()
         return picked
@@ -1461,6 +1465,9 @@ class AssetBrowserApp:
         self._remember_window()
         self.browser.cancel_review()
         self.browser._close_clip_picker()   # the Animation list is a grabbed popup; release it first
+        dialog = getattr(self, "clip_dialog", None)
+        if dialog is not None:
+            dialog._close()   # the export's animation picker is modal and runs a live viewer; stop it before the window goes
         if self.browser.review or self.runner:
             self._append_log("Closing after the active extractor stops…", "muted")
             if self.runner:

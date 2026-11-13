@@ -42,6 +42,10 @@ if args.blend:
     from rc2016.pipeline.scene_defaults import apply_new_scene_defaults
     # Plain scene/render defaults only: no shared-lighting world (HDRI load) and no OptiX device setup.
     apply_new_scene_defaults(bpy.context.scene, configure_world=False, configure_gpu=False)
+    for obj in bpy.data.objects:   # rigs stay in the file (they drive the clips) but start hidden, as the pipeline's skeletons do
+        if obj.type == 'ARMATURE':
+            obj.hide_set(True)
+            obj.hide_render = True
     bpy.ops.file.pack_all()
     bpy.ops.wm.save_as_mainfile(filepath=args.blend, compress=True)
     print('EXPORTED', args.blend, flush=True)
