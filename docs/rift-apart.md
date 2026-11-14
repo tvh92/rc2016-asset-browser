@@ -2,11 +2,10 @@
 
 The Rift Apart reader lives in `rc2016/games/rcra/`. It reads the Steam PC install directly: nothing is extracted, and nothing is written to the game folder. This page covers the archive layer, model geometry, textures and the material texture slots behind the viewer's labelled preview.
 
-The layouts below were taken from three references and then checked against the installed files:
+The layouts below were taken from two references and then checked against the installed files:
 
 - ALERT `dat1lib` (GPL-3.0, vendored in `third_party/ALERT`)
-- ripped_apart (MIT)
-- riftripper (GPL-3.0)
+- RCRA-Forge (GPL-3.0), for mesh, joint and texture header layouts
 
 ## How the browser picks the game
 
