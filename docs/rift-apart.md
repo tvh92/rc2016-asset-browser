@@ -1,6 +1,6 @@
 # Rift Apart (PC)
 
-The Rift Apart reader lives in `rc2016/games/rcra/`. It reads the Steam PC install directly: nothing is extracted, and nothing is written to the game folder. This page covers the archive layer. Model, texture and material decoding are added in later steps.
+The Rift Apart reader lives in `rc2016/games/rcra/`. It reads the Steam PC install directly: nothing is extracted, and nothing is written to the game folder. This page covers the archive layer and model geometry. Texture and material decoding are added in later steps.
 
 The layouts below were taken from three references and then checked against the installed files:
 
@@ -85,6 +85,54 @@ The layouts below were taken from three references and then checked against the 
 - The cache key covers the toc and dag hashes (through the shared `stat_file_hash` sidecar) and the reader's own source.
 - A warm open takes about half a second.
 
+## Models
+
+`rc2016/games/rcra/model.py` decodes a `.model` asset into the same dict schema as `formats.native_model.decode_model` (`schema='rcra-pc-model-v1'`). Because the schema matches, `viewer.loader.mesh_payload`, `_selected_meshes` and the glTF exporter use the result unchanged. `decode_for_viewer` is the `Game.decode_model` hook.
+
+### Asset and DAT1 layout
+
+- **Asset header:** the 36-byte toc header comes first: u32 magic `0x9D2C0FA9`, u32 streamed-section offset, u32 streamed-section size, then 24 zero bytes.
+- **DAT1:** starts at +36, with type `0x9D2C0FA9`.
+- **String pointers** are offsets from the DAT1 start.
+
+| Section | Contents |
+| --- | --- |
+| `0x283D0383` built | f32 position offset at +0x1C; f32 position scale at +0x2C (1/4096 in every checked model); u32 at +0x30 whose low 4 bits give the UV scale `(1 << n) / 16384` |
+| `0xA98BE69B` | 16-byte vertex: int16 x, y, z, w; u32 packed normal; int16 u, v |
+| `0x0859863D` | u16 indices. Mesh flag `0x10` makes them relative to the mesh's first vertex; without it they are global |
+| `0x78D9CBDE` | 64-byte mesh record (fields below) |
+| `0x06EB7EFC` | Looks: 8 (u16 first mesh, u16 count) LOD slots per look. The 2016 game uses 4 |
+| `0x3250BB80` | Materials: the first half of the section holds (u64 path, u64 name) string pointers |
+| `0x6B855EED` | int16 UV1 per vertex, at the same UV scale |
+| `0x5CBA9DE9` | u8 RGBA per vertex |
+| `0x15DF9D3B` | Joints: i16 parent, u16 index, two u16, u32 name hash, u32 name pointer |
+
+`0x6B855EED` and `0x5CBA9DE9` may be zero-padded to a 16-byte multiple.
+
+**Mesh record fields (`0x78D9CBDE`):**
+- +4: u64 mesh id
+- +20: four u32: first vertex, first index, index count, vertex count
+- +36: four u16: flags, material slot, first skin batch, skin batch count
+- +56: u32 first weight index
+
+### Vertex decoding
+
+- **Positions** are `int16 * scale + offset`.
+- **Normals** use ALERT's two-angle form: x and y come from two 10-bit fields, z from the remainder, and z's sign is bit 31. Across the corpus, decoded normals agree with face normals at a median dot product of 0.9995.
+- **UVs** are `int16 * uv scale`. V is flipped for the Blender convention, as the 2016 decoder does.
+- **The vertex w word is not decoded.** It spans the whole int16 range, so it is not a ±1 handedness. Tangents are therefore not available yet.
+
+### Not decoded yet
+
+These sections are listed in `unsupported_sections` and are not interpreted.
+
+**Skinning is not read yet.** Skinned models show their bind pose, which is how their vertices are stored.
+- `0xCCBAFF15` holds 8 bytes per vertex (4 u8 joints, then 4 u8 weights) for meshes with flag `0x100`, reached through the mesh's first weight index.
+- `0xC61B1FF5` and `0xDCA379A2` batches differ from the 2016 layout.
+- Until skinning and animation are read, `joint_count` is 0 and the joints are listed in `joints`.
+
+**Models without geometry:** 24 models have no vertex or mesh section, only looks, locators or joints. Decoding one raises `UnsupportedModelError` with a message saying so.
+
 ## Evidence tool
 
 ```bash
@@ -95,7 +143,7 @@ python -m rc2016.games.rcra.inspect --game <install> --output-root <folder> --su
 
 ## Tests
 
-`tests/test_rcra_archive.py` has two parts:
+`tests/test_rcra_archive.py` and `tests/test_rcra_model.py` each have two parts:
 
-- **Synthetic tests** build a small toc, dag and set of DSAR archives.
+- **Synthetic tests** build a small toc, dag and set of DSAR archives, or a two-mesh model.
 - **Real-install tests** read `RCRA_GAME` (the install folder) and skip when it is not set. They also compare bytes against ALERT's own TOC2 reader.
