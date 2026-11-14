@@ -11,8 +11,8 @@ Slot keys are the low 32 bits of the 2016 game's 0x49A7866B........ slot hashes,
 binds them to the same texture suffixes (5,721 materials): ABDAD780 holds the base colour (_c in
 2,600 of 2,862 materials), 7AE34E7A the normal (_n, 2,591 of 2,647), 1576D848 the _g map and
 E68930AC the _m mask. The preview draws only the base colour and the normal: what the game's
-_g and _m channels mean is not decoded, and the viewer draws no translated materialgraph program
-(Blender exports do: rc2016.games.rcra.surface).
+_g and _m channels mean is not decoded. Materials whose program translates are drawn from it instead in the Shaded mode
+(rc2016.games.rcra.viewer_materials, _translated).
 
 The one decoded graph is architecture glass (gbl_arch_glass, 44 materials, e.g. the Nefarious trooper and swarmer
 domes). Its forward pixel shader reads named reflection data, so the rule is traced to that program, not to a capture:
@@ -225,7 +225,9 @@ def _arch_glass(source, key, slots, cache, hd):
 def material_textures(source, materials, cache, translations=None, hd=False):
     """Material slot -> the viewer entry (viewer.textures.material_textures shape) for the preview:
     '_c' and '_n' loaded from their slots, every other role None, neutral parameters. A gbl_arch_glass material instead gets its
-    decoded forward glass rule (``forward``) and the four graph units as the roles _pick, _window_c, _n and _window_g."""
+    decoded forward glass rule (``forward``) and the four graph units as the roles _pick, _window_c, _n and _window_g. A
+    material whose graph translates also carries the translated program (``native_translation``, _translated), which the
+    Shaded mode draws when the viewer's native translation is on."""
     from rc2016.viewer.textures import ROLES
     result = {}
     for material in materials:
@@ -246,10 +248,29 @@ def material_textures(source, materials, cache, translations=None, hd=False):
                 for slot, role in PREVIEW_ROLES.items():
                     if slots.get(slot):
                         entry[role] = _load(source, slots[slot], cache, hd)
+            _translated(source, key, entry, hd)
         if translations is not None and material.get('path'):
             translations[material['path']] = None
         result[material['index']] = entry
     return result
+
+
+TRANSLATED_KIND = 'rcra_translated'
+
+
+def _translated(source, key, entry, hd):
+    """Attach the material's translated receipt (rc2016.games.rcra.viewer_materials) as the entry's native translation; a
+    blended one also becomes a forward rule (kind TRANSLATED_KIND) that keeps any decoded glass rule as its fallback for when
+    the viewer's native translation is off. Without a translation the entry keeps the preview."""
+    from rc2016.games.rcra.viewer_materials import cached_receipt
+    receipt, textures = cached_receipt(source, key, hd)
+    if receipt is None:
+        entry['rcra_translation_error'] = textures
+        return
+    entry['native_translation'], entry['native_textures'] = receipt, textures
+    if receipt['blend'] != 'opaque':
+        entry['forward'] = dict(kind=TRANSLATED_KIND, blend=receipt['blend'], two_sided=False, fallback=entry.get('forward'),
+                                limitation=' '.join(receipt['limitations']))
 
 
 def model_texture_list(source, materials):

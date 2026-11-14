@@ -53,7 +53,7 @@ NEUTRAL_FLOATS = {'GlobalWorldCBuffer.m_KeyLightTapScale': 1.0}    # sun shadow 
 FORWARD_FAR_CLIP = 1000.0
 FORWARD_LIGHTING = ('g_LightGridLookup', 'g_LightLookupView', 'g_LightZBinView', 'g_LightGridData', 'g_LightVolumes',
                     'g_Lights', 'g_ShadowAtlas', 'g_GoboAtlas', 'g_EnvProbeEnvs', 'g_EnvProbeArray', 'g_EnvProbeDefault',
-                    'g_SSRFinalTex', 'g_AoSsrBuffer', 'g_BrdfLookup')
+                    'g_SSRFinalTex', 'g_AoSsrBuffer', 'g_BrdfLookup', 'g_RayTracedShadows')
 FORWARD_RESOURCES = dict({name: 0.0 for name in FORWARD_LIGHTING}, g_ViewDepthBuffer=FORWARD_FAR_CLIP)
 # - View: the programs rebuild the view-space position from SV_POSITION (screen xy, view depth w) and turn it into world
 #   space with m_ViewToWorldMat. With these values the view-space position is SV_POSITION.(x, y, w) and view space has the
@@ -73,6 +73,42 @@ FORWARD_VIEW_INPUTS = {'SV_POSITION.x': 'VIEW.x', 'SV_POSITION.y': 'VIEW.y', 'SV
                        'GlobalViewportCBuffer.m_ViewToWorldMat+48': 'CAMERA.x',
                        'GlobalViewportCBuffer.m_ViewToWorldMat+52': 'CAMERA.y',
                        'GlobalViewportCBuffer.m_ViewToWorldMat+56': 'CAMERA.z'}
+
+
+# The engine's per-object record (structured buffer g_SceneObjectView, element "$Element", 128 bytes; member names and
+# offsets from the programs' reflection). The engine model vertex program reads it: the transform is row-major 3x4 (the
+# world normal is the object normal dotted with rows 0, 1 and 2 at bytes 0, 16 and 32, translation in dword 3), and it
+# passes the object's custom values on as TEXCOORD6 = (1, Misc, Rand, LOD factor) and TEXCOORD7 = (custom X, Y, Z, FX
+# lighting index). The values are set per object at run time; NEUTRAL_OBJECT is a plain object: identity transform, alpha
+# 1, white colour, every custom value, time and bias 0. Viewer choices, not game data. Fp16 pairs pack low half first.
+HALF_ONE = 0x3C00
+NEUTRAL_OBJECT = {
+    'm_ObjToWorldMatTrans': (1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+    'm_ObjToWorldNormScale': (1.0, 1.0, 1.0),
+    'm_TransformScale': (1.0,),
+    'm_Alpha': (1.0,),
+    'm_ColorRGFp16': (HALF_ONE | HALF_ONE << 16,),
+    'm_ColorBMiscFp16': (HALF_ONE,),
+    'm_Radius': (1.0,),
+}
+OBJECT_BUFFER = 'g_SceneObjectView'
+NEUTRAL_OBJECT_INTERPOLANTS = {'TEXCOORD6.x': 1.0, 'TEXCOORD6.y': 0.0, 'TEXCOORD6.z': 0.0, 'TEXCOORD6.w': 0.0,
+                               'TEXCOORD7.x': 0.0, 'TEXCOORD7.y': 0.0, 'TEXCOORD7.z': 0.0, 'TEXCOORD7.w': 0.0}
+
+
+def object_words(reflection):
+    """{byte offset: u32 bits} of the neutral object in the layout the program's reflection gives; None without one."""
+    import numpy as np
+    if reflection is None:
+        return None
+    buffer = reflection.constant_buffer(OBJECT_BUFFER)
+    if buffer is None or not buffer.variables or not buffer.variables[0].members:
+        return None
+    words = {at: 0 for at in range(0, buffer.size, 4)}
+    for name, at, _member in buffer.variables[0].members:
+        for i, value in enumerate(NEUTRAL_OBJECT.get(name, ())):
+            words[at + 4 * i] = int(np.float32(value).view(np.uint32)) if isinstance(value, float) else value
+    return words
 
 
 def pass_table(graph_data):

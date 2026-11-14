@@ -196,12 +196,24 @@ def perspective_matrix(camera):
 
 
 
-def split_forward(batches, textures):
+TRANSLATED_FORWARD = 'rcra_translated'   # rc2016.games.rcra.material.TRANSLATED_KIND
+
+
+def forward_rule(entry, native=True):
+    """A material's forward rule as drawn: a translated Rift Apart forward rule (TRANSLATED_FORWARD) stands only while the
+    native translation is on, otherwise its decoded fallback rule (or none) does."""
+    rule = entry.get("forward") or {}
+    if rule.get('kind') == TRANSLATED_FORWARD and not native:
+        return rule.get('fallback') or {}
+    return rule
+
+
+def split_forward(batches, textures, native=True):
     """(opaque, forward) batch lists; forward batches have a texture_preview 'forward' entry (glass)."""
     opaque, forward = [], []
     for batch in batches:
         entry = (textures or {}).get(batch[0]) or {}
-        rule = entry.get("forward") or {}
+        rule = forward_rule(entry, native)
         (forward if rule and not rule.get('deferred_material') else opaque).append(batch)
     return opaque, forward
 
@@ -964,7 +976,8 @@ class ModelViewport(_TkFrame):
                     if not texture.get('pixels'):
                         self.shading_warning = 'Native texture pixels unavailable: ' + path
                         break
-                    name = self._upload_texture(texture, decode_srgb=linear_rgb)
+                    name = self._upload_texture(texture, decode_srgb=linear_rgb,
+                                                mipmaps=False if texture.get('no_mipmaps') else None)   # atlases: tiles stay apart
                     by_path[cache_key] = (name, linear_rgb) if name else None
                 if not by_path[cache_key]:
                     self.shading_warning = 'Native texture upload failed: ' + path
@@ -1059,6 +1072,9 @@ class ModelViewport(_TkFrame):
             self._compressed_upload(self.GL_TEXTURE_2D, 0, internal, texture["width"],
                                     texture["height"], 0, len(pixels), pixels)
             compressed = True
+        elif texture.get("gl_float"):   # float RGBA (Rift Apart data formats): GL_RGBA32F from GL_RGBA / GL_FLOAT
+            gl.glPixelStorei(self.GL_UNPACK_ALIGNMENT, 1)
+            gl.glTexImage2D(self.GL_TEXTURE_2D, 0, 0x8814, texture["width"], texture["height"], 0, 0x1908, 0x1406, pixels)
         elif texture.get("gl_pixel_format"):
             gl.glPixelStorei(self.GL_UNPACK_ALIGNMENT, 1)
             internal = 0x8C43 if decode_srgb else texture['gl_pixel_format'] # SRGB8_ALPHA8: alpha remains linear
@@ -1424,7 +1440,7 @@ class ModelViewport(_TkFrame):
             sh.glUniform1i(u["uMode"], level)
             sh.glUniform3f(u["uColor"], 0.72, 0.74, 0.78)
             # Shaded: forward (glass) batches are drawn after every opaque one, see _draw_glass.
-            opaque, glass = split_forward(batches, self._gl_textures) if level == 2 else (batches, [])
+            opaque, glass = split_forward(batches, self._gl_textures, self.native_translation) if level == 2 else (batches, [])
             base_program, base_u = program, u
             panes = [b for b in opaque if ((self._gl_textures or {}).get(b[0]) or {}).get('alpha_pane')]
             if panes:   # alpha panes (textures 'alpha_pane') blend over every opaque batch, farthest first
@@ -1438,8 +1454,8 @@ class ModelViewport(_TkFrame):
                 opaque = opaque + list(forward_order(panes, cached[1], list(modelview), lambda slot: False))
             # Panes, idle-effect quads and the HDR_FORWARD_KINDS batches blend in scene-linear colour and are tonemapped once
             # (_hdr_begin); other models keep drawing display-referred straight into the window.
-            hdr_forward = any((((self._gl_textures or {}).get(b[0]) or {}).get('forward') or {}).get('kind') in self.HDR_FORWARD_KINDS
-                              for b in glass)
+            hdr_forward = any(forward_rule((self._gl_textures or {}).get(b[0]) or {}, self.native_translation).get('kind')
+                              in self.HDR_FORWARD_KINDS for b in glass)
             emitters = self.BLOOM and self.BLOOM_EMITTERS and any(
                 self_lit_entry(((self._gl_textures or {}).get(b[0]) or {}), self.native_translation) for b in batches)
             hdr = self._hdr_begin() if level == 2 and (panes or effect_quads or hdr_forward or emitters) else None
@@ -1657,7 +1673,7 @@ class ModelViewport(_TkFrame):
     # The Telepathipus brain case (uKind 20) mixes the scene colour behind it into its own colour, so its frames need the
     # scene-linear colour of the float target to copy (_scene_copies). The test dummy's energy ball (uKind 25) blends HDR
     # emission (G up to about 2 in its capture) alpha-over in the game's float target.
-    HDR_FORWARD_KINDS = frozenset({'turret_shield', 'turret_hud', 'brain_case', 'energy_ball'})
+    HDR_FORWARD_KINDS = frozenset({'turret_shield', 'turret_hud', 'brain_case', 'energy_ball', TRANSLATED_FORWARD})
     # Frames with a self-lit material (self_lit_entry: the Clank bots' eyes, antenna bulbs) also use the float target, so the
     # decoded bloom glows around their emission as in the game (gadgebot capture: eye glow reproduced to 0.5 %). Without a
     # transparent pass the bloom's 'before' copy is the resolve copy, as in the game's chain.
@@ -2320,12 +2336,17 @@ class ModelViewport(_TkFrame):
         modelview = (ctypes.c_float * 16)()
         gl.glGetFloatv(self.GL_MODELVIEW_MATRIX, modelview)
         gl.glCullFace(self.GL_BACK)   # decoded meshes are counter-clockwise front, GL's default
+        native = self.native_translation
         ordered = forward_order(batches, cached[1], list(modelview),
-                                lambda slot: self._gl_textures[slot]["forward"].get("blend") == "opaque")
+                                lambda slot: forward_rule(self._gl_textures[slot], native).get("blend") == "opaque")
         copies = None   # the frame's colour and depth, copied before the first brain case batch (_scene_copies)
         for slot, first, count in ordered:
             entry = self._gl_textures[slot]
-            forward = entry["forward"]
+            forward = forward_rule(entry, native)
+            if forward.get('kind') == TRANSLATED_FORWARD:
+                self._draw_translated_forward(index_array, entry, forward, first, count, skin)
+                sh.glUseProgram(program)
+                continue
             blended = forward.get("blend") != "opaque"
             gl.glDepthMask(0 if blended else 1)
             (gl.glEnable if blended else gl.glDisable)(self.GL_BLEND)
@@ -2365,6 +2386,41 @@ class ModelViewport(_TkFrame):
             self._draw_range(index_array, first, count)
         gl.glDepthMask(1); gl.glDisable(self.GL_BLEND); gl.glDisable(self.GL_CULL_FACE)
         sh.glDisableVertexAttribArray(UV1_ATTRIBUTE)
+
+    def _draw_translated_forward(self, index_array, entry, forward, first, count, skin):
+        """One translated Rift Apart forward batch (rc2016.viewer.rcra_glsl) in its own program: the multiply pass scales what
+        is behind by the material's background factor (blended: mix(1, B, alpha); additive: 1 + alpha B; modulate: the
+        tint), then the colour pass adds its premultiplied colour, coverage blended over. Depth is tested, not written."""
+        from rc2016.viewer.rcra_glsl import PASS_UNIFORM
+        from rc2016.viewer.shading import BONE_TEXTURE_UNIT
+        gl, sh = self._gl, self._shading
+        program, u = self._surface_program(entry, 2)
+        sh.glUseProgram(program)
+        self._apply_lighting(u)
+        sh.glUniform1i(u['uSkin'], int(skin))
+        sh.glUniform1i(u['uBoneTex'], BONE_TEXTURE_UNIT)
+        sh.glUniform1f(u['uBoneWidth'], float(4 * self._bone_count))
+        sh.glUniform1i(u['uMode'], 2)
+        self._apply_material(u, entry, 2)
+        mode = forward.get('blend')
+        separate = self._hdr_fns.get('glBlendFuncSeparate') if getattr(self, '_linear_output', False) else None
+        zero, one, src_colour, one_minus_src_alpha = 0, 1, 0x0300, 0x0303
+
+        def blend(colour, alpha):
+            if separate:
+                separate(colour[0], colour[1], alpha[0], alpha[1])
+            else:
+                gl.glBlendFunc(colour[0], colour[1])
+        gl.glDepthMask(0); gl.glEnable(self.GL_BLEND)
+        (gl.glDisable if forward.get('two_sided') else gl.glEnable)(self.GL_CULL_FACE)
+        sh.glUniform1i(u[PASS_UNIFORM], 0)
+        blend((zero, src_colour), (zero, one))
+        self._draw_range(index_array, first, count)
+        if mode != 'modulate':
+            sh.glUniform1i(u[PASS_UNIFORM], 1)
+            blend((one, one), (one, one_minus_src_alpha) if mode == 'blended' else (zero, one))
+            self._draw_range(index_array, first, count)
+        self._blend_over()
 
     def _scene_copies(self):
         """(colour texture, depth texture, (width, height, near, far)): the frame's colour and depth buffers as they are before

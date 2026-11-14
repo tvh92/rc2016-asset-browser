@@ -70,6 +70,44 @@ class TexelTests(unittest.TestCase):
         self.assertIn('blender_materials', rcra_game.GAME.hooks)
 
 
+class VolumeTests(unittest.TestCase):
+    def test_atlas_tiles_wrap(self):
+        slices = [np.full((2, 3, 4), k, np.float32) + np.arange(3, dtype=np.float32)[None, :, None] for k in range(5)]
+        atlas = blender_export.volume_atlas(slices, 3)
+        self.assertEqual(atlas.shape, (2 * 4, 3 * 5, 4))
+        tile = atlas[4:8, 5:10]                       # slice 4: row 1, column 1
+        np.testing.assert_array_equal(tile[1:3, 1:4], slices[4])
+        np.testing.assert_array_equal(tile[1:3, 0], slices[4][:, 2])   # left border is the right edge
+        np.testing.assert_array_equal(tile[0, 1:4], slices[4][1])      # top border is the bottom edge
+
+    @unittest.skipUnless(os.path.isfile(BLENDER), 'Blender is not installed')
+    def test_blender_volume_lookup_is_trilinear(self):
+        """A synthetic 3D texture, its depth coordinate running over several wraps: the bake matches trilinear wrap."""
+        rng = np.random.default_rng(7)
+        slices = [rng.random((6, 5, 4)).astype(np.float32) for _ in range(7)]
+        texture = dict(format=28)
+        nodes = [dict(op='input', type='f', name='TEXCOORD.x', args=[]), dict(op='input', type='f', name='TEXCOORD.y', args=[]),
+                 dict(op='const', type='f', value=3.7, args=[]), None, None,
+                 dict(op='const', type='f', value=0.0, args=[]), dict(op='const', type='f', value=1.0, args=[])]
+        nodes[3] = dict(op='mul', type='f', args=[0, 2])
+        nodes[4] = dict(op='sample', type='v', args=[0, 1, 3, 0], binding='textureUnit5', opcode='sample', dimension=5,
+                        sampler=None, offsets=[], controls=None)
+        nodes += [dict(op='channel', type='f', args=[4], index=c) for c in range(3)]   # 7, 8, 9
+        terms = {'albedo.r': 7, 'albedo.g': 8, 'albedo.b': 9, 'f0.r': 5, 'f0.g': 5, 'f0.b': 5, 'gloss': 5, 'normal.x': 5,
+                 'normal.y': 6, 'normal.z': 5, 'occlusion': 6, 'emission': 5, 'clip': 5}
+        with tempfile.TemporaryDirectory() as tmp:
+            columns = 3
+            row = blender_export._save(blender_export.volume_atlas(slices, columns), texture, 'volume', Path(tmp) / 'units',
+                                       'synthetic')
+            row['volume'] = dict(depth=7, columns=columns, width=5, height=6)
+            entry = dict(recipe=dict(version=1, nodes=nodes, terms=terms, textures={}, inputs=[], limitations=[]),
+                         images={'textureUnit5': row})
+            want = blender_check.expected(entry, 23)
+            got = blender_check.bake(entry, BLENDER, 23, tmp)
+        self.assertGreater(float(np.ptp(want['albedo'])), 0.3)
+        self.assertLess(float(np.abs(got['albedo'][:, :3] - want['albedo']).max()), 3e-3)   # 8-bit atlas, float bake
+
+
 def _q(x):
     return int(math.floor(min(max(x, 0.0), 1.0) * 255.0 + 0.5))
 
@@ -144,6 +182,23 @@ class RealSurfaceTests(unittest.TestCase):
             terms = rsurface.evaluate_recipe(entry['forward'], inputs, lambda node, args: [0.5, 0.5, 0.5, 1.0])
             return terms['alpha']
         self.assertLess(alpha((0.0, -3.0, 0.0)), alpha((2.9, -0.3, 0.0)))   # glass is clearer face-on than at its rim
+
+    def forward_of(self, path):
+        key = self.source.resolve(path)[0]
+        graph = next(r['path'] for r in self.source.asset_references(key) if r['path'].endswith('.materialgraph'))
+        gkey = next(k for k in self.source.resolve(graph) if self.source.entries[k]['type'] == 'materialgraph')
+        return rsurface.forward(self.source.asset_data(gkey), self.source.asset_data(key))
+
+    def test_object_record_reads_the_neutral_object(self):
+        result = self.forward_of('material/environment/clankpuzzles/cpz_plasma_ball.material')
+        self.assertTrue(any('plain object' in line for line in result['limitations']))
+
+    def test_scene_behind_splits_into_a_background_tint(self):
+        result = self.forward_of('material/visualeffect/global/gbl_fire_heat_distortion_01/gbl_fire_heat_distortion_01.material')
+        g, terms = result['graph'], result['terms']
+        self.assertEqual([g.value(terms['background.' + c]) for c in 'rgb'], [1.0, 1.0, 1.0])   # passes the scene through
+        self.assertEqual([g.value(terms['colour.' + c]) for c in 'rgb'], [0.0, 0.0, 0.0])
+        self.assertTrue(any('distortion' in line for line in result['limitations']))
 
     @unittest.skipUnless(os.path.isfile(BLENDER), 'Blender is not installed')
     def test_blender_forward_nodes_bake_to_the_recipe(self):

@@ -5,7 +5,7 @@ A Windows desktop tool that reads Ratchet & Clank game files directly: an asset 
 It reads two games. The folder picked as the source decides which one (`rc2016/games/`, [docs](docs/rift-apart.md#how-the-browser-picks-the-game)):
 
 - **Ratchet & Clank (PS4, 2016):** the extracted `CUSA01073` archive. Every feature, including levels, Flash UI, animation and the research pipeline, is built for this game.
-- **Ratchet & Clank: Rift Apart:** the PS5 game, read from its Steam PC install (`toc`, `dag`, `d/`). Models, textures, skeletal animation and model export, with a labelled preview shading; Blender exports carry the game's own translated materials ([docs](docs/rift-apart.md#blender-materials)); everything else is greyed out ([docs](docs/rift-apart.md)).
+- **Ratchet & Clank: Rift Apart:** the PS5 game, read from its Steam PC install (`toc`, `dag`, `d/`). Models, textures, skeletal animation and model export. The viewer and Blender exports draw the game's own translated material programs ([docs](docs/rift-apart.md#in-the-viewer)), with a labelled preview where a program does not translate; everything else is greyed out ([docs](docs/rift-apart.md)).
  Its history and evidence live in the local-only `Research/` folder inside this checkout; it is gitignored and never committed (index and sorting rules: [Research/research.md](Research/research.md)).
 
 ## Layout
@@ -44,7 +44,7 @@ Equations, slot meanings and graph families are in [shading](docs/shading.md); t
 - `_c` alpha is a self-lit mask, never transparency. `_n` is a DirectX tangent normal at strength 1.0 without a green flip.
 - Opaque surfaces use the game's deferred BRDF (`rc2016/pipeline/game_shader.py`, the viewer's `rc2016/viewer/shading.py`) with metallic 0. Never tune shading by eye: every term must trace to decoded data or be labelled as a preview.
 - Blend and cull come from the `.material` flags word (`rc2016/pipeline/render_state.py`). Glass, energy and VFX forward materials only have the specific decoded rules in the docs.
-- Rift Apart decodes one graph, `gbl_arch_glass` ([docs](docs/rift-apart.md#architecture-glass-gbl_arch_glass)); every other material's viewer preview uses only the base colour and normal slots and is labelled as a preview. Never apply 2016 material rules, graph translations or slot meanings to Rift Apart without decoding them from its own files.
+- Rift Apart materials come from their own translated programs ([docs](docs/rift-apart.md#material-graph-shaders)), never from per-material hand decoding; engine inputs a material does not own are bound in one labelled profile (`rc2016/games/rcra/shaders.py`). Never apply 2016 material rules, graph translations, slot meanings or the 2016 BRDF to Rift Apart.
 - New viewer material rules must be mirrored in the Blender front-end (`materials.viewer_graph_rule`, `game_shader.apply_viewer_graph_rule`) and checked by `rc2016/shaders/validation.py`.
 
 ## Pipeline

@@ -18,7 +18,9 @@ unsupported, never approximated.
 
 ``forward`` translates the forward program of a blended material (rc2016.games.rcra.material.material_blend) under the
 forward profile of rc2016.games.rcra.shaders: every light source zero, so its target is the material's own colour and
-alpha. It reads the view through the inputs VIEW.xyz (camera-to-point offset) and CAMERA.xyz (camera position).
+alpha. It reads the view through the inputs VIEW.xyz (camera-to-point offset) and CAMERA.xyz (camera position). A
+program that samples the scene behind it (g_FrameBuffer) is kept when each colour channel is affine in that channel of the
+background: colour = A + B x background, split into the terms colour (A) and background (B).
 """
 from collections import defaultdict
 
@@ -41,9 +43,12 @@ NEUTRAL_DRAW_FLOATS = {'TEXCOORD.z': 0.0, 'TEXCOORD.w': 1.0, 'TEXCOORD2.w': 0.25
                        'GlobalWorldCBuffer.m_DeltaTime': 0.0, 'GlobalWorldCBuffer.m_TimeOfDay': 0.0,
                        'GlobalWorldCBuffer.m_MaterialLoDOffset': 0.0}
 NEUTRAL_DRAW_DYNAMIC = {'MatDrawCB': 0}   # m_RenderFlags and the other per-draw words read through the instance index
+NEUTRAL_DRAW_FLOATS.update(rshaders.NEUTRAL_OBJECT_INTERPOLANTS)   # the neutral object's custom values, as the VS passes them
 SURFACE_TERMS = ('albedo.r', 'albedo.g', 'albedo.b', 'f0.r', 'f0.g', 'f0.b', 'gloss', 'normal.x', 'normal.y', 'normal.z',
                  'occlusion', 'emission', 'clip')
 NORMAL_SCALE = 5791.205
+# SM5 resource dimensions of a sample instruction (its extended opcode token).
+DIMENSION_TEXTURE3D, CUBE_DIMENSIONS = 5, (6, 10)
 
 
 class Unsupported(ValueError):
@@ -62,9 +67,20 @@ REVIEW_VALUES = {'GlobalWorldCBuffer.m_AdaptedLuminance': 1.0, 'SV_POSITION.x': 
 class _Bindings(rshaders.NeutralEngine):
     """Material constants, the neutral engine and draw, and review values for every other non-geometry input."""
 
-    def __init__(self, material):
+    def __init__(self, material, reflection=None):
         super().__init__(material)
         self.review = {}
+        self.object = rshaders.object_words(reflection)
+        self.object_read = False
+
+    def resource(self, graph, op, binding, args):
+        if binding == rshaders.OBJECT_BUFFER and op == 'ld_structured' and self.object is not None:
+            offset = graph.value(args[4]) if len(args) > 4 else None
+            if offset is None:
+                return None
+            self.object_read = True
+            return [graph.const('i', self.object.get(offset + 4 * c, 0)) for c in range(4)]
+        return None
 
     def _review(self, name):
         value = NEUTRAL_DRAW_FLOATS.get(name, REVIEW_VALUES.get(name, 0.0))
@@ -90,6 +106,8 @@ class _Bindings(rshaders.NeutralEngine):
         return self.graph.const('i', 0)
 
 
+OBJECT_NOTE = (' Per-object values are a plain object: identity transform, alpha 1, white object colour, custom values, '
+               'creation time and bias 0.')
 FORWARD_FLAGS_NAME = 'MatDrawCB.m_RenderFlags'
 
 
@@ -108,8 +126,9 @@ class _ForwardBindings(_Bindings):
             return self.graph.const('f', rshaders.FORWARD_VIEW_FLOATS[name])
         return super().constant(name)
 
-    def __init__(self, material, draw_flags):
-        super().__init__(material)
+    def __init__(self, material, draw_flags, reflection=None):
+        super().__init__(material, reflection)
+        self.background_read = False
         self.draw_flags = draw_flags
 
     def constant(self, name):
@@ -118,11 +137,14 @@ class _ForwardBindings(_Bindings):
         return self._view_constant(name)
 
     def resource(self, graph, op, binding, args):
+        if binding == BACKGROUND_BUFFER and op.startswith('sample'):   # the scene behind: symbolic, split out afterwards
+            self.background_read = True
+            return [graph.input('BACKGROUND.' + c, 'f') for c in 'rgba']
         if binding in rshaders.FORWARD_RESOURCES:   # an integer read (ld_structured) takes the same value's bits
             value = rshaders.FORWARD_RESOURCES[binding]
             kind = 'f' if op.startswith('sample') or binding == 'g_ViewDepthBuffer' else 'i'
             return [graph.const(kind, value if kind == 'f' else int(value))] * 4
-        return None
+        return super().resource(graph, op, binding, args)
 
 
 class _Unpack:
@@ -303,7 +325,7 @@ def surface(graph_data, material_data, slot=rshaders.SLOT_GBUFFER):
     Raises Unsupported when the writer is not the engine packing or keeps non-portable operations."""
     shader = rshaders.pass_shader(graph_data, slot)
     cb2 = rshaders.material_constants(graph_data, material_data)
-    bindings = _Bindings(cb2)
+    bindings = _Bindings(cb2, shader.reflection)
     translator = sm5.Translator(shader, bindings)
     bindings.graph = translator.g
     tr = translator.run()
@@ -350,7 +372,7 @@ def surface(graph_data, material_data, slot=rshaders.SLOT_GBUFFER):
         terms[name] = g.op('mul', stored, stored)
     terms['gloss'] = _rounded(g, g.op('sat', gloss))
     limitations = ['Per-draw values are the neutral draw: no dissolve, opaque, no render flags (lighting class 0), '
-                   'shader time 0.', 'The 12-bit normal and the 8-bit albedo, occlusion and emission are used before the '
+                   'shader time 0.' + OBJECT_NOTE * bindings.object_read, 'The 12-bit normal and the 8-bit albedo, occlusion and emission are used before the '
                    "G-buffer's rounding; F0 and gloss keep it."]
     return _portable(g, terms, bindings, graph_data, material_data, tr, limitations, 'Surface')
 
@@ -371,6 +393,8 @@ def _portable(g, terms, bindings, graph_data, material_data, tr, limitations, wh
         if n['op'] == 'sample':
             if n['binding'] not in units:
                 raise Unsupported('%s samples engine texture %s' % (what, n['binding']))
+            if n.get('dimension') in CUBE_DIMENSIONS:
+                raise Unsupported('%s samples cube map %s, which an image lookup cannot address' % (what, n['binding']))
             textures[n['binding']] = units[n['binding']]
         if n['op'] == 'load':
             raise Unsupported('%s loads from %s' % (what, n['binding']))
@@ -384,7 +408,69 @@ def _portable(g, terms, bindings, graph_data, material_data, tr, limitations, wh
                 program_status=tr.status(), outputs=dict(tr.outputs))
 
 
-FORWARD_TERMS = ('colour.r', 'colour.g', 'colour.b', 'alpha', 'clip')
+FORWARD_TERMS = ('colour.r', 'colour.g', 'colour.b', 'background.r', 'background.g', 'background.b', 'alpha', 'clip')
+BACKGROUND_BUFFER = 'g_FrameBuffer'
+BACKGROUND_INPUTS = ('BACKGROUND.r', 'BACKGROUND.g', 'BACKGROUND.b', 'BACKGROUND.a')
+
+
+def _affine_split(g, root, names):
+    """(A, {name: B}) with root = A + sum(B x name) exactly, A and B free of ``names``; None when root is not affine in them
+    (they pass through anything but add, neg, a multiply or divide by a free value, or a select on a free condition)."""
+    depends = {}
+
+    def free(i):
+        if i not in depends:
+            n = g.nodes[i]
+            depends[i] = (n['op'] == 'input' and n['name'] in names) or any(not free(a) for a in n['args'])
+        return not depends[i]
+
+    memo = {}
+    zero = g.const('f', 0.0)
+
+    def split(i):
+        if i in memo:
+            return memo[i]
+        n = g.nodes[i]
+        op, args = n['op'], n['args']
+        if free(i):
+            result = (i, {})
+        elif op == 'input':
+            result = (zero, {n['name']: g.const('f', 1.0)})
+        elif op == 'add':
+            a, b = split(args[0]), split(args[1])
+            if a is None or b is None:
+                return None
+            coeffs = dict(a[1])
+            for k, c in b[1].items():
+                coeffs[k] = g.op('add', coeffs[k], c) if k in coeffs else c
+            result = (g.op('add', a[0], b[0]), coeffs)
+        elif op == 'neg':
+            a = split(args[0])
+            if a is None:
+                return None
+            result = (g.op('neg', a[0]), {k: g.op('neg', c) for k, c in a[1].items()})
+        elif op in ('mul', 'div') and free(args[1]):
+            a = split(args[0])
+            if a is None:
+                return None
+            result = (g.op(op, a[0], args[1]), {k: g.op(op, c, args[1]) for k, c in a[1].items()})
+        elif op == 'mul' and free(args[0]):
+            a = split(args[1])
+            if a is None:
+                return None
+            result = (g.op('mul', args[0], a[0]), {k: g.op('mul', args[0], c) for k, c in a[1].items()})
+        elif op == 'select' and free(args[0]):
+            a, b = split(args[1]), split(args[2])
+            if a is None or b is None:
+                return None
+            keys = set(a[1]) | set(b[1])
+            result = (g.select(args[0], a[0], b[0]),
+                      {k: g.select(args[0], a[1].get(k, zero), b[1].get(k, zero)) for k in keys})
+        else:
+            return None
+        memo[i] = result
+        return result
+    return split(root)
 
 
 def forward(graph_data, material_data):
@@ -395,7 +481,7 @@ def forward(graph_data, material_data):
     shader = rshaders.pass_shader(graph_data, rshaders.SLOT_FORWARD)
     from rc2016.games.rcra.material import draw_flags
     flags = draw_flags(material_data)
-    bindings = _ForwardBindings(rshaders.material_constants(graph_data, material_data), flags)
+    bindings = _ForwardBindings(rshaders.material_constants(graph_data, material_data), flags, shader.reflection)
     translator = sm5.Translator(shader, bindings)
     bindings.graph = translator.g
     tr = translator.run()
@@ -406,13 +492,36 @@ def forward(graph_data, material_data):
     target = [g.cast(x, 'f') for x in target]
     terms = {'colour.r': target[0], 'colour.g': target[1], 'colour.b': target[2], 'alpha': g.op('sat', target[3]),
              'clip': tr.discard}
+    zero = g.const('f', 0.0)
+    background = dict.fromkeys(('background.r', 'background.g', 'background.b'), zero)
+    if bindings.background_read:
+        reach = g.reachable(list(terms.values()))
+        if any(g.nodes[i]['op'] == 'input' and g.nodes[i]['name'] in BACKGROUND_INPUTS for i in reach):
+            if flags:
+                raise Unsupported('Forward colour samples engine texture %s in a lit material (the scene behind is '
+                                  'shaded by the forward lighting)' % BACKGROUND_BUFFER)
+            for name in ('alpha', 'clip'):
+                if not _affine_split(g, terms[name], BACKGROUND_INPUTS) or _affine_split(g, terms[name],
+                                                                                          BACKGROUND_INPUTS)[1]:
+                    raise Unsupported('Forward %s depends on the scene behind (%s)' % (name, BACKGROUND_BUFFER))
+            for c in 'rgb':
+                split = _affine_split(g, terms['colour.' + c], BACKGROUND_INPUTS)
+                if split is None or set(split[1]) - {'BACKGROUND.' + c}:
+                    raise Unsupported('Forward colour is not affine in the scene behind (%s)' % BACKGROUND_BUFFER)
+                terms['colour.' + c] = split[0]
+                background['background.' + c] = split[1].get('BACKGROUND.' + c, zero)
+    terms.update(background)
     limitations = [
         'Forward colour with every engine light source zero (key light, light grid, probes, GI, reflections): the '
         "material's own emission and effects. The renderer's lights shade its G-buffer surface instead of the forward "
         "program's lighting.",
         "Draw: render flags hold only the material's lit bit (%s), no dissolve, no particle values, shader time 0; "
         'stored scene depth at the far clip (no soft depth fade); view space with the world axes.'
-        % ('lit' if flags else 'unlit: lighting term 1')]
+        % ('lit' if flags else 'unlit: lighting term 1') + OBJECT_NOTE * bindings.object_read]
+    if bindings.background_read:
+        limitations.append('The program samples the scene behind it (%s); the colour is affine in it, so it is split into '
+                           'an emission and a background tint, and the sample\'s screen-space offset (distortion, '
+                           'refraction) is dropped.' % BACKGROUND_BUFFER)
     return _portable(g, terms, bindings, graph_data, material_data, tr, limitations, 'Forward colour')
 
 

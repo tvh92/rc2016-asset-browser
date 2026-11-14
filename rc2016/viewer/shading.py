@@ -2980,9 +2980,14 @@ class Shading:
         vertex = INSTANCED_VERTEX if instanced else VERTEX
         key = self.native_program_key(translation, srgb, instanced, scene, experimental, rule_preview, alpha_api, alpha_discard, alpha_opacity)
         if key not in self.programs:
-            surface = fragment_source(translation, srgb, experimental=experimental, rule_preview=rule_preview,
-                                      alpha_api=alpha_api, alpha_discard=alpha_discard, alpha_opacity=alpha_opacity)
-            names = (*OPAQUE_UNIFORMS, *(s['uniform'] for s in surface['samplers']))
+            if translation.get('kind') == 'rcra':   # a Rift Apart receipt (rc2016.viewer.rcra_glsl)
+                from rc2016.viewer import rcra_glsl
+                surface = rcra_glsl.fragment_source(translation)
+                names = (*OPAQUE_UNIFORMS, *surface['samplers'], rcra_glsl.PASS_UNIFORM)
+            else:
+                surface = fragment_source(translation, srgb, experimental=experimental, rule_preview=rule_preview,
+                                          alpha_api=alpha_api, alpha_discard=alpha_discard, alpha_opacity=alpha_opacity)
+                names = (*OPAQUE_UNIFORMS, *(s['uniform'] for s in surface['samplers']))
             attributes = INSTANCE_ATTRIBUTES if instanced else dict(ATTRIBUTES, aRockAlpha=ROCK_ALPHA_ATTRIBUTE, aGroundBlend=GROUND_BLEND_ATTRIBUTE, aStaticPackedVector=STATIC_VECTOR_ATTRIBUTE, aTangent=TANGENT_ATTRIBUTE, aUV1=UV1_ATTRIBUTE)
             source=surface['source'].replace('#version 120', '#version 120\n#define RC_SCENE_EFFECTS 1',1) if scene else surface['source']
             self.programs[key] = self._link(vertex, source, attributes, names)

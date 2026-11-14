@@ -28,10 +28,12 @@ BRDF group "RC RA Deferred BRDF", from the engine's class-0 deferred apply progr
   multiplies the diffuse colour by it instead.
 
 Blended materials (entry ``blend`` additive, blended or modulate) carry a forward recipe: the colour and alpha the game
-blends, with every engine light source zero. ``apply_recipe`` composes it over a Transparent BSDF by the mode, and for
-'blended' adds the G-buffer surface lit by Blender (its emission left to the forward colour, which already holds it):
-- blended: mix(Transparent, BRDF + Emission(colour), alpha)
-- additive: Transparent + Emission(colour, strength alpha)
+blends, with every engine light source zero, and a background tint B where the program passes the scene behind it
+through (colour = A + B x background). ``apply_recipe`` composes it with a Transparent BSDF by the mode, and for 'blended'
+adds the G-buffer surface lit by Blender (its emission left to the forward colour, which already holds it):
+- blended: Transparent(mix(white, B, alpha)) + alpha x (BRDF + Emission(colour)), i.e. mix(Transparent, body, alpha)
+  when B = 0
+- additive: Transparent(1 + alpha B) + Emission(colour, strength alpha)
 - modulate: Transparent tinted by mix(white, colour, alpha)
 """
 import hashlib
@@ -329,6 +331,9 @@ class _Emitter:
         if image is None:
             raise ValueError('No image for ' + n['binding'])
         u, v = self.value(n['args'][0]), self.value(n['args'][1])
+        if isinstance(image, Volume):
+            self.samples[index] = self.volume(image, u, v, self.value(n['args'][2]), n['binding'])
+            return self.samples[index]
         combine = self.node('ShaderNodeCombineXYZ')
         self.feed(u, combine.inputs[0])
         self.feed(self.math('SUBTRACT', 1.0, v) if not isinstance(v, float) else 1.0 - v, combine.inputs[1])
@@ -357,6 +362,35 @@ class _Emitter:
                         self.math('MULTIPLY', pick.outputs[0], c) for c, total in zip(looked, channels)]
         self.samples[index] = channels
         return channels
+
+
+    def volume(self, vol, u, v, z, binding):
+        """Trilinear wrap lookup in a padded atlas: bilinear in the slices floor(s) and floor(s) + 1 (mod depth), s = z depth
+        - 0.5, mixed by frac(s)."""
+        d, cols, w, h = float(vol.depth), vol.columns, float(vol.width), float(vol.height)
+        rows = -(-vol.depth // cols)
+        aw, ah = cols * (w + 2.0), rows * (h + 2.0)
+        s = self.math('SUBTRACT', self.math('MULTIPLY', z, d), 0.5)
+        k0 = self.math('FLOOR', s)
+        f = self.math('SUBTRACT', s, k0)
+        fu, fv = self.math('FRACT', u), self.math('FRACT', v)
+        looked = []
+        for step in (0.0, 1.0):
+            k = self.math('FLOORED_MODULO', self.math('ADD', k0, step), d)
+            row = self.math('FLOOR', self.math('DIVIDE', k, float(cols)))
+            col = self.math('SUBTRACT', k, self.math('MULTIPLY', row, float(cols)))
+            x = self.math('DIVIDE', self.math('ADD', self.math('MULTIPLY', col, w + 2.0), self.math('MULTIPLY_ADD', fu, w, 1.0)), aw)
+            y = self.math('DIVIDE', self.math('ADD', self.math('MULTIPLY', row, h + 2.0), self.math('MULTIPLY_ADD', fv, h, 1.0)), ah)
+            combine = self.node('ShaderNodeCombineXYZ')
+            self.feed(x, combine.inputs[0])
+            self.feed(self.math('SUBTRACT', 1.0, y), combine.inputs[1])   # atlas rows are stored top first
+            tex = self.node('ShaderNodeTexImage', image=vol.image, interpolation=self.interpolation, extension='CLIP')
+            tex.name = 'Unit %s volume %d' % (binding, int(step))
+            self.links.new(combine.outputs[0], tex.inputs['Vector'])
+            sep = self.node('ShaderNodeSeparateColor')
+            self.links.new(tex.outputs['Color'], sep.inputs[0])
+            looked.append([sep.outputs[0], sep.outputs[1], sep.outputs[2], tex.outputs['Alpha']])
+        return [self.math('MULTIPLY_ADD', f, self.math('SUBTRACT', b, a), a) for a, b in zip(*looked)]
 
 
 SURFACE_OUTPUTS = (('Albedo', 'NodeSocketColor'), ('F0', 'NodeSocketColor'), ('Gloss', 'NodeSocketFloat'),
@@ -400,11 +434,12 @@ def build_surface_group(recipe, images, uv_maps, colour_attribute=None, interpol
     return group
 
 
-FORWARD_OUTPUTS = (('Colour', 'NodeSocketColor'), ('Alpha', 'NodeSocketFloat'))
+FORWARD_OUTPUTS = (('Colour', 'NodeSocketColor'), ('Alpha', 'NodeSocketFloat'), ('Background', 'NodeSocketColor'))
 
 
 def build_forward_group(recipe, images, uv_maps, colour_attribute=None, interpolation='Linear', fixed=None):
-    """A node group computing a forward recipe's Colour (HDR) and Alpha (with the program's discard applied)."""
+    """A node group computing a forward recipe's Colour (HDR), Alpha (with the program's discard applied) and Background
+    tint."""
     digest = recipe_sha256(recipe)
     group = bpy.data.node_groups.new(FORWARD_PREFIX + digest[:16], 'ShaderNodeTree')
     group[FORWARD_PROPERTY] = digest
@@ -417,6 +452,10 @@ def build_forward_group(recipe, images, uv_maps, colour_attribute=None, interpol
     for k, name in enumerate(('colour.r', 'colour.g', 'colour.b')):
         em.feed(terms[name], colour.inputs[k])
     group.links.new(colour.outputs[0], out.inputs['Colour'])
+    tint = em.node('ShaderNodeCombineColor')
+    for k, name in enumerate(('background.r', 'background.g', 'background.b')):
+        em.feed(terms.get(name, 0.0), tint.inputs[k])
+    group.links.new(tint.outputs[0], out.inputs['Background'])
     clip = terms['clip']
     keep = em.math('SUBTRACT', 1.0, clip) if not isinstance(clip, float) else 1.0 - clip
     alpha = terms['alpha']
@@ -446,9 +485,20 @@ def load_image(path, colourspace, kind='png', width=0, height=0):
     return image
 
 
+class Volume:
+    """A 3D texture's padded slice atlas (rc2016.games.rcra.blender_export.write_volume_texture)."""
+
+    def __init__(self, image, depth, columns, width, height):
+        self.image, self.depth, self.columns, self.width, self.height = image, depth, columns, width, height
+
+
 def _load_row(row):
     if 'slices' in row:   # a texture array sampled at a run-time slice: one image per slice
         return [_load_row(r) for r in row['slices']]
+    if 'volume' in row:
+        v = row['volume']
+        image = load_image(row['path'], row['colourspace'], row.get('kind', 'png'), row.get('width', 0), row.get('height', 0))
+        return Volume(image, v['depth'], v['columns'], v['width'], v['height'])
     return load_image(row['path'], row['colourspace'], row.get('kind', 'png'), row.get('width', 0), row.get('height', 0))
 
 
@@ -498,24 +548,38 @@ def _forward_shader(tree, entry, images, uv_maps, colour_attribute, lit):
     emit = nodes.new('ShaderNodeEmission')
     emit.location = (300, -400)
     links.new(f.outputs['Colour'], emit.inputs['Color'])
-    combine = nodes.new('ShaderNodeAddShader')
-    combine.location = (560, -400)
+    total = nodes.new('ShaderNodeAddShader')
+    total.location = (1000, -400)
+    links.new(clear.outputs[0], total.inputs[0])
     if mode == 'additive':
+        through = nodes.new('ShaderNodeVectorMath')   # 1 + alpha B
+        through.operation, through.location = 'MULTIPLY_ADD', (120, -600)
+        links.new(f.outputs['Background'], through.inputs[0])
+        links.new(f.outputs['Alpha'], through.inputs[1])
+        through.inputs[2].default_value = (1.0, 1.0, 1.0)
+        links.new(through.outputs[0], clear.inputs['Color'])
         links.new(f.outputs['Alpha'], emit.inputs['Strength'])
-        links.new(clear.outputs[0], combine.inputs[0])
-        links.new(emit.outputs[0], combine.inputs[1])
-        return combine.outputs[0], group
+        links.new(emit.outputs[0], total.inputs[1])
+        return total.outputs[0], group
+    through = nodes.new('ShaderNodeMix')   # mix(white, B, alpha) = 1 - alpha + alpha B
+    through.data_type, through.location = 'RGBA', (120, -600)
+    links.new(f.outputs['Alpha'], through.inputs['Factor'])
+    through.inputs['A'].default_value = (1.0, 1.0, 1.0, 1.0)
+    links.new(f.outputs['Background'], through.inputs['B'])
+    links.new(through.outputs['Result'], clear.inputs['Color'])
     body = emit.outputs[0]
     if lit is not None:
+        combine = nodes.new('ShaderNodeAddShader')
+        combine.location = (560, -400)
         links.new(lit, combine.inputs[0])
         links.new(emit.outputs[0], combine.inputs[1])
         body = combine.outputs[0]
-    mix = nodes.new('ShaderNodeMixShader')
-    mix.location = (800, -400)
-    links.new(f.outputs['Alpha'], mix.inputs['Fac'])
-    links.new(clear.outputs[0], mix.inputs[1])
-    links.new(body, mix.inputs[2])
-    return mix.outputs[0], group
+    weight = nodes.new('ShaderNodeMixShader')   # alpha x body: the first input is left empty (no light)
+    weight.location = (800, -400)
+    links.new(f.outputs['Alpha'], weight.inputs['Fac'])
+    links.new(body, weight.inputs[2])
+    links.new(weight.outputs[0], total.inputs[1])
+    return total.outputs[0], group
 
 
 def apply_recipe(material, entry, uv_maps, colour_attribute=None):

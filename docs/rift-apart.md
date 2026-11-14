@@ -32,7 +32,7 @@ Rift Apart's capabilities are `models`, `textures`, `export` and `animation`:
 
 - **Supported:**
   - Browsing.
-  - The 3D model view with its labelled preview shading, and skeletal [animation](#animation) playback.
+  - The 3D model view, with skeletal [animation](#animation) playback. The Shaded mode draws each material's own translated program where it translates ([In the viewer](#in-the-viewer)), and the labelled preview elsewhere.
   - The Textures tab.
   - Model export to GLB, glTF and OBJ (FBX, USD and `.blend` through Blender), with skin weights and animation clips. Blender exports carry the game's own materials where the G-buffer writer or, for blended materials, the forward program translates ([Blender materials](#blender-materials)).
 - **Disabled:** the Level and Flash UI types, the backend choice, the Blender scene and the shading filter. Each is greyed out with the tip "Not yet available for Rift Apart".
@@ -362,7 +362,7 @@ Slot keys are the low 32 bits of the 2016 game's `0x49A7866B........` slot hashe
 
 ### The labelled preview
 
-The viewer draws a labelled **Rift Apart preview** (`rule_kind 'rift apart preview'`).
+The viewer draws a labelled **Rift Apart preview** (`rule_kind 'rift apart preview'`) in the Textured mode, and in the Shaded mode for materials whose program does not translate or while the native translation is off ([In the viewer](#in-the-viewer)).
 
 **What the preview uses:**
 - **Base colour:** from the material's `ABDAD780` slot.
@@ -371,7 +371,7 @@ The viewer draws a labelled **Rift Apart preview** (`rule_kind 'rift apart previ
 
 **What it leaves out:**
 - **`_g` and `_m` maps:** their channel meanings are not decoded.
-- **Material graphs:** no graph shader is translated, except architecture glass (next section). 1,474 graphs exist; 1,386 are bound by materials and 29 materials bind none.
+- **Material graphs:** the preview translates no graph shader. Architecture glass keeps its hand decode (next section) as the fallback of the translated program. 1,474 graphs exist; 1,386 are bound by materials and 29 materials bind none.
 - **Gloss, metal, emission and blending:** these are review values, not game data.
 - **Fur shells:** they have no texture slots, so they draw in the neutral colour.
 
@@ -533,23 +533,33 @@ The class-0 apply program (exe offset 59122268) gives the deferred BRDF. It is n
 ### Forward profile
 
 Blended materials are drawn by their forward program (slot 1), which lights itself. For export, `rc2016/games/rcra/shaders.py` defines one labelled set of engine inputs. Its rule is that every light source is zero, and the renderer lights the material's G-buffer surface instead:
-- **Lights:** key light, light grid and lists, shadow atlas, gobos, probes, GI, SSR, AO and the BRDF lookup read 0 (`FORWARD_LIGHTING`).
+- **Lights:** key light, light grid and lists, shadow atlas, ray-traced shadows, gobos, probes, GI, SSR, AO and the BRDF lookup read 0 (`FORWARD_LIGHTING`).
 - **Draw flags:** only the material's lit bit (`material.draw_flags`).
+- **Object:** the neutral object of [Per-object values](#per-object-values).
 - **Depth:** the stored scene depth sits at the far clip, so there is no soft depth fade.
 - **Clip plane:** the custom clip plane clips nothing.
 - **View:** the programs rebuild the view position from `SV_POSITION` and `m_ViewToWorldMat`. With `FORWARD_VIEW_FLOATS`, `SV_POSITION.xyw` is the camera-to-point offset in world axes, so a renderer supplies it as `VIEW.xyz` and the matrix translation as the camera position `CAMERA.xyz`.
 
 `surface.forward` returns the target under this profile: colour (HDR), alpha and the discard. On the trooper dome it matches the hand decode of `gbl_arch_glass` with lighting zero: alpha within 4 × 10⁻⁷, colour within 7 × 10⁻⁷ relative. Two translator folds make the profile's dead code disappear: a comparison `x < 0` of a value that is never negative is false, and a shifted zero is zero.
 
-**Coverage:** 981 of 1,747 blended materials. Not translated:
-- reads of per-object data (`g_SceneObjectView`), the G-buffer or scene colour (`g_FrameBuffer`, refraction)
-- units outside the graph's slot table
-- unbounded loops
+**The scene behind.** A program that samples the scene colour behind it (`g_FrameBuffer`: heat haze, shockwaves, water splats) binds the sample as symbolic `BACKGROUND.rgb`. `surface._affine_split` keeps it only when each colour channel is affine in its own background channel, colour = A + B × background (through add, negate, a multiply or divide by a free value, or a select on a free condition), and the alpha and discard do not read it. It then returns A as the colour and B as the `background` terms. Over the 45 materials it splits, A + B × background matches the unsplit program within 1.4 × 10⁻⁷ relative at random inputs. The sample's screen-space offset (the distortion) is dropped and labelled. A lit material that reads the scene stays unsupported: its background passes through the forward lighting, which the profile zeroes.
 
-### Not done yet
+**Texture kinds.** Material units are 2D arrays, sampled at a slice. 3D textures (flipbook volumes) are sampled trilinearly with a normalised depth ([Textures](#textures)). Cube maps are unsupported: an image lookup cannot address them.
 
-- **Viewer:** the viewer does not draw translated programs yet. The glass preview is still the hand-written `uKind 26` program.
-- **Particle values:** `TEXCOORD6` and `TEXCOORD7` (particle age, softness) read 0, so particle-quad materials such as `exp_quad` come out transparent.
+**Coverage:** 1,115 of 1,747 blended materials. Not translated:
+- booleans read back as float bits (`bits2f(b2i(c))`, NaN when true) inside a discard, mostly holo graphs (about 120)
+- G-buffer reads (decals) and per-pixel volume flags
+- lit materials that read the scene colour (27), and colour that is not affine in it (16)
+- cube maps (38), units outside the graph's slot table, unbounded loops
+
+### Per-object values
+
+Programs read the engine's per-object record, `g_SceneObjectView` (element `$Element`, 128 bytes; names and offsets from the reflection). The engine's model vertex program shows its layout:
+- **Transform:** row-major 3 × 4, rows at bytes 0, 16 and 32, translation in dword 3. The world normal is the object normal dotted with each row.
+- **Values:** alpha, an fp16 object colour (`m_ColorRGFp16`, `m_ColorBMiscFp16`), custom XY, Z and random halves, creation time, LOD override.
+- **Interpolants:** the vertex program passes the custom values on as `TEXCOORD6 = (1, Misc, Rand, LOD factor)` and `TEXCOORD7 = (custom X, custom Y, custom Z, FX lighting index)`.
+
+The game sets these per object at run time. `shaders.NEUTRAL_OBJECT` is a plain object: identity transform, alpha 1, white colour, and every custom value, time and bias 0. Both the G-buffer and the forward translations bind it, and a material that reads it says so in its limitations. Effects driven by the custom values, such as the particle quads `exp_quad` and `smk_quad`, come out at their zero state (often transparent).
 
 ## Blender materials
 
@@ -575,10 +585,10 @@ Values a material does not own are bound and listed in its limitations:
 - **Neutral draw:** no dissolve, opaque, no render flags (lighting class 0), shader time 0.
 - **Review values:** screen position for dither, LOD fade and adapted luminance 1.
 
-**Coverage:** 4,621 of 5,721 materials. The rest are reported with a reason (`rc2016.games.rcra.surface.Unsupported`):
-- per-object buffer loads and integer operations left in the writer, for example foliage wind (591 materials)
-- writers without the packed normal, as in the holo graphs (360)
-- unbounded loops (81)
+**Coverage:** 4,875 of 5,721 materials. The rest are reported with a reason (`rc2016.games.rcra.surface.Unsupported`):
+- integer operations left in the writer
+- writers without the packed normal, as in the holo graphs
+- unbounded loops
 
 ### Textures
 
@@ -589,6 +599,7 @@ Each unit texture is written as stored. Missing channels follow D3D: green and b
 | 8-bit | RGBA PNG |
 | Float | Raw float32 RGBA (`.f32`), loaded into a packed float image |
 | Array, slice chosen at run time | Every slice; the material picks one by `round(slice)`, clamped |
+| 3D (flipbook volumes) | One atlas of every slice, each tile with a one-texel border copied from its opposite edge; the material samples the two slices around `depth × z − 0.5` bilinearly and mixes them, wrapping in depth (trilinear, as D3D filters) |
 
 The colourspace follows the DXGI format: sRGB formats are `sRGB`, everything else `Non-Color`. Some material and graph strings double their path separators; they are normalised.
 
@@ -618,9 +629,11 @@ A blended material's entry carries `blend` and a `forward` recipe ([Forward prof
 
 | Mode | Shader |
 | --- | --- |
-| Blended | mix(Transparent, BRDF + Emission(colour), alpha). The BRDF's own emission input is left unlinked, because the forward colour already holds it. |
-| Additive | Transparent + Emission(colour, strength alpha) |
+| Blended | Transparent(mix(white, B, alpha)) + alpha × (BRDF + Emission(colour)); with B = 0 this is mix(Transparent, BRDF + Emission(colour), alpha). The BRDF's own emission input is left unlinked, because the forward colour already holds it. |
+| Additive | Transparent(1 + alpha B) + Emission(colour, strength alpha) |
 | Modulate | Transparent tinted by mix(white, colour, alpha) |
+
+B is the background tint of a program that passes the scene behind it through ([Forward profile](#forward-profile)); a modulate material that does so is not linear in it and keeps its opaque surface.
 
 `VIEW` and `CAMERA` come from Geometry Incoming and Camera Data View Distance. EEVEE materials use the blended render method. The engine names the modes, but the blend factors are the standard ones for those names and are labelled as such. A blended material whose forward program does not translate keeps its opaque surface, with the reason in its limitations.
 
@@ -631,11 +644,24 @@ Export check: each export builds the `.blend` as a candidate, reopens it in a se
 `python -m rc2016.games.rcra.blender_check --game <install> --blender <blender.exe> --output-root <folder> <material> ...` bakes every surface output of the emitted node tree in Cycles. It compares the bake, texel by texel, with the recipe evaluated by the translator on the same textures:
 - **Window:** a UV window small enough that the bake's sub-pixel jitter stays below a texel.
 - **Results:** on one material from each of the ten most-used graphs, F0 and alpha are exact. Albedo and the normal agree within 2 × 10⁻³, and gloss, occlusion and emission within 8-bit rounding ties.
-- **Forward:** a blended material's forward colour and alpha are baked too, with the view held at fixed values (`FORWARD_VIEW`). On the trooper dome and the wine glass, colour agrees within 2 × 10⁻⁶ and alpha within 6 × 10⁻⁸.
+- **Forward:** a blended material's forward colour, alpha and background tint are baked too, with the view held at fixed values (`FORWARD_VIEW`). On the trooper dome and the wine glass, colour agrees within 2 × 10⁻⁶ and alpha within 6 × 10⁻⁸; a 128-slice noise volume within 5 × 10⁻⁶.
+
+### In the viewer
+
+The model viewer's Shaded mode draws the translated programs (`rc2016/games/rcra/viewer_materials.py` builds each material's receipt; `rc2016/viewer/rcra_glsl.py` emits its GLSL, one statement per recipe node). The receipt follows the export's choices: the G-buffer surface for opaque materials; the forward program, plus the lit surface for blended ones. The viewer's native translation toggle switches back to the preview.
+
+| Part | Viewer |
+| --- | --- |
+| Inputs | UV0 and UV1, the world normal, the UV-derivative tangent frame (`native_glsl.FRAME_HELPERS`), front face, and the view from `vTintViewOffset`. Vertex colour reads 1: the viewer draws no colour stream. |
+| Textures | A sampled array slice as stored. Arrays with a run-time slice and 3D textures as the padded atlas of the Blender export, without mipmaps. Float data formats as `RGBA32F`. |
+| Lighting | The review rig with the Rift Apart BRDF: GGX α = (0.9725 − 0.7514 gloss)², Smith joint approximation, Schlick F90 = 1, Lambert, occlusion on ambient light only |
+| Blending | Forward materials draw in the float scene target, tested but not writing depth. A multiply pass scales what is behind by the background factor (blended: mix(1, B, α); additive: 1 + αB; modulate: the tint). Then a colour pass adds the premultiplied colour, coverage blended over. |
+
+`tests/test_rcra_viewer.py` draws the swarmer through the model viewport (Windows, `RCRA_GAME`) and checks that the translated programs link and draw.
 
 ### Not translated
 
-- **Blended materials whose forward program does not translate** (766 of 1,747): Blender gets their G-buffer surface, opaque.
+- **Blended materials whose forward program does not translate** (632 of 1,747): Blender gets their G-buffer surface, opaque.
 - **Forward lighting:** the forward program's own light loop is not used. Blender's lights shade the G-buffer surface instead, which assumes that the forward program lights the same terms as the deferred apply.
 - **Lighting classes 1 to 5:** skin, hair and the other special classes need their own apply programs. They are lit with class 0.
 

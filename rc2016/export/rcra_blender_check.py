@@ -21,7 +21,7 @@ from rc2016.export import rcra_blender  # noqa: E402
 
 BAKES = (('albedo', 'Albedo'), ('f0', 'F0'), ('normal', 'Normal'), ('scalars', ('Gloss', 'Occlusion', 'Emission')),
          ('alpha', 'Alpha'))
-FORWARD_BAKES = (('forward_colour', 'Colour'), ('forward_alpha', 'Alpha'))
+FORWARD_BAKES = (('forward_colour', 'Colour'), ('forward_alpha', 'Alpha'), ('forward_background', 'Background'))
 
 
 def main():

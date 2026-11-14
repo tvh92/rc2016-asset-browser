@@ -179,9 +179,12 @@ class RealGlassTests(unittest.TestCase):
         path = 'characters/enemy/enm_neo_nefarious_swarmer/enm_neo_nefarious_swarmer.model'
         decoded = decode_model(path, data=self.source.asset_data(self.source.resolve(path)[0]), as_arrays=True)
         entries = rmat.material_textures(self.source, decoded['materials'], {})
-        glass = [e for e in entries.values() if e.get('forward')]
+        forward = [e for e in entries.values() if e.get('forward')]
+        # Blended materials draw their translated programs; the dome keeps the decoded glass rule as the fallback.
+        self.assertTrue(forward and all(e['forward']['kind'] == rmat.TRANSLATED_KIND for e in forward))
+        glass = [e for e in forward if e['forward'].get('fallback')]
         self.assertEqual(len(glass), 1)
-        self.assertEqual(glass[0]['forward']['kind'], 'rcra_arch_glass')
+        self.assertEqual(glass[0]['forward']['fallback']['kind'], 'rcra_arch_glass')
         self.assertTrue(all(glass[0][role] for role in ('_pick', '_window_c', '_n', '_window_g')))
 
 

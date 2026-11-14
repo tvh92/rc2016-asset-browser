@@ -30,9 +30,19 @@ TERMS = {'albedo': ('albedo.r', 'albedo.g', 'albedo.b'), 'f0': ('f0.r', 'f0.g', 
          'scalars': ('gloss', 'occlusion', 'emission')}
 
 
+class Volume(list):
+    """A 3D texture's slices (from its padded atlas)."""
+
+
 def load_unit(row):
     if 'slices' in row:
         return [load_unit(r) for r in row['slices']]
+    if 'volume' in row:
+        v = dict(row['volume'])
+        atlas = load_unit({k: x for k, x in row.items() if k != 'volume'})
+        h, w = v['height'], v['width']
+        return Volume(atlas[r * (h + 2) + 1:r * (h + 2) + 1 + h, c * (w + 2) + 1:c * (w + 2) + 1 + w]
+                      for r, c in (divmod(k, v['columns']) for k in range(v['depth'])))
     if row['kind'] == 'float':
         return np.fromfile(row['path'], dtype='<f4').reshape(row['height'], row['width'], 4)
     from PIL import Image
@@ -58,7 +68,7 @@ def bilinear(image, u, v):
 def window(entry, size):
     """(origin, span) of the baked UV window: each bake pixel covers at most a quarter of the largest texture's texel, so
     the bake's sub-pixel jitter (Cycles' minimum filter width) moves a lookup by a negligible fraction of a texel."""
-    widths = [r.get('width', 1) for row in entry['images'].values() for r in row.get('slices', [row])]
+    widths = [r.get('volume', r).get('width', 1) for row in entry['images'].values() for r in row.get('slices', [row])]
     span = min(1.0, size / (4.0 * max(widths + [1])))
     return 0.3, span
 
@@ -69,6 +79,11 @@ def expected(entry, size):
 
     def sample(node, args):
         image = units[node['binding']]
+        if isinstance(image, Volume):   # trilinear, wrapping in depth
+            s = args[2] * len(image) - 0.5
+            k = math.floor(s)
+            a, b = bilinear(image[k % len(image)], args[0], args[1]), bilinear(image[(k + 1) % len(image)], args[0], args[1])
+            return [x + (s - k) * (y - x) for x, y in zip(a, b)]
         if isinstance(image, list):
             image = image[int(min(max(math.floor(args[2] + 0.5), 0), len(image) - 1))]
         return bilinear(image, args[0], args[1])
@@ -91,6 +106,7 @@ def expected(entry, size):
                 terms = rsurface.evaluate_recipe(entry['forward'], dict(inputs, **FORWARD_VIEW), sample)
                 out['forward_colour'].append([terms['colour.r'], terms['colour.g'], terms['colour.b']])
                 out['forward_alpha'].append([0.0 if terms['clip'] else terms['alpha']] * 3)
+                out['forward_background'].append([terms.get('background.' + c, 0.0) for c in 'rgb'])
     return {k: np.array(v) for k, v in out.items()}
 
 

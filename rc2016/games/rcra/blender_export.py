@@ -15,6 +15,9 @@ lacks (0 for green and blue, 1 for alpha); float formats are written as raw floa
 top first) that Blender loads into a float image. Colourspace follows the DXGI format: sRGB formats are 'sRGB', everything
 else 'Non-Color'. Texture arrays write the slice the recipe samples; an array sampled at a slice chosen at run time
 writes every slice (up to MAX_SLICES), and the Blender material picks one by round(slice), clamped, as D3D does.
+A 3D texture (flipbook volumes) is written as one atlas: its slices in a grid of ``columns``, each with a one-texel border
+copied from the opposite edge, so a bilinear lookup inside a tile wraps as the texture does; the Blender material samples
+the two slices around the depth coordinate and mixes them (trilinear, wrapping in depth).
 """
 import json
 from pathlib import Path
@@ -41,6 +44,7 @@ BLEND_LIMITATIONS = {
                 'mode; the pipeline\'s blend state is not in the files.'}
 MAX_SLICES = 32
 ALL_SLICES = 'all'
+VOLUME = 'volume'
 
 
 def texel_array(texture, index=0):
@@ -80,7 +84,41 @@ def write_unit_texture(source, path, folder, index=0, cache=None):
         return cache[key]
     texture = load_texture_full(source, path)
     data = texel_array(texture, index)
-    stem = Path(path).stem + ('_slice%d' % index if index else '')
+    row = _save(data, texture, Path(path).stem + ('_slice%d' % index if index else ''), folder, path)
+    if cache is not None:
+        cache[key] = row
+    return row
+
+
+def volume_atlas(slices, columns):
+    """(rows, cols, 4) atlas of equal (h, w, 4) slices, each tile (h + 2, w + 2) with a wrapped one-texel border."""
+    h, w = slices[0].shape[:2]
+    rows = -(-len(slices) // columns)
+    atlas = np.zeros((rows * (h + 2), columns * (w + 2), 4), np.float32)
+    for k, data in enumerate(slices):
+        r, c = divmod(k, columns)
+        atlas[r * (h + 2):(r + 1) * (h + 2), c * (w + 2):(c + 1) * (w + 2)] = np.pad(data, ((1, 1), (1, 1), (0, 0)), 'wrap')
+    return atlas
+
+
+def write_volume_texture(source, path, folder, cache=None):
+    """Write a 3D texture as a padded slice atlas; the row carries volume=dict(depth, columns, width, height)."""
+    from rc2016.games.rcra.texture import load_texture_full
+    key = (path, VOLUME)
+    if cache is not None and key in cache:
+        return cache[key]
+    texture = load_texture_full(source, path)
+    count = len(texture.get('slices', [texture['pixels']]))
+    columns = max(1, int(np.ceil(np.sqrt(count))))
+    atlas = volume_atlas([texel_array(texture, k) for k in range(count)], columns)
+    row = _save(atlas, texture, Path(path).stem + '_volume', folder, path)
+    row['volume'] = dict(depth=count, columns=columns, width=int(texture['width']), height=int(texture['height']))
+    if cache is not None:
+        cache[key] = row
+    return row
+
+
+def _save(data, texture, stem, folder, path):
     folder.mkdir(parents=True, exist_ok=True)
     colourspace = 'sRGB' if texture['format'] in SRGB_FORMATS else 'Non-Color'
     if texture['format'] in FLOAT_FORMATS:
@@ -92,26 +130,29 @@ def write_unit_texture(source, path, folder, index=0, cache=None):
         target = folder / (stem + '.png')
         Image.fromarray(np.round(data * 255.0).astype(np.uint8), 'RGBA').save(target)
         kind = 'png'
-    row = dict(path=str(target), colourspace=colourspace, kind=kind, width=int(data.shape[1]), height=int(data.shape[0]),
-               source=path, format=int(texture['format']))
-    if cache is not None:
-        cache[key] = row
-    return row
+    return dict(path=str(target), colourspace=colourspace, kind=kind, width=int(data.shape[1]), height=int(data.shape[0]),
+                source=path, format=int(texture['format']))
 
 
 def _slices(recipe):
-    """{binding: slice} of the recipe's samples, ALL_SLICES where the slice is chosen at run time or differs."""
+    """{binding: slice} of the recipe's samples, ALL_SLICES where the slice is chosen at run time or differs, VOLUME for a
+    3D texture."""
     slices = {}
     for n in recipe['nodes']:
         if n['op'] == 'sample':
             z = recipe['nodes'][n['args'][2]] if len(n['args']) > 2 else None
-            index = 0 if z is None else (int(round(z['value'])) if z['op'] == 'const' else ALL_SLICES)
+            if n.get('dimension') == rsurface.DIMENSION_TEXTURE3D:
+                index = VOLUME
+            else:
+                index = 0 if z is None else (int(round(z['value'])) if z['op'] == 'const' else ALL_SLICES)
             if slices.setdefault(n['binding'], index) != index:
                 slices[n['binding']] = ALL_SLICES
     return slices
 
 
 def _unit_images(source, path, folder, index, cache):
+    if index == VOLUME:
+        return write_volume_texture(source, path, folder, cache)
     if index != ALL_SLICES:
         return write_unit_texture(source, path, folder, index, cache)
     from rc2016.games.rcra.texture import texture_header
@@ -127,12 +168,21 @@ def _images(source, results, folder, texture_cache):
     for recipe, result in results:
         for binding, index in _slices(recipe).items():
             if slices.setdefault(binding, index) != index:
+                if VOLUME in (index, slices[binding]):
+                    raise rsurface.Unsupported('Texture %s is sampled as a volume and as an array' % binding)
                 slices[binding] = ALL_SLICES
     textures = {}
     for _recipe, result in results:
         textures.update(result['textures'])
     return {binding: _unit_images(source, path, folder, slices.get(binding, 0), texture_cache)
             for binding, path in textures.items()}
+
+
+def _reads_background(recipe):
+    """True when a forward recipe's background tint is not the constant 0."""
+    nodes = recipe['nodes']
+    return any(nodes[recipe['terms'][k]]['op'] != 'const' or nodes[recipe['terms'][k]]['value']
+               for k in ('background.r', 'background.g', 'background.b') if k in recipe['terms'])
 
 
 def material_entry(source, material_path, folder, texture_cache=None, graph_cache=None):
@@ -168,6 +218,11 @@ def material_entry(source, material_path, folder, texture_cache=None, graph_cach
     if 'recipe' not in results and 'forward' not in results:
         return dict(error=errors.get('recipe') or errors.get('forward'), graph=graph_path, blend=blend)
     recipes = {name: rsurface.export_recipe(result) for name, result in results.items()}
+    if blend == 'modulate' and 'forward' in recipes and _reads_background(recipes['forward']):
+        errors['forward'] = 'Unsupported: a modulate material that passes the scene behind through is not linear in it'
+        del results['forward'], recipes['forward']
+        if 'recipe' not in results:
+            return dict(error=errors.get('recipe') or errors['forward'], graph=graph_path, blend=blend)
     try:
         images = _images(source, [(recipes[n], results[n]) for n in recipes], folder, texture_cache)
     except (rsurface.Unsupported, ValueError, KeyError, OSError) as error:
