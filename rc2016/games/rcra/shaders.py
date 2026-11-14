@@ -41,6 +41,39 @@ NEUTRAL_INTEGERS = {
 }
 NEUTRAL_FLOATS = {'GlobalWorldCBuffer.m_KeyLightTapScale': 1.0}    # sun shadow PCF: 8 taps
 
+# Forward profile (pass slot 1), for exporting blended materials. The forward programs light themselves (key light, light
+# grid, probes, GI, SSR); an export lights the material's G-buffer surface with the renderer's own lights instead. So every
+# light source a forward program reads is zero (every engine constant not bound here is zero), and the forward colour is
+# the material's own unlit contribution: emission, self-lit terms and effects. These are export choices, not game data.
+# - Draw flags: MatDrawCB.m_RenderFlags holds the material's lit bit (material.draw_flags, decoded); everything else in
+#   it (lighting class, per-object state) is 0.
+# - Engine textures and buffers: the stored view depth at the far clip (no soft depth fade). The lighting inputs (light
+#   grid and lists, shadow atlas, gobos, probes, SSR, AO, the BRDF lookup) read 0, as the light sources they belong to are
+#   zero. Programs that read scene colour, the G-buffer or per-object buffers stay unsupported.
+FORWARD_FAR_CLIP = 1000.0
+FORWARD_LIGHTING = ('g_LightGridLookup', 'g_LightLookupView', 'g_LightZBinView', 'g_LightGridData', 'g_LightVolumes',
+                    'g_Lights', 'g_ShadowAtlas', 'g_GoboAtlas', 'g_EnvProbeEnvs', 'g_EnvProbeArray', 'g_EnvProbeDefault',
+                    'g_SSRFinalTex', 'g_AoSsrBuffer', 'g_BrdfLookup')
+FORWARD_RESOURCES = dict({name: 0.0 for name in FORWARD_LIGHTING}, g_ViewDepthBuffer=FORWARD_FAR_CLIP)
+# - View: the programs rebuild the view-space position from SV_POSITION (screen xy, view depth w) and turn it into world
+#   space with m_ViewToWorldMat. With these values the view-space position is SV_POSITION.(x, y, w) and view space has the
+#   world's axes, so a renderer supplies SV_POSITION.xyw as the world offset from the camera to the point (input
+#   'VIEW.xyz') and the matrix translation as the camera's world position ('CAMERA.xyz'), both in game space.
+FORWARD_VIEW_FLOATS = {
+    'GlobalViewportCBuffer.m_InvDimensions': 1.0, 'GlobalViewportCBuffer.m_InvDimensions+4': 1.0,
+    'GlobalViewportCBuffer.m_ScreenToViewA': 1.0, 'GlobalViewportCBuffer.m_ScreenToViewA+4': 1.0,
+    'GlobalViewportCBuffer.m_ScreenToViewA+8': 0.0, 'GlobalViewportCBuffer.m_ScreenToViewA+12': 0.0,
+    'GlobalViewportCBuffer.m_ScreenToViewB': 0.0, 'GlobalViewportCBuffer.m_ScreenToViewB+4': 1.0,
+    'GlobalViewportCBuffer.m_ViewToWorldMat': 1.0, 'GlobalViewportCBuffer.m_ViewToWorldMat+20': 1.0,
+    'GlobalViewportCBuffer.m_ViewToWorldMat+40': 1.0,
+    'GlobalViewportCBuffer.m_FarClip': FORWARD_FAR_CLIP,
+    'GlobalViewportCBuffer.m_CustomClipPlane+12': 1.0,   # the custom clip plane (0, 0, 0, 1) clips nothing
+}
+FORWARD_VIEW_INPUTS = {'SV_POSITION.x': 'VIEW.x', 'SV_POSITION.y': 'VIEW.y', 'SV_POSITION.w': 'VIEW.z',
+                       'GlobalViewportCBuffer.m_ViewToWorldMat+48': 'CAMERA.x',
+                       'GlobalViewportCBuffer.m_ViewToWorldMat+52': 'CAMERA.y',
+                       'GlobalViewportCBuffer.m_ViewToWorldMat+56': 'CAMERA.z'}
+
 
 def pass_table(graph_data):
     """{slot: (flags, hash, entry offset, entry size)} of the filled pass slots."""

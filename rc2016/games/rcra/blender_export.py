@@ -5,6 +5,11 @@ writer (rc2016.games.rcra.surface), writes the textures the recipe samples and r
 rc2016/export/rcra_blender.py turns into a node tree. A material whose writer is not supported gets an entry with its
 reason and keeps the glTF importer's material.
 
+A blended material (rc2016.games.rcra.material.material_blend: additive, blended or modulate) also gets its forward program
+translated (rc2016.games.rcra.surface.forward) as ``forward``: the colour and alpha the game blends, with every light source
+zero. Its G-buffer surface, when it translates, stays as ``recipe`` and is lit by the renderer. A blended material whose
+forward program does not translate keeps the opaque surface and says why.
+
 Unit textures keep their stored values. 8-bit formats are written as RGBA PNG with the D3D defaults for channels a format
 lacks (0 for green and blue, 1 for alpha); float formats are written as raw float32 RGBA (``.f32``, little endian, rows
 top first) that Blender loads into a float image. Colourspace follows the DXGI format: sRGB formats are 'sRGB', everything
@@ -23,10 +28,17 @@ SRGB_FORMATS = frozenset({29, 72, 75, 78, 91, 93, 99})
 FLOAT_FORMATS = {2: ('<f4', 4), 10: ('<f2', 4), 16: ('<f4', 2), 34: ('<f2', 2), 41: ('<f4', 1), 54: ('<f2', 1),
                  11: ('<u2', 4), 35: ('<u2', 2), 56: ('<u2', 1)}
 UNORM16 = frozenset({11, 35, 56})
-ENTRY_SCHEMA = 'rcra-blender-materials-v1'
-# Third u32 of the material's flags section 0xE1275683: bit 0x100 is set on every glass and effect material sampled
-# (gbl_arch_glass, basic_glass, exp_quad, exp_beam) and clear on the opaque ones; inferred, not decoded, so it only labels.
-FORWARD_HINT_BIT = 0x100
+ENTRY_SCHEMA = 'rcra-blender-materials-v2'
+# How each blend mode is composed over what is behind it. The engine names the modes ("Additive", "Lerp", "Modulate"
+# blending into the alpha layer); the blend factors themselves are pipeline state outside the files, so these are the
+# standard factors for those names, not decoded values.
+BLEND_LIMITATIONS = {
+    'blended': 'Blended (the engine\'s "Lerp" mode): colour x alpha over the background x (1 - alpha), the standard '
+               'factors for that mode; the pipeline\'s blend state is not in the files.',
+    'additive': 'Additive: colour x alpha added to the background, the standard factors for that mode; the pipeline\'s blend '
+                'state is not in the files.',
+    'modulate': 'Modulate: the background multiplied by the colour (lerped to white by alpha), the standard factors for that '
+                'mode; the pipeline\'s blend state is not in the files.'}
 MAX_SLICES = 32
 ALL_SLICES = 'all'
 
@@ -109,9 +121,23 @@ def _unit_images(source, path, folder, index, cache):
     return dict(slices=[write_unit_texture(source, path, folder, k, cache) for k in range(count)])
 
 
+def _images(source, results, folder, texture_cache):
+    """{binding: image row} of every texture the recipes sample (one material: a binding is the same texture in both)."""
+    slices = {}
+    for recipe, result in results:
+        for binding, index in _slices(recipe).items():
+            if slices.setdefault(binding, index) != index:
+                slices[binding] = ALL_SLICES
+    textures = {}
+    for _recipe, result in results:
+        textures.update(result['textures'])
+    return {binding: _unit_images(source, path, folder, slices.get(binding, 0), texture_cache)
+            for binding, path in textures.items()}
+
+
 def material_entry(source, material_path, folder, texture_cache=None, graph_cache=None):
-    """The Blender entry of one material: dict(recipe, images, limitations), or dict(error) when unsupported."""
-    from rc2016.games.rcra.material import _graphs, _material_key
+    """The Blender entry of one material: dict(blend, recipe, forward, images, limitations), or dict(error)."""
+    from rc2016.games.rcra.material import _graphs, _material_key, material_blend
     key = _material_key(source, material_path)
     if key is None:
         return dict(error='material asset not found')
@@ -126,32 +152,46 @@ def material_entry(source, material_path, folder, texture_cache=None, graph_cach
     graph = graph_cache[graph_path]
     if graph is None:
         return dict(error='graph not found: ' + graph_path)
+    data = source.asset_data(key)
     try:
-        result = rsurface.surface(graph, source.asset_data(key))
-        recipe = rsurface.export_recipe(result)
-        slices = _slices(recipe)
-        images = {binding: _unit_images(source, result['textures'][binding], folder, slices.get(binding, 0),
-                                        texture_cache) for binding in result['textures']}
+        blend = material_blend(data)
+    except ValueError as error:
+        return dict(error='ValueError: %s' % error, graph=graph_path)
+    errors, results, limitations = {}, {}, []
+    passes = (('forward', rsurface.forward), ('recipe', rsurface.surface)) if blend != 'opaque' else \
+        (('recipe', rsurface.surface),)
+    for name, translate in passes:
+        try:
+            results[name] = translate(graph, data)
+        except (rsurface.Unsupported, ValueError, KeyError) as error:
+            errors[name] = '%s: %s' % (type(error).__name__, error)
+    if 'recipe' not in results and 'forward' not in results:
+        return dict(error=errors.get('recipe') or errors.get('forward'), graph=graph_path, blend=blend)
+    recipes = {name: rsurface.export_recipe(result) for name, result in results.items()}
+    try:
+        images = _images(source, [(recipes[n], results[n]) for n in recipes], folder, texture_cache)
     except (rsurface.Unsupported, ValueError, KeyError, OSError) as error:
-        return dict(error='%s: %s' % (type(error).__name__, error), graph=graph_path)
-    forward = _forward_hint(source.asset_data(key))
-    limitations = list(result['limitations']) + ([
-        'The game probably draws this material blended in its forward pass (flags bit 0x100, inferred): Blender gets its '
-        'opaque G-buffer surface, without the forward alpha or colour.'] if forward else []) + [
+        return dict(error='%s: %s' % (type(error).__name__, error), graph=graph_path, blend=blend)
+    if blend != 'opaque':
+        if 'forward' in results:
+            limitations.append(BLEND_LIMITATIONS[blend])
+            limitations += results['forward']['limitations']
+            if 'recipe' not in results:
+                limitations.append('The G-buffer surface does not translate (%s): only the forward colour is drawn, '
+                                   'unlit by the renderer.' % errors['recipe'])
+        else:
+            limitations.append('The game draws this material %s in its forward pass, which does not translate (%s): '
+                               'Blender gets its opaque G-buffer surface.' % (blend, errors['forward']))
+    if 'recipe' in results:
+        limitations += results['recipe']['limitations']
+    limitations += [
         'Tangent frame from Blender\'s UV0 tangent space (the stored vertex tangent is not decoded); bitangent along the '
         "game's -v, as in the viewer.",
         'Texture filtering is Blender\'s linear repeat; the game\'s sampler states are not in the program.']
-    return dict(graph=graph_path, recipe=recipe, images=images, limitations=limitations, forward_hint=forward)
-
-
-def _forward_hint(material_data):
-    import struct
-    from rc2016.games.rcra.material import FLAGS
-    from rc2016.games.rcra.toc import sections
-    table = sections(material_data[36:])
-    if FLAGS not in table or table[FLAGS][1] < 12:
-        return False
-    return bool(struct.unpack_from('<I', material_data, 36 + table[FLAGS][0] + 8)[0] & FORWARD_HINT_BIT)
+    entry = dict(graph=graph_path, blend=blend if 'forward' in results else 'opaque', game_blend=blend, images=images,
+                 limitations=limitations)
+    entry.update(recipes)
+    return entry
 
 
 def blender_materials(source, materials, folder):

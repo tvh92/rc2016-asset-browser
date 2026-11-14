@@ -1,4 +1,5 @@
-"""Rift Apart surface terms from a translated G-buffer writer (pass slot 4), for Blender and other renderers.
+"""Rift Apart surface terms from a translated G-buffer writer (pass slot 4), and the forward colour of blended materials
+(pass slot 1), for Blender and other renderers.
 
 The writer ends in the engine's G-buffer packing, the same code in every graph. ``surface`` translates the writer with the
 material bound (rc2016.games.rcra.shaders) and unpacks that code, using the decode of the engine's deferred apply program
@@ -14,6 +15,10 @@ F0 and gloss keep the game's 8-bit rounding (round(255 x) / 255, F0 squared afte
 albedo, occlusion and emission are taken before their rounding. Everything the result still reads is a float expression
 of interpolants, textures and named engine inputs (``PORTABLE_OPS``); integer operations that survive make the material
 unsupported, never approximated.
+
+``forward`` translates the forward program of a blended material (rc2016.games.rcra.material.material_blend) under the
+forward profile of rc2016.games.rcra.shaders: every light source zero, so its target is the material's own colour and
+alpha. It reads the view through the inputs VIEW.xyz (camera-to-point offset) and CAMERA.xyz (camera position).
 """
 from collections import defaultdict
 
@@ -83,6 +88,41 @@ class _Bindings(rshaders.NeutralEngine):
             return self.graph.const('i', NEUTRAL_DRAW_DYNAMIC[buffer])
         self.review['%s+%d[dynamic]' % (buffer, offset)] = 0.0
         return self.graph.const('i', 0)
+
+
+FORWARD_FLAGS_NAME = 'MatDrawCB.m_RenderFlags'
+
+
+class _ForwardBindings(_Bindings):
+    """_Bindings with the forward profile: lit draw, light sources zero, engine textures and the view bound."""
+
+    def input(self, name):
+        if name in rshaders.FORWARD_VIEW_INPUTS:
+            return self.graph.input(rshaders.FORWARD_VIEW_INPUTS[name], 'f')
+        return super().input(name)
+
+    def _view_constant(self, name):
+        if name in rshaders.FORWARD_VIEW_INPUTS:
+            return self.graph.input(rshaders.FORWARD_VIEW_INPUTS[name], 'f')
+        if name in rshaders.FORWARD_VIEW_FLOATS:
+            return self.graph.const('f', rshaders.FORWARD_VIEW_FLOATS[name])
+        return super().constant(name)
+
+    def __init__(self, material, draw_flags):
+        super().__init__(material)
+        self.draw_flags = draw_flags
+
+    def constant(self, name):
+        if name == FORWARD_FLAGS_NAME:   # the draw index folds to 0 (TEXCOORD2.w bound), so the read is a plain constant
+            return self.graph.const('f', sm5.bits_float(self.draw_flags))
+        return self._view_constant(name)
+
+    def resource(self, graph, op, binding, args):
+        if binding in rshaders.FORWARD_RESOURCES:   # an integer read (ld_structured) takes the same value's bits
+            value = rshaders.FORWARD_RESOURCES[binding]
+            kind = 'f' if op.startswith('sample') or binding == 'g_ViewDepthBuffer' else 'i'
+            return [graph.const(kind, value if kind == 'f' else int(value))] * 4
+        return None
 
 
 class _Unpack:
@@ -309,33 +349,71 @@ def surface(graph_data, material_data, slot=rshaders.SLOT_GBUFFER):
         stored = _rounded(g, g.op('sat', byte))
         terms[name] = g.op('mul', stored, stored)
     terms['gloss'] = _rounded(g, g.op('sat', gloss))
+    limitations = ['Per-draw values are the neutral draw: no dissolve, opaque, no render flags (lighting class 0), '
+                   'shader time 0.', 'The 12-bit normal and the 8-bit albedo, occlusion and emission are used before the '
+                   "G-buffer's rounding; F0 and gloss keep it."]
+    return _portable(g, terms, bindings, graph_data, material_data, tr, limitations, 'Surface')
+
+
+def _portable(g, terms, bindings, graph_data, material_data, tr, limitations, what):
+    """The result dict, after checking that every term is a portable float expression of geometry and material textures."""
     roots = list(terms.values())
     reach = g.reachable(roots)
     bad = sorted({g.nodes[i]['op'] for i in reach} - PORTABLE_OPS)
     if bad:
         raise Unsupported('Non-portable operations remain: ' + ', '.join(bad))
     if g.unknowns(roots):
-        raise Unsupported('Surface depends on unknown values')
+        raise Unsupported('%s depends on unknown values' % what)
     textures = {}
     units = rshaders.material_units(graph_data, material_data)
     for i in reach:
         n = g.nodes[i]
         if n['op'] == 'sample':
             if n['binding'] not in units:
-                raise Unsupported('Surface samples engine texture ' + n['binding'])
+                raise Unsupported('%s samples engine texture %s' % (what, n['binding']))
             textures[n['binding']] = units[n['binding']]
         if n['op'] == 'load':
-            raise Unsupported('Surface loads from ' + n['binding'])
+            raise Unsupported('%s loads from %s' % (what, n['binding']))
     inputs = sorted({g.nodes[i]['name'] for i in reach if g.nodes[i]['op'] == 'input'})
     engine = sorted(bindings.review)
-    limitations = ['Per-draw values are the neutral draw: no dissolve, opaque, no render flags (lighting class 0), '
-                   'shader time 0.', 'The 12-bit normal and the 8-bit albedo, occlusion and emission are used before the '
-                   "G-buffer's rounding; F0 and gloss keep it."]
+    limitations = list(limitations)
     if engine:
-        limitations.append('Engine inputs at review values (translation-time, may not all reach the surface): ' +
+        limitations.append('Engine inputs at review values (translation-time, may not all reach the %s): ' % what.lower() +
                            ', '.join('%s = %g' % (name, bindings.review[name]) for name in engine))
     return dict(graph=g, terms=terms, textures=textures, inputs=inputs, limitations=limitations,
                 program_status=tr.status(), outputs=dict(tr.outputs))
+
+
+FORWARD_TERMS = ('colour.r', 'colour.g', 'colour.b', 'alpha', 'clip')
+
+
+def forward(graph_data, material_data):
+    """The forward program's target under the forward profile: colour (unclamped, HDR), alpha and the discard.
+
+    Returns the same dict as ``surface`` with terms FORWARD_TERMS. Raises Unsupported when the target depends on anything
+    but geometry, the view inputs and the material's own textures and constants."""
+    shader = rshaders.pass_shader(graph_data, rshaders.SLOT_FORWARD)
+    from rc2016.games.rcra.material import draw_flags
+    flags = draw_flags(material_data)
+    bindings = _ForwardBindings(rshaders.material_constants(graph_data, material_data), flags)
+    translator = sm5.Translator(shader, bindings)
+    bindings.graph = translator.g
+    tr = translator.run()
+    g = tr.graph
+    target = [tr.outputs.get(('o', 0, c)) for c in range(4)]
+    if None in target:
+        raise Unsupported('Forward program does not write a colour and alpha target')
+    target = [g.cast(x, 'f') for x in target]
+    terms = {'colour.r': target[0], 'colour.g': target[1], 'colour.b': target[2], 'alpha': g.op('sat', target[3]),
+             'clip': tr.discard}
+    limitations = [
+        'Forward colour with every engine light source zero (key light, light grid, probes, GI, reflections): the '
+        "material's own emission and effects. The renderer's lights shade its G-buffer surface instead of the forward "
+        "program's lighting.",
+        "Draw: render flags hold only the material's lit bit (%s), no dissolve, no particle values, shader time 0; "
+        'stored scene depth at the far clip (no soft depth fade); view space with the world axes.'
+        % ('lit' if flags else 'unlit: lighting term 1')]
+    return _portable(g, terms, bindings, graph_data, material_data, tr, limitations, 'Forward colour')
 
 
 def export_recipe(result):

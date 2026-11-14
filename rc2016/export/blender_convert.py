@@ -29,9 +29,9 @@ args.add_argument('--blend')
 args = args.parse_args(sys.argv[sys.argv.index('--') + 1:])
 
 if args.validate:
-    from rc2016.export.rcra_blender import RECIPE_PROPERTY, validate_material
+    from rc2016.export.rcra_blender import translated as is_translated, validate_material
     bpy.ops.wm.open_mainfile(filepath=args.validate)
-    translated = [m for m in bpy.data.materials if m.get(RECIPE_PROPERTY)]
+    translated = [m for m in bpy.data.materials if is_translated(m)]
     problems = [p for m in translated for p in validate_material(m)]
     for problem in problems:
         print('PROBLEM', problem, flush=True)
@@ -62,7 +62,7 @@ if args.materials:
                     users.setdefault(slot.material.name, obj.data)
     for name, entry in entries.items():
         material = bpy.data.materials.get(name)
-        if material is None or 'recipe' not in entry:
+        if material is None or not (entry.get('recipe') or entry.get('forward')):
             continue
         mesh = users.get(name)
         uv_maps = [layer.name for layer in mesh.uv_layers] if mesh is not None else []

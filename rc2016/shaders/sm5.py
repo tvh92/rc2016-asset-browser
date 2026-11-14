@@ -270,9 +270,34 @@ class Graph:
             return simplified
         return self._add(name, result, args)
 
+    def never_negative(self, index, depth=8):
+        """True when the float value is >= 0, -0 or NaN: never less than 0 (comparisons with NaN are false)."""
+        n = self.nodes[index]
+        op = n['op']
+        if op == 'const':
+            return n['type'] == 'f' and not n['value'] < 0.0
+        if op in ('sat', 'abs', 'sqrt', 'rsq', 'exp2'):
+            return True
+        if depth == 0:
+            return False
+        args = n['args']
+        if op == 'mul' and any(self.value(x) == 0.0 for x in args):
+            return True   # +-0 or NaN
+        if op in ('add', 'mul', 'div', 'min'):
+            return all(self.never_negative(x, depth - 1) for x in args)
+        if op == 'max':   # D3D max returns the other operand for NaN
+            return any(self.never_negative(x, depth - 1) for x in args)
+        if op == 'select':
+            return all(self.never_negative(x, depth - 1) for x in args[1:])
+        return False
+
     def _simplify(self, name, args, values):
         a = args
         v = values
+        if name == 'lt' and v[1] is not None and v[1] <= 0.0 and self.never_negative(a[0]):
+            return self.const('b', False)
+        if name in ('ushr', 'ishr', 'ishl') and v[0] == 0:
+            return self.const('i', 0)   # a shifted zero
         if name == 'mul':
             for x, y in ((0, 1), (1, 0)):
                 if v[x] == 1.0:

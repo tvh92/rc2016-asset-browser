@@ -5,6 +5,7 @@
 For each material: the Blender entry (rc2016.games.rcra.blender_export) is built, rc2016/export/rcra_blender_check.py
 bakes every surface output of the emitted node tree on a UV-unit plane in Cycles, and the result is compared with the
 recipe evaluated by rc2016.shaders.sm5 for the same inputs and the same unit textures (bilinear repeat on both sides).
+A blended material's forward colour and alpha are baked too, with the view inputs held at FORWARD_VIEW.
 Prints and returns the worst absolute difference per surface term.
 """
 import argparse
@@ -22,6 +23,9 @@ import numpy as np
 from rc2016.games.rcra import blender_export, surface as rsurface
 
 CHECK_SCRIPT = Path(__file__).resolve().parents[2] / 'export' / 'rcra_blender_check.py'
+# Forward view inputs for the bake: a camera 3 units in front of the plane, seen at an angle (game space; the plane's
+# normal is game +y).
+FORWARD_VIEW = {'VIEW.x': -0.6, 'VIEW.y': -2.4, 'VIEW.z': 0.9, 'CAMERA.x': 0.6, 'CAMERA.y': 2.4, 'CAMERA.z': -0.9}
 TERMS = {'albedo': ('albedo.r', 'albedo.g', 'albedo.b'), 'f0': ('f0.r', 'f0.g', 'f0.b'),
          'scalars': ('gloss', 'occlusion', 'emission')}
 
@@ -76,12 +80,17 @@ def expected(entry, size):
             inputs = {'TEXCOORD.x': ub, 'TEXCOORD.y': 1.0 - vb, 'TEXCOORD2.x': 0.0, 'TEXCOORD2.y': 1.0, 'TEXCOORD2.z': 0.0,
                       'TEXCOORD3.x': 1.0, 'TEXCOORD3.y': 0.0, 'TEXCOORD3.z': 0.0, 'TEXCOORD3.w': 1.0,
                       'TEXCOORD4.x': 1.0, 'TEXCOORD4.y': 1.0, 'TEXCOORD4.z': 1.0, 'TEXCOORD4.w': 1.0, 'SV_IsFrontFace': True}
-            terms = rsurface.evaluate_recipe(entry['recipe'], inputs, sample)
-            for name, keys in TERMS.items():
-                out[name].append([terms[k] for k in keys])
-            n = np.array([terms['normal.x'], -terms['normal.z'], terms['normal.y']])   # game -> Blender
-            out['normal'].append(list(n / max(np.linalg.norm(n), 1e-12)))
-            out['alpha'].append([0.0 if terms['clip'] else 1.0] * 3)
+            if entry.get('recipe'):
+                terms = rsurface.evaluate_recipe(entry['recipe'], inputs, sample)
+                for name, keys in TERMS.items():
+                    out[name].append([terms[k] for k in keys])
+                n = np.array([terms['normal.x'], -terms['normal.z'], terms['normal.y']])   # game -> Blender
+                out['normal'].append(list(n / max(np.linalg.norm(n), 1e-12)))
+                out['alpha'].append([0.0 if terms['clip'] else 1.0] * 3)
+            if entry.get('forward'):
+                terms = rsurface.evaluate_recipe(entry['forward'], dict(inputs, **FORWARD_VIEW), sample)
+                out['forward_colour'].append([terms['colour.r'], terms['colour.g'], terms['colour.b']])
+                out['forward_alpha'].append([0.0 if terms['clip'] else terms['alpha']] * 3)
     return {k: np.array(v) for k, v in out.items()}
 
 
@@ -89,8 +98,9 @@ def bake(entry, blender, size, folder):
     job = Path(folder) / 'job.json'
     out = Path(folder) / 'baked.json'
     origin, span = window(entry, size)
-    job.write_text(json.dumps(dict(recipe=entry['recipe'], images=entry['images'], size=size, uv_origin=origin,
-                                   uv_span=span, out=str(out))), encoding='utf-8')
+    job.write_text(json.dumps(dict(recipe=entry.get('recipe'), forward=entry.get('forward'), fixed=FORWARD_VIEW,
+                                   images=entry['images'], size=size, uv_origin=origin, uv_span=span, out=str(out))),
+                   encoding='utf-8')
     env = dict(os.environ, BLENDER_USER_RESOURCES=str(Path(folder) / 'user'),
                PYTHONPATH=str(Path(__file__).resolve().parents[3]))
     run = subprocess.run([str(blender), '--background', '--factory-startup', '--python-exit-code', '1', '--python',

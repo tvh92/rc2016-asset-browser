@@ -1,5 +1,6 @@
 """Rift Apart surface terms for Blender: unpacking checked against the writer's own G-buffer bits, the texture writer,
-the export wiring, and (with Blender) the emitted node trees baked against the recipe.
+the export wiring, the blend and lit decode, forward recipes of blended materials, and (with Blender) the emitted node
+trees baked against the recipes.
 
 Real-install tests read RCRA_GAME; the Blender test also needs Blender (RC2016_BLENDER, else the default install path).
 """
@@ -23,6 +24,12 @@ GRAPHS = ('required/materials/basic_normal_gloss.materialgraph',
           'materialgraph/characters/hero/hero_armor_palette/hero_armor_palette.materialgraph',
           'required/materials/basic_normal_gloss_emissive.materialgraph')
 CHECKED = 'material/environment/megalopolis/prop/meg_prop_plastic_trims/meg_prop_plastic_ship_002.material'
+DOME = 'characters/enemy/enm_neo_nefarious_trooper/materials/enm_neo_nefarious_trooper_dome.material'
+# (material, blend, lit) as the flags word decodes them.
+BLENDS = ((DOME, 'blended', True), ('material/characters/npc/wine_glass/wine_glass.material', 'additive', True),
+          ('material/visualeffect/global/gbl_glow_sphere_mask_01_w_depthsoftness/gbl_glow_sphere_mask_01_modulate.material',
+           'modulate', False),
+          ('material/visualeffect/global/exp_quad/exp_quad_thk_02_unlit.material', 'blended', False), (CHECKED, 'opaque', True))
 
 
 class TexelTests(unittest.TestCase):
@@ -43,6 +50,18 @@ class TexelTests(unittest.TestCase):
         image = np.arange(16, dtype=np.float32).reshape(2, 2, 4)
         np.testing.assert_allclose(blender_check.bilinear(image, 0.25, 0.25), image[0, 0])
         np.testing.assert_allclose(blender_check.bilinear(image, 0.5, 0.25), (image[0, 0] + image[0, 1]) / 2)
+
+    def test_blend_and_lit_bits(self):
+        from unittest import mock
+        from rc2016.games.rcra import material as rmat
+        for flags, blend, lit in ((0x1810, 'opaque', 0x400), (0x1110, 'blended', 0), (0x887, 'additive', 0x400),
+                                  (0x1211, 'modulate', 0), (0x918, 'opaque', 0x400), (None, 'opaque', 0)):
+            with mock.patch.object(rmat, 'flags_word', return_value=flags):
+                self.assertEqual(rmat.material_blend(b''), blend, hex(flags or 0))
+                self.assertEqual(rmat.draw_flags(b''), lit, hex(flags or 0))
+        with mock.patch.object(rmat, 'flags_word', return_value=0x180):
+            with self.assertRaises(ValueError):
+                rmat.material_blend(b'')
 
     def test_export_wiring(self):
         from rc2016.export.models import FORMATS
@@ -105,6 +124,33 @@ class RealSurfaceTests(unittest.TestCase):
                 self.assertEqual(bool(word[(0, 1)] & 0x8000), v['normal.z'] < 0, graph_path)
                 for c, axis in enumerate(('albedo.r', 'albedo.g', 'albedo.b')):
                     self.assertAlmostEqual(min(max(word[(1, c)], 0.0), 1.0), v[axis], places=6)
+
+    def test_blend_modes_and_forward_recipes(self):
+        from rc2016.games.rcra import material as rmat
+        for path, blend, lit in BLENDS:
+            data = self.source.asset_data(self.source.resolve(path)[0])
+            self.assertEqual(rmat.material_blend(data), blend, path)
+            self.assertEqual(bool(rmat.draw_flags(data)), lit, path)
+        with tempfile.TemporaryDirectory() as tmp:
+            entry = blender_export.material_entry(self.source, DOME, Path(tmp))
+        self.assertEqual(entry['blend'], 'blended')
+        self.assertIn('recipe', entry)
+        self.assertTrue({'VIEW.x', 'VIEW.y', 'VIEW.z'} <= set(entry['forward']['inputs']))   # the rim reads the view
+
+        def alpha(view):
+            inputs = {'TEXCOORD.x': 0.3, 'TEXCOORD.y': 0.3, 'TEXCOORD2.x': 0.0, 'TEXCOORD2.y': 1.0, 'TEXCOORD2.z': 0.0,
+                      'TEXCOORD3.x': 1.0, 'TEXCOORD3.y': 0.0, 'TEXCOORD3.z': 0.0, 'TEXCOORD3.w': 1.0, 'SV_IsFrontFace': True,
+                      'VIEW.x': view[0], 'VIEW.y': view[1], 'VIEW.z': view[2], 'CAMERA.x': 0.0, 'CAMERA.y': 0.0, 'CAMERA.z': 0.0}
+            terms = rsurface.evaluate_recipe(entry['forward'], inputs, lambda node, args: [0.5, 0.5, 0.5, 1.0])
+            return terms['alpha']
+        self.assertLess(alpha((0.0, -3.0, 0.0)), alpha((2.9, -0.3, 0.0)))   # glass is clearer face-on than at its rim
+
+    @unittest.skipUnless(os.path.isfile(BLENDER), 'Blender is not installed')
+    def test_blender_forward_nodes_bake_to_the_recipe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = blender_check.check(self.source, DOME, BLENDER, tmp, size=13)
+        self.assertLess(report['forward_colour']['max'], 1e-4)
+        self.assertLess(report['forward_alpha']['max'], 1e-5)
 
     @unittest.skipUnless(os.path.isfile(BLENDER), 'Blender is not installed')
     def test_blender_nodes_bake_to_the_recipe(self):

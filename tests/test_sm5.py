@@ -207,5 +207,23 @@ class TranslatorTests(unittest.TestCase):
         self.assertFalse(sm5.evaluate(g, [store['active']], {'vThreadID.x': 3, 'vThreadID.y': 4}, load)[store['active']])
 
 
+class FoldTests(unittest.TestCase):
+    """Graph folds that need no compiler."""
+
+    def test_comparison_of_a_never_negative_value_with_zero(self):
+        g = sm5.Graph()
+        x = g.input('TEXCOORD.x')
+        never = g.op('min', g.op('sat', x), g.op('add', g.op('mul', x, g.const('f', 0.0)), g.const('f', 1.0)))
+        self.assertIs(g.value(g.op('lt', never, g.const('f', 0.0))), False)
+        self.assertIsNone(g.value(g.op('lt', g.op('add', x, g.const('f', 1.0)), g.const('f', 0.0))))
+        self.assertIsNone(g.value(g.op('lt', g.op('sat', x), g.const('f', 0.5))))
+
+    def test_shifted_zero(self):
+        g = sm5.Graph()
+        n = g.cast(g.input('TEXCOORD.x'), 'i')
+        for op in ('ushr', 'ishr', 'ishl'):
+            self.assertEqual(g.value(g.op(op, g.const('i', 0), n)), 0)
+
+
 if __name__ == '__main__':
     unittest.main()

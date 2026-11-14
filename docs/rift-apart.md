@@ -34,7 +34,7 @@ Rift Apart's capabilities are `models`, `textures`, `export` and `animation`:
   - Browsing.
   - The 3D model view with its labelled preview shading, and skeletal [animation](#animation) playback.
   - The Textures tab.
-  - Model export to GLB, glTF and OBJ (FBX, USD and `.blend` through Blender), with skin weights and animation clips. Blender exports carry the game's own materials where the G-buffer writer translates ([Blender materials](#blender-materials)).
+  - Model export to GLB, glTF and OBJ (FBX, USD and `.blend` through Blender), with skin weights and animation clips. Blender exports carry the game's own materials where the G-buffer writer or, for blended materials, the forward program translates ([Blender materials](#blender-materials)).
 - **Disabled:** the Level and Flash UI types, the backend choice, the Blender scene and the shading filter. Each is greyed out with the tip "Not yet available for Rift Apart".
 - **Clips:** found through the dag by `Game.animation_library`, without a scan's reference index.
 - **Model list:** read in-process through `Game.list_models`, without the pipeline subprocess.
@@ -332,8 +332,22 @@ The clip notes take about 8 s to compute, off the Tk thread.
   9. unknown
   10. unknown
 - **Texture records:** each is (u32 string offset from the batch end, u32 slot key). The strings follow the batch.
-- **Section `0xE1275683`** is the 40-byte flags block, as in the 2016 game.
+- **Section `0xE1275683`** is the 40-byte flags block. Its third u32 is the material flags word ([Flags word](#flags-word)).
 - **Fur materials** have no `0xF5260180` section, so they bind no textures.
+
+### Flags word
+
+The engine's material loader copies u32 2 of section `0xE1275683` into the material object (`material.flags_word`). These bits are traced in `RiftApart.exe`:
+
+| Bits | Meaning | Where the engine reads it |
+| --- | --- | --- |
+| `0x80`, `0x100`, `0x200` | Blend mode: additive, blended (alpha "Lerp"), modulate. At most one is set. | The mesh sort sends a material down the blended path when any of the three is set and bit `0x8` is clear. The engine's blend enum names the modes and describes them as rendering "to Alpha layer". |
+| `0x8` | Keeps a material on the opaque path (2 materials) | Same mesh sort |
+| `0x800` | Lit: the draw's render flag `0x400` | Draw setup, `(word >> 11 & 1) << 10`. Programs with the flag clear use a lighting term of 1 (unlit). |
+| `0x4000` | Fur | The loader reads the fur section |
+| `0x800000` | Water | The loader reads the water section |
+
+`material_blend` returns `opaque`, `additive`, `blended` or `modulate`; `draw_flags` returns the lit bit. Over 5,721 materials: 3,974 opaque, 1,309 blended, 427 additive and 11 modulate. The blend factors are pipeline state outside the files.
 
 ### Slot keys
 
@@ -516,10 +530,26 @@ The class-0 apply program (exe offset 59122268) gives the deferred BRDF. It is n
 | Fresnel | Schlick, F90 = 1 |
 | Diffuse | Lambert `sat(N·L)`, no 1/π, times the light colour |
 
+### Forward profile
+
+Blended materials are drawn by their forward program (slot 1), which lights itself. For export, `rc2016/games/rcra/shaders.py` defines one labelled set of engine inputs. Its rule is that every light source is zero, and the renderer lights the material's G-buffer surface instead:
+- **Lights:** key light, light grid and lists, shadow atlas, gobos, probes, GI, SSR, AO and the BRDF lookup read 0 (`FORWARD_LIGHTING`).
+- **Draw flags:** only the material's lit bit (`material.draw_flags`).
+- **Depth:** the stored scene depth sits at the far clip, so there is no soft depth fade.
+- **Clip plane:** the custom clip plane clips nothing.
+- **View:** the programs rebuild the view position from `SV_POSITION` and `m_ViewToWorldMat`. With `FORWARD_VIEW_FLOATS`, `SV_POSITION.xyw` is the camera-to-point offset in world axes, so a renderer supplies it as `VIEW.xyz` and the matrix translation as the camera position `CAMERA.xyz`.
+
+`surface.forward` returns the target under this profile: colour (HDR), alpha and the discard. On the trooper dome it matches the hand decode of `gbl_arch_glass` with lighting zero: alpha within 4 × 10⁻⁷, colour within 7 × 10⁻⁷ relative. Two translator folds make the profile's dead code disappear: a comparison `x < 0` of a value that is never negative is false, and a shifted zero is zero.
+
+**Coverage:** 981 of 1,747 blended materials. Not translated:
+- reads of per-object data (`g_SceneObjectView`), the G-buffer or scene colour (`g_FrameBuffer`, refraction)
+- units outside the graph's slot table
+- unbounded loops
+
 ### Not done yet
 
 - **Viewer:** the viewer does not draw translated programs yet. The glass preview is still the hand-written `uKind 26` program.
-- **Engine inputs:** the key light, ambient and probe values the programs read are not chosen yet, and neither are the engine textures (`g_BrdfLookup`, `g_EnvProbeDefault`).
+- **Particle values:** `TEXCOORD6` and `TEXCOORD7` (particle age, softness) read 0, so particle-quad materials such as `exp_quad` come out transparent.
 
 ## Blender materials
 
@@ -527,7 +557,7 @@ A Blender export (`.blend`, FBX or USD, through `rc2016/export/blender_convert.p
 
 | Module | Role |
 | --- | --- |
-| `rc2016/games/rcra/surface.py` | Translates the G-buffer writer (slot 4) and unpacks the engine's packing into surface terms: a recipe |
+| `rc2016/games/rcra/surface.py` | Translates the G-buffer writer (slot 4) and unpacks the engine's packing into surface terms: a recipe. For blended materials it also translates the forward program (slot 1) into colour and alpha. |
 | `rc2016/games/rcra/blender_export.py` | The `Game.blender_materials` hook: recipes and unit textures, written as `rcra_materials.json` beside the export |
 | `rc2016/export/rcra_blender.py` | Runs in Blender: the "RC RA Deferred BRDF" group, and one Math node per recipe operation |
 
@@ -545,7 +575,7 @@ Values a material does not own are bound and listed in its limitations:
 - **Neutral draw:** no dissolve, opaque, no render flags (lighting class 0), shader time 0.
 - **Review values:** screen position for dither, LOD fade and adapted luminance 1.
 
-**Coverage:** 4,617 of 5,721 materials. The rest are reported with a reason (`rc2016.games.rcra.surface.Unsupported`):
+**Coverage:** 4,621 of 5,721 materials. The rest are reported with a reason (`rc2016.games.rcra.surface.Unsupported`):
 - per-object buffer loads and integer operations left in the writer, for example foliage wind (591 materials)
 - writers without the packed normal, as in the holo graphs (360)
 - unbounded loops (81)
@@ -582,6 +612,18 @@ The BRDF group follows the deferred apply program:
 
 Light strength is π × the game's light colour, as for R&C 2016. Cycles uses the exact Smith term rather than the game's joint approximation. The game applies occlusion to ambient light only, which Cycles cannot separate; the group's "Occlusion on diffuse" input (default 0) applies it to the diffuse colour instead.
 
+### Blended materials
+
+A blended material's entry carries `blend` and a `forward` recipe ([Forward profile](#forward-profile)), and keeps its G-buffer `recipe` when that translates. The Blender material composes them over a Transparent BSDF:
+
+| Mode | Shader |
+| --- | --- |
+| Blended | mix(Transparent, BRDF + Emission(colour), alpha). The BRDF's own emission input is left unlinked, because the forward colour already holds it. |
+| Additive | Transparent + Emission(colour, strength alpha) |
+| Modulate | Transparent tinted by mix(white, colour, alpha) |
+
+`VIEW` and `CAMERA` come from Geometry Incoming and Camera Data View Distance. EEVEE materials use the blended render method. The engine names the modes, but the blend factors are the standard ones for those names and are labelled as such. A blended material whose forward program does not translate keeps its opaque surface, with the reason in its limitations.
+
 ### Checks
 
 Export check: each export builds the `.blend` as a candidate, reopens it in a second Blender (`blender_convert.py --validate`), then moves it into place.
@@ -589,10 +631,12 @@ Export check: each export builds the `.blend` as a candidate, reopens it in a se
 `python -m rc2016.games.rcra.blender_check --game <install> --blender <blender.exe> --output-root <folder> <material> ...` bakes every surface output of the emitted node tree in Cycles. It compares the bake, texel by texel, with the recipe evaluated by the translator on the same textures:
 - **Window:** a UV window small enough that the bake's sub-pixel jitter stays below a texel.
 - **Results:** on one material from each of the ten most-used graphs, F0 and alpha are exact. Albedo and the normal agree within 2 × 10⁻³, and gloss, occlusion and emission within 8-bit rounding ties.
+- **Forward:** a blended material's forward colour and alpha are baked too, with the view held at fixed values (`FORWARD_VIEW`). On the trooper dome and the wine glass, colour agrees within 2 × 10⁻⁶ and alpha within 6 × 10⁻⁸.
 
 ### Not translated
 
-- **Forward and blended materials:** glass, screens and effects are drawn by the forward program in the game. Blender gets their G-buffer surface, opaque. A material whose flags word has bit `0x100` is labelled as probably blended. The bit is inferred: it is set on every glass and effect material sampled and clear on the opaque ones. The architecture glass domes come out black, because their writer stores only their specular.
+- **Blended materials whose forward program does not translate** (766 of 1,747): Blender gets their G-buffer surface, opaque.
+- **Forward lighting:** the forward program's own light loop is not used. Blender's lights shade the G-buffer surface instead, which assumes that the forward program lights the same terms as the deferred apply.
 - **Lighting classes 1 to 5:** skin, hair and the other special classes need their own apply programs. They are lit with class 0.
 
 ## Evidence tool

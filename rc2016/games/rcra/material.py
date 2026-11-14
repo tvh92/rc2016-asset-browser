@@ -4,13 +4,15 @@ A material asset is the 36-byte toc header (u32 type 0x88730155) and a DAT1 of t
 Section 0xF5260180 (ALERT "Material Serialized Data") starts with ten u32: section size, parameter
 count, 2 unknown, parameter batch end, texture count, texture batch start, texture batch end,
 2 unknown. Each texture record is (u32 string offset from the batch end, u32 slot key); the
-strings follow the batch. Section 0xE1275683 is the 40-byte flags block (as in the 2016 game).
+strings follow the batch. Section 0xE1275683 is the 40-byte flags block; its third u32 is the material flags word
+(``material_blend``).
 
 Slot keys are the low 32 bits of the 2016 game's 0x49A7866B........ slot hashes, and the corpus
 binds them to the same texture suffixes (5,721 materials): ABDAD780 holds the base colour (_c in
 2,600 of 2,862 materials), 7AE34E7A the normal (_n, 2,591 of 2,647), 1576D848 the _g map and
 E68930AC the _m mask. The preview draws only the base colour and the normal: what the game's
-_g and _m channels mean is not decoded, and no materialgraph shader is translated.
+_g and _m channels mean is not decoded, and the viewer draws no translated materialgraph program
+(Blender exports do: rc2016.games.rcra.surface).
 
 The one decoded graph is architecture glass (gbl_arch_glass, 44 materials, e.g. the Nefarious trooper and swarmer
 domes). Its forward pixel shader reads named reflection data, so the rule is traced to that program, not to a capture:
@@ -74,6 +76,45 @@ def material_flags(data):
     if FLAGS not in table or table[FLAGS][1] < 4:
         return None
     return struct.unpack_from('<I', data, 36 + table[FLAGS][0])[0]
+
+
+# Material flags word: u32 2 of section 0xE1275683. The exe's material loader copies it to the material object, and the
+# mesh sort sends a material down the blended path when any of bits 0x380 is set and bit 0x8 is clear. Each material sets
+# at most one of the three bits. The engine's blend enum names the modes and describes them: "Renders to Alpha layer with
+# Additive / Lerp / Modulate blending", and opaque "Renders as opaque to either GBuffer or Forward layer". Bit 0x8 keeps a
+# material on the opaque path (2 materials); the loader also reads the fur section for bit 0x4000 and the water section
+# for bit 0x800000. Evidence: Research/corpus/2026-11-14_rcra-forward-flag/.
+# Bit 0x800 is the lit flag: the draw setup turns it into the draw's render flag 0x400 ((word >> 11 & 1) << 10, exe
+# 0x141398319), which the materialgraph programs test to apply their lighting (clear: lighting term 1, unlit).
+FLAGS_WORD = 2
+LIT_BIT, DRAW_LIT = 0x800, 0x400
+BLEND_BITS = {0x80: 'additive', 0x100: 'blended', 0x200: 'modulate'}
+BLEND_MASK, OPAQUE_PATH_BIT = 0x380, 0x8
+
+
+def flags_word(data):
+    """The material flags word (u32 2 of section 0xE1275683), or None."""
+    table = sections(data[36:])
+    if FLAGS not in table or table[FLAGS][1] < 4 * (FLAGS_WORD + 1):
+        return None
+    return struct.unpack_from('<I', data, 36 + table[FLAGS][0] + 4 * FLAGS_WORD)[0]
+
+
+def draw_flags(data):
+    """The render-flag bits the draw takes from the material: DRAW_LIT when the material is lit."""
+    flags = flags_word(data)
+    return DRAW_LIT if flags is not None and flags & LIT_BIT else 0
+
+
+def material_blend(data):
+    """'opaque', 'additive', 'blended' (alpha lerp) or 'modulate': how the game draws the material."""
+    flags = flags_word(data)
+    if flags is None or flags & OPAQUE_PATH_BIT or not flags & BLEND_MASK:
+        return 'opaque'
+    mode = BLEND_BITS.get(flags & BLEND_MASK)
+    if mode is None:
+        raise ValueError('Material sets more than one blend bit: 0x%08X' % flags)
+    return mode
 
 
 def material_parameters(data):

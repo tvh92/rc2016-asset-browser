@@ -13,6 +13,8 @@ Inputs the recipe reads, in Blender:
   decoded yet, so this is labelled on every material.
 - ``TEXCOORD4`` (vertex colour): the mesh's first colour attribute, else 1.
 - ``SV_IsFrontFace``: not Geometry Backfacing.
+- ``VIEW.xyz`` and ``CAMERA.xyz`` (forward recipes): the offset from the camera to the shaded point, -Incoming x View
+  Distance, and the camera position, Position + Incoming x View Distance, both converted to game space.
 
 Vectors convert between game space (Y-up) and Blender (Z-up, the glTF importer's turn): game (x, y, z) = Blender (x, z, -y).
 
@@ -24,6 +26,13 @@ BRDF group "RC RA Deferred BRDF", from the engine's class-0 deferred apply progr
 - **Light units:** the game's lights carry no 1/pi, so a Blender light's strength is pi x the game's colour, as for R&C 2016.
 - **Occlusion:** the game applies it to ambient light only, which Cycles cannot separate. "Occlusion on diffuse" (default 0)
   multiplies the diffuse colour by it instead.
+
+Blended materials (entry ``blend`` additive, blended or modulate) carry a forward recipe: the colour and alpha the game
+blends, with every engine light source zero. ``apply_recipe`` composes it over a Transparent BSDF by the mode, and for
+'blended' adds the G-buffer surface lit by Blender (its emission left to the forward colour, which already holds it):
+- blended: mix(Transparent, BRDF + Emission(colour), alpha)
+- additive: Transparent + Emission(colour, strength alpha)
+- modulate: Transparent tinted by mix(white, colour, alpha)
 """
 import hashlib
 import json
@@ -35,6 +44,9 @@ BRDF_GROUP = 'RC RA Deferred BRDF'
 GROUP_VERSION = 1
 SURFACE_PREFIX = 'RC RA surface '
 RECIPE_PROPERTY = 'rc_rcra_recipe_sha256'
+FORWARD_PREFIX = 'RC RA forward '
+FORWARD_PROPERTY = 'rc_rcra_forward_sha256'
+BLEND_MODES = ('opaque', 'additive', 'blended', 'modulate')
 MATH = {'add': 'ADD', 'mul': 'MULTIPLY', 'div': 'DIVIDE', 'min': 'MINIMUM', 'max': 'MAXIMUM', 'abs': 'ABSOLUTE',
         'sqrt': 'SQRT', 'rsq': 'INVERSE_SQRT', 'frc': 'FRACT', 'round_ne': 'ROUND', 'round_ni': 'FLOOR',
         'round_pi': 'CEIL', 'round_z': 'TRUNC', 'sin': 'SINE', 'cos': 'COSINE', 'lt': 'LESS_THAN'}
@@ -125,7 +137,8 @@ def build_brdf_group():
 # ----------------------------------------------------------------------------------------------- surface emitter
 
 class _Emitter:
-    def __init__(self, tree, recipe, images, uv_maps, colour_attribute, interpolation='Linear'):
+    def __init__(self, tree, recipe, images, uv_maps, colour_attribute, interpolation='Linear', fixed=None):
+        self.fixed = fixed or {}   # input name -> float, replacing the mesh/camera value (checks)
         self.tree, self.nodes, self.links = tree, tree.nodes, tree.links
         self.recipe, self.images = recipe, images
         self.uv_maps, self.colour_attribute = uv_maps, colour_attribute
@@ -266,8 +279,31 @@ class _Emitter:
                 self.inputs['colour'] = [1.0, 1.0, 1.0, 1.0]
         return self.inputs['colour']
 
+    def view(self):
+        """(camera-to-point offset, camera position) as game vectors."""
+        if 'view' not in self.inputs:
+            g = self.geometry()
+            camera = self.node('ShaderNodeCameraData')
+            towards = self.node('ShaderNodeVectorMath', operation='SCALE')
+            self.links.new(g.outputs['Incoming'], towards.inputs[0])
+            self.links.new(camera.outputs['View Distance'], towards.inputs['Scale'])
+            offset = self.node('ShaderNodeVectorMath', operation='SCALE')
+            self.links.new(towards.outputs[0], offset.inputs[0])
+            offset.inputs['Scale'].default_value = -1.0
+            eye = self.node('ShaderNodeVectorMath', operation='ADD')
+            self.links.new(g.outputs['Position'], eye.inputs[0])
+            self.links.new(towards.outputs[0], eye.inputs[1])
+            self.inputs['view'] = (self.game_vector(offset.outputs[0]), self.game_vector(eye.outputs[0]))
+        return self.inputs['view']
+
     def input(self, name):
         axis = {'x': 0, 'y': 1, 'z': 2, 'w': 3}
+        if name in self.fixed:
+            return float(self.fixed[name])
+        if name in ('VIEW.x', 'VIEW.y', 'VIEW.z'):
+            return self.view()[0][axis[name[-1]]]
+        if name in ('CAMERA.x', 'CAMERA.y', 'CAMERA.z'):
+            return self.view()[1][axis[name[-1]]]
         if name == 'SV_IsFrontFace':
             return self.math('SUBTRACT', 1.0, self.geometry().outputs['Backfacing'])
         semantic, _, component = name.partition('.')
@@ -364,6 +400,32 @@ def build_surface_group(recipe, images, uv_maps, colour_attribute=None, interpol
     return group
 
 
+FORWARD_OUTPUTS = (('Colour', 'NodeSocketColor'), ('Alpha', 'NodeSocketFloat'))
+
+
+def build_forward_group(recipe, images, uv_maps, colour_attribute=None, interpolation='Linear', fixed=None):
+    """A node group computing a forward recipe's Colour (HDR) and Alpha (with the program's discard applied)."""
+    digest = recipe_sha256(recipe)
+    group = bpy.data.node_groups.new(FORWARD_PREFIX + digest[:16], 'ShaderNodeTree')
+    group[FORWARD_PROPERTY] = digest
+    for socket, kind in FORWARD_OUTPUTS:
+        _socket(group, socket, 'OUTPUT', kind)
+    out = group.nodes.new('NodeGroupOutput')
+    em = _Emitter(group, recipe, images, uv_maps, colour_attribute, interpolation, fixed)
+    terms = {k: em.value(i) for k, i in recipe['terms'].items()}
+    colour = em.node('ShaderNodeCombineColor')
+    for k, name in enumerate(('colour.r', 'colour.g', 'colour.b')):
+        em.feed(terms[name], colour.inputs[k])
+    group.links.new(colour.outputs[0], out.inputs['Colour'])
+    clip = terms['clip']
+    keep = em.math('SUBTRACT', 1.0, clip) if not isinstance(clip, float) else 1.0 - clip
+    alpha = terms['alpha']
+    em.feed(alpha * keep if isinstance(alpha, float) and isinstance(keep, float) else em.math('MULTIPLY', alpha, keep),
+            out.inputs['Alpha'])
+    out.location = ((em.count // 40 + 1) * 200, 0)
+    return group
+
+
 def load_image(path, colourspace, kind='png', width=0, height=0):
     """A unit texture as written by rc2016.games.rcra.blender_export: PNG, or raw float32 RGBA rows top first."""
     if kind == 'float':
@@ -394,25 +456,16 @@ def load_images(rows):
     return {binding: _load_row(row) for binding, row in rows.items()}
 
 
-def apply_recipe(material, entry, uv_maps, colour_attribute=None):
-    """Replace ``material``'s nodes with the recipe's surface group feeding the BRDF group.
-
-    ``entry``: dict(recipe, images {binding: {path, colourspace}}, limitations)."""
+def _surface_shader(tree, entry, images, uv_maps, colour_attribute, blended):
+    """The surface group feeding the BRDF group; returns the shader socket (alpha clip applied when opaque)."""
     recipe = entry['recipe']
-    images = load_images(entry['images'])
     surface = build_surface_group(recipe, images, uv_maps, colour_attribute)
-    brdf = build_brdf_group()
-    material.use_nodes = True
-    tree = material.node_tree
-    tree.nodes.clear()
     s = tree.nodes.new('ShaderNodeGroup')
     s.node_tree, s.name, s.location = surface, 'Translated surface', (0, 0)
     b = tree.nodes.new('ShaderNodeGroup')
-    b.node_tree, b.name, b.location = brdf, 'Game BRDF', (300, 0)
-    for socket in ('Albedo', 'F0', 'Gloss', 'Normal', 'Occlusion', 'Emission'):
+    b.node_tree, b.name, b.location = build_brdf_group(), 'Game BRDF', (300, 0)
+    for socket in ('Albedo', 'F0', 'Gloss', 'Normal', 'Occlusion') + (() if blended else ('Emission',)):
         tree.links.new(s.outputs[socket], b.inputs[socket])
-    output = tree.nodes.new('ShaderNodeOutputMaterial')
-    output.location = (800, 0)
     clip = recipe['nodes'][recipe['terms']['clip']]
     if clip['op'] != 'const' or clip['value']:   # alpha-tested: the writer's discard becomes a transparent mix
         mix = tree.nodes.new('ShaderNodeMixShader')
@@ -421,35 +474,129 @@ def apply_recipe(material, entry, uv_maps, colour_attribute=None):
         tree.links.new(s.outputs['Alpha'], mix.inputs['Fac'])
         tree.links.new(clear.outputs[0], mix.inputs[1])
         tree.links.new(b.outputs['Shader'], mix.inputs[2])
-        tree.links.new(mix.outputs[0], output.inputs['Surface'])
-    else:
-        tree.links.new(b.outputs['Shader'], output.inputs['Surface'])
-    material[RECIPE_PROPERTY] = surface[RECIPE_PROPERTY]
+        return mix.outputs[0], surface
+    return b.outputs['Shader'], surface
+
+
+def _forward_shader(tree, entry, images, uv_maps, colour_attribute, lit):
+    """The forward group composed over a Transparent BSDF by the entry's blend mode."""
+    group = build_forward_group(entry['forward'], images, uv_maps, colour_attribute)
+    f = tree.nodes.new('ShaderNodeGroup')
+    f.node_tree, f.name, f.location = group, 'Translated forward', (0, -400)
+    nodes, links = tree.nodes, tree.links
+    clear = nodes.new('ShaderNodeBsdfTransparent')
+    clear.location = (300, -600)
+    mode = entry['blend']
+    if mode == 'modulate':
+        tint = nodes.new('ShaderNodeMix')
+        tint.data_type, tint.location = 'RGBA', (300, -400)
+        links.new(f.outputs['Alpha'], tint.inputs['Factor'])
+        tint.inputs['A'].default_value = (1.0, 1.0, 1.0, 1.0)
+        links.new(f.outputs['Colour'], tint.inputs['B'])
+        links.new(tint.outputs['Result'], clear.inputs['Color'])
+        return clear.outputs[0], group
+    emit = nodes.new('ShaderNodeEmission')
+    emit.location = (300, -400)
+    links.new(f.outputs['Colour'], emit.inputs['Color'])
+    combine = nodes.new('ShaderNodeAddShader')
+    combine.location = (560, -400)
+    if mode == 'additive':
+        links.new(f.outputs['Alpha'], emit.inputs['Strength'])
+        links.new(clear.outputs[0], combine.inputs[0])
+        links.new(emit.outputs[0], combine.inputs[1])
+        return combine.outputs[0], group
+    body = emit.outputs[0]
+    if lit is not None:
+        links.new(lit, combine.inputs[0])
+        links.new(emit.outputs[0], combine.inputs[1])
+        body = combine.outputs[0]
+    mix = nodes.new('ShaderNodeMixShader')
+    mix.location = (800, -400)
+    links.new(f.outputs['Alpha'], mix.inputs['Fac'])
+    links.new(clear.outputs[0], mix.inputs[1])
+    links.new(body, mix.inputs[2])
+    return mix.outputs[0], group
+
+
+def apply_recipe(material, entry, uv_maps, colour_attribute=None):
+    """Replace ``material``'s nodes with the translated material.
+
+    ``entry``: dict(blend, recipe (G-buffer surface), forward (blended materials), images {binding: row}, limitations).
+    An opaque entry needs ``recipe``; a blended one needs ``forward`` and uses ``recipe`` for its lit part when present."""
+    mode = entry.get('blend', 'opaque')
+    if mode not in BLEND_MODES:
+        raise ValueError('Unknown blend mode ' + str(mode))
+    images = load_images(entry['images'])
+    material.use_nodes = True
+    tree = material.node_tree
+    tree.nodes.clear()
+    output = tree.nodes.new('ShaderNodeOutputMaterial')
+    output.location = (1100, 0)
+    shader, surface, forward = None, None, None
+    if entry.get('recipe'):
+        shader, surface = _surface_shader(tree, entry, images, uv_maps, colour_attribute, mode != 'opaque')
+    if mode != 'opaque':
+        shader, forward = _forward_shader(tree, entry, images, uv_maps, colour_attribute,
+                                          shader if mode == 'blended' else None)
+        if hasattr(material, 'surface_render_method'):   # EEVEE draws it sorted and blended
+            material.surface_render_method = 'BLENDED'
+    if shader is None:
+        raise ValueError('Entry has no surface recipe')
+    tree.links.new(shader, output.inputs['Surface'])
+    for key, group, prop in (('recipe', surface, RECIPE_PROPERTY), ('forward', forward, FORWARD_PROPERTY)):
+        if group is not None:
+            material[prop] = group[prop]
+        elif prop in material:
+            del material[prop]
+    material['rc_rcra_blend'] = mode
     material['rc_rcra_limitations'] = '\n'.join(entry.get('limitations', []))
-    material['rc_rcra_forward_hint'] = bool(entry.get('forward_hint'))
     return material
+
+
+def translated(material):
+    """True for a material apply_recipe built."""
+    return bool(material.get(RECIPE_PROPERTY) or material.get(FORWARD_PROPERTY))
+
+
+def _images_missing(material, group):
+    problems = []
+    for node in group.nodes:
+        if node.type == 'TEX_IMAGE':
+            image = node.image
+            if image is None or not (image.packed_file or image.has_data or image.size[0]):
+                problems.append('%s: %s has no image data' % (material.name, node.name))
+    return problems
 
 
 def validate_material(material):
     """Problems with a translated material after a reopen; empty when it is intact."""
-    problems = []
-    digest = material.get(RECIPE_PROPERTY)
-    if not digest:
+    if not translated(material):
         return ['%s: no translated recipe' % material.name]
+    problems = []
     tree = material.node_tree
-    surface = tree.nodes.get('Translated surface') if tree else None
-    brdf = tree.nodes.get('Game BRDF') if tree else None
-    if surface is None or surface.node_tree is None or surface.node_tree.get(RECIPE_PROPERTY) != digest:
-        problems.append('%s: surface group missing or not its recipe' % material.name)
-    if brdf is None or brdf.node_tree is None or brdf.node_tree.get('rc_version') != GROUP_VERSION:
-        problems.append('%s: BRDF group missing or out of date' % material.name)
-    if surface is not None and surface.node_tree is not None:
-        for node in surface.node_tree.nodes:
-            if node.type == 'TEX_IMAGE':
-                image = node.image
-                if image is None or not (image.packed_file or image.has_data or image.size[0]):
-                    problems.append('%s: %s has no image data' % (material.name, node.name))
-        for socket in surface.node_tree.nodes['Group Output'].inputs[:len(SURFACE_OUTPUTS)]:
-            if not socket.is_linked and socket.name not in ('Gloss', 'Occlusion', 'Emission', 'Alpha'):
-                problems.append('%s: surface output %s unlinked' % (material.name, socket.name))
+    mode = material.get('rc_rcra_blend', 'opaque')
+    digest = material.get(RECIPE_PROPERTY)
+    if mode == 'opaque' and not digest:
+        problems.append('%s: opaque material without a surface recipe' % material.name)
+    if digest:
+        surface = tree.nodes.get('Translated surface') if tree else None
+        brdf = tree.nodes.get('Game BRDF') if tree else None
+        if surface is None or surface.node_tree is None or surface.node_tree.get(RECIPE_PROPERTY) != digest:
+            problems.append('%s: surface group missing or not its recipe' % material.name)
+        if brdf is None or brdf.node_tree is None or brdf.node_tree.get('rc_version') != GROUP_VERSION:
+            problems.append('%s: BRDF group missing or out of date' % material.name)
+        if surface is not None and surface.node_tree is not None:
+            problems += _images_missing(material, surface.node_tree)
+            for socket in surface.node_tree.nodes['Group Output'].inputs[:len(SURFACE_OUTPUTS)]:
+                if not socket.is_linked and socket.name not in ('Gloss', 'Occlusion', 'Emission', 'Alpha'):
+                    problems.append('%s: surface output %s unlinked' % (material.name, socket.name))
+    if mode != 'opaque':
+        forward = tree.nodes.get('Translated forward') if tree else None
+        want = material.get(FORWARD_PROPERTY)
+        if not want or forward is None or forward.node_tree is None or forward.node_tree.get(FORWARD_PROPERTY) != want:
+            problems.append('%s: forward group missing or not its recipe' % material.name)
+        elif not forward.node_tree.nodes['Group Output'].inputs['Colour'].is_linked:
+            problems.append('%s: forward colour unlinked' % material.name)
+        else:
+            problems += _images_missing(material, forward.node_tree)
     return problems

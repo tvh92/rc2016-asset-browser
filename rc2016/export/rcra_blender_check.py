@@ -2,7 +2,8 @@
 
     blender --background --factory-startup --python rcra_blender_check.py -- --job job.json
 
-job.json: {recipe, images {binding: {path, colourspace}}, size, uv_origin, uv_span, out}. The plane spans UV
+job.json: {recipe, forward, fixed, images {binding: {path, colourspace}}, size, uv_origin, uv_span, out}; ``recipe`` and
+``forward`` are optional, ``fixed`` holds the forward recipe's view inputs (VIEW/CAMERA) as constants. The plane spans UV
 [origin, origin + span]^2 in Blender's first UV
 map, faces +Z with Blender's tangent +X and bitangent +Y, and images are sampled bilinearly ('Linear', as exported). Each output is baked (Cycles
 EMIT, 1 sample) into a float image; the pixels go to ``out`` as JSON {term: [[r, g, b] per pixel row-major from v = 0]}.
@@ -18,8 +19,9 @@ import bpy
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from rc2016.export import rcra_blender  # noqa: E402
 
-BAKES = (('albedo', 'Albedo', None), ('f0', 'F0', None), ('normal', 'Normal', None),
-         ('scalars', ('Gloss', 'Occlusion', 'Emission'), None), ('alpha', 'Alpha', None))
+BAKES = (('albedo', 'Albedo'), ('f0', 'F0'), ('normal', 'Normal'), ('scalars', ('Gloss', 'Occlusion', 'Emission')),
+         ('alpha', 'Alpha'))
+FORWARD_BAKES = (('forward_colour', 'Colour'), ('forward_alpha', 'Alpha'))
 
 
 def main():
@@ -49,21 +51,33 @@ def main():
     scene.cycles.filter_width = 0.01   # sample the pixel centre, where the reference is evaluated
     scene.render.bake.margin = 0
     images = rcra_blender.load_images(job['images'])
-    group = rcra_blender.build_surface_group(job['recipe'], images, ['UVMap'])
+    groups = []
+    if job.get('recipe'):
+        groups.append((rcra_blender.build_surface_group(job['recipe'], images, ['UVMap']), BAKES))
+    if job.get('forward'):
+        groups.append((rcra_blender.build_forward_group(job['forward'], images, ['UVMap'], fixed=job.get('fixed')),
+                       FORWARD_BAKES))
     material = bpy.data.materials.new('check')
     material.use_nodes = True
     obj.data.materials.append(material)
     tree = material.node_tree
     tree.nodes.clear()
     surface = tree.nodes.new('ShaderNodeGroup')
-    surface.node_tree = group
     output = tree.nodes.new('ShaderNodeOutputMaterial')
     emission = tree.nodes.new('ShaderNodeEmission')
     emission.inputs['Strength'].default_value = 1.0
     tree.links.new(emission.outputs[0], output.inputs['Surface'])
     target = tree.nodes.new('ShaderNodeTexImage')
     results = {}
-    for name, sockets, _ in BAKES:
+    for group, bakes in groups:
+        surface.node_tree = group
+        bake(tree, surface, emission, target, bakes, size, results)
+    Path(job['out']).write_text(json.dumps(results), encoding='utf-8')
+    print('CHECKED', job['out'], flush=True)
+
+
+def bake(tree, surface, emission, target, bakes, size, results):
+    for name, sockets in bakes:
         for link in list(emission.inputs['Color'].links):
             tree.links.remove(link)
         if isinstance(sockets, tuple):
@@ -80,8 +94,6 @@ def main():
         bpy.ops.object.bake(type='EMIT')
         pixels = list(image.pixels)
         results[name] = [pixels[i:i + 3] for i in range(0, len(pixels), 4)]
-    Path(job['out']).write_text(json.dumps(results), encoding='utf-8')
-    print('CHECKED', job['out'], flush=True)
 
 
 main()
