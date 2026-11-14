@@ -757,9 +757,9 @@ class ModelExporter:
                                              sources=cinematic_sources)
             self._check()
         meshes = selected_meshes(decoded, options.lod, options.look)
-        from rc2016.pipeline import render_state
+        game = self.loader.game   # the archive's game (rc2016.games): its material reads and texture export
         material_paths = {m.get('index', i): m.get('path') for i, m in enumerate(decoded['materials'])}
-        casters = [m for m in meshes if render_state.shadow_only(material_paths.get((m.get('material') or {}).get('index')))]
+        casters = [m for m in meshes if game.shadow_only(material_paths.get((m.get('material') or {}).get('index')))]
         if casters and len(casters) < len(meshes):
             meshes = [m for m in meshes if not any(m is c for c in casters)]
             notes.append(f'{len(casters)} shadow-cast-only mesh(es) left out: the game never draws them (material flags bit 0x80).')
@@ -787,7 +787,7 @@ class ModelExporter:
             self._check()
             material = by_index.get(slot, {})
             self.log(f"  material {slot}: {material.get('name') or material.get('path') or '(none)'}")
-            maps[slot] = material_maps(archive, material, self.texture_cache, self.map_cache) if options.textures else \
+            maps[slot] = game.material_maps(archive, material, self.texture_cache, self.map_cache) if options.textures else \
                 dict(name=material.get('name') or f'material_{slot}', base=None, mr=None, normal=None, emissive=None,
                      emissive_strength=0.0, alpha_mode='OPAQUE', alpha=1.0, double_sided=False, notes=['textures not exported'], sources={}, png={})
         names = set()
@@ -849,9 +849,8 @@ class ModelExporter:
             self._check()
             written += self._blender_convert(folder, stem, doc, blob, needs_blender, options.blender)
         if options.source_textures:
-            from rc2016.viewer.textures import export_textures
             paths = sorted({p for m in maps.values() for p in m['sources'].values()})
-            rows = export_textures(archive, paths, tex_dir / 'game_dds', {'dds'})
+            rows = game.export_textures(archive, paths, tex_dir / 'game_dds', {'dds'})
             for row in rows:
                 if row.get('error'):
                     notes.append(f"DDS export failed for {row['path']}: {row['error']}")

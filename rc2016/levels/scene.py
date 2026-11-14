@@ -11,7 +11,8 @@ import math
 from pathlib import Path
 import sys
 
-from rc2016.formats.archive import Archive, decompress, locate
+from rc2016.formats.archive import decompress
+from rc2016.games import detect as detect_game
 
 from rc2016.levels.level_format import decode_level
 from rc2016.levels.zone_format import decode_zone_arrays, name_crc32
@@ -21,10 +22,14 @@ HIDDEN_MARKERS = ('collision', 'camera_coll', '_coll.model', 'environment/templa
 
 
 def open_archive(source_root):
-    """Archive for a source root that holds the level assets (the `Image0` tree)."""
-    root = locate(Path(source_root).expanduser().resolve())
-    cache = Path(__file__).resolve().parents[2] / '.cache'
-    archive = Archive(root, cache / 'level_view', lambda *_a, **_k: None)
+    """Archive for a source root that holds the level assets (the `Image0` tree). The folder's game
+    (rc2016.games) must offer levels; R&C 2016's caches stay directly under .cache."""
+    root = Path(source_root).expanduser().resolve()
+    game = detect_game(root)
+    if not game.has('levels'):
+        raise ValueError(f'Levels are not yet available for {game.title}')
+    cache = game.cache_dir()
+    archive = game.open_source(root, cache / 'level_view', lambda *_a, **_k: None)
     archive.verify_repeats = False   # preview only: skip re-reading every repeated copy of an asset
     from rc2016.viewer.textures import TextureDiskCache
     from rc2016.viewer.native_glsl import TranslationDiskCache

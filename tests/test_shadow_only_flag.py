@@ -34,7 +34,9 @@ class ShadowOnlyFlagTests(unittest.TestCase):
         self.assertIn('render_state.shadow_only(material_path)', geometry)
         self.assertIn('obj.visible_shadow=True', geometry)
         export = (ROOT / 'rc2016/export/models.py').read_text(encoding='utf-8')
-        self.assertIn('render_state.shadow_only(', export)
+        self.assertIn('game.shadow_only(', export)   # through the game seam; R&C 2016's record asks the census
+        adapter = (ROOT / 'rc2016/games/rc2016.py').read_text(encoding='utf-8')
+        self.assertIn('from rc2016.pipeline.render_state import shadow_only', adapter)
 
 
 if __name__ == '__main__':

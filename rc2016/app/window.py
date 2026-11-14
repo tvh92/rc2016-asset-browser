@@ -15,6 +15,7 @@ from rc2016.app.batch import (
     PipelineModelCandidate, discover_models, ensure_disjoint, folder_layout, parse_prefixes, status_for)
 from rc2016.app.settings import _default_blender, _default_interpreter, _load_settings, _save_settings
 from rc2016.common import remember_var, reset_remembered
+from rc2016.games import APP_TITLE, SOURCE_PICKER_TITLE, detect as detect_game
 from rc2016.app.theme import (
     UI_SCALES, _Tooltip, _configure_tk_runtime, apply_theme, apply_titlebar, apply_ui_scale, color, listen,
     themed_scrolled_text_class, track, windows_prefers_dark)
@@ -25,14 +26,16 @@ ALWAYS_COLLAPSED_FOLDERS = {"chunk", "bangle_set"}
 
 HELP = {
     "source": (
-        "The game folder you unpacked from the PS4 .pkg file.\n\n"
-        "It is the folder named after the game ID, for example:\n"
+        "The game folder. The browser recognises the game from it and shows that game's assets.\n\n"
+        "R&C 2016: the folder you unpacked from the PS4 .pkg file, named after the game ID, for example:\n"
         "...\\Downloads\\Ratchet & Clank (EUR)\\CUSA01073\n\n"
+        "Rift Apart: the Steam install folder, the one holding toc, dag and the d folder.\n\n"
         "Click Browse… and pick that folder. The model list fills in automatically."),
     "output": (
         "Where the finished Blender files and reports are saved.\n\n"
-        "Filled in for you next to the game folder. It must be a different "
-        "folder from the game folder; you can leave it as is."),
+        "Filled in for you next to the game folder, or under Documents\\R&C Asset Browser for an installed game. "
+        "It must be a different folder from the game folder; you can leave it as is."),
+    "animations": "Writes the model's animation clips into the glTF/GLB (and the FBX/USD made from it).",
     "python": (
         "A normal Python 3 installation on this PC, used behind the scenes.\n\n"
         "Found automatically; you normally don't need to touch this."),
@@ -145,6 +148,8 @@ STATE_FILTERS = {"pipeline": ("All", "READY", "EXPORTED", "PREVIOUS"),
                  "transform": ("All", "READY", "VERIFIED", "STALE", "NO ANIMSET")}
 SHADING_FILTERS = {"Native translation": "native translation", "Generic reading": "generic reading", "Family fallback": "family fallback",
                    "No material graph": "no material graph", "Exact rules only": None}
+# The game capability (rc2016.games) each asset type needs.
+ASSET_TYPE_CAPABILITY = {"Model": "models", "Level": "levels", "Texture": "textures", "Flash UI": "flash"}
 
 
 class AssetBrowserApp:
@@ -176,7 +181,9 @@ class AssetBrowserApp:
                 "--scan mode. Blender's bundled Python does not include Tkinter. "
                 f"Details: {error}"
             ) from error
-        self.root.title("R&C 2016 Asset Browser and Extractor")
+        self.root.title(APP_TITLE)   # "R&C Asset Browser — <game>" once the game folder is recognised
+        self.game = None          # the source folder's game (rc2016.games); None until a scan recognises it
+        self._game_source = ""    # the source text that game was recognised from
         appearance = _load_settings().get("appearance", "")
         self.dark = appearance == "dark" if appearance in ("dark", "light") else windows_prefers_dark()
         apply_theme(self.root, ttk, self.dark)
@@ -213,6 +220,9 @@ class AssetBrowserApp:
         self.blender_var = tk.StringVar(value=remembered("blender") or _default_blender())
         self.backend_var = remember_var(tk.StringVar(value="Full archive pipeline"), "export.backend",
                                         ("Transform only", "Full archive pipeline"))
+        # Controls that need a game capability: (capability, widget or None, its normal state, tooltip, help text).
+        # _apply_game disables the widget and swaps its tip when the game lacks the capability.
+        self.game_gates: list[tuple] = []
         self.filter_var = tk.StringVar()
         self.model_filter_stale = False   # the shared Search changed while the Texture type showed; the model list refreshes on return
         self.folder_mode = "auto"  # "auto", "expanded" or "collapsed"; see toggle_expand_all
@@ -331,7 +341,8 @@ class AssetBrowserApp:
                                      command=lambda: self.browser.show_asset_type(self.asset_type_var.get()))
             button.pack(side="left", padx=(0, 2))
             self.asset_type_buttons[kind] = button
-        self._tip(HELP["asset_type"], *self.asset_type_buttons.values())
+        for kind, button in self.asset_type_buttons.items():
+            self._gate(ASSET_TYPE_CAPABILITY[kind], HELP["asset_type"], button)
         self.model_tools = filters = ttk.Frame(toolbar)
         filters.grid(row=0, column=1, sticky="ew")
         filters.columnconfigure(2, weight=1)
@@ -364,7 +375,8 @@ class AssetBrowserApp:
         shading_label.grid(row=0, column=7, padx=(18, 8))
         shading = ttk.Combobox(filters, textvariable=self.shading_var, state="readonly", values=("All", *SHADING_FILTERS), width=17)
         shading.grid(row=0, column=8)
-        self._tip(HELP["shading"], shading_label, shading)
+        self._gate("decoded_shading", HELP["shading"], shading, "readonly")
+        self._gate("decoded_shading", HELP["shading"], shading_label, None)
         shading.bind("<<ComboboxSelected>>", lambda _event: self.refresh_table())
         # Model-only controls: hidden for the Texture type, which shares the Search and List|Grid switch.
         self.model_only_tools = (self.expand_button, state_label, state, shading_label, shading)
@@ -470,7 +482,7 @@ class AssetBrowserApp:
         self.blend_check = ttk.Checkbutton(formats, text="Blender Scene (.blend) (includes local setup for quick rendering)",
                                            variable=self.blend_scene_var)
         self.blend_check.grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
-        self._tip(HELP["blend_scene"], self.blend_check)
+        self._gate("pipeline", HELP["blend_scene"], self.blend_check, None)   # its state follows _options_changed
         self.group_check = ttk.Checkbutton(formats, text="Also put the selected models into one .blend, framed by one camera",
                                            variable=self.group_blend_var)
         self.group_check.grid(row=1, column=0, columnspan=3, sticky="w", padx=(22, 0), pady=(4, 2))
@@ -507,10 +519,11 @@ class AssetBrowserApp:
         self._tip(HELP["skeleton"], self.skeleton_check)
         self.animation_check = ttk.Checkbutton(include, text="Include animations", variable=self.export_animations_var)
         self.animation_check.grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 2))
+        self._gate("animation", HELP["animations"], self.animation_check, None)
         self.cutscene_check = ttk.Checkbutton(include, text="Cutscene animations (the model's real-time cutscene shots)",
                                               variable=self.export_cutscenes_var)
         self.cutscene_check.grid(row=4, column=0, columnspan=3, sticky="w", padx=(22, 0))
-        self._tip(HELP["cutscenes"], self.cutscene_check)
+        self._gate("animation", HELP["cutscenes"], self.cutscene_check, None)
         picker = ttk.Frame(include)
         picker.grid(row=5, column=0, columnspan=3, sticky="w", padx=(22, 0))
         self.picker_check = ttk.Checkbutton(picker, text="Animation picker: ask which clips to export when a model has more than",
@@ -520,7 +533,8 @@ class AssetBrowserApp:
         self.picker_spin.pack(side="left", padx=4)
         self.picker_unit = ttk.Label(picker, text="clips (0: always)")
         self.picker_unit.pack(side="left")
-        self._tip(HELP["picker"], self.picker_check, self.picker_spin, self.picker_unit)
+        for widget in (self.picker_check, self.picker_spin, self.picker_unit):
+            self._gate("animation", HELP["picker"], widget, None)
         self.lod_label = ttk.Label(include, text="Detail level (LOD)")
         self.lod_label.grid(row=6, column=0, sticky="w", pady=(6, 2))
         self.lod_box = ttk.Combobox(include, textvariable=self.export_lod_var, values=("Highest", "Lowest", "All"),
@@ -546,7 +560,8 @@ class AssetBrowserApp:
                                 values=("Transform only", "Full archive pipeline"), width=28)
         backend.grid(row=0, column=1, sticky="w", padx=6, pady=4)
         backend.bind("<<ComboboxSelected>>", lambda _event: self._backend_changed())
-        self._tip(HELP["backend"], backend_label, backend)
+        self._gate("pipeline", HELP["backend"], backend, "readonly")
+        self._gate("pipeline", HELP["backend"], backend_label, None)
         self.prefix_label = ttk.Label(advanced, text="Clip prefixes")
         self.prefix_label.grid(row=1, column=0, sticky="w", pady=4)
         self.prefix_entry = ttk.Entry(advanced, textvariable=self.prefix_var)
@@ -615,12 +630,14 @@ class AssetBrowserApp:
 
     def _options_changed(self) -> None:
         # The Blender scene is the research pipeline; Transform only ignores every export option.
-        pipeline = self.backend_var.get() == "Full archive pipeline"
-        blend = pipeline and self.blend_scene_var.get()
+        # A game without the pipeline or animation capability (rc2016.games) greys those options out.
+        pipeline = self._pipeline_backend()
+        research = self._game_has("pipeline")
+        blend = pipeline and research and self.blend_scene_var.get()
         # The Blender scene replaces the portable formats, so their boxes are greyed out while it is on.
         for box in self.format_checks:
             box.configure(state="disabled" if blend else "normal")
-        self.blend_check.configure(state="normal" if pipeline else "disabled")
+        self.blend_check.configure(state="normal" if pipeline and research else "disabled")
         group_state = "normal" if blend else "disabled"
         self.group_check.configure(state=group_state)
         self.group_name_entry.configure(state=group_state)
@@ -629,9 +646,10 @@ class AssetBrowserApp:
         # Without a skeleton there is nothing to animate, so the animation choice is switched off.
         self.skeleton_check.configure(state="normal" if pipeline else "disabled")
         self.attachments_check.configure(state="normal" if pipeline and not blend and self.export_skeleton_var.get() else "disabled")
-        self.animation_check.configure(state="normal" if pipeline and self.export_skeleton_var.get() else "disabled")
-        self.cutscene_check.configure(state="normal" if pipeline and self.export_skeleton_var.get() and self.export_animations_var.get() else "disabled")
-        animated = pipeline and self.export_skeleton_var.get() and self.export_animations_var.get()
+        animation = pipeline and self._game_has("animation")
+        self.animation_check.configure(state="normal" if animation and self.export_skeleton_var.get() else "disabled")
+        self.cutscene_check.configure(state="normal" if animation and self.export_skeleton_var.get() and self.export_animations_var.get() else "disabled")
+        animated = animation and self.export_skeleton_var.get() and self.export_animations_var.get()
         self.picker_check.configure(state="normal" if animated else "disabled")
         self.picker_spin.configure(state="normal" if animated and self.picker_var.get() else "disabled")
         self.picker_unit.configure(style="TLabel" if animated and self.picker_var.get() else "Disabled.TLabel")
@@ -650,7 +668,7 @@ class AssetBrowserApp:
                 parts.append(", ".join(formats))
                 parts.append("textures" if self.export_textures_var.get() else "no textures")
             if self.export_skeleton_var.get():
-                parts.append("all animations" if self.export_animations_var.get() else "no animations")
+                parts.append("all animations" if animation and self.export_animations_var.get() else "no animations")
             else:
                 parts.append("no skeleton or animations")
             if not blend and self.export_lod_var.get() != "Highest":
@@ -660,12 +678,13 @@ class AssetBrowserApp:
 
     def export_options(self):
         from rc2016.export.models import ExportOptions
+        animations = self.export_animations_var.get() and self._game_has("animation")
         return ExportOptions(formats=self._export_formats(), textures=self.export_textures_var.get(),
-                             source_textures=self.export_dds_var.get(), animations="all" if self.export_animations_var.get() else "none",
+                             source_textures=self.export_dds_var.get(), animations="all" if animations else "none",
                              skeleton=self.export_skeleton_var.get(), attachments=self.export_attachments_var.get(),
                              lod=self.export_lod_var.get(), blender=self.blender_var.get().strip(),
-                             skip_existing=True, cinematic=self.export_animations_var.get() and self.export_cutscenes_var.get(),
-                             borrowed=self.export_animations_var.get() and self.browser.borrowed_var.get())
+                             skip_existing=True, cinematic=animations and self.export_cutscenes_var.get(),
+                             borrowed=animations and self.browser.borrowed_var.get())
 
     def _path_row(self, parent, row: int, label: str, variable, command, tooltip: str) -> None:
         ttk = self.ttk
@@ -677,9 +696,49 @@ class AssetBrowserApp:
         button.grid(row=row, column=2, padx=(8, 6), pady=4)
         self._tip(tooltip, label_widget, entry, button)
 
-    def _tip(self, text: str, *widgets) -> None:
-        for widget in widgets:
-            _Tooltip(self.tk, widget, text)
+    def _tip(self, text: str, *widgets) -> list:
+        return [_Tooltip(self.tk, widget, text) for widget in widgets]
+
+    def _gate(self, capability: str, text: str, widget, normal_state: str | None = "normal") -> None:
+        """A control that needs a game capability: its tip (and, with a normal_state, its state) follow _apply_game.
+        A normal_state of None leaves the state to other code (labels, or options _options_changed sets)."""
+        tip, = self._tip(text, widget)
+        self.game_gates.append((capability, widget if normal_state else None, normal_state, tip, text))
+
+    def _game_has(self, capability: str) -> bool:
+        """Whether the source folder's game offers a capability; everything is offered until a game is recognised."""
+        return self.game is None or self.game.has(capability)
+
+    def _pipeline_backend(self) -> bool:
+        """True when models come from the archive index (PipelineModelCandidate records): the Full archive pipeline
+        backend, or always for a game without that pipeline, which lists its models in-process (Game.list_models)."""
+        return self.backend_var.get() == "Full archive pipeline" or not self._game_has("pipeline")
+
+    def _apply_game(self, game) -> None:
+        """The recognised game: the window title, and every control it lacks disabled with a 'Not yet available' tip."""
+        self.game = game
+        self.root.title(game.window_title)
+        for capability, widget, normal_state, tip, text in self.game_gates:
+            available = game.has(capability)
+            tip.text = text if available else game.unavailable_tip
+            if widget is not None:
+                widget.configure(state=normal_state if available else "disabled")
+        if not game.has(ASSET_TYPE_CAPABILITY.get(self.asset_type_var.get(), "models")):
+            self.asset_type_var.set("Model")
+            self.browser.show_asset_type("Model")
+        if not game.has("decoded_shading") and self.shading_var.get() != "All":
+            self.shading_var.set("All")
+        self._options_changed()
+
+    def _use_game(self, game, source_text: str) -> None:
+        """Apply a recognised game; on a change of game, its own remembered output root (or its default) replaces the
+        other game's. A picked folder of the same game keeps the output root, as before."""
+        previous = self.game
+        self._apply_game(game)
+        self._game_source = source_text
+        if not self.output_var.get().strip() or (previous is not None and previous.id != game.id):
+            saved = _load_settings().get(f"game.{game.id}.output", "")
+            self.output_var.set(saved or str(game.default_output(Path(source_text))))
 
     def set_layout(self, mode: str) -> None:
         """Vertical or Horizontal viewers; remembered for the next start."""
@@ -690,9 +749,14 @@ class AssetBrowserApp:
         _save_settings(settings)
 
     def _remember_settings(self) -> None:
-        _save_settings({**_load_settings(), "source": self.source_var.get().strip(), "output": self.output_var.get().strip(),
-                        "python": self.interpreter_var.get().strip(), "blender": self.blender_var.get().strip(),
-                        "ui_scale": self.ui_scale_var.get()})
+        source, output = self.source_var.get().strip(), self.output_var.get().strip()
+        values = {**_load_settings(), "source": source, "output": output,
+                  "python": self.interpreter_var.get().strip(), "blender": self.blender_var.get().strip(),
+                  "ui_scale": self.ui_scale_var.get()}
+        if self.game is not None and source and source == self._game_source:
+            # Each game also keeps its own folder and output root; "source"/"output" stay the last used pair.
+            values.update({f"game.{self.game.id}.source": source, f"game.{self.game.id}.output": output})
+        _save_settings(values)
 
     def _dark_mode_changed(self) -> None:
         self.dark = self.dark_mode_var.get()
@@ -708,12 +772,9 @@ class AssetBrowserApp:
         _save_settings(settings)
 
     def _browse_source(self) -> None:
-        chosen = self.filedialog.askdirectory(title="Choose extracted PS4 source root")
+        chosen = self.filedialog.askdirectory(title=SOURCE_PICKER_TITLE)
         if chosen:
-            self.source_var.set(chosen)
-            if not self.output_var.get():
-                source = Path(chosen)
-                self.output_var.set(str(source.parent / f"{source.name} Animation Output"))
+            self.source_var.set(chosen)   # the scan recognises the game and fills in an empty output root (_use_game)
             self.scan()
 
     def _browse_output(self) -> None:
@@ -737,7 +798,7 @@ class AssetBrowserApp:
 
     def _apply_backend_states(self) -> None:
         """The State filter offers only the states the chosen backend produces."""
-        kind = "pipeline" if self.backend_var.get() == "Full archive pipeline" else "transform"
+        kind = "pipeline" if self._pipeline_backend() else "transform"
         self.state_box.configure(values=STATE_FILTERS[kind])
         for tip in self.state_tips:
             tip.text = HELP["state" if kind == "pipeline" else "state_transform"]
@@ -749,7 +810,7 @@ class AssetBrowserApp:
         self._apply_backend_states()
         self.records = []
         self.selected_map = {}   # the other backend's records cannot be exported by this one
-        widget_state = "disabled" if self.backend_var.get() == "Full archive pipeline" else "normal"
+        widget_state = "disabled" if self._pipeline_backend() else "normal"
         self.prefix_entry.configure(state=widget_state)
         self.prefix_label.configure(style="Disabled.TLabel" if widget_state == "disabled" else "TLabel")
         self.refresh_table()
@@ -762,9 +823,51 @@ class AssetBrowserApp:
         if not source_text:
             self.messagebox.showinfo("Source root", "Choose a source root first.")
             return
-        source = Path(source_text)
+        if self.game is not None and source_text == self._game_source:
+            self._scan_game(Path(source_text))   # the game of this folder is known
+        else:
+            self._start_detection(source_text)
+
+    def _start_detection(self, source_text: str) -> None:
+        """Recognise the folder's game on a worker (R&C 2016's check walks the folder); the scan follows (game_detected)."""
+        self._set_busy(scanning=True)
+        self.progress_var.set("Recognising the game…")
+        transform = self.backend_var.get() != "Full archive pipeline"
+        self.worker = threading.Thread(target=self._detect_worker, args=(source_text, transform), daemon=True)
+        self.worker.start()
+
+    def _detect_worker(self, source_text: str, transform: bool = False) -> None:
+        try:
+            try:
+                game = detect_game(Path(source_text))
+            except ValueError:
+                if not transform:
+                    raise
+                from rc2016.games import RC2016
+                game = RC2016   # Transform only reads R&C 2016 loose files, which need no archive root
+            self.events.put(("game_detected", {"game": game, "source": source_text}))
+        except Exception as error:
+            self.events.put(("scan_error", {"message": str(error)}))
+
+    def _scan_game(self, source: Path) -> None:
+        """List the models of a folder whose game is recognised (self.game)."""
         output = Path(self.output_var.get()) if self.output_var.get().strip() else None
-        if self.backend_var.get() == "Full archive pipeline":
+        if not self._game_has("pipeline"):
+            # Read in-process from the game's own index (Game.list_models): no pipeline subprocess, no Blender.
+            if output is None:
+                self.messagebox.showerror("Output root", "Choose a separate output root first.")
+                return
+            try:
+                ensure_disjoint(source, output)
+            except ValueError as error:
+                self.messagebox.showerror("Output root", str(error))
+                return
+            self._set_busy(scanning=True)
+            self.progress_var.set(f"Reading the {self.game.title} model list…")
+            self.worker = threading.Thread(target=self._game_scan_worker, args=(self.game, source, output), daemon=True)
+            self.worker.start()
+            return
+        if self._pipeline_backend():
             if output is None:
                 self.messagebox.showerror("Output root", "Choose a separate output root before indexing the archive.")
                 return
@@ -797,6 +900,12 @@ class AssetBrowserApp:
             self.events.put(("scan_done", {"records": records}))
         except Exception as error:
             self.events.put(("scan_error", {"message": str(error)}))
+
+    def _game_scan_worker(self, game, source: Path, output: Path) -> None:
+        try:
+            self.events.put(("scan_done", {"records": game.list_models(source, output)}))
+        except Exception as error:
+            self.events.put(("scan_error", {"message": str(error) or type(error).__name__}))
 
     def _pipeline_scan_worker(self, source: Path, output: Path, python: Path, blender: Path) -> None:
         try:
@@ -1188,7 +1297,7 @@ class AssetBrowserApp:
         if not interpreter.is_file():
             self.messagebox.showerror("Python interpreter", f"File not found:\n{interpreter}")
             return
-        pipeline_mode = self.backend_var.get() == "Full archive pipeline"
+        pipeline_mode = self._pipeline_backend()
         blend_mode = pipeline_mode and self.blend_scene_var.get()
         export_mode = pipeline_mode and not blend_mode
         if export_mode:
@@ -1582,12 +1691,21 @@ class AssetBrowserApp:
             self._set_busy()
             self._remember_settings()
             self.refresh_table()
-            if self.backend_var.get() == "Full archive pipeline":
+            if not self._game_has("pipeline"):
+                self._append_log(f"{self.game.title} model list ready: {len(self.records)} model(s)", "success")
+            elif self._pipeline_backend():
                 note = " (archive and index unchanged since the last scan; reused it)" if values.get("reused") else ""
                 self._append_log(f"Pipeline index ready: {len(self.records)} model(s){note}", "success")
             else:
                 paired = sum(isinstance(record, ModelCandidate) and record.animset is not None for record in self.records)
                 self._append_log(f"Scan complete: {len(self.records)} model(s), {paired} exact animset pair(s)", "success")
+        elif kind == "game_detected":
+            self._set_busy()
+            if values["source"] != self.source_var.get().strip():
+                self._start_detection(self.source_var.get().strip())   # the folder changed while it was read
+            else:
+                self._use_game(values["game"], str(values["source"]))
+                self._scan_game(Path(str(values["source"])))
         elif kind == "scan_error":
             self._set_busy()
             self.progress_var.set("Scan failed")

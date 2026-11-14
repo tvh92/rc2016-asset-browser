@@ -5,9 +5,9 @@ import json
 from pathlib import Path
 import threading
 import numpy as np
-from rc2016.formats.archive import Archive, asset_references, locate, decompress
-from rc2016.formats.native_model import decode_model, secondary_uv
-from rc2016.formats.container import section_table
+from rc2016.formats.archive import asset_references
+from rc2016.formats.native_model import secondary_uv
+from rc2016.games import RC2016, open_source as open_game_source
 
 
 def presentation_basis(value):
@@ -217,6 +217,7 @@ def material_rules(archive, materials, translations=None):
 
 class SourcePreviewLoader:
     """One archive metadata instance and one selected decoded model; no corpus model decode."""
+    game=RC2016   # the open archive's game (rc2016.games); set by _ensure_archive
     def __init__(self):
         self.archive=None
         self.actor_graph=None   # the archive's actor reference graph, read once for borrowed animsets
@@ -245,17 +246,19 @@ class SourcePreviewLoader:
     def _ensure_archive(self, source_root):
         source_root=Path(source_root).expanduser().resolve()
         if self.source_root!=source_root:
-            archive_root=locate(source_root)
+            # The folder's game is detected once per open (rc2016.games); its caches live under
+            # game.cache_dir(), which for R&C 2016 is .cache itself, as before the game seam.
             # Archive initialization reads metadata and prior source_mapping only.
             # This path is never checkpointed or decoded using Archive.decode().
-            self.archive=Archive(archive_root,Path(__file__).resolve().parents[2]/'.cache'/'source_preview',lambda *_a,**_k:None)
+            game,self.archive=open_game_source(source_root,'source_preview',lambda *_a,**_k:None)
+            self.game=game;cache=game.cache_dir()
             self.actor_graph=None
             self.archive.verify_repeats=False   # preview only: read the first of an asset's repeated copies
             from rc2016.viewer.textures import TextureDiskCache
-            self.archive.texture_disk_cache=TextureDiskCache(Path(__file__).resolve().parents[2]/'.cache'/'texture_preview')
+            self.archive.texture_disk_cache=TextureDiskCache(cache/'texture_preview')
             from rc2016.viewer.native_glsl import TranslationDiskCache
-            self.archive.translation_disk_cache=TranslationDiskCache(Path(__file__).resolve().parents[2]/'.cache'/'native_translation')
-            self.archive.cinematic_disk_cache=Path(__file__).resolve().parents[2]/'.cache'/'cinematic_directory'
+            self.archive.translation_disk_cache=TranslationDiskCache(cache/'native_translation')
+            self.archive.cinematic_disk_cache=cache/'cinematic_directory'
             self.source_root=source_root
             self.identity=None;self.current=None;self.texture_cache={};self.preview_cache={}
             self._recent.clear();self._recent_identity=None
@@ -264,11 +267,9 @@ class SourcePreviewLoader:
     def archive_textures(self, source_root):
         """Every texture in the archive, model or not: [{'path', 'folder'}] sorted by path."""
         with self.lock:
-            archive=self._ensure_archive(source_root)
-        from rc2016.viewer.textures import _suffix, is_placeholder_texture
-        paths=sorted({e['path'] for e in archive.entries.values()
-                      if e['type']=='texture' and e['built_path'].lower().endswith('.built') and not is_placeholder_texture(e['path'])})
-        return [dict(path=p,suffix=_suffix(p),materials=[],via_graph=False) for p in paths]
+            archive=self._ensure_archive(source_root);game=self.game
+        from rc2016.viewer.textures import _suffix
+        return [dict(path=p,suffix=_suffix(p),materials=[],via_graph=False) for p in game.texture_paths(archive)]
 
     # Flash UI (.gfx/.swf) ---------------------------------------------------
     def ui_files(self, source_root):
@@ -340,12 +341,12 @@ class SourcePreviewLoader:
 
     def texture_image(self, texture_path, index=0):
         """(Pillow image, facts) for the Textures tab; reuses the 3D view's decoded textures."""
-        from rc2016.viewer.textures import FORMAT_NAMES, load_texture, to_image
-        archive=self.archive
+        from rc2016.viewer.textures import FORMAT_NAMES, to_image
+        archive,game=self.archive,self.game
         if archive is None:raise ValueError('No source archive is loaded')
         texture=self.preview_cache.get(texture_path)
         if texture is None:
-            with self.texture_lock:texture=load_texture(archive,texture_path)
+            with self.texture_lock:texture=game.load_texture(archive,texture_path)
             self.preview_cache[texture_path]=texture
         index=min(max(0,index),texture.get('array_size',1)-1)
         facts=dict(path=texture_path,format=texture['format'],format_name=FORMAT_NAMES.get(texture['format'],str(texture['format'])),
@@ -356,19 +357,18 @@ class SourcePreviewLoader:
     def texture_thumbnail(self, texture_path, size=96):
         """RGB Pillow thumbnail (at most size px) of a texture's top mip, for the texture grid."""
         from PIL import Image
-        from rc2016.viewer.textures import load_texture, to_image
-        archive=self.archive
+        from rc2016.viewer.textures import to_image
+        archive,game=self.archive,self.game
         if archive is None:raise ValueError('No source archive is loaded')
         with self.texture_lock:
-            image=to_image(load_texture(archive,texture_path),0)
+            image=to_image(game.load_texture(archive,texture_path),0)
         image=image.convert('RGB')
         image.thumbnail((size,size),Image.Resampling.LANCZOS)
         return image
 
     def export_textures(self, paths, folder, formats, flip=False, progress=None):
-        from rc2016.viewer.textures import export_textures
         if self.archive is None:raise ValueError('No source archive is loaded')
-        return export_textures(self.archive,paths,folder,formats,flip,progress)
+        return self.game.export_textures(self.archive,paths,folder,formats,flip,progress)
 
     RECENT_MODELS = 6
     RECENT_VERTEX_BUDGET = 1_500_000
@@ -456,28 +456,25 @@ class SourcePreviewLoader:
                 sum(c['vertices'] for c in self._recent.values())>self.RECENT_VERTEX_BUDGET):
             self._recent.popitem(last=False)
 
-    def _decode(self, archive, model_id, source_path, purpose, texture_cache):
-        """Decode one model into a _recent entry. Runs without self.lock."""
-        packed,packed_hash=archive.bytes(model_id)
-        data,codec=decompress(packed)
-        decoded=decode_model(source_path,lod='All',data=data,as_arrays=purpose=='view')
-        sections=section_table(data,0)
-        joint_count=next((s['size']//16 for s in sections if s['label_hash']=='0x15DF9D3B'),0)
-        decoded.update(packed_sha256=packed_hash,codec=codec,joint_count=joint_count)
+    def _decode(self, archive, model_id, source_path, purpose, texture_cache, game=None):
+        """Decode one model into a _recent entry. Runs without self.lock. ``game`` (rc2016.games) is the
+        archive's game; the decode and texture reads dispatch through it once per model."""
+        game=game or self.game
+        decoded,data=game.decode_model(archive,model_id,source_path,purpose=='view')
         if purpose=='view':
-            from rc2016.viewer.textures import FORMAT_NAMES, material_textures, model_texture_list, texture_header
+            from rc2016.viewer.textures import FORMAT_NAMES
             translations={}
-            decoded['textures']=material_textures(archive,decoded['materials'],texture_cache,translations,hd=True)
-            decoded['texture_list']=model_texture_list(archive,decoded['materials'])
+            decoded['textures']=game.material_textures(archive,decoded['materials'],texture_cache,translations,hd=True)
+            decoded['texture_list']=game.model_texture_list(archive,decoded['materials'])
             for row in decoded['texture_list']:
                 try:
-                    header=texture_header(archive,row['path'])
+                    header=game.texture_header(archive,row['path'])
                     full=(header['hd_width'],header['hd_height']) if header['hd_width'] else (header['sd_width'],header['sd_height'])
                     row.update(format=header['format'],format_name=FORMAT_NAMES.get(header['format'],str(header['format'])),width=full[0],height=full[1])
                 except (ValueError,KeyError,OSError) as error:
                     row.update(format_name='unreadable',error=str(error))
-            decoded['material_rules']=material_rules(archive,decoded['materials'],translations)
-            decoded['effect_preview']=_effect_preview(archive,data,source_path)
+            decoded['material_rules']=game.material_rules(archive,decoded['materials'],translations)
+            decoded['effect_preview']=game.effect_preview(archive,data,source_path)
         else:
             decoded.update(textures={},texture_list=[],material_rules={},effect_preview=None)
         decoded['_archive_path']=source_path;decoded['animation_note']='';decoded['animsets']=[]
@@ -500,9 +497,9 @@ class SourcePreviewLoader:
             cached=self._recent.get(identity)
             if cached is not None:
                 self._remember(identity,cached)
-            texture_cache=self.texture_cache
+            texture_cache,game=self.texture_cache,self.game
         if cached is None:
-            cached=self._decode(archive,model_id,source_path,purpose,texture_cache)
+            cached=self._decode(archive,model_id,source_path,purpose,texture_cache,game)
             with self.lock:
                 if self.archive is not archive:
                     raise ValueError('The source archive changed while the model loaded; select it again')

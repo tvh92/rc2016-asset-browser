@@ -310,7 +310,7 @@ class LoaderTests(unittest.TestCase):
             seen.append(loader.lock.acquire(blocking=False))
             if seen[-1]: loader.lock.release()
             return real(*a, **k)
-        with patch.object(ld, 'decode_model', side_effect=decode):
+        with patch.object(nm, 'decode_model', side_effect=decode):   # read by the R&C 2016 game adapter at decode time
             loader.load(Path.cwd(), 'id', 'a/b.model', 'All', 0, None, True)
         self.assertEqual(seen, [True])
 
