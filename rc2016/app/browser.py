@@ -84,6 +84,8 @@ def rule_text(material):
         return f'shading: exact rule — decoded writer of graph {graphs}'
     if kind == 'family fallback':
         return f"shading: family fallback ({material['rule'].rstrip('/')}*) — graph {graphs} has no rule of its own"
+    if kind == 'rift apart preview':
+        return f'shading: Rift Apart preview — base colour and normal from the material slots; graph {graphs} not decoded'
     if kind == 'generic reading':
         return f'shading: generic reading (coloured F0 + gloss alpha) — graph {graphs} has no decoded rule'
     return 'shading: generic reading — the material names no material graph'

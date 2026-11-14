@@ -1,6 +1,6 @@
 # Rift Apart (PC)
 
-The Rift Apart reader lives in `rc2016/games/rcra/`. It reads the Steam PC install directly: nothing is extracted, and nothing is written to the game folder. This page covers the archive layer and model geometry. Texture and material decoding are added in later steps.
+The Rift Apart reader lives in `rc2016/games/rcra/`. It reads the Steam PC install directly: nothing is extracted, and nothing is written to the game folder. This page covers the archive layer, model geometry, textures and the material texture slots behind the viewer's labelled preview.
 
 The layouts below were taken from three references and then checked against the installed files:
 
@@ -133,6 +133,95 @@ These sections are listed in `unsupported_sections` and are not interpreted.
 
 **Models without geometry:** 24 models have no vertex or mesh section, only looks, locators or joints. Decoding one raises `UnsupportedModelError` with a message saying so.
 
+## Textures
+
+`rc2016/games/rcra/texture.py` reads `.texture` assets. It returns the same dicts as the 2016 viewer's texture functions:
+
+- `load_texture`, `load_texture_full` and `read_top_mip` return the loaded top mip.
+- `texture_header` returns the header facts.
+- `export_textures` also writes the asset and its HD stream.
+- `archive_textures` lists every texture in the install.
+
+### Layout
+
+- **Asset header:** the 36-byte toc header comes first: u32 type `0x8F53A199`, u32 DAT1 size, u32 SD byte count.
+- **DAT1:** a small DAT1 follows. Its one section, `0x4EDE3593`, is the 44-byte texture header.
+- **SD mip chain:** follows the DAT1.
+- **HD stream:** a streamed texture's headerless toc row holds the larger top mips the SD chain lacks.
+
+**Header fields.** The 2016 game uses the same layout.
+
+| Offset | Field |
+| --- | --- |
+| +0 | u32 SD bytes |
+| +4 | u32 HD bytes |
+| +8 | u16 HD width, u16 HD height |
+| +12 | u16 SD width, u16 SD height |
+| +16 | u16 array size |
+| +18 | u8 Insomniac format, u8 planes |
+| +20 | u16 DXGI format |
+| +30 | u8 SD mip count |
+| +32 | u8 HD mip count |
+
+### Storage on PC
+
+**Mips** are stored linearly in DXGI order. There is no tiling.
+
+**Arrays and cube maps** store one whole chain per slice, back to back.
+- A cube map has an SD payload exactly six chains long (108 sky and probe textures). Its six faces are read as six slices.
+
+**Format coverage.** All 12,502 headers parse, and their SD and HD sizes match the computed chains exactly.
+- **Previewable:** BC1–BC7, BC6H, RGBA8, R8 and R8G8.
+- **Sized but not previewed:** the float data formats (RG32F, RGBA16F, RGBA32F, RG16F, RG16, R16F) used by vertex-animation and lookup textures.
+
+## Materials and the viewer preview
+
+`rc2016/games/rcra/material.py` reads the texture slots of a `.material`. It also provides the `Game` hooks `material_textures`, `model_texture_list`, `material_rules` and `effect_preview`.
+
+### Layout
+
+- **Asset header:** a material asset is the 36-byte toc header (type `0x88730155`) and a DAT1 of the same type.
+- **Section `0xF5260180`** begins with ten u32:
+  1. section size
+  2. parameter count
+  3. unknown
+  4. unknown
+  5. parameter batch end
+  6. texture count
+  7. texture batch start
+  8. texture batch end
+  9. unknown
+  10. unknown
+- **Texture records:** each is (u32 string offset from the batch end, u32 slot key). The strings follow the batch.
+- **Section `0xE1275683`** is the 40-byte flags block, as in the 2016 game.
+- **Fur materials** have no `0xF5260180` section, so they bind no textures.
+
+### Slot keys
+
+Slot keys are the low 32 bits of the 2016 game's `0x49A7866B........` slot hashes. Across 5,721 materials they bind the same texture suffixes:
+
+| Slot key | Texture | Count |
+| --- | --- | --- |
+| `ABDAD780` | Base colour (`_c`) | 2,600 of 2,862 |
+| `7AE34E7A` | Normal (`_n`) | 2,591 of 2,647 |
+| `1576D848` | `_g` | — |
+| `E68930AC` | `_m` mask | — |
+
+### The labelled preview
+
+The viewer draws a labelled **Rift Apart preview** (`rule_kind 'rift apart preview'`).
+
+**What the preview uses:**
+- **Base colour:** from the material's `ABDAD780` slot.
+- **Normal:** from the material's `7AE34E7A` slot.
+- **Everything else:** neutral parameters.
+
+**What it leaves out:**
+- **`_g` and `_m` maps:** their channel meanings are not decoded.
+- **Material graphs:** no graph shader is translated.
+- **Gloss, metal, emission and blending:** these are review values, not game data.
+- **Fur shells:** they have no texture slots, so they draw in the neutral colour.
+
 ## Evidence tool
 
 ```bash
@@ -143,7 +232,7 @@ python -m rc2016.games.rcra.inspect --game <install> --output-root <folder> --su
 
 ## Tests
 
-`tests/test_rcra_archive.py` and `tests/test_rcra_model.py` each have two parts:
+`tests/test_rcra_archive.py`, `tests/test_rcra_model.py` and `tests/test_rcra_texture.py` each have two parts:
 
-- **Synthetic tests** build a small toc, dag and set of DSAR archives, or a two-mesh model.
+- **Synthetic tests** build a small toc, dag and set of DSAR archives, a two-mesh model, or texture and material assets.
 - **Real-install tests** read `RCRA_GAME` (the install folder) and skip when it is not set. They also compare bytes against ALERT's own TOC2 reader.
