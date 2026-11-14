@@ -1,6 +1,6 @@
 # Rift Apart (PC)
 
-The Rift Apart reader lives in `rc2016/games/rcra/`. Rift Apart is a PS5 game; the reader takes its Steam PC release, not a PS5 dump, and reads the install directly: nothing is extracted, and nothing is written to the game folder. This page covers the archive layer, model geometry, textures and the material texture slots behind the viewer's labelled preview.
+The Rift Apart reader lives in `rc2016/games/rcra/`. Rift Apart is a PS5 game; the reader takes its Steam PC release, not a PS5 dump, and reads the install directly: nothing is extracted, and nothing is written to the game folder. This page covers the archive layer, model geometry, textures, the material texture slots behind the viewer's labelled preview, and the translation of the games' own shader programs.
 
 The layouts below were taken from two references and then checked against the installed files:
 
@@ -411,6 +411,117 @@ The one decoded graph. 44 materials use it, among them the Nefarious trooper and
 - **Exposure:** `m_AdaptedLuminance` is not known. The preview uses 1.0 (`RCRA_ADAPTED_LUMINANCE`), so a material with a large `emission` (the trooper and swarmer domes: 15) draws far brighter than a lit surface.
 - **Blender:** there is no Blender rule; the Blender scene is not available for Rift Apart.
 
+**Translated program.** The automatic path (see [Material graph shaders](#material-graph-shaders)) reproduces these equations: on the trooper dome, with the real material values and textures, its alpha and emissive colour match them to float precision (`tests/test_rcra_shaders.py`). The translation also shows the terms the preview leaves out:
+- the material and vertex alpha (`TEXCOORD.w`) and the per-draw alpha override (`MatDrawCB.m_AlphaOverrides`)
+- the custom clip plane and the dissolve test on `TEXCOORD.z`, which set the alpha to 0
+- a fog factor on the alpha, gated by render flag `0x4000000`
+- the unlit path: with render flag `0x400` clear, the lighting term is exactly 1
+- the normal frame: the vertex tangent and its bitangent sign, not screen derivatives
+
+## Material graph shaders
+
+Every `.materialgraph` carries its compiled programs, and the engine's own passes are in `RiftApart.exe`. Both are read in place; nothing is copied out of the game folder.
+
+| Module | Role |
+| --- | --- |
+| `rc2016/shaders/dxbc.py` | DXBC container: chunks, RDEF reflection (constant buffers with struct members, bindings), signatures, and the SM4/SM5 token stream. DXIL containers are identified only. |
+| `rc2016/shaders/sm5.py` | SM5 program to a typed expression DAG, with a numeric evaluator. |
+| `rc2016/games/rcra/shaders.py` | Pass table, pass programs, the generic material binding and the neutral engine profile. |
+
+### Programs in a graph
+
+- **Shader section `0xBBFC8900`:** entries on 16-byte boundaries, with zero bytes between some of them. An entry is a 12-byte header (u32 magic `IGSH`, u32 SM5 size, u32 DXIL size), the SM5 container, then the DXIL container. Raytracing libraries use magic `IGRS` and are DXIL only (395 graphs).
+- **Pass table `0x8C049CCA`:** 18 records (1,281 graphs) or 36 (193 graphs) of (u32 flags, u32 hash, u32 entry offset from the section start, u32 entry size). The record index is the pass slot; an entry's size is 12 + SM5 + DXIL.
+- **Raytracing record `0xF9C35F30`:** one record of the same shape, pointing at the `IGRS` entry.
+
+The slot meanings below come from each program's stage, outputs and bindings across all 1,474 graphs:
+
+| Slot | Graphs | Program |
+| --- | --- | --- |
+| 1 | 1,474 | Forward pixel program, one target. It does its own lighting: light grid, probes, sun shadows, SSR, GI, fog. |
+| 4 | 1,474 | G-buffer pixel program, 4 targets (5 in 54 graphs): packed normal and specular, albedo and occlusion or emission, view depth, velocity. |
+| 5 | 1,474 | The same writer without velocity (3 targets). |
+| 8 | 1,474 | Depth-only pixel program (alpha test). |
+| 11 | 1,474 | Two-target pixel program. |
+| 15, 16 | 1,474 | GI voxelization pixel program (UAV stores) and its geometry program. |
+| 3, 7, 10, 13, 17 | 208 | Vertex programs of vertex-deforming graphs. |
+| 0, 14, 18 to 31 | fewer | Other pixel and vertex programs, mostly in the 36-record tables. |
+
+The engine vertex program that feeds slots 1, 4 and 5 is in the exe (vertex pulling from `g_MainVBPosView`, `g_MainVBNrmTanView`, `g_MainVBUV0View` and others). Its translation gives the interpolants:
+
+| Interpolant | Content |
+| --- | --- |
+| `TEXCOORD.xy` | UV0 (int16 × the subset's UV scale / 16384) |
+| `TEXCOORD.zw` | Material and object values (dissolve, alpha) |
+| `TEXCOORD1.xy` | UV1 |
+| `TEXCOORD2.xyz`, `.w` | World normal; instance index + 0.25 |
+| `TEXCOORD3.xyz`, `.w` | World tangent; bitangent sign |
+| `TEXCOORD4` | Vertex colour or paint |
+| `TEXCOORD5` | Previous clip position (velocity) |
+
+### Translation
+
+`dxbc.program` decodes the token stream: opcodes, operands with swizzles, masks, modifiers and relative indices, declarations and the immediate constant buffer. Over all 7,899 distinct SM5 programs in the graphs, its instruction list matches `D3DDisassemble`, mnemonic by mnemonic and operand count by operand count. The one naming difference is the disassembler's `resinfo_uint`.
+
+`sm5.translate` turns a program into a hash-consed DAG:
+
+- **Types:** every node is a float, an integer bit pattern or a comparison result. Bitcasts fold for constants; folding uses float32 arithmetic.
+- **Branches:** each `if`, `else` and `switch` case runs as its own region and joins with one `select` per register.
+- **Loops:** a loop is unrolled while its exit condition folds. A data-dependent loop (a light list, for example) poisons only the registers it writes, with an `unknown` node, so outputs that do not depend on it still translate.
+- **Discard and return:** both become predicates.
+- **Names:** constant-buffer reads become inputs named from the reflection, such as `GlobalWorldCBuffer.m_KeyLightVec+4` or `MultiCustomMaterialCB.g_CustomMaterial_Buffer+12`. Interpolants become inputs named by semantic, such as `TEXCOORD2.x`. Texture reads become `sample` and `load` nodes carrying the binding name.
+- **Compute programs:** UAV stores are kept with their predicate (`Translation.stores`).
+
+A `Bindings` object can replace any input during translation.
+
+**Material binding.** The binding is the same for every graph:
+- `cb2` (`MultiCustomMaterialCB`) holds the graph's float defaults, overwritten by the material's values at the graph's offsets (`material_constants`).
+- Texture unit `t(5 + u)` (`textureUnit<5+u>`) is the graph's slot-table row `u`: the material's texture for that slot, else the row's default (`material_units`).
+
+**Neutral engine profile** (`NEUTRAL_INTEGERS`, `NEUTRAL_FLOATS`): no local lights or probes (lookup word counts 0), no debug view (`m_MiscFlags` 0), no optional features (`m_FeatureFlags`, `m_RTFlags` 0) and 8 sun-shadow taps. These are viewer choices, not game data. Every other engine input stays a named input.
+
+### Coverage
+
+With the neutral profile, over all programs (`ready` means no output depends on an unknown value):
+
+| Slots | Ready | Material uses covered |
+| --- | --- | --- |
+| G-buffer 4 and 5 | 1,449 of 1,474 programs | 5,611 of 5,692 |
+| Forward 1 | 356 fully, 1,073 in part, 45 not at all | 552 of 5,692 fully |
+| Vertex 3, 7, 10, 13, 17 | 194 of 208 | 526 of 583 |
+
+The forward programs still in part keep further engine loops, so their outputs need more engine inputs bound. Not translated:
+- groupshared memory
+- tessellation control-point inputs (3 graphs)
+- UAV atomics
+- the DXIL-only raytracing libraries
+
+### G-buffer and deferred lighting
+
+The G-buffer writer of `basic_normal_gloss` (666 materials) translates fully. The engine's deferred apply programs are compute programs in the exe that read `g_GBufNormalSpec`, `g_GBufDiffuseEmis` and `g_GBufExtra`. Their translations decode the targets:
+
+| Target | Content |
+| --- | --- |
+| NormalSpec x, y | Normal: 12 bits each, `n = v × 0.00069070 − 1.41421` (octahedral-style, z sign in bit 15 of y); class in bits 13 to 15 of x (bit 12 set means class 0) |
+| NormalSpec z, w | Bytes: F0 red, F0 green (z high, low), F0 blue (w high), gloss (w low). F0 is stored as `sqrt(F0) × 255` and read as `(byte / 255)²`. |
+| DiffuseEmis rgb | Albedo (`basic_normal_gloss`: `t5.rgb × tint`, `cb2` dwords 0 to 2) |
+| DiffuseEmis a | Occlusion when NormalSpec y bit 13 is set; otherwise emission `2^(5a) − 1` |
+
+The class-0 apply program (exe offset 59122268) gives the deferred BRDF. It is not the R&C 2016 one ([shading](shading.md#opaque-deferred-brdf)):
+
+| Term | Rift Apart |
+| --- | --- |
+| GGX | `α = (0.9725 − 0.7514 gloss)²` |
+| Visibility | Smith joint approximation, `0.5 / (NL (NV (1 − α) + α) + NV (NL (1 − α) + α))` |
+| Fresnel | Schlick, F90 = 1 |
+| Diffuse | Lambert `sat(N·L)`, no 1/π, times the light colour |
+
+### Not done yet
+
+- **Viewer:** the viewer does not draw translated programs yet. The glass preview is still the hand-written `uKind 26` program.
+- **Blender:** no Blender node emitter or Rift Apart BRDF group exists yet.
+- **Engine inputs:** the key light, ambient and probe values the programs read are not chosen yet, and neither are the engine textures (`g_BrdfLookup`, `g_EnvProbeDefault`).
+
 ## Evidence tool
 
 ```bash
@@ -425,3 +536,5 @@ python -m rc2016.games.rcra.inspect --game <install> --output-root <folder> --su
 
 - **Synthetic tests** build a small toc, dag and set of DSAR archives, a two-mesh model, texture and material assets, clips (plain and with a frame table) or skin batches (with a palette and a joint base).
 - **Real-install tests** read `RCRA_GAME` (the install folder) and skip when it is not set. They also compare bytes against ALERT's own TOC2 reader.
+
+`tests/test_sm5.py` compiles small HLSL programs with Windows' `d3dcompiler_47` at test time, checks the decoder against `D3DDisassemble` and the translator against known results (branches, loops, switch, bit packing, discard, reflection names, UAV stores). It skips without the DLL. `tests/test_rcra_shaders.py` (`RCRA_GAME`) checks the pass table, the glass forward program against the hand decode on the trooper dome, and the `basic_normal_gloss` G-buffer writer.

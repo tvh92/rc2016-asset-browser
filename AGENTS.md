@@ -20,7 +20,7 @@ It reads two games. The folder picked as the source decides which one (`rc2016/g
 | `rc2016/export/` | Portable model export and the Blender conversion script |
 | `rc2016/formats/` | Archive, index, model, skeleton, texture, material and animation decoders |
 | `rc2016/games/` | The game seam: folder detection, per-game capabilities and hooks, the R&C 2016 adapter, and the Rift Apart PC reader (`rcra/`, [docs](docs/rift-apart.md)) |
-| `rc2016/shaders/` | Materialgraph shader analysis: GCN decoder, translation, families, Blender node emission and validation |
+| `rc2016/shaders/` | Materialgraph shader analysis: GCN decoder, translation, families, Blender node emission and validation; the DXBC reader and SM5 translator for Rift Apart programs (`dxbc.py`, `sm5.py`) |
 | `rc2016/pipeline/` | Research Blender pipeline (`run.py` CLI, `builder.py` in Blender), deferred BRDF (`game_shader.py`), scene defaults, lighting, profiles, weapon profile data (`weapons/`) |
 | `assets/` | Shared review lighting (JSON + CC0 HDRI) and the captured game-view tables |
 | `third_party/` | ALERT `dat1lib` (GPL-3.0, weapon config links) and opengnm `gcn_types.h` (MIT) |
