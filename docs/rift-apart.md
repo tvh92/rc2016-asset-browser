@@ -8,6 +8,39 @@ The layouts below were taken from three references and then checked against the 
 - ripped_apart (MIT)
 - riftripper (GPL-3.0)
 
+## How the browser picks the game
+
+The folder chosen as the game folder picks the game, and the browser shows only that game's assets. `rc2016/games/` holds one `Game` record per game. `games.detect(folder)` tries them in this order:
+
+| Game | Recognised by |
+| --- | --- |
+| Rift Apart | A `toc` whose first u32 is `0x34E89035`, a `dag` file and a `d/` folder |
+| R&C 2016 | Exactly one extracted archive root under the folder (`layout.csv`, `toc`, `dag`, `chunkmap.txt` and segment files) |
+
+A folder that matches neither gets an error naming both games. With the Transform only backend, a folder that matches neither is read as R&C 2016 loose files.
+
+Once the scan recognises the game:
+
+- The window title becomes "R&C Asset Browser — <game>".
+- Settings keep a folder and an output root per game (`game.<id>.source`, `game.<id>.output`) beside the last-used `source` and `output`.
+- An installed game, under Program Files or in a Steam library, never receives output. Its default output root is `Documents\R&C Asset Browser\<game> Output`.
+
+Each `Game` record declares its capabilities and supplies hooks: model decode, material textures and rules, texture header, texture listing, loading and export, export material maps and shadow-only flags. Dispatch happens once per source open and once per model decode or export, so no hot loop sees the seam. R&C 2016's record names the functions it used before the seam, and its caches stay directly in `.cache/`. Other games cache under `.cache/<game id>/`.
+
+### What Rift Apart supports
+
+Rift Apart's capabilities are `models`, `textures` and `export`:
+
+- **Supported:** browsing, the 3D model view with its labelled preview shading, the Textures tab, and model export to GLB, glTF and OBJ (FBX and USD through Blender).
+- **Disabled:** the Level and Flash UI types, animation export, the backend choice, the Blender scene and the shading filter. Each is greyed out with the tip "Not yet available for Rift Apart".
+- **Model list:** read in-process through `Game.list_models`, without the pipeline subprocess.
+
+The export writes only what is decoded, through `rc2016/games/rcra_export.py`:
+
+- Each material's base colour and its normal map, at full resolution.
+- Every material is opaque, single-sided, non-metallic and fully rough, and its notes say so.
+- A texture stored in a float or 16-bit data format is left out with a note, because its 8-bit conversion is not decoded. One example is the 4×4 `R32G32_FLOAT` `default_pink_shader_n` placeholder.
+
 ## Install layout
 
 | File | Contents |
