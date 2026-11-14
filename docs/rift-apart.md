@@ -250,9 +250,59 @@ The viewer draws a labelled **Rift Apart preview** (`rule_kind 'rift apart previ
 
 **What it leaves out:**
 - **`_g` and `_m` maps:** their channel meanings are not decoded.
-- **Material graphs:** no graph shader is translated.
+- **Material graphs:** no graph shader is translated, except architecture glass (next section). 1,474 graphs exist; 1,386 are bound by materials and 29 materials bind none.
 - **Gloss, metal, emission and blending:** these are review values, not game data.
 - **Fur shells:** they have no texture slots, so they draw in the neutral colour.
+
+### Architecture glass (`gbl_arch_glass`)
+
+The one decoded graph. 44 materials use it, among them the Nefarious trooper and swarmer domes. Every graph embeds its shaders (about 15 DXBC containers each, SM5 and DXIL, with named reflection), so the rule is traced to the graph's forward pixel shader (SM5 `ps_5_0`, disassembled with `D3DDisassemble`), not to a capture. The viewer draws these materials alpha-over through the forward glass program (`uKind 26`; GLSL comment in `rc2016/viewer/shading.py`), with `rule_kind 'rift apart glass'`.
+
+**Graph layout** (`graph_layout`). Three sections of the graph, then the material's own values (`material_parameters`):
+
+| Section | Content |
+| --- | --- |
+| `0x1CAFE804` (graph) | Slot table, rows of (u32 default-texture string offset, u16, u16 unit, u64 slot hash). Unit `u` is texture register `t(5 + u)`. |
+| `0x45C4F4C0` (graph) | Parameter records (u16 byte offset, u16 byte size, u32 key); the offset is the dword position in `cb2`. |
+| `0xA59F667B` (graph) | The float defaults of `cb2`. |
+| `0xF5260180` (material) | The same record layout from byte 40, its values in a block that starts at header word 2. |
+
+`cb2` is the graph's defaults overwritten by the material's values at the graph's offsets. An unbound texture unit takes the graph's default texture.
+
+**Texture units**
+
+| Unit | Slot | Role | Use |
+| --- | --- | --- | --- |
+| `t5` | `A6C3B1D5` | `_pick` | One scalar, added to the alpha. The default is a mid-grey. |
+| `t6` | `ABDAD780` | `_window_c` | Colour. |
+| `t7` | `7AE34E7A` | `_n` | Normal x, y. |
+| `t8` | `6376D191` | `_window_g` | F0 in rgb, gloss in alpha. |
+
+**Parameters** (dword in `cb2`; the trooper dome value in brackets, then the graph default)
+
+| Dword | Key | Name | Use |
+| --- | --- | --- | --- |
+| 0 | `FD3F0F1D` | `soft_flag` | Scene-depth fade on the colour and alpha (1, default 1). |
+| 1 | `0C0A6B30` | `emissive_adapt` | Non-zero: the emission is scaled by 4 `m_AdaptedLuminance` (1, default 0). |
+| 2 | `24F4CA4C` | `gloss_scale` | Scale of the `t8` gloss (0.9, default 1). |
+| 3 | `70137DA7` | `rim_width` | Width of the grazing rim (0.2, default 0.25). |
+| 4 | `74979B4A` | `colour_k` | Colour factor at full alpha (0.5, default 5). |
+| 5 | `8E7EC8A1` | `g_mode` | At or above 0.5 `t8` is F0 rgb and gloss alpha; below, F0 is `t8.g` and gloss is `sqrt(t8.r)` (1, default 0). |
+| 6 | `06F19114` | `emission` | Self-lit amount (15, default 0.05). |
+| 7 | `CAF31501` | `alpha_floor` | Lowest alpha before the rim and `t5` (0.4, default 0.4). |
+
+**Equations.** `N' = normalize((1 - x² - y²) N + x T + y B)`, `(x, y) = 2 n.rg - 1`.
+- **Rim:** `rim = sat(((1 - N'·V)⁴ - w/2) / (w/2))`.
+- **Alpha:** `pre = max(rim, floor) + t5.r`, `alpha = sat(pre)`, times the vertex alpha (taken as 1).
+- **Colour:** `c' = c (1 + sat(pre + soft_flag · depth_fade) (k - 1))` with `depth_fade` 0 here, emission `E = emission (1 - rim/2)`, times `4 L` with the adapt flag.
+- **Specular:** GGX alpha `(0.9725 - 0.7514 gloss)⁴`, Schlick Fresnel on `F0`.
+- **Result:** `rgb = c' (E + Ld) + specular`, then the fog.
+
+**Not decoded.** These are viewer stand-ins, and the preview says so (`GLASS_LIMITATION`):
+- **Lighting:** the light list, shadows, probe and screen-space reflections and fog are the viewer rig. The specular lobe is the shared glass lobe, not the program's own visibility term (its Fresnel has F90 = 1).
+- **Frame:** the soft depth fade is 0 (no scene depth); the vertex alpha, the alpha override and the dissolve discard are 1, 0 and off; the normal frame comes from screen derivatives, not the vertex tangent.
+- **Exposure:** `m_AdaptedLuminance` is not known. The preview uses 1.0 (`RCRA_ADAPTED_LUMINANCE`), so a material with a large `emission` (the trooper and swarmer domes: 15) draws far brighter than a lit surface.
+- **Blender:** there is no Blender rule; the Blender scene is not available for Rift Apart.
 
 ## Evidence tool
 
@@ -264,7 +314,7 @@ python -m rc2016.games.rcra.inspect --game <install> --output-root <folder> --su
 
 ## Tests
 
-`tests/test_rcra_archive.py`, `tests/test_rcra_model.py` and `tests/test_rcra_texture.py` each have two parts:
+`tests/test_rcra_archive.py`, `tests/test_rcra_model.py`, `tests/test_rcra_texture.py` and `tests/test_rcra_glass.py` each have two parts:
 
 - **Synthetic tests** build a small toc, dag and set of DSAR archives, a two-mesh model, or texture and material assets.
 - **Real-install tests** read `RCRA_GAME` (the install folder) and skip when it is not set. They also compare bytes against ALERT's own TOC2 reader.

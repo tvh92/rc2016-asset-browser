@@ -44,7 +44,7 @@ Equations, slot meanings and graph families are in [shading](docs/shading.md); t
 - `_c` alpha is a self-lit mask, never transparency. `_n` is a DirectX tangent normal at strength 1.0 without a green flip.
 - Opaque surfaces use the game's deferred BRDF (`rc2016/pipeline/game_shader.py`, the viewer's `rc2016/viewer/shading.py`) with metallic 0. Never tune shading by eye: every term must trace to decoded data or be labelled as a preview.
 - Blend and cull come from the `.material` flags word (`rc2016/pipeline/render_state.py`). Glass, energy and VFX forward materials only have the specific decoded rules in the docs.
-- Rift Apart has no decoded shading: its viewer preview uses only the base colour and normal slots and is labelled as a preview. Never apply 2016 material rules, graph translations or slot meanings to Rift Apart without decoding them from its own files.
+- Rift Apart decodes one graph, `gbl_arch_glass` ([docs](docs/rift-apart.md#architecture-glass-gbl_arch_glass)); every other material's viewer preview uses only the base colour and normal slots and is labelled as a preview. Never apply 2016 material rules, graph translations or slot meanings to Rift Apart without decoding them from its own files.
 - New viewer material rules must be mirrored in the Blender front-end (`materials.viewer_graph_rule`, `game_shader.apply_viewer_graph_rule`) and checked by `rc2016/shaders/validation.py`.
 
 ## Pipeline

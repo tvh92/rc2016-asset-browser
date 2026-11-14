@@ -1333,6 +1333,17 @@ void main() {
 #   alpha = sat(attribute0.w sat(S)); rgb = A F (1 + S) (0.8894421, 5, 4.523306) (the fog term (1 - F) fog is the viewer's).
 #   Static values are the test-dummy capture frame's (checked per pixel on its draw); animated, t is the effect clock and r
 #   the frame_fade stand-in.
+# uKind 26, rcra_arch_glass: the Rift Apart graph gbl_arch_glass (44 materials, e.g. the Nefarious trooper and swarmer domes), read from
+#   the forward ps_5_0 program embedded in the graph (docs/rift-apart.md); alpha-over. Units t5..t8 = the graph's slot table in order:
+#   t5 = slot A6C3B1D5 (_pick, one scalar), t6 = ABDAD780 base colour c (_window_c), t7 = 7AE34E7A normal (_n, xy), t8 = 6376D191 (_window_g,
+#   F0 rgb and gloss a); an unbound unit takes the graph's default texture. cb2 = the graph's defaults overwritten by the material's
+#   values: uA = (soft depth flag, emission adapt flag, gloss scale, rim width), uB = (colour k, _g mode, emission, alpha floor),
+#   uC.x = the adapted luminance stand-in (RCRA_ADAPTED_LUMINANCE). N' = normalize((1 - x^2 - y^2) N + x T + y B), (x, y) = 2 n.rg - 1;
+#   rim = sat(((1 - N'.V)^4 - w / 2) / (w / 2)), pre = max(rim, floor) + t5.r; alpha = sat(pre) (vertex alpha and the alpha override
+#   are 1); c' = c (1 + sat(pre) (k - 1)) (the soft depth term is 0 without scene depth); E = emission (1 - rim / 2), times 4 L when
+#   the adapt flag is set; F0 = t8.rgb and gloss = sat(a t8.a gloss scale) (mode >= 0.5, else F0 = t8.g, gloss = sat(sqrt(t8.r) scale));
+#   GGX alpha = (0.9725 - 0.7514 gloss)^4; rgb = c' (E + Ld) + specular (the program's light list, probes, SSR and fog are the
+#   viewer rig, its lobe the shared glass one, not the program's own visibility term and F90 = 1).
 GLASS_FRAGMENT = """
 #version 120
 #extension GL_ARB_shader_texture_lod : enable
@@ -1597,6 +1608,37 @@ void main() {
         vec3 Ld = (max(dot(Ns, L1), 0.0) * C1 + max(dot(Ns, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
         vec3 body = mix(uA.rgb, uC.rgb, hA) * c5 + uC.w * windowEnvironment(reflect(-V, Ns), a);
         color = Ld * body + glassSpec(Ns, V, L1, L2, C1, C2, F0, a, ambient);
+    } else if (uKind == 26) { // Rift Apart gbl_arch_glass (see the uKind 26 comment)
+        vec3 dp1 = dFdx(vPos), dp2 = dFdy(vPos); vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
+        float det = du1.x * du2.y - du1.y * du2.x;
+        float idet = abs(det) > 1e-20 ? 1.0 / det : 0.0;
+        vec3 Pu = (dp1 * du2.y - dp2 * du1.y) * idet, Pv = (dp2 * du1.x - dp1 * du2.x) * idet;
+        vec3 n0 = normalize(vNrm);
+        vec3 T = Pu - n0 * dot(n0, Pu);
+        T *= inversesqrt(max(dot(T, T), 1e-20));
+        vec3 B = cross(n0, T);
+        B *= dot(B, Pv) < 0.0 ? -1.0 : 1.0;
+        vec2 xy = uHasN ? texture2D(uTexN, vUV).rg * 2.0 - 1.0 : vec2(0.0);
+        vec3 Ns = normalize(N * (1.0 - dot(xy, xy)) + T * xy.x + B * xy.y);
+        float s1 = 1.0 - sat(dot(Ns, V)), s2 = s1 * s1, rw = 0.5 * uA.w;
+        float rim = sat((s2 * s2 - rw) / max(rw, 1e-6));
+        float m5 = uHasP ? texture2D(uTexP, vUV).r : 0.0;
+        if (uHasP && uSrgbP) m5 = screenLinear(m5);
+        float pre = max(rim, uB.w) + m5;
+        alpha = sat(pre);
+        vec3 c6 = uHasWindowC ? texture2D(uTexWindowC, vUV).rgb : vec3(0.0);
+        if (uHasWindowC && uSrgbWindowC) c6 = vec3(screenLinear(c6.r), screenLinear(c6.g), screenLinear(c6.b));
+        vec4 g8 = uHasWindowMask ? texture2D(uTexWindowMask, vUV) : vec4(1.0);
+        if (uHasWindowMask && uSrgbWindowMask) g8.rgb = vec3(screenLinear(g8.r), screenLinear(g8.g), screenLinear(g8.b));
+        bool full = uB.y >= 0.5;
+        vec3 F0 = full ? g8.rgb : vec3(g8.g);
+        float gl = sat((full ? g8.a : sqrt(g8.r)) * uA.z);
+        float E = uB.z * (1.0 - 0.5 * rim);
+        if (uA.y != 0.0) E *= 4.0 * uC.x;
+        vec3 ambient = ambientLight(Ns);
+        vec3 Ld = (max(dot(Ns, L1), 0.0) * C1 + max(dot(Ns, L2), 0.0) * C2 + ambient) / PI * diffuseScale();
+        float u = 0.9725 - 0.7514 * gl, a = u * u * u * u;
+        color = c6 * (1.0 + alpha * (uB.x - 1.0)) * (E + Ld) + glassSpec(Ns, V, L1, L2, C1, C2, F0, a, ambient);
     } else if (uKind == 16) { // 4C184DCC Warmonger sight screen (see the uKind 16 comment)
         float t = uB.w;
         float th = -0.25 * t + 0.41176471 * cos(3.0 * t);
@@ -2082,7 +2124,12 @@ GLASS_KINDS = {"character_glass": 1, "glass_patterned": 2, "screen": 3, "water":
                "eye_cornea": 6, "number_display": 7, "glass_basic": 8, "glass_cg02": 9, "glass_jn": 10, "glass_thumper": 11,
                "ion_tubes": 12, "glass_liquid": 13, "window_glass": 14, "glass_tank": 15, "warmonger_reticle": 16, "glass_taxi": 17,
                "turret_shield": 18, "turret_hud": 19, "brain_case": 20, "glass_tinted_spec": 21, "dwarf_star": 22,
-               "flat_incandescent": 23, "decal_gnormal": 24, "energy_ball": 25}
+               "flat_incandescent": 23, "decal_gnormal": 24, "energy_ball": 25, "rcra_arch_glass": 26}
+
+
+# Rift Apart gbl_arch_glass scales its emission by 4 m_AdaptedLuminance (GlobalWorldCB, offset 204) when a material sets the adapt flag. The
+# game's exposure value is not known, so the preview uses 1.0; it is a preview constant, not game data.
+RCRA_ADAPTED_LUMINANCE = 1.0
 
 
 def frame_fade(time, rate):
@@ -2153,6 +2200,10 @@ def glass_uniforms(forward, time=None):
     if forward["kind"] == "glass_tank":
         return (GLASS_KINDS["glass_tank"], (*p["tint"], p["rim_bias"]), (*p["body"], p["gloss"]),
                 (p["f0_base"], p["rim_exp"], 0.0, 0.0), (p["alpha_scale"], 0.0, 0.0, 0.0), (0.0,) * 4)
+    if forward["kind"] == "rcra_arch_glass":
+        return (GLASS_KINDS["rcra_arch_glass"], (p["soft_flag"], p["emissive_adapt"], p["gloss_scale"], p["rim_width"]),
+                (p["colour_k"], p["g_mode"], p["emission"], p["alpha_floor"]), (RCRA_ADAPTED_LUMINANCE, 0.0, 0.0, 0.0),
+                (0.0,) * 4, (0.0,) * 4)
     if forward["kind"] == "glass_taxi":
         return (GLASS_KINDS["glass_taxi"], (*p["tint"], p["height_weight"]),
                 (p["parallax_depth"], p["fade_scale"], p["fade_bias"], p["alpha_test"]),
