@@ -27,7 +27,7 @@ from rc2016.formats.texture_transport import validate_reopened_texture_bindings
 from rc2016.shaders.validation import validate_polygon_used_material_preflights
 from rc2016.pipeline.material_presentation_collector import collect_material_presentation_status
 from rc2016.pipeline.scene_defaults import (apply_new_scene_defaults,audit_scene,_configure_optix_gpu,check_shared_lighting,load_shared_lighting,
-    fit_render_region,fit_render_size,frame_camera_zoom,visible_mesh_points,pack_scene_images)
+    fit_render_region,fit_render_size,frame_camera_zoom,visible_mesh_points,pack_scene_images,review_sun,world_hdri_nodes)
 
 
 # The game stores assets in Y-up coordinates.  Keep source mesh/bone/action data in
@@ -69,7 +69,8 @@ def review_preview_lighting(scene):
     original_world=scene.world
     original_render=(scene.render.resolution_x,scene.render.resolution_y,
         scene.render.resolution_percentage,scene.cycles.samples,scene.render.filepath,scene.frame_current)
-    light_states=[(obj,obj.hide_render) for obj in scene.objects if obj.type=='LIGHT']
+    # The review HDRI sun belongs to the shared lighting (scene_defaults.review_sun) and stays on.
+    light_states=[(obj,obj.hide_render) for obj in scene.objects if obj.type=='LIGHT' and not review_sun(obj)]
     temporary_world=None;temporary_image=None
     try:
         source='saved_shared_golden_gate_hdri'
@@ -90,9 +91,7 @@ def review_preview_lighting(scene):
             output.is_active_output=True
             scene.world=temporary_world
         else:
-            output=next(n for n in scene.world.node_tree.nodes if n.type=='OUTPUT_WORLD' and n.is_active_output)
-            background=output.inputs['Surface'].links[0].from_node
-            environment=background.inputs['Color'].links[0].from_node
+            output,background,environment=world_hdri_nodes(scene.world)
             image=environment.image
             current_path=Path(bpy.path.abspath(image.filepath)).resolve() if image else None
             if (environment.type!='TEX_ENVIRONMENT' or image is None or
@@ -896,9 +895,7 @@ def validate(job):
             exposure=view['blender_exposure_stops'],view='RC PS4 Game (compositor nodes, view transform Raw)',world=scene.world.name,
             rc_game_view_sha256=job['veldin_look']['rc_game_view_sha256'],game_lighting_equivalence_claim=False)
     else:
-        output=next(n for n in scene.world.node_tree.nodes if n.type=='OUTPUT_WORLD' and n.is_active_output)
-        background=output.inputs['Surface'].links[0].from_node
-        environment=background.inputs['Color'].links[0].from_node
+        output,background,environment=world_hdri_nodes(scene.world)
         image=environment.image
         hdri_path=Path(bpy.path.abspath(image.filepath)).resolve()
         assert environment.type=='TEX_ENVIRONMENT' and image and image.packed_file,'Shared HDRI is not packed'

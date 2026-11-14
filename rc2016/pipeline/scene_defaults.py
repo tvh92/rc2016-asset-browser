@@ -58,8 +58,116 @@ def load_shared_lighting(path: Optional[Any] = None) -> Dict[str, Any]:
     if not hdri.is_file():
         raise FileNotFoundError("Shared HDRI not found: %s" % hdri)
     settings = {k: data[k] for k in _LIGHTING_KEYS}
+    if data.get("hdri_sun") is not None:
+        settings["hdri_sun"] = dict(data["hdri_sun"])
     settings.update(hdri_path=str(hdri), config_path=str(path), config_sha256=hashlib.sha256(raw).hexdigest())
     return settings
+
+
+# HDRI sun split (shared_lighting.json "hdri_sun": {"cap": c, "visible_glossy": bool}). Review lighting, not game
+# data. The world's HDRI is capped at c (per channel, every ray type) and the energy above the cap becomes one Sun
+# lamp: its irradiance, colour and direction are integrated from the HDRI pixels (equirectangular solid angles, the
+# world strength, the PS4 HDRI Rotation mapping), its angle twice the mean angular spread of those pixels (at least
+# the real sun's 0.53 degrees). With visible_glossy false the lamp lights diffuse and casts shadows but leaves no
+# mirror-like sun spots; the capped sky still reflects. The 1k Golden Gate HDRI keeps 99.9 % of its pixels below 2.2;
+# its sun peaks near 9e4 and holds 55 % of the energy.
+SUN_CAP_NODE = "PS4 HDRI sun cap"
+REVIEW_SUN_NAME = "PS4 review HDRI sun"
+REVIEW_SUN_ROLE = "review_hdri_sun"
+
+
+def review_sun(obj: Any) -> bool:
+    """True for the shared review lighting's HDRI sun lamp (part of the review lighting, not a separate light)."""
+    return obj.get("lighting_role") == REVIEW_SUN_ROLE
+
+
+def remove_review_sun(scene: Any) -> int:
+    """Delete the review HDRI sun from a scene (game lighting paths replace the review lighting)."""
+    import bpy  # type: ignore
+
+    suns = [o for o in scene.objects if o.type == "LIGHT" and review_sun(o)]
+    for obj in suns:
+        data = obj.data
+        bpy.data.objects.remove(obj, do_unlink=True)
+        if data is not None and data.users == 0:
+            bpy.data.lights.remove(data)
+    return len(suns)
+
+
+def world_hdri_nodes(world: Any) -> tuple:
+    """(output, background, environment) of a world: Output <- Background <- [sun cap] <- Environment."""
+    output = next(n for n in world.node_tree.nodes if n.type == "OUTPUT_WORLD" and n.is_active_output)
+    background = output.inputs["Surface"].links[0].from_node
+    environment = background.inputs["Color"].links[0].from_node
+    if environment.name == SUN_CAP_NODE:
+        environment = environment.inputs[0].links[0].from_node
+    return output, background, environment
+
+
+def hdri_sun_parameters(pixels: Any, width: int, height: int, cap: float, strength: float,
+                        rotation_x: float, rotation_z: float) -> Dict[str, Any]:
+    """The Sun lamp that carries an equirectangular HDRI's energy above ``cap`` (radians for the rotations).
+
+    ``pixels`` is the flat RGBA float buffer (Blender order, bottom row first). Returns energy (peak-channel
+    irradiance x world strength), colour (normalised RGB), the world-space direction toward the sun, the lamp angle
+    (radians) and the pixel count. Blender's equirectangular lookup is u = -atan2(y, x) / 2pi + 0.5,
+    v = atan2(z, hypot(x, y)) / pi + 0.5; the PS4 HDRI Rotation maps world to image as Rz(z) Rx(x)."""
+    import numpy as np
+
+    p = np.asarray(pixels, dtype=np.float64).reshape(height, width, 4)[:, :, :3]
+    excess = np.clip(p - cap, 0.0, None)
+    lat = ((np.arange(height) + 0.5) / height - 0.5) * math.pi
+    d_omega = (2 * math.pi / width) * (math.pi / height) * np.cos(lat)[:, None]
+    weight = excess.sum(2) * d_omega
+    ys, xs = np.nonzero(weight > 0)
+    if not len(xs):
+        raise ValueError("HDRI has no pixel above the sun cap %g" % cap)
+    irradiance = (excess * d_omega[:, :, None]).sum((0, 1)) * strength
+    phi = ((xs + 0.5) / width - 0.5) * 2 * math.pi
+    theta = ((ys + 0.5) / height - 0.5) * math.pi
+    dirs = np.stack([np.cos(theta) * np.cos(phi), -np.cos(theta) * np.sin(phi), np.sin(theta)], 1)
+    w = weight[ys, xs]
+    image_dir = (dirs * w[:, None]).sum(0)
+    image_dir /= np.linalg.norm(image_dir)
+    spread = math.radians(float(np.average(np.degrees(np.arccos(np.clip(dirs @ image_dir, -1, 1))), weights=w)))
+    cx, sx, cz, sz = math.cos(rotation_x), math.sin(rotation_x), math.cos(rotation_z), math.sin(rotation_z)
+    rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]]); rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+    world_dir = (rz @ rx).T @ image_dir
+    peak = float(irradiance.max())
+    return dict(energy=peak, color=[float(c / peak) for c in irradiance], direction=[float(c) for c in world_dir],
+                angle=max(math.radians(0.53), 2 * spread), pixels=int(len(xs)))
+
+
+def _set_review_sun(scene: Any, image: Any, sun: Optional[Dict[str, Any]], strength: float,
+                    rotation_x: float, rotation_z: float) -> None:
+    import bpy  # type: ignore
+    from mathutils import Vector  # type: ignore
+
+    existing = [o for o in scene.objects if o.type == "LIGHT" and review_sun(o) and o.data.type == "SUN"]
+    if not sun:
+        remove_review_sun(scene)
+        return
+    width, height = image.size
+    pixels = [0.0] * (width * height * 4)
+    image.pixels.foreach_get(pixels)
+    params = hdri_sun_parameters(pixels, width, height, float(sun["cap"]), strength, rotation_x, rotation_z)
+    if existing:
+        # Updated in place: review proofs snapshot scene objects and restore them afterwards.
+        obj, data = existing[0], existing[0].data
+        for extra in existing[1:]:
+            bpy.data.objects.remove(extra, do_unlink=True)
+    else:
+        remove_review_sun(scene)
+        data = bpy.data.lights.new(REVIEW_SUN_NAME, "SUN")
+        obj = bpy.data.objects.new(REVIEW_SUN_NAME, data)
+        scene.collection.objects.link(obj)
+    data.energy, data.color, data.angle = params["energy"], params["color"], params["angle"]
+    # Blender Sun rays travel along local -Z, away from the sun.
+    obj.rotation_euler = (-Vector(params["direction"])).to_track_quat("-Z", "Y").to_euler()
+    obj.visible_glossy = bool(sun.get("visible_glossy", False))
+    obj["lighting_role"] = REVIEW_SUN_ROLE
+    obj["hdri_sun"] = json.dumps(dict(params, cap=float(sun["cap"])), sort_keys=True)
+    obj.hide_select = True
 
 
 def _recorded_lighting(scene: Any) -> Optional[Dict[str, Any]]:
@@ -76,10 +184,9 @@ def check_shared_lighting(scene: Any, expected: Optional[Dict[str, Any]] = None)
     expected = expected or _recorded_lighting(scene) or load_shared_lighting()
     problems = []
     try:
-        output = next(n for n in scene.world.node_tree.nodes if n.type == "OUTPUT_WORLD" and n.is_active_output)
-        bg = output.inputs["Surface"].links[0].from_node
-        env = bg.inputs["Color"].links[0].from_node
+        output, bg, env = world_hdri_nodes(scene.world)
         image = env.image if env.type == "TEX_ENVIRONMENT" else None
+        problems.extend(_check_review_sun(scene, bg, expected))
         path = Path(bpy.path.abspath(image.filepath)).expanduser().resolve() if image else None
         if bg.type != "BACKGROUND" or abs(bg.inputs["Strength"].default_value - float(expected["world_strength"])) > 1e-5:
             problems.append("lighting.world_strength")
@@ -110,9 +217,32 @@ def check_shared_lighting(scene: Any, expected: Optional[Dict[str, Any]] = None)
             abs(view.exposure - float(expected["exposure"])) > 1e-5 or abs(view.gamma - float(expected["gamma"])) > 1e-5 or
             bool(scene.render.use_compositing) != bool(expected["use_compositing"])):
         problems.append("colour_management.shared_view")
-    if [o for o in scene.objects if o.type == "LIGHT" and not o.hide_render and not effect_light(o)]:
+    if [o for o in scene.objects if o.type == "LIGHT" and not o.hide_render and not effect_light(o) and not review_sun(o)]:
         problems.append("lighting.separate_lights")
     return problems
+
+
+def _check_review_sun(scene: Any, background: Any, expected: Dict[str, Any]) -> List[str]:
+    """The HDRI sun split matches the expected lighting: cap node and lamp present with the recorded values, or neither."""
+    sun = expected.get("hdri_sun")
+    linked = background.inputs["Color"].links[0].from_node
+    lamps = [o for o in scene.objects if o.type == "LIGHT" and review_sun(o)]
+    if not sun:
+        return ["lighting.hdri_sun"] if lamps or linked.name == SUN_CAP_NODE else []
+    cap = float(sun["cap"])
+    if (linked.name != SUN_CAP_NODE or linked.operation != "MINIMUM" or
+            any(abs(v - cap) > 1e-6 for v in linked.inputs[1].default_value)):
+        return ["lighting.hdri_sun"]
+    if (len(lamps) != 1 or lamps[0].data.type != "SUN" or lamps[0].hide_render or
+            bool(lamps[0].visible_glossy) != bool(sun.get("visible_glossy", False))):
+        return ["lighting.hdri_sun"]
+    try:
+        recorded = json.loads(lamps[0]["hdri_sun"])
+    except (KeyError, TypeError, ValueError):
+        return ["lighting.hdri_sun"]
+    if abs(recorded.get("cap", -1) - cap) > 1e-6 or abs(lamps[0].data.energy - recorded["energy"]) > 1e-4 * max(1.0, recorded["energy"]):
+        return ["lighting.hdri_sun"]
+    return []
 def effect_light(obj):
     """True for a holocon effect's point light (rc2016/pipeline/holocon_effect.py: custom property holocon_effect = 'light'),
     which the scene audits accept beside the review lighting."""
@@ -148,7 +278,8 @@ def _set_cycles_defaults(scene: Any) -> None:
 
 
 def _set_world_hdri(scene: Any, hdri_path: Optional[Path], strength: Optional[float] = None,
-                    rotation_z_degrees: Optional[float] = None, rotation_x_degrees: Optional[float] = None) -> None:
+                    rotation_z_degrees: Optional[float] = None, rotation_x_degrees: Optional[float] = None,
+                    sun: Optional[Dict[str, Any]] = None) -> None:
     if hdri_path is None:
         hdri_path = Path(load_shared_lighting()["hdri_path"])
     if strength is None:
@@ -199,9 +330,22 @@ def _set_world_hdri(scene: Any, hdri_path: Optional[Path], strength: Optional[fl
             links.remove(link)
     links.new(coords.outputs["Generated"], mapping.inputs["Vector"])
     links.new(mapping.outputs["Vector"], environment.inputs["Vector"])
-    links.new(environment.outputs["Color"], background.inputs["Color"])
+    cap = nodes.get(SUN_CAP_NODE)
+    if sun:
+        if cap is None:
+            cap = nodes.new("ShaderNodeVectorMath")
+            cap.name = cap.label = SUN_CAP_NODE
+        cap.operation = "MINIMUM"
+        cap.inputs[1].default_value = (float(sun["cap"]),) * 3
+        links.new(environment.outputs["Color"], cap.inputs[0])
+        links.new(cap.outputs["Vector"], background.inputs["Color"])
+    else:
+        if cap is not None:
+            nodes.remove(cap)
+        links.new(environment.outputs["Color"], background.inputs["Color"])
     links.new(background.outputs["Background"], output.inputs["Surface"])
     output.is_active_output = True
+    _set_review_sun(scene, environment.image, sun, strength, math.radians(rotation_x_degrees), math.radians(rotation_z_degrees))
 
 
 def pack_scene_images(scene: Any) -> Dict[str, Any]:
@@ -211,10 +355,7 @@ def pack_scene_images(scene: Any) -> Dict[str, Any]:
     import bpy  # type: ignore
 
     try:
-        output = next(n for n in scene.world.node_tree.nodes
-                      if n.type == "OUTPUT_WORLD" and n.is_active_output)
-        background = output.inputs["Surface"].links[0].from_node
-        environment = background.inputs["Color"].links[0].from_node
+        _output, _background, environment = world_hdri_nodes(scene.world)
         image = environment.image
     except (AttributeError, IndexError, KeyError, StopIteration) as exc:
         raise RuntimeError("HDRI world is missing its active Environment Texture") from exc
@@ -299,7 +440,8 @@ def apply_shared_lighting(scene: Any, lighting: Optional[Any] = None, hdri_path:
     if hdri_path:
         settings["hdri_path"] = str(Path(hdri_path).expanduser().resolve())
     _set_world_hdri(scene, Path(settings["hdri_path"]), float(settings["world_strength"]),
-                    float(settings["hdri_rotation_z_degrees"]), float(settings["hdri_rotation_x_degrees"]))
+                    float(settings["hdri_rotation_z_degrees"]), float(settings["hdri_rotation_x_degrees"]),
+                    settings.get("hdri_sun"))
     view = scene.view_settings
     view.view_transform = settings["view_transform"]
     view.look = settings["look"]
@@ -566,7 +708,7 @@ def _configure_optix_gpu(bpy: Any) -> None:
 def _lighting_file_differs(recorded: Dict[str, Any], selected: Optional[Dict[str, Any]] = None) -> bool:
     """Compare a scene record with the current selected file; an explicit HDRI override is part of the selection."""
     current = load_shared_lighting(selected.get("config_path") if selected else None)
-    keys = _LIGHTING_KEYS + ("hdri_path",)
+    keys = _LIGHTING_KEYS + ("hdri_path", "hdri_sun")
     if selected is None:   # the file alone: the run's game_tonemap choice is not part of it
         return any(recorded.get(key) != current.get(key) for key in keys)
     return (not selected.get("config_path") or selected.get("config_path") != current.get("config_path") or
@@ -689,7 +831,8 @@ def audit_scene(scene: Any = None, check_gpu: bool = True,
             result["mismatches"].append("gpu.non_optix_device_enabled")
     if camera is None or camera.data.type != "PERSP":
         result["mismatches"].append("camera.perspective")
-    lights = [o for o in scene.objects if o.type == "LIGHT" and not effect_light(o)]   # a holocon's own light is part of its effect
+    # A holocon's own light is part of its effect; the review HDRI sun is part of the shared lighting (checked there).
+    lights = [o for o in scene.objects if o.type == "LIGHT" and not effect_light(o) and not review_sun(o)]
     authorised_novalis_sun = (scene.get("lighting_source") == "novalis_game_reflection_probe_plus_atmosphere_sun" and
         len(lights) == 1 and lights[0].data.type == "SUN" and
         lights[0].get("lighting_role") == "novalis_atmosphere_sun")
@@ -699,9 +842,7 @@ def audit_scene(scene: Any = None, check_gpu: bool = True,
     if lights and not (authorised_novalis_sun or authorised_veldin_key):
         result["mismatches"].append("lighting.separate_lights")
     try:
-        output = next(n for n in scene.world.node_tree.nodes if n.type == "OUTPUT_WORLD" and n.is_active_output)
-        bg = output.inputs["Surface"].links[0].from_node
-        env = bg.inputs["Color"].links[0].from_node
+        output, bg, env = world_hdri_nodes(scene.world)
         if veldin:
             # Captured Veldin look (rc2016/pipeline/game_look.py): fitted ambient world,
             # captured key light and the RC PS4 Game view transform.

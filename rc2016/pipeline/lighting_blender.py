@@ -115,6 +115,10 @@ def apply_game_lighting(scene,descriptor,exr_path):
     environment_image['source_probe_sha256']=descriptor['source_sha256'];environment_image['lighting_region']=descriptor['region'];environment_image.pack()
     world=scene.world or bpy.data.worlds.new('PS4 Novalis World');scene.world=world;world.use_nodes=True
     nodes=world.node_tree.nodes;links=world.node_tree.links
+    # Game lighting replaces the review lighting: no review HDRI sun or sun cap (scene_defaults HDRI sun split).
+    from rc2016.pipeline.scene_defaults import SUN_CAP_NODE,remove_review_sun
+    remove_review_sun(scene)
+    if nodes.get(SUN_CAP_NODE) is not None:nodes.remove(nodes[SUN_CAP_NODE])
     environment=nodes.get('Novalis Game Reflection Probe') or nodes.new('ShaderNodeTexEnvironment')
     old=environment.image;environment.name='Novalis Game Reflection Probe';environment.label=descriptor['source_path'];environment.image=environment_image
     # The packed game probe is already scene-linear. Do not apply a Blender

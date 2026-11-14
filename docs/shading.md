@@ -302,7 +302,8 @@ Blend and cull come from the `.material` flags word, not from names or guesses (
 |---|---|
 | HDRI | `golden_gate_hills_1k.exr`, world strength 1.5 |
 | HDRI rotation | tilted −23° about X, then turned 45° about Z: the sun about 20° above the horizon, in front of the build camera |
-| Separate lights | none |
+| HDRI sun | split out: the world is capped at 4 (`hdri_sun.cap`) and the energy above it is one Sun lamp invisible to glossy rays (`hdri_sun.visible_glossy` false) |
+| Separate lights | none besides that sun |
 | View transform | Khronos PBR Neutral, look None |
 | Exposure | −1.0 |
 | Gamma | 1.0 |
@@ -312,6 +313,7 @@ Blend and cull come from the `.material` flags word, not from names or guesses (
 - The photograph's sun is 43° above its horizon. The X tilt lowers it for frontal review light; it tilts the whole sky with it, so the photographed horizon is 23° low in front of the model and 23° high behind it. With film transparency that shows only in reflections and in a slightly darker fill from above (about 25% less sky irradiance on an upward face).
 - `scene_defaults.load_shared_lighting` fails loudly if a key or the HDRI is missing. `apply_new_scene_defaults` and `apply_shared_lighting` apply it and record it on the scene as `scene["shared_lighting"]`. `check_shared_lighting` and the validators compare against that record, and `audit_scene` reports `lighting.differs_from_current_shared_file` for older scenes. For a pipeline build using `--lighting-config`, `audit_scene(selected_lighting=...)` checks the scene against the selected settings and reloads that config file to detect drift; the default call still compares with this checkout's shared file.
 - The pipeline default is `--lighting-source hdri`; `--lighting-config` selects another lighting file. The pipeline links the HDRI by absolute path; pack it in hand-delivered scenes.
+- The HDRI sun split (`scene_defaults.hdri_sun_parameters`, `_set_review_sun`) keeps the lighting and removes mirror-like sun spots. The world is the HDRI through a per-channel `MINIMUM` node (`PS4 HDRI sun cap`). The pixel energy above the cap becomes the Sun lamp `PS4 review HDRI sun` (`lighting_role` `review_hdri_sun`, parameters in its `hdri_sun` property). Its irradiance, colour and direction are integrated from the HDRI pixels with their equirectangular solid angles, the world strength and the HDRI rotation, and its angle is twice the pixels' mean angular spread (at least 0.53°). The lamp lights diffuse and casts shadows but is invisible to glossy rays, so specular surfaces lose the sun's highlight while the capped sky still reflects. 99.9% of the HDRI's pixels are below 2.2, and its sun (about 200 pixels, peak about 9e4) holds 55% of the energy. On a Ratchet render the split without the glossy switch matched the plain HDRI within 1/255 (median). `check_shared_lighting` reports `lighting.hdri_sun` when the cap node or lamp is missing or differs from the record. The Novalis and Veldin game-lighting paths remove the lamp and the cap. Leave out `hdri_sun` to light with the plain HDRI.
 - This is neutral review lighting. It is not game lighting and must not be called game accurate.
 - Render defaults in `scene_defaults.py`: 3840 × 2560, Cycles with OptiX on GPU only, 96 samples, adaptive threshold 0.04, 5 total bounces (2 diffuse, 2 glossy, 4 transmission, 6 transparent, 0 volume), Light Tree, transparent film.
 

@@ -34,6 +34,8 @@ def apply_veldin_look(scene=None, view_dir=VIEW_DIR, elevation_deg=None, azimuth
     # Key light: captured colour/strength, presentation direction.  The captured
     # direction is relative to the game camera of that frame, so it has no meaning
     # for a standalone model.  Light from the camera's side, from above.
+    from rc2016.pipeline.scene_defaults import remove_review_sun
+    remove_review_sun(scene)   # the review HDRI sun belongs to the shared lighting this look replaces
     for o in [o for o in scene.objects if o.type == "LIGHT"]:
         o.hide_render = True
     key = info.get("key_light", {})

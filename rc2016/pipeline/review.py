@@ -582,7 +582,7 @@ def _proof_render(request, master_hash):
     image_path = output_dir / ("proof_" + "_".join(parts) + ".png")
     if image_path.exists():
         raise FileExistsError("Refusing to overwrite existing proof output")
-    from rc2016.pipeline.scene_defaults import _configure_optix_gpu, apply_shared_lighting
+    from rc2016.pipeline.scene_defaults import _configure_optix_gpu, apply_shared_lighting, remove_review_sun, review_sun
     from rc2016.pipeline.builder import review_preview_lighting
     _configure_optix_gpu(bpy)
     scene.render.engine = "CYCLES"
@@ -603,10 +603,12 @@ def _proof_render(request, master_hash):
         # Work on a disposable world so applying current central settings cannot mutate the master world.
         saved_preview_world = scene.world
         temp_world = bpy.data.worlds.new("Asset Browser Review | Shared Lighting")
+        had_review_sun = any(obj.type == "LIGHT" and review_sun(obj) for obj in scene.objects)
         try:
             scene.world = temp_world
             shared_lighting = apply_shared_lighting(scene)
-            lights = [obj for obj in scene.objects if obj.type == "LIGHT"]
+            # The review HDRI sun is part of the shared lighting: it stays on (scene_defaults.review_sun).
+            lights = [obj for obj in scene.objects if obj.type == "LIGHT" and not review_sun(obj)]
             for light in lights:
                 light.hide_render = True
             provenance["disabled_separate_lights"] = len(lights)
@@ -616,6 +618,8 @@ def _proof_render(request, master_hash):
             bpy.ops.render.render(write_still=True)
         finally:
             scene.world = saved_preview_world
+            if not had_review_sun:
+                remove_review_sun(scene)   # added for this proof only
             if temp_world.users == 0:
                 bpy.data.worlds.remove(temp_world)
     if not image_path.is_file() or image_path.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n":
