@@ -90,9 +90,11 @@ class GameRecordTests(unittest.TestCase):
         self.assertEqual(RC2016.cache_dir(), Path(__file__).resolve().parents[1] / '.cache')
         self.assertEqual(RCRA.cache_dir(), CACHE_ROOT / 'rcra')
 
-    def test_rift_apart_milestone_one_capabilities(self):
-        self.assertEqual(RCRA.capabilities, {'models', 'textures', 'export'})
-        for capability in ('levels', 'flash', 'animation', 'pipeline', 'decoded_shading'):
+    def test_rift_apart_capabilities(self):
+        self.assertEqual(RCRA.capabilities, {'models', 'textures', 'export', 'animation'})
+        self.assertTrue(RCRA.has_animation_library())
+        self.assertFalse(RC2016.has_animation_library())   # 2016 finds its animsets through the scan's index
+        for capability in ('levels', 'flash', 'pipeline', 'decoded_shading'):
             self.assertFalse(RCRA.has(capability), capability)
         self.assertEqual(RCRA.unavailable_tip, 'Not yet available for Rift Apart')
         self.assertEqual(RCRA.window_title, 'R&C Asset Browser — Rift Apart')
@@ -148,6 +150,25 @@ class LoaderDispatchTests(unittest.TestCase):
         with patch('rc2016.games.rcra.model.decode_for_viewer', return_value=('decoded', b'data')) as decode:
             self.assertEqual(RCRA.decode_model('source', 'id', 'a.model', True), ('decoded', b'data'))
         decode.assert_called_once_with('source', 'id', 'a.model', True)
+
+    def test_rift_apart_animation_library_hook_reaches_its_clip_library(self):
+        with patch('rc2016.games.rcra.clip_library.animation_library', return_value='library') as build:
+            self.assertEqual(RCRA.animation_library('s', b'model', 'a.model', clips=False), 'library')
+        build.assert_called_once_with('s', b'model', 'a.model', False)
+
+    def test_loader_builds_a_rift_apart_library_through_the_game(self):
+        from rc2016.viewer.loader import SourcePreviewLoader
+        library = SimpleNamespace(clips=['clip'], animset_data={'a.animset': None})
+        library.with_cinematic = lambda archive, path: library
+        loader = SourcePreviewLoader()
+        loader.game, loader.archive = RCRA, 'archive'
+        cached = dict(decoded=dict(joint_count=3, _archive_path='a.model'), data=b'model', purpose='view',
+                      animation=None, animation_built=None)
+        with patch('rc2016.games.rcra.clip_library.animation_library', return_value=library) as build:
+            loader._build_animation_locked(cached, None)
+        build.assert_called_once_with('archive', b'model', 'a.model', True)
+        self.assertIs(cached['animation'], library)
+        self.assertEqual((cached['decoded']['animsets'], cached['decoded']['animation_note']), (['a.animset'], ''))
 
     def test_rift_apart_texture_and_material_hooks_reach_its_readers(self):
         for hook, module, name, args in (
@@ -284,7 +305,7 @@ class CapabilityGatingTests(unittest.TestCase):
             self.assertFalse(self.buttons[kind].instate(['disabled']), kind)
             self.assertEqual(tips[id(self.buttons[kind])], self.HELP['asset_type'])
         self.assertTrue(self.backend.instate(['disabled']))
-        self.assertEqual(tips[id(self.animation)], 'Not yet available for Rift Apart')
+        self.assertEqual(tips[id(self.animation)], self.HELP['animations'])   # Rift Apart animates
         self.assertEqual((app.asset_type_var.get(), self.shown), ('Model', ['Model']))   # Level was showing
         self.assertEqual(app.shading_var.get(), 'All')
         self.assertTrue(app._pipeline_backend())   # its models come from its own index, not Transform only

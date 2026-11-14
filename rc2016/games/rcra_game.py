@@ -97,15 +97,20 @@ def list_models(folder, output, progress=None):
     return [PipelineModelCandidate(model_id=key, archive_path=path) for path, key in rows]
 
 
+def animation_library(source, model_bytes, model_path, clips=True):
+    from rc2016.games.rcra.clip_library import animation_library as build
+    return build(source, model_bytes, model_path, clips)
+
+
 def material_maps(source, material, cache, map_cache=None):
     from rc2016.games.rcra_export import material_maps as maps
     return maps(source, material, cache, map_cache)
 
 
-# Milestone 1: browse, models, textures and glTF export.
+# Browse, models, textures, glTF export, and skeletal animation (viewer playback and export).
 GAME = Game(id='rcra', title='Rift Apart', detect=detect, open_source=open_source,
-            capabilities=frozenset({'models', 'textures', 'export'}),
+            capabilities=frozenset({'models', 'textures', 'export', 'animation'}),
             hooks=dict(decode_model=decode_model, material_textures=material_textures, model_texture_list=model_texture_list,
                        material_rules=material_rules, effect_preview=effect_preview, texture_header=texture_header,
                        texture_paths=texture_paths, load_texture=load_texture, export_textures=export_textures,
-                       material_maps=material_maps, list_models=list_models))
+                       material_maps=material_maps, list_models=list_models, animation_library=animation_library))

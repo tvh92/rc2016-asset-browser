@@ -4,6 +4,8 @@ How packed skeletal animation is stored in Ratchet & Clank (PS4, 2016), how this
 
 Related documents: [pipeline](pipeline.md) (how the build uses the baker, clip selection, NLA and controls), [viewer](viewer.md) (animation preview in the browser).
 
+Rift Apart clips reuse this sample layout with four header and table differences; see [Rift Apart](rift-apart.md#animation).
+
 ## Modules
 
 | Module | Role |

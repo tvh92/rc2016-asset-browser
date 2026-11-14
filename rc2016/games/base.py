@@ -19,7 +19,7 @@ APP_TITLE = 'R&C Asset Browser'
 # Hooks a game may supply; each one missing raises NotImplementedError when called.
 HOOKS = frozenset({'list_models', 'decode_model', 'material_textures', 'model_texture_list', 'texture_header',
                    'material_rules', 'effect_preview', 'texture_paths', 'load_texture', 'export_textures',
-                   'material_maps', 'shadow_only'})
+                   'material_maps', 'shadow_only', 'animation_library'})
 
 
 class GameUnavailable(RuntimeError):
@@ -157,6 +157,17 @@ class Game:
     def material_maps(self, source, material, cache, map_cache=None):
         """``export.models.material_maps``'s dict (name, base, mr, normal, emissive, factors, notes, sources, png)."""
         return self._hook('material_maps')(source, material, cache, map_cache)
+
+    # Animation -------------------------------------------------------------------------------
+    def has_animation_library(self) -> bool:
+        """True when the game finds and decodes its own clips (``animation_library``); R&C 2016 instead reaches its
+        animsets through the scan's reference index (``viewer.animation.model_animsets``)."""
+        return 'animation_library' in self.hooks
+
+    def animation_library(self, source, model_bytes, model_path, clips=True):
+        """A ``viewer.animation.AnimationLibrary``-compatible clip library of one model (``clips=False``: the
+        skeleton only, for a rig exported without clips)."""
+        return self._hook('animation_library')(source, model_bytes, model_path, clips)
 
     def shadow_only(self, material_path):
         """True for a material the game only draws into shadow maps; False when the game cannot tell."""

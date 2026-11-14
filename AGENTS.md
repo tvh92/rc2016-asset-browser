@@ -5,7 +5,7 @@ A Windows desktop tool that reads Ratchet & Clank game files directly: an asset 
 It reads two games. The folder picked as the source decides which one (`rc2016/games/`, [docs](docs/rift-apart.md#how-the-browser-picks-the-game)):
 
 - **Ratchet & Clank (PS4, 2016):** the extracted `CUSA01073` archive. Every feature, including levels, Flash UI, animation and the research pipeline, is built for this game.
-- **Ratchet & Clank: Rift Apart:** the PS5 game, read from its Steam PC install (`toc`, `dag`, `d/`). Models, textures and model export only, with a labelled preview shading; everything else is greyed out ([docs](docs/rift-apart.md)).
+- **Ratchet & Clank: Rift Apart:** the PS5 game, read from its Steam PC install (`toc`, `dag`, `d/`). Models, textures, skeletal animation and model export, with a labelled preview shading; everything else is greyed out ([docs](docs/rift-apart.md)).
  Its history and evidence live in the local-only `Research/` folder inside this checkout; it is gitignored and never committed (index and sorting rules: [Research/research.md](Research/research.md)).
 
 ## Layout

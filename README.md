@@ -1,6 +1,6 @@
 # R&C 2016 Asset Browser
 
-A Windows desktop tool for browsing, viewing and exporting the assets of **Ratchet & Clank (PS4, 2016)** straight from the game's own archive. It also reads **Ratchet & Clank: Rift Apart** (the PS5 game, from its PC release) for models, textures and model export; see [Rift Apart](#rift-apart).
+A Windows desktop tool for browsing, viewing and exporting the assets of **Ratchet & Clank (PS4, 2016)** straight from the game's own archive. It also reads **Ratchet & Clank: Rift Apart** (the PS5 game, from its PC release) for models, textures, animation and model export; see [Rift Apart](#rift-apart).
 
 The features below are for R&C 2016.
 
@@ -19,7 +19,7 @@ The features below are for R&C 2016.
 
 ## Rift Apart
 
-Pick the Rift Apart install as **Source** and the browser switches to that game; the window title names the game in use. Supported: the model tree and 3D view, the Textures tab, and model export to GLB, glTF and OBJ (FBX and USD through Blender). The shading is a labelled preview from each material's base colour and normal map, not the game's shading. Skinning, animation, levels, Flash UI and the research pipeline are not available for Rift Apart yet. Details: [docs/rift-apart.md](docs/rift-apart.md).
+Pick the Rift Apart install as **Source** and the browser switches to that game; the window title names the game in use. Supported: the model tree and 3D view, skeletal animation (the model's animset clips and cutscene shots, played in the 3D view), the Textures tab, and model export to GLB, glTF and OBJ (FBX and USD through Blender) with skin weights and animation clips. The shading is a labelled preview from each material's base colour and normal map, not the game's shading. Levels, Flash UI and the research pipeline are not available for Rift Apart yet. Details: [docs/rift-apart.md](docs/rift-apart.md).
 
 ## Requirements
 

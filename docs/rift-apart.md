@@ -28,10 +28,15 @@ Each `Game` record declares its capabilities and supplies hooks: model decode, m
 
 ### What Rift Apart supports
 
-Rift Apart's capabilities are `models`, `textures` and `export`:
+Rift Apart's capabilities are `models`, `textures`, `export` and `animation`:
 
-- **Supported:** browsing, the 3D model view with its labelled preview shading, the Textures tab, and model export to GLB, glTF and OBJ (FBX and USD through Blender).
-- **Disabled:** the Level and Flash UI types, animation export, the backend choice, the Blender scene and the shading filter. Each is greyed out with the tip "Not yet available for Rift Apart".
+- **Supported:**
+  - Browsing.
+  - The 3D model view with its labelled preview shading, and skeletal [animation](#animation) playback.
+  - The Textures tab.
+  - Model export to GLB, glTF and OBJ (FBX and USD through Blender), with skin weights and animation clips.
+- **Disabled:** the Level and Flash UI types, the backend choice, the Blender scene and the shading filter. Each is greyed out with the tip "Not yet available for Rift Apart".
+- **Clips:** found through the dag by `Game.animation_library`, without a scan's reference index.
 - **Model list:** read in-process through `Game.list_models`, without the pipeline subprocess.
 
 The export writes only what is decoded, through `rc2016/games/rcra_export.py`:
@@ -137,14 +142,18 @@ The export writes only what is decoded, through `rc2016/games/rcra_export.py`:
 | `0x3250BB80` | Materials: the first half of the section holds (u64 path, u64 name) string pointers |
 | `0x6B855EED` | int16 UV1 per vertex, at the same UV scale |
 | `0x5CBA9DE9` | u8 RGBA per vertex |
-| `0x15DF9D3B` | Joints: i16 parent, u16 index, two u16, u32 name hash, u32 name pointer |
+| `0x15DF9D3B` | Joints: i16 parent, u16 index, u16, u16 flags (bit 0: segment scale compensation, as in 2016), u32 name hash (game CRC-32 of the name), u32 name pointer |
+| `0xDCC88A19` | Joint rest S/Q/T, 48 bytes each, then the inverse binds from the next 64-byte boundary (the 2016 layout) |
+| `0xC61B1FF5` | Skin batches, 16 bytes: u32 offset into `0xDCA379A2`, u32 remap, u16 palette size, u16 (not read), u16 vertex count, u16 first vertex in the mesh |
+| `0xDCA379A2` | Skin data: groups of 16 vertices per batch (see [Skin weights](#skin-weights)) |
+| `0x5240C82B` | Skin joint palettes: u16 skeleton joints, one palette per batch that names a size |
 
 `0x6B855EED` and `0x5CBA9DE9` may be zero-padded to a 16-byte multiple.
 
 **Mesh record fields (`0x78D9CBDE`):**
 - +4: u64 mesh id
 - +20: four u32: first vertex, first index, index count, vertex count
-- +36: four u16: flags, material slot, first skin batch, skin batch count
+- +36: four u16: flags, material slot, first skin batch, skin batch count word (the mesh owns the low byte's count of batches; the high byte is not read)
 - +56: u32 first weight index
 
 ### Vertex decoding
@@ -154,16 +163,114 @@ The export writes only what is decoded, through `rc2016/games/rcra_export.py`:
 - **UVs** are `int16 * uv scale`. V is flipped for the Blender convention, as the 2016 decoder does.
 - **The vertex w word is not decoded.** It spans the whole int16 range, so it is not a ±1 handedness. Tangents are therefore not available yet.
 
+### Skin weights
+
+Each skin batch covers `vertex count` vertices from `first vertex` of its mesh. Its data is a run of groups of 16
+vertices; the last group may be shorter. Each group is:
+
+1. A byte n.
+2. For n = 0: one u8 joint id per vertex, with weight 1.
+3. Otherwise: n + 1 (u8 joint id, u8 weight) pairs per vertex, at most 8 influences. Weights sum to 255 or 256 and are
+   normalized.
+
+**Joint ids.** A batch with a palette size reads the u8 id as an index into that many u16 skeleton joints, at byte
+offset `remap` of `0x5240C82B`. A batch without one adds `remap` to the id. These are the R&C 2016 rules, used by the
+rigs of more than 256 joints. Remapping brings the median joint-to-vertex distance on those rigs from about 2.0 to
+0.28 units.
+
+**The weight records in `0xCCBAFF15` are not read.** They hold the same weights as fixed 8-byte records (4 u8
+joints, 4 u8 weights) for the meshes with flag `0x100`, from the mesh's first weight index. The batches cover every
+skinned mesh:
+
+- Across the install's 959 skinned models (41,818 meshes), every batch parses and covers its mesh.
+- On the 77,722 batches that both forms hold, the raw batch ids and weights equal the records exactly.
+- So the records keep palette-local ids, and only the remapped id is a skeleton joint. On a remapped rig, the record
+  ids put the Thug Brawler's pistol on `sword_RT_unequip_chunk`; the remap puts it on `gun_unequip_chunk`.
+
+`joint_count` is the skeleton size when the model has `0xDCC88A19`. The skeleton is still listed in `joints`.
+
 ### Not decoded yet
 
 These sections are listed in `unsupported_sections` and are not interpreted.
 
-**Skinning is not read yet.** Skinned models show their bind pose, which is how their vertices are stored.
-- `0xCCBAFF15` holds 8 bytes per vertex (4 u8 joints, then 4 u8 weights) for meshes with flag `0x100`, reached through the mesh's first weight index.
-- `0xC61B1FF5` and `0xDCA379A2` batches differ from the 2016 layout.
-- Until skinning and animation are read, `joint_count` is 0 and the joints are listed in `joints`.
-
 **Models without geometry:** 24 models have no vertex or mesh section, only looks, locators or joints. Decoding one raises `UnsupportedModelError` with a message saying so.
+
+## Animation
+
+Rift Apart clips play in the 3D view and export with the model, like R&C 2016 clips. The decoder is
+`rc2016/games/rcra/animation.py`; `rc2016/games/rcra/clip_library.py` finds a model's clips and is the
+`Game.animation_library` hook.
+
+### Clip assets
+
+Each clip is its own `.animclip` asset: the 36-byte toc header (type `0x0F64FFE8`) and a DAT1 of the same type. Its
+sections have the R&C 2016 clip ids ([animation](animation.md#sample-layout)), and the base records, base scale
+tail, 48-byte destination layout and frame-major bit packing are the 2016 version-15 layout. So
+`animation_transforms.sample_transforms` turns a decoded clip into scale, rotation and translation per joint
+unchanged. Joint hashes are the game CRC-32 of the model's joint names.
+
+Four things differ from 2016:
+
+| Section | Rift Apart |
+| --- | --- |
+| `0x9DF23F77` built | +0 u32 is the name's string offset, not a format version. +4 name hash; +8 flags (`0x40` additive, `0x10000` frame table); +12 f32 fps; +16 f32 seconds; +32 u16 joints, frames, elements, 0; +40 u32 bytes per stored sample; +44 u16 scale-tail blocks, u16 count of 4-byte records after the tail; +48 u16 stored samples |
+| `0xD070D358` elements | u32 destination per element (not u16), then u8 bit width minus one each, zero-padded to 4 bytes |
+| `0x3A7B4855` samples | With flag `0x10000`: `round(seconds * fps) + 1` u16 stored-sample indices, padded to 16 bytes, then the stored samples. A clip that repeats a pose stores it once. Without the flag, frame i is stored sample i |
+| `0x2BB5BC8F` base | Joint records and scale tail as in 2016; one additive clip adds the 4-byte (u16 joint, u16 value) records the built header counts, which are not read |
+
+A clip with only custom float tracks (`0x14014CB6`/`0x116EB684`: camera and property curves) is not skeletal and is
+refused. Root motion (`0x3976E44C`, `0xE08AA35F`), triggers, morph and face sections are not read.
+
+**Coverage.** Of the 23,317 installed clips, 21,377 are skeletal and 21,003 decode. The rest:
+
+- 10 have a negative packed scale (a mirrored joint), which the 2016 sampler refuses as well.
+- 1 has a payload 12 bytes longer than its header implies.
+- 1,940 are not skeletal: custom-track clips and one camera-shake clip.
+
+No decoded clip uses the collapsed-rotation sentinel.
+
+**Check.** On `amb_fish_01`, frame 0 of `Swimming_Idle` matches the model's rest S/Q/T with a median translation
+difference of 1.1e-4.
+
+### Skinning
+
+Each skinned mesh's weights are in skin batches (`0xC61B1FF5`, `0xDCA379A2`). The layout is in [Models](#models).
+Rest S/Q/T and inverse binds (`0xDCC88A19`) have the 2016 layout, read by `formats.skeleton.inspect_model`.
+Both 2016 inheritance rules reproduce the stored inverse binds:
+
+| Model | Max inverse-bind error |
+| --- | --- |
+| Fish | 4.5e-7 |
+| Ratchet | 1.8e-5 |
+
+### Finding a model's clips
+
+Clips are found through the dag, never by joint coverage alone:
+
+1. **Referenced animsets.** An actor or config that depends on the model, and the configs it depends on, name the
+   animsets. Each animset depends on its clips.
+2. **Same-folder animsets.** These are the animsets in the model's own folder whose first clip names at least half of
+   the model's joints. The runtime assembles some models, such as the Ratchet outfits, and no actor names them.
+3. **Cutscene shots** (3D view, or export with Include cutscenes). These are clips under `cinematics/` whose name
+   ends in `_shot<N>_<performer>`. The performer must be the model's file stem or one of its folder names holding an
+   underscore, as written or without a `_master<N>` or copy-number suffix. The clip's `.cinematic2` is its source.
+
+Each clip is still classified on its first frame, as in 2016. The clip list hides one that does not drive the
+skeleton. For example, `hero_ratchet.model` gets:
+
+- 1,380 animset clips from five animsets, among them `hero_rivet.animset`, which an actor pairs with the model.
+- 532 cutscene shots.
+- Of those 1,912 clips, 212 are additive layers, 38 are unplayable and 20 are copies.
+
+The clip notes take about 8 s to compute, off the Tk thread.
+
+### Not decoded
+
+- Negative packed scales.
+- Root-motion paths.
+- Clip blending and additive partners. Additive clips are previewed on the rest pose, as in 2016.
+- Face performance clips (`.performanceclip`).
+- Vertex-animation textures.
 
 ## Textures
 
@@ -314,7 +421,7 @@ python -m rc2016.games.rcra.inspect --game <install> --output-root <folder> --su
 
 ## Tests
 
-`tests/test_rcra_archive.py`, `tests/test_rcra_model.py`, `tests/test_rcra_texture.py` and `tests/test_rcra_glass.py` each have two parts:
+`tests/test_rcra_archive.py`, `tests/test_rcra_model.py`, `tests/test_rcra_texture.py`, `tests/test_rcra_glass.py` and `tests/test_rcra_animation.py` each have two parts:
 
-- **Synthetic tests** build a small toc, dag and set of DSAR archives, a two-mesh model, or texture and material assets.
+- **Synthetic tests** build a small toc, dag and set of DSAR archives, a two-mesh model, texture and material assets, clips (plain and with a frame table) or skin batches (with a palette and a joint base).
 - **Real-install tests** read `RCRA_GAME` (the install folder) and skip when it is not set. They also compare bytes against ALERT's own TOC2 reader.

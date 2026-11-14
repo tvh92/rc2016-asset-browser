@@ -18,13 +18,23 @@ on the installed files (docs/rift-apart.md):
   0x3250BB80        materials: the first half holds (u64 path, u64 name) string pointers
   0x6B855EED        int16 UV1 per vertex (same scale); this and the colours may be zero-padded to 16 bytes
   0x5CBA9DE9        u8 RGBA per vertex
-  0x15DF9D3B        joints: i16 parent, u16 index, u16, u16, u32 name hash, u32 name pointer
-
-Skin weights are not decoded yet. 0xCCBAFF15 holds 8 bytes (4 u8 joints, 4 u8 weights) per vertex
-of the meshes with flag 0x100, reached through the mesh's first weight index (Ratchet: 202,471
-records = the vertex count of those meshes); 0xC61B1FF5/0xDCA379A2 batches differ from the 2016
-layout. Nothing can check the joint mapping before animation is read. A
-skinned model is shown in its bind pose, which is how its vertices are stored.
+  0x15DF9D3B        joints: i16 parent, u16 index, u16, u16 flags, u32 name hash (game CRC-32 of
+                    the name), u32 name pointer
+  0xDCC88A19        joint rest S/Q/T (48 bytes each), then the inverse binds from the next 64-byte
+                    boundary: the 2016 layout, read by formats.skeleton.inspect_model
+  0xC61B1FF5        skin batches, 16 bytes: u32 offset into 0xDCA379A2, u32 remap, u16 palette size,
+                    u16 (not read), u16 vertex count, u16 first vertex in the mesh. A mesh owns the low
+                    byte of its batch count word, from its first skin batch. With a palette size, the
+                    u8 joint ids index that many u16 skeleton joints at byte offset ``remap`` of
+                    0x5240C82B; without one, ``remap`` is added to each id (the R&C 2016 rules, used by
+                    rigs of more than 256 joints)
+  0xDCA379A2        skin data: per batch, groups of 16 vertices (the last may be shorter). Each group
+                    is a byte n, then for n = 0 one u8 skeleton joint index per vertex (weight 1), else
+                    n + 1 (u8 joint, u8 weight) pairs per vertex; weights sum to 255 or 256
+  0xCCBAFF15        the same weights as fixed 8-byte records (4 u8 joints, 4 u8 weights) for the
+                    meshes with flag 0x100, from the mesh's first weight index. Not read: the batches
+                    hold every skinned mesh, their raw ids equal these on every vertex both hold, and
+                    these records keep the palette-local ids of a remapped rig
 """
 import math
 import struct
@@ -38,12 +48,15 @@ MODEL_MAGIC = 0x9D2C0FA9
 HEADER = 36
 BUILT, VERTICES, INDEXES, MESHES = 0x283D0383, 0xA98BE69B, 0x0859863D, 0x78D9CBDE
 LOOK, MATERIALS, UV1, COLORS, JOINTS = 0x06EB7EFC, 0x3250BB80, 0x6B855EED, 0x5CBA9DE9, 0x15DF9D3B
-JOINT_TRANSFORMS = 0xDCC88A19
-SKIN_SECTIONS = (0xC61B1FF5, 0xDCA379A2, 0xCCBAFF15)
+JOINT_TRANSFORMS, SKIN_BATCHES, SKIN_DATA, WEIGHTS = 0xDCC88A19, 0xC61B1FF5, 0xDCA379A2, 0xCCBAFF15
+SKIN_REMAP = 0x5240C82B
+SKIN_SECTIONS = (SKIN_BATCHES, SKIN_DATA, WEIGHTS, SKIN_REMAP)
+SKIN_GROUP = 16            # vertices per skin-data group
+MAX_INFLUENCES = 8
 LODS_PER_LOOK = 8
 MESH_STRIDE = 64
 VERTEX = np.dtype([('xyzw', '<i2', 4), ('normal', '<u4'), ('uv', '<i2', 2)])
-DECODED = {BUILT, VERTICES, INDEXES, MESHES, LOOK, MATERIALS, UV1, COLORS, JOINTS}
+DECODED = {BUILT, VERTICES, INDEXES, MESHES, LOOK, MATERIALS, UV1, COLORS, JOINTS, SKIN_BATCHES, SKIN_DATA, SKIN_REMAP}
 SCHEMA = 'rcra-pc-model-v1'
 
 
@@ -125,6 +138,70 @@ def _per_vertex(raw, vertex_count, label):
     return raw[:need]
 
 
+def _batch_weights(skin, offset, count, limit):
+    """(joints, weights) arrays (count, 8) of one skin batch, and the offset after it (at most ``limit``)."""
+    joints = np.zeros((count, MAX_INFLUENCES), np.int64)
+    weights = np.zeros((count, MAX_INFLUENCES), np.int64)
+    position = offset
+    for first in range(0, count, SKIN_GROUP):
+        n = min(SKIN_GROUP, count - first)
+        if position >= limit:
+            raise ValueError('Skin batch runs past its data')
+        mode = skin[position]
+        position += 1
+        if mode == 0:
+            size = n
+            if position + size > limit:
+                raise ValueError('Skin batch runs past its data')
+            joints[first:first + n, 0] = np.frombuffer(skin, np.uint8, n, position)
+            weights[first:first + n, 0] = 255
+        elif mode < MAX_INFLUENCES:
+            k = mode + 1
+            size = n * 2 * k
+            if position + size > limit:
+                raise ValueError('Skin batch runs past its data')
+            block = np.frombuffer(skin, np.uint8, size, position).reshape(n, k, 2)
+            joints[first:first + n, :k], weights[first:first + n, :k] = block[:, :, 0], block[:, :, 1]
+        else:
+            raise ValueError(f'Unsupported skin group with {mode + 1} influences')
+        position += size
+    return joints, weights, position
+
+
+def _mesh_weights(skin, remap, batches, first_batch, batch_count, vertex_count, joint_count, mesh_index, as_arrays):
+    """(per-vertex [(joint, weight)] lists, (n, 8) joint array, (n, 8) weight array) of one mesh's skin batches."""
+    if first_batch + batch_count > len(batches):
+        raise ValueError(f'Mesh {mesh_index} skin batches run past the batch table')
+    joints = np.zeros((vertex_count, MAX_INFLUENCES), np.int64)
+    raw = np.zeros((vertex_count, MAX_INFLUENCES), np.int64)
+    covered = np.zeros(vertex_count, bool)
+    for index in range(first_batch, first_batch + batch_count):
+        offset, base, palette_size, _unknown, count, first = batches[index]
+        limit = batches[index + 1][0] if index + 1 < len(batches) else len(skin)
+        if first + count > vertex_count or covered[first:first + count].any():
+            raise ValueError(f'Skin batch {index} overlaps or exceeds mesh {mesh_index}')
+        ids, raw[first:first + count], _end = _batch_weights(skin, offset, count, limit)
+        if palette_size:
+            if base + 2 * palette_size > len(remap) or ids.max(initial=0) >= palette_size:
+                raise ValueError(f'Skin batch {index} joint palette is out of range')
+            ids = np.frombuffer(remap, '<u2', palette_size, base).astype(np.int64)[ids]
+        else:
+            ids = ids + base
+        joints[first:first + count] = ids
+        covered[first:first + count] = True
+    if not covered.all():
+        raise ValueError(f'Mesh {mesh_index} skin batches leave {int((~covered).sum())} vertices without weights')
+    if joints.max(initial=0) >= joint_count:
+        raise ValueError(f'Mesh {mesh_index} skin weights name a joint outside the skeleton')
+    total = raw.sum(axis=1)
+    if (total <= 0).any():
+        raise ValueError(f'Mesh {mesh_index} has a vertex with zero skin weight')
+    values = raw / total[:, None]
+    joints = np.where(raw > 0, joints, 0)
+    lists = [[(j, w) for j, w in zip(jr, wr) if w > 0] for jr, wr in zip(joints.tolist(), values.tolist())]
+    return lists, (joints if as_arrays else None), (values if as_arrays else None)
+
+
 def _tuples(values):
     return list(map(tuple, values.tolist()))
 
@@ -190,6 +267,10 @@ def decode_model(path, lod='All', look=0, data=None, as_arrays=False):
         raise ValueError('Non-finite vertex data')
     materials = _materials(dat1, chunk(MATERIALS), bounds)
     joints = _joints(dat1, chunk(JOINTS), bounds)
+    batches_raw, skin, remap = chunk(SKIN_BATCHES), chunk(SKIN_DATA), chunk(SKIN_REMAP)
+    if len(batches_raw) % 16:
+        raise ValueError('Skin batch section is not a multiple of 16 bytes')
+    batches = [struct.unpack_from('<IIHHHH', batches_raw, at) for at in range(0, len(batches_raw), 16)]
     mesh_count = len(meshes_raw) // MESH_STRIDE
     looks = _looks(chunk(LOOK), mesh_count)
     membership = {i: [] for i in range(mesh_count)}
@@ -225,10 +306,16 @@ def decode_model(path, lod='All', look=0, data=None, as_arrays=False):
             raise ValueError(f'Mesh {mesh_index} indices fall outside its vertices')
         triangles = local.reshape(-1, 3)
         window = slice(first_vertex, first_vertex + local_count)
-        result.append(dict(
+        weights, skin_joints, skin_weights = None, None, None
+        own_batches = skin_batch_count & 0xFF   # the high byte is not a count (it is not read)
+        if own_batches:
+            weights, skin_joints, skin_weights = _mesh_weights(skin, remap, batches, first_skin_batch, own_batches,
+                                                               local_count, len(joints), mesh_index, as_arrays)
+        extra = dict(skin_joint_array=skin_joints, skin_weight_array=skin_weights) if skin_joints is not None else {}
+        result.append(dict(**extra,
             index=mesh_index, mesh_id=f'0x{mesh_id:016X}', first_vertex=first_vertex, first_index=first_index,
             index_count=index_count, vertex_count=local_count, flags=flags, material_index=material_index,
-            first_skin_batch=first_skin_batch, skin_batch_count=skin_batch_count,
+            first_skin_batch=first_skin_batch, skin_batch_count=skin_batch_count & 0xFF, skin_batch_count_word=skin_batch_count,
             first_weight_index=first_weight_index, unknown_u32_00=unknown_u32_00, unknown_u32_60=unknown_u32_60,
             raw_record_hex=meshes_raw[at:at + MESH_STRIDE].hex(),
             triangles=triangles if as_arrays else triangles.tolist(),
@@ -236,8 +323,9 @@ def decode_model(path, lod='All', look=0, data=None, as_arrays=False):
             uv1=uv1_out[window] if uv1_out is not None else None,
             colors=colors_out[window] if colors_out is not None else None,
             tangents=None, tangent_signs=None, packed_normals=None, raw_vectors=None, uv0_secondary_packed=None,
-            static_vector_eligible=False, weights=None, unweighted_vertices=local_count,
-            skinned=bool(skin_batch_count), material=materials[material_index] if material_index < len(materials) else None,
+            static_vector_eligible=False, weights=weights if weights is not None else [None] * local_count,
+            unweighted_vertices=0 if weights is not None else local_count,
+            skinned=weights is not None, material=materials[material_index] if material_index < len(materials) else None,
             index_base='local' if flags & 0x10 else 'global', memberships=membership[mesh_index]))
     section_sizes = {f'0x{k:08X}': size for k, (_o, size) in table.items()}
     unsupported = sorted(f'0x{k:08X}' for k in table if k not in DECODED)
@@ -252,7 +340,7 @@ def decode_model(path, lod='All', look=0, data=None, as_arrays=False):
                           uv0_decode='int16 * uv scale; V flipped for the Blender convention like the 2016 decoder'),
         packed_normal='ALERT two-angle form: 10-bit x and y, z from the remainder, sign at bit 31 (face-normal checked)',
         tangent='not decoded: the vertex w word is not yet interpreted',
-        skin='not decoded: bind-pose geometry only; skin batch layout differs from 2016',
+        skin='0xC61B1FF5/0xDCA379A2 skin batches: 16-vertex groups of 1 to 8 (joint, weight) influences',
         vertex_count=vertex_count, index_count=len(index_words), mesh_record_count=mesh_count,
         selected_mesh_count=len(result), selected_mesh_indices=selected, import_lod=lod, import_look=look,
         looks=looks, materials=materials, joints=joints, skeleton_joint_count=len(joints), meshes=result,
@@ -263,10 +351,11 @@ def decode_model(path, lod='All', look=0, data=None, as_arrays=False):
 def decode_for_viewer(source, model_id, source_path, as_arrays):
     """The ``Game.decode_model`` hook: (decoded, data) with packed_sha256, codec and joint_count.
 
-    joint_count stays 0 until Rift Apart skinning and animation are decoded, so the loader does not
-    look for 2016 animation sets; the skeleton itself is in ``joints``."""
+    joint_count is the skeleton size when the model stores its joint rest transforms (section
+    0xDCC88A19), else 0; the clip library (``rcra.animation.RcraAnimationLibrary``) reads the
+    skeleton from ``data``, the whole asset."""
     data, digest = source.bytes(model_id)
     decoded = decode_model(source_path, lod='All', data=data, as_arrays=as_arrays)
-    decoded.update(packed_sha256=digest, codec='rcra-dsar', joint_count=0,
-                   animation_note='Rift Apart animation and skinning are not decoded yet; the model shows its bind pose')
+    rigged = '0x%08X' % JOINT_TRANSFORMS in decoded['section_sizes']
+    decoded.update(packed_sha256=digest, codec='rcra-dsar', joint_count=len(decoded['joints']) if rigged else 0)
     return decoded, data

@@ -237,23 +237,31 @@ class AnimationLibrary:
         pipeline's ``classify`` on the clip's first frame, so only that frame is decoded."""
         seen, notes = set(), []
         for clip in self.clips:
-            data = self.animset_data[clip['animset']]
-            digest = hashlib.sha1(data[clip['offset']:clip['offset'] + clip['size']]).digest() if clip.get('size') else None
+            digest = self._clip_digest(clip)
             if digest in seen:
                 notes.append('duplicate')
                 continue
             if digest:
                 seen.add(digest)
-            key = (clip['animset'], clip['offset'])
+            key = (clip['animset'], clip['offset'], clip.get('key'))   # key: a Rift Apart clip's own asset
             if key not in self._kinds:
                 try:
-                    start = decode_clip(data, clip['offset'], self.names, first_frames=1)
+                    start = self._decode_clip(clip, first_frames=1)
                     self._kinds[key] = classify(self.rows, sample_transforms(start), clip.get('source') == 'cinematic2')[0]
                 except Exception:   # the full decode in pose() fails the same way
                     self._kinds[key] = 'unsupported'
             kind = self._kinds[key]
             notes.append('layer' if kind == 'relative/additive-style layer' else None if kind in PLAYABLE else 'unplayable')
         return notes
+
+    def _clip_digest(self, clip):
+        """SHA-1 of a clip's bytes (copies of one clip share it), or None when its size is unknown."""
+        data = self.animset_data[clip['animset']]
+        return hashlib.sha1(data[clip['offset']:clip['offset'] + clip['size']]).digest() if clip.get('size') else None
+
+    def _decode_clip(self, clip, first_frames=None):
+        """The ``animation_samples.decode_clip`` dict of one clip entry."""
+        return decode_clip(self.animset_data[clip['animset']], clip['offset'], self.names, first_frames=first_frames)
 
     def clip_frames(self, index):
         """(decoded clip, kind, frames) for clip ``index``: the source samples as this model plays them.
@@ -263,7 +271,7 @@ class AnimationLibrary:
         model's rig (``clip_fits_source``). Raises NotPlayable
         for a clip that does not drive the skeleton."""
         entry = self.clips[index]
-        clip = decode_clip(self.animset_data[entry['animset']], entry['offset'], self.names)
+        clip = self._decode_clip(entry)
         frames = sample_transforms(clip)
         kind, _evidence = classify(self.rows, frames, entry.get('source') == 'cinematic2')
         if kind not in PLAYABLE:

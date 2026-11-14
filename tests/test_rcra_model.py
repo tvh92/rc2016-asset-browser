@@ -129,7 +129,8 @@ class RealModelTests(unittest.TestCase):
         self.assertEqual((d['vertex_count'], d['mesh_record_count'], len(d['looks']), len(d['joints'])), (331368, 186, 7, 205))
         self.assertEqual([lod['count'] for lod in d['looks'][0]['lods']], [31] * 6 + [0, 0])
         self.assertIn('hero_Ratchet_Boots', [m['name'] for m in d['materials']])
-        self.assertEqual(d['joint_count'], 0)        # until skinning and animation are decoded
+        self.assertEqual(d['joint_count'], 205)
+        self.assertTrue(all(m['skinned'] and m['unweighted_vertices'] == 0 for m in d['meshes']))
         payload = mesh_payload(d, 'Highest', 0)
         height = payload['vertices'][:, 2].max() - payload['vertices'][:, 2].min()
         self.assertAlmostEqual(float(height), 1.39, delta=0.02)

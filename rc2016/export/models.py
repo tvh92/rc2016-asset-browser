@@ -743,13 +743,18 @@ class ModelExporter:
         archive = self.loader.archive
         self._check()
         notes = []
-        if load_animation and decoded['joint_count'] and animset_root is None and not options.cinematic_only:
+        own_clips = self.loader.game.has_animation_library()   # Rift Apart finds its clips without a scan
+        if load_animation and decoded['joint_count'] and animset_root is None and not options.cinematic_only and not own_clips:
             notes.append('Animations skipped: scan the archive into this output folder first (its reference index links models to animation sets).')
         joint_count = decoded['joint_count'] if library is not None and library.rows else 0
         if options.skeleton and decoded['joint_count'] and not joint_count:
             # Skeleton still exported for rigging even without a clip library.
-            from rc2016.viewer.animation import AnimationLibrary
-            library = AnimationLibrary(archive, self.loader._recent[self.loader.identity]['data'], [])
+            model_data = self.loader._recent[self.loader.identity]['data']
+            if own_clips:
+                library = self.loader.game.animation_library(archive, model_data, decoded['_archive_path'], clips=False)
+            else:
+                from rc2016.viewer.animation import AnimationLibrary
+                library = AnimationLibrary(archive, model_data, [])
             joint_count = len(library.rows) if library.rows else 0
         if cutscenes and library is not None and library.rows:
             self.log('  scanning real-time cutscenes')
@@ -775,7 +780,8 @@ class ModelExporter:
             notes.append(f'{unweighted} vertices without skin weights follow the root joint.')
         by_index = {m.get('index', i): m for i, m in enumerate(decoded['materials'])}
         attached = []
-        if options.attachments and joint_count and need_gltf:
+        # Attach parts are the R&C 2016 bangle_set/*_attach layout, read with its decoders; Rift Apart has none.
+        if options.attachments and joint_count and need_gltf and not own_clips:
             attached, attachment_notes = self._attachment_parts(archive, source_path, library, parts, by_index, options)
             notes += attachment_notes
             parts += [part for entry in attached for part in entry['parts']]

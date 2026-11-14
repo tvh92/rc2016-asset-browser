@@ -428,6 +428,16 @@ class SourcePreviewLoader:
         cached['animation_built']=borrowed
         cached['animation']=None;decoded['animation_note']='';decoded['animsets']=[]
         if not decoded['joint_count']:return
+        if self.game.has_animation_library():   # the game finds its own clips (Rift Apart: through its dag)
+            try:
+                library=self.game.animation_library(self.archive,cached['data'],decoded['_archive_path'])
+                if cached['purpose']=='view':library=library.with_cinematic(self.archive,decoded['_archive_path'])
+                cached['animation']=library
+                decoded['animsets']=list(library.animset_data)
+                decoded['animation_note']='' if library.clips else 'No animation set or cutscene clip found for this model.'
+            except Exception as error:  # the model still displays without clips
+                cached['animation']=None;decoded['animation_note']=f'Animations unavailable: {error}'
+            return
         try:
             from rc2016.viewer.animation import AnimationLibrary, model_animsets
             animsets=model_animsets(self.archive,output_root,decoded['_archive_path']) if output_root else []
