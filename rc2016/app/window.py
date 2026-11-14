@@ -102,6 +102,9 @@ HELP = {
     "tree": (
         "The models in the selected folder, with their output state. Ctrl-click or Shift-click selects several for "
         "extraction. The selection stays when you choose another folder."),
+    "hide_topiary": (
+        "Hides the topiary variant (<name>_topiary.model) of each Rift Apart enemy and vehicle. "
+        "The topiary weapon, plants and NPCs stay listed."),
     "expand": (
         "Opens every folder on the left, or closes them all again.\n\n"
         "Without this, folders open by themselves for short lists and searches. "
@@ -150,6 +153,12 @@ SHADING_FILTERS = {"Native translation": "native translation", "Generic reading"
                    "No material graph": "no material graph", "Exact rules only": None}
 # The game capability (rc2016.games) each asset type needs.
 ASSET_TYPE_CAPABILITY = {"Model": "models", "Level": "levels", "Texture": "textures", "Flash UI": "flash"}
+
+
+def _is_topiary_variant(path: str) -> bool:
+    """True for <name>_topiary.model of an enemy or a vehicle (the 'Hide topiary' filter)."""
+    path = path.casefold()
+    return path.endswith("_topiary.model") and (path.startswith("characters/enemy/") or "vehicle/" in path)
 
 
 class AssetBrowserApp:
@@ -232,6 +241,7 @@ class AssetBrowserApp:
         self._rebuilding = False   # True while the folder tree and the list are refilled; their selection events are ignored
         self.state_var = tk.StringVar(value="All")
         self.shading_var = tk.StringVar(value="All")
+        self.hide_topiary_var = remember_var(tk.BooleanVar(value=False), "browser.hide_topiary")
         self.prefix_var = remember_var(tk.StringVar(), "export.prefixes")
         # Export options (Options… window): every option is restored from, and saved to, the settings file on change.
         from rc2016.export.models import FORMATS
@@ -378,8 +388,12 @@ class AssetBrowserApp:
         self._gate("decoded_shading", HELP["shading"], shading, "readonly")
         self._gate("decoded_shading", HELP["shading"], shading_label, None)
         shading.bind("<<ComboboxSelected>>", lambda _event: self.refresh_table())
+        topiary_check = ttk.Checkbutton(filters, text="Hide topiary", variable=self.hide_topiary_var,
+                                        command=self.refresh_table)
+        topiary_check.grid(row=0, column=9, padx=(18, 0))
+        self._tip(HELP["hide_topiary"], topiary_check)
         # Model-only controls: hidden for the Texture type, which shares the Search and List|Grid switch.
-        self.model_only_tools = (self.expand_button, state_label, state, shading_label, shading)
+        self.model_only_tools = (self.expand_button, state_label, state, shading_label, shading, topiary_check)
         # Layout of the viewers (all asset types): Vertical = viewport left, controls right; Horizontal = stacked.
         layout_box = ttk.Frame(toolbar)
         layout_box.grid(row=0, column=2, sticky="e", padx=(18, 0))
@@ -932,9 +946,12 @@ class AssetBrowserApp:
         self._sync_selection()   # selected models stay selected, even the ones this list is about to hide
         open_folders = {item for item in self._folder_items() if self.folder_tree.item(item, "open")} if hasattr(self, "folder_tree") else set()
         terms = needle.split()
+        hide_topiary = self.hide_topiary_var.get()
         self._cancel_pending_refresh()
         matched, statuses = [], []
         for record in self.records:
+            if hide_topiary and _is_topiary_variant(self._record_path(record)):
+                continue
             is_pipeline = isinstance(record, PipelineModelCandidate)
             relative_model = record.archive_path if is_pipeline else record.relative_model
             haystack = (relative_model + (" " + record.model_id + " " + record.search_text if is_pipeline
