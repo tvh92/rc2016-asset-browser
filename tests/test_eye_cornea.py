@@ -169,6 +169,16 @@ class EyeCorneaValidationTests(unittest.TestCase):
         self.assertIn("use_backface_culling = not f.get('two_sided')", body)
         self.assertIn("surface_render_method = 'BLENDED'", body)
 
+    def test_reflection_is_off_by_default_behind_a_non_vr_switch(self):
+        import pathlib
+        text = (pathlib.Path(__file__).resolve().parents[1] / 'rc2016/pipeline/game_shader.py').read_text(encoding='utf-8')
+        self.assertIn("CORNEA_REFLECTION_SWITCH = 'Presentation cornea reflection'", text)
+        body = text.split('def _viewer_rule_eye_cornea')[1].split('def _viewer_skin_spec')[0]
+        self.assertIn("switch.outputs[0].default_value = 0.0", body)
+        self.assertIn("weight = P.m('MULTIPLY', weight, switch.outputs[0])", body)
+        # validation rejects any 'VR ' value node without a source rule value, so the switch must not carry that prefix
+        self.assertFalse('Presentation cornea reflection'.startswith('VR '))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1454,13 +1454,18 @@ def _viewer_rule_bright_glow(mat, rule):
             % p['amplitude']]
 
 
+CORNEA_REFLECTION_SWITCH = 'Presentation cornea reflection'
+
+
 def _viewer_rule_eye_cornea(mat, rule, img):
     """Eye cornea, forward colour pass A36A97CB (gl_shading.GLASS_FRAGMENT uKind 6), alpha-over, back faces culled.
 
     Built: F = sat(base + (1.001 - sat(N.V))^4) with the dome normal at xy scale 0.555, alpha = sat(F + 0.06), and a
     white Glossy BSDF (environment normal scale) weighted by (weight + (1.001 - N.V)^4). Surface = Cull(Mix(alpha,
     Transparent, Glossy)). The highlight lobe 4 sat(r.H)^p (1 - fade), which needs the key-light direction, and the lens
-    texture term are viewer-only: the scene lights and HDRI lighting give Cycles its own highlight.
+    texture term are viewer-only: the scene lights and HDRI lighting give Cycles its own highlight. The Glossy weight
+    passes through the presentation switch CORNEA_REFLECTION_SWITCH, 0 by default, so the cornea shows no reflection
+    unless the user sets it to 1.
     """
     nt = mat.node_tree; P = _ViewerNodes(nt)
     f = rule['terms']['eye_cornea']; p = f['params']
@@ -1476,6 +1481,12 @@ def _viewer_rule_eye_cornea(mat, rule, img):
     fr = P.sat(P.m('ADD', P.const('cornea reflect base', p['reflect_base']), f4))
     alpha = P.sat(P.m('ADD', fr, P.const('cornea alpha bias', p['alpha_bias'])))
     weight = P.m('ADD', P.const('cornea reflect weight', p['reflect_weight']), f4)
+    # Presentation switch, not game data: off by default because the review HDRI's sky, blurred at the presentation
+    # roughness, reads as a grey haze over the pupils (the game reflects its level probes and SSR instead). Set to 1
+    # to restore the decoded reflection weight.
+    switch = P.N.new('ShaderNodeValue'); switch.name = switch.label = CORNEA_REFLECTION_SWITCH
+    switch.outputs[0].default_value = 0.0
+    weight = P.m('MULTIPLY', weight, switch.outputs[0])
     gl = P.N.new('ShaderNodeBsdfGlossy'); gl.name = gl.label = 'VR cornea glossy'
     gl.distribution = 'GGX'
     P.L.new(P.comb(weight, weight, weight), gl.inputs['Color'])
@@ -1497,7 +1508,9 @@ def _viewer_rule_eye_cornea(mat, rule, img):
     return ['Forward eye cornea A36A97CB (alpha-over): Fresnel alpha and the dome-normal reflection weight are decoded; the '
             'key-light highlight lobe and lens-texture term are viewer-only, and the Glossy BSDF (presentation roughness %.3g) '
             'replaces the engine light loop, reflection probes and screen-space reflections; CB0 normal strength, instance '
-            'floats and fog fade are frozen (1, 0, 1)' % (2.0 ** -2.75)]
+            'floats and fog fade are frozen (1, 0, 1)' % (2.0 ** -2.75),
+            'Cornea reflection off by default (node "%s" = 0, a presentation choice): the review HDRI reflection read as '
+            'haze over the pupils; set it to 1 for the decoded reflection weight' % CORNEA_REFLECTION_SWITCH]
 def _viewer_skin_spec(P, skin, gR, gG, f, tinted):
     """(F0 grey, gloss input, F0 rgb or None) of the basic_skin writers 9AAD640B / 0E6CC87B (viewer textures.SKIN_KEYS).
 

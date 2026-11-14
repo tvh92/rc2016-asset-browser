@@ -403,7 +403,7 @@ alpha = sat(lobe + F + 0.06)                                   (times the vertex
 rgb   = reflection(Ne) (reflect weight + F4) + (lens.r + Llight) lobe (4 - 3 k)
 ```
 
-The reflection is the engine's probe loop and a screen-space reflection march mixed by a hit mask, then fogged. The viewer replaces it with the viewer environment (`envSpecular`) at a labelled presentation roughness (GGX alpha `2^-5.5`). Blender builds `F`, `alpha`, and a white Glossy BSDF with the weight `reflect weight + F4` on `Ne`, as `Cull(Mix(alpha, Transparent, Glossy))`; the highlight lobe and lens term need the key-light direction and are viewer-only, and Cycles lights and the HDRI give its highlight.
+The reflection is the engine's probe loop and a screen-space reflection march mixed by a hit mask, then fogged. The viewer replaces it with the viewer environment (`envSpecular`) at a labelled presentation roughness (GGX alpha `2^-5.5`). Blender builds `F`, `alpha`, and a white Glossy BSDF with the weight `reflect weight + F4` on `Ne`, as `Cull(Mix(alpha, Transparent, Glossy))`; the highlight lobe and lens term need the key-light direction and are viewer-only, and Cycles lights and the HDRI give its highlight. The Glossy weight is multiplied by the value node `Presentation cornea reflection`, which is 0 by default: blurred at the presentation roughness, the review HDRI's sky reads as a grey haze over the pupils, so built corneas show no reflection (and no HDRI highlight). Setting the node to 1 restores the decoded weight. This switch is a presentation choice, not game data.
 
 Limitations:
 
