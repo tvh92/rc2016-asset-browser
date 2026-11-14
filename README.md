@@ -1,6 +1,8 @@
 # R&C 2016 Asset Browser
 
-A Windows desktop tool for browsing, viewing and exporting the assets of **Ratchet & Clank (PS4, 2016)** straight from the game's own archive.
+A Windows desktop tool for browsing, viewing and exporting the assets of **Ratchet & Clank (PS4, 2016)** straight from the game's own archive. It also reads **Ratchet & Clank: Rift Apart** (the PS5 game, from its PC release) for models, textures and model export; see [Rift Apart](#rift-apart).
+
+The features below are for R&C 2016.
 
 - **Models:** a searchable tree of all ~7,000 models with an interactive 3D view (Shaded, Textured, Solid, Wireframe), looks/LODs, skeletal animation playback and model details: the viewer shading rule of each material, and which levels and zones place the model. Light it with a viewer rig or the shared review HDRI, which predicts the Blender review render. A Shading filter lists models whose material graphs have no decoded rule.
 - **Grid view:** the model list as a thumbnail grid of a folder or search result (rendered by a separate process and cached in the output folder); click a tile to open the model.
@@ -10,7 +12,14 @@ A Windows desktop tool for browsing, viewing and exporting the assets of **Ratch
 - **Flash UI:** renders the game's Scaleform menus and in-game planet maps, and exports them as PNG.
 - **Export:** glTF/GLB (skeleton and clips included) and OBJ with no extra software. FBX, USD and `.blend` need Blender. An optional research pipeline builds validated Blender scenes using the game's deferred BRDF.
 
-**No game data is included.** You need your own dump of the game (CUSA01073 or another region), extracted so that the archive folder (`Image0`, with `toc`, `layout.csv` and the archive files) is on disk.
+**No game data is included.** You need your own copy of the game:
+
+- **R&C 2016:** a dump of the game (CUSA01073 or another region), extracted so that the archive folder (`Image0`, with `toc`, `layout.csv` and the archive files) is on disk.
+- **Rift Apart:** the Steam PC install, the folder that holds `toc`, `dag` and `d\`. It is read in place, and nothing is written to it. Its GDeflate archives are decompressed with the install's own `dstoragecore.dll`.
+
+## Rift Apart
+
+Pick the Rift Apart install as **Source** and the browser switches to that game; the window title names the game in use. Supported: the model tree and 3D view, the Textures tab, and model export to GLB, glTF and OBJ (FBX and USD through Blender). The shading is a labelled preview from each material's base colour and normal map, not the game's shading. Skinning, animation, levels, Flash UI and the research pipeline are not available for Rift Apart yet. Details: [docs/rift-apart.md](docs/rift-apart.md).
 
 ## Requirements
 
@@ -39,7 +48,7 @@ From the repository folder:
 py -m rc2016
 ```
 
-1. Set **Source** to the extracted game folder and **Output** to an empty folder for exports and the asset index.
+1. Set **Source** to the extracted R&C 2016 game folder or the Rift Apart install, and **Output** to an empty folder for exports and the asset index. The folder decides the game, and each game remembers its own Source and Output.
 2. Click **Scan**. The first scan indexes the archive, which takes a few seconds. Later scans are reused while nothing changes.
 3. Pick an asset type (Model, Level or Flash UI) and select an item to view it.
 4. **Extract selected** exports the selected models. Formats and Blender's path are under **Options…**.
@@ -72,6 +81,7 @@ Use `pyw` instead of `py` to launch the windows without a console. Settings are 
 | `rc2016/flash/` | Flash UI renderer and planet-map export |
 | `rc2016/export/` | glTF/GLB/OBJ export and Blender conversion |
 | `rc2016/formats/` | Decoders for the archive, asset index, models, skeletons, textures, materials and animation |
+| `rc2016/games/` | Game detection and per-game support, including the Rift Apart reader (`rcra/`) |
 | `rc2016/shaders/` | Materialgraph shader analysis (GCN decoding, translation, shader families) |
 | `rc2016/pipeline/` | Research Blender pipeline, the game's deferred BRDF for Blender, scene defaults, per-weapon assemblies |
 | `assets/` | Shared review lighting (settings and HDRI) and the captured game-view tables |
@@ -87,6 +97,7 @@ Documentation:
 - [Research pipeline](docs/pipeline.md)
 - [Animation format](docs/animation.md)
 - [Shading and lighting](docs/shading.md)
+- [Rift Apart](docs/rift-apart.md)
 
 ## Tests
 
@@ -94,7 +105,7 @@ Documentation:
 py -m unittest discover -s tests -t .
 ```
 
-Tests that need game files skip unless the `RC2016_RESEARCH` environment variable points at a folder that has them.
+Tests that need game files skip unless `RC2016_RESEARCH` points at the R&C 2016 archive folder, or `RCRA_GAME` at the Rift Apart install.
 
 ## Packaging
 
@@ -107,6 +118,7 @@ This project is licensed under the GNU General Public License v3.0; see [`LICENS
 ## Third-party code and assets
 
 - `third_party/ALERT/` (the `dat1lib` package only): [ALERT](https://github.com/Tkachov/ALERT) by Tkachov, GPL-3.0. See its `LICENSE.txt`. Used to read weapon config files for the research pipeline's V1/V5 weapon assemblies, and by `rc2016/research/` for section-reader cross-checks and CRC hashing.
+- Rift Apart layouts follow ALERT's `dat1lib` and [RCRA-Forge](https://github.com/ROStudios25/RCRA-Forge) (GPL-3.0), as credited in [docs/rift-apart.md](docs/rift-apart.md); no RCRA-Forge code is included.
 - `third_party/opengnm/gcn_types.h`: opengnm, MIT. See its `LICENSE`. Provides the GCN opcode tables for the shader decoder.
 - `assets/lighting/golden_gate_hills_1k.exr`: a downscaled copy of *Golden Gate Hills* from [Poly Haven](https://polyhaven.com/a/golden_gate_hills), CC0.
 

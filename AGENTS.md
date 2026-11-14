@@ -1,6 +1,12 @@
 # R&C 2016 Asset Browser — agent guide
 
-A Windows desktop tool that reads the Ratchet & Clank (PS4, 2016) game archive directly: an asset browser with an interactive 3D model, level and Flash UI viewer, plus exporters (glTF/GLB/OBJ, FBX/USD/.blend through Blender, and a validated research Blender pipeline). The code is the Python package `rc2016/`. Its history and evidence live in the local-only `Research/` folder inside this checkout; it is gitignored and never committed (index and sorting rules: [Research/research.md](Research/research.md)).
+A Windows desktop tool that reads Ratchet & Clank game files directly: an asset browser with an interactive 3D model, level and Flash UI viewer, plus exporters (glTF/GLB/OBJ, FBX/USD/.blend through Blender, and a validated research Blender pipeline). The code is the Python package `rc2016/`.
+
+It reads two games. The folder picked as the source decides which one (`rc2016/games/`, [docs](docs/rift-apart.md#how-the-browser-picks-the-game)):
+
+- **Ratchet & Clank (PS4, 2016):** the extracted `CUSA01073` archive. Every feature, including levels, Flash UI, animation and the research pipeline, is built for this game.
+- **Ratchet & Clank: Rift Apart:** the PS5 game, read from its Steam PC install (`toc`, `dag`, `d/`). Models, textures and model export only, with a labelled preview shading; everything else is greyed out ([docs](docs/rift-apart.md)).
+ Its history and evidence live in the local-only `Research/` folder inside this checkout; it is gitignored and never committed (index and sorting rules: [Research/research.md](Research/research.md)).
 
 ## Layout
 
@@ -19,7 +25,7 @@ A Windows desktop tool that reads the Ratchet & Clank (PS4, 2016) game archive d
 | `assets/` | Shared review lighting (JSON + CC0 HDRI) and the captured game-view tables |
 | `third_party/` | ALERT `dat1lib` (GPL-3.0, weapon config links) and opengnm `gcn_types.h` (MIT) |
 
-Before changing a subsystem, read the section of its doc that covers the code you are touching: [viewer](docs/viewer.md), [levels](docs/levels.md), [pipeline](docs/pipeline.md), [animation](docs/animation.md), [shading](docs/shading.md). The code is the source of truth when a doc and the code disagree; fix the doc.
+Before changing a subsystem, read the section of its doc that covers the code you are touching: [viewer](docs/viewer.md), [levels](docs/levels.md), [pipeline](docs/pipeline.md), [animation](docs/animation.md), [shading](docs/shading.md), [Rift Apart](docs/rift-apart.md). The code is the source of truth when a doc and the code disagree; fix the doc.
 
 ## Working rules
 
@@ -38,6 +44,7 @@ Equations, slot meanings and graph families are in [shading](docs/shading.md); t
 - `_c` alpha is a self-lit mask, never transparency. `_n` is a DirectX tangent normal at strength 1.0 without a green flip.
 - Opaque surfaces use the game's deferred BRDF (`rc2016/pipeline/game_shader.py`, the viewer's `rc2016/viewer/shading.py`) with metallic 0. Never tune shading by eye: every term must trace to decoded data or be labelled as a preview.
 - Blend and cull come from the `.material` flags word (`rc2016/pipeline/render_state.py`). Glass, energy and VFX forward materials only have the specific decoded rules in the docs.
+- Rift Apart has no decoded shading: its viewer preview uses only the base colour and normal slots and is labelled as a preview. Never apply 2016 material rules, graph translations or slot meanings to Rift Apart without decoding them from its own files.
 - New viewer material rules must be mirrored in the Blender front-end (`materials.viewer_graph_rule`, `game_shader.apply_viewer_graph_rule`) and checked by `rc2016/shaders/validation.py`.
 
 ## Pipeline
@@ -63,8 +70,9 @@ python -m ruff check rc2016 tests
 ```
 
 - Headless GUI smoke tests (Tkinter, background workers) run under a timeout, must not set the `'source'` setting (it starts a scan that can stall the run), and use a temporary `APPDATA`.
-- Tests that need game files read `RC2016_RESEARCH` (the game archive folder, `CUSA01073`) and skip without it; tests that need saved evidence read `Research/` and skip when it is absent.
-- Changes to the archive, index or model-listing code also need a scan (`python rc2016/pipeline/run.py --extracted-root <game> --output-root <folder> --blender <blender.exe> --list-models-json <file>`). Blender-side modules (`builder.py`, `game_shader.py`, weapon merges) only import inside Blender.
+- Tests that need game files read `RC2016_RESEARCH` (the R&C 2016 archive folder, `CUSA01073`) or `RCRA_GAME` (the Rift Apart install folder) and skip without them; tests that need saved evidence read `Research/` and skip when it is absent.
+- Changes to the archive, index or model-listing code also need a scan (`python rc2016/pipeline/run.py --extracted-root <game> --output-root <folder> --blender <blender.exe> --list-models-json <file>`). Changes to the Rift Apart reader need `python -m rc2016.games.rcra.inspect --game <install> --output-root <folder> --summary --verify`.
+- Changes to shared code reached through the game seam (`viewer/loader.py`, `export/models.py`, `app/window.py`) need the tests for both games (`tests/test_games.py` and the `test_rcra_*` modules). Blender-side modules (`builder.py`, `game_shader.py`, weapon merges) only import inside Blender.
 
 ## Git and GitHub
 

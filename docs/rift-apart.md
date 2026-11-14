@@ -1,6 +1,6 @@
 # Rift Apart (PC)
 
-The Rift Apart reader lives in `rc2016/games/rcra/`. It reads the Steam PC install directly: nothing is extracted, and nothing is written to the game folder. This page covers the archive layer, model geometry, textures and the material texture slots behind the viewer's labelled preview.
+The Rift Apart reader lives in `rc2016/games/rcra/`. Rift Apart is a PS5 game; the reader takes its Steam PC release, not a PS5 dump, and reads the install directly: nothing is extracted, and nothing is written to the game folder. This page covers the archive layer, model geometry, textures and the material texture slots behind the viewer's labelled preview.
 
 The layouts below were taken from two references and then checked against the installed files:
 
