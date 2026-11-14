@@ -107,10 +107,16 @@ def material_maps(source, material, cache, map_cache=None):
     return maps(source, material, cache, map_cache)
 
 
+def blender_materials(source, materials, folder):
+    from rc2016.games.rcra.blender_export import blender_materials as build
+    return build(source, materials, folder)
+
+
 # Browse, models, textures, glTF export, and skeletal animation (viewer playback and export).
 GAME = Game(id='rcra', title='Rift Apart', detect=detect, open_source=open_source,
             capabilities=frozenset({'models', 'textures', 'export', 'animation'}),
             hooks=dict(decode_model=decode_model, material_textures=material_textures, model_texture_list=model_texture_list,
                        material_rules=material_rules, effect_preview=effect_preview, texture_header=texture_header,
                        texture_paths=texture_paths, load_texture=load_texture, export_textures=export_textures,
-                       material_maps=material_maps, list_models=list_models, animation_library=animation_library))
+                       material_maps=material_maps, list_models=list_models, animation_library=animation_library,
+                       blender_materials=blender_materials))

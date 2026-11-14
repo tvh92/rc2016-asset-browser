@@ -1,6 +1,12 @@
 """Blender side of rc2016.export.models: import one .glb, write FBX / USD / .blend. Run by Blender only.
 
     blender --background --factory-startup --python blender_convert.py -- --glb in.glb [--fbx out.fbx] [--usd out.usdc] [--blend out.blend]
+        [--materials rcra_materials.json]
+    blender --background --factory-startup --python blender_convert.py -- --validate file.blend
+
+``--materials`` (rc2016.games.rcra.blender_export) replaces each named imported material with the game's translated
+material (rc2016.export.rcra_blender) before any file is written. ``--validate`` reopens a written .blend and checks
+every translated material (its surface group, the BRDF group and its images); it exits non-zero on a problem.
 
 Factory settings, nothing saved to the user's preferences. The .blend gets the repository's
 plain scene/render defaults (rc2016.pipeline.scene_defaults.apply_new_scene_defaults, without the HDRI world or OptiX GPU setup) and packs its images.
@@ -14,11 +20,25 @@ import bpy
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))   # repository root, for rc2016.pipeline.scene_defaults
 
 args = argparse.ArgumentParser()
-args.add_argument('--glb', required=True)
+args.add_argument('--glb')
+args.add_argument('--materials')
+args.add_argument('--validate')
 args.add_argument('--fbx')
 args.add_argument('--usd')
 args.add_argument('--blend')
 args = args.parse_args(sys.argv[sys.argv.index('--') + 1:])
+
+if args.validate:
+    from rc2016.export.rcra_blender import RECIPE_PROPERTY, validate_material
+    bpy.ops.wm.open_mainfile(filepath=args.validate)
+    translated = [m for m in bpy.data.materials if m.get(RECIPE_PROPERTY)]
+    problems = [p for m in translated for p in validate_material(m)]
+    for problem in problems:
+        print('PROBLEM', problem, flush=True)
+    if problems:
+        sys.exit(1)
+    print('VALIDATED', args.validate, len(translated), 'translated materials', flush=True)
+    sys.exit(0)
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 # No bone-display Icosphere: FBX/USD would export it as a mesh.
@@ -29,6 +49,26 @@ group_by_model(bpy.context.scene)
 actions = list(bpy.data.actions)
 for action in actions:
     action.use_fake_user = True   # every clip stays in the file, not only the active one
+
+if args.materials:
+    import json
+    from rc2016.export.rcra_blender import apply_recipe
+    entries = json.loads(Path(args.materials).read_text(encoding='utf-8'))['materials']
+    users = {}
+    for obj in bpy.data.objects:
+        if obj.type == 'MESH':
+            for slot in obj.material_slots:
+                if slot.material is not None:
+                    users.setdefault(slot.material.name, obj.data)
+    for name, entry in entries.items():
+        material = bpy.data.materials.get(name)
+        if material is None or 'recipe' not in entry:
+            continue
+        mesh = users.get(name)
+        uv_maps = [layer.name for layer in mesh.uv_layers] if mesh is not None else []
+        colour = mesh.color_attributes[0].name if mesh is not None and len(mesh.color_attributes) else None
+        apply_recipe(material, entry, uv_maps, colour)
+        print('TRANSLATED', name, flush=True)
 
 if args.fbx:
     bpy.ops.export_scene.fbx(filepath=args.fbx, path_mode='COPY', embed_textures=True, add_leaf_bones=False,

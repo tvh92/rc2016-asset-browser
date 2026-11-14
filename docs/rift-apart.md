@@ -34,7 +34,7 @@ Rift Apart's capabilities are `models`, `textures`, `export` and `animation`:
   - Browsing.
   - The 3D model view with its labelled preview shading, and skeletal [animation](#animation) playback.
   - The Textures tab.
-  - Model export to GLB, glTF and OBJ (FBX and USD through Blender), with skin weights and animation clips.
+  - Model export to GLB, glTF and OBJ (FBX, USD and `.blend` through Blender), with skin weights and animation clips. Blender exports carry the game's own materials where the G-buffer writer translates ([Blender materials](#blender-materials)).
 - **Disabled:** the Level and Flash UI types, the backend choice, the Blender scene and the shading filter. Each is greyed out with the tip "Not yet available for Rift Apart".
 - **Clips:** found through the dag by `Game.animation_library`, without a scan's reference index.
 - **Model list:** read in-process through `Game.list_models`, without the pipeline subprocess.
@@ -519,8 +519,81 @@ The class-0 apply program (exe offset 59122268) gives the deferred BRDF. It is n
 ### Not done yet
 
 - **Viewer:** the viewer does not draw translated programs yet. The glass preview is still the hand-written `uKind 26` program.
-- **Blender:** no Blender node emitter or Rift Apart BRDF group exists yet.
 - **Engine inputs:** the key light, ambient and probe values the programs read are not chosen yet, and neither are the engine textures (`g_BrdfLookup`, `g_EnvProbeDefault`).
+
+## Blender materials
+
+A Blender export (`.blend`, FBX or USD, through `rc2016/export/blender_convert.py`) replaces each imported glTF material with the game's own material. The work splits into three modules:
+
+| Module | Role |
+| --- | --- |
+| `rc2016/games/rcra/surface.py` | Translates the G-buffer writer (slot 4) and unpacks the engine's packing into surface terms: a recipe |
+| `rc2016/games/rcra/blender_export.py` | The `Game.blender_materials` hook: recipes and unit textures, written as `rcra_materials.json` beside the export |
+| `rc2016/export/rcra_blender.py` | Runs in Blender: the "RC RA Deferred BRDF" group, and one Math node per recipe operation |
+
+### Surface terms
+
+The packing is the same engine code in every graph (see [G-buffer and deferred lighting](#g-buffer-and-deferred-lighting)). `surface` translates the writer with the material bound and unpacks:
+
+- albedo, F0 rgb, gloss and the world normal
+- occlusion, or emission `E` (self-lit `albedo × E`)
+- the writer's discard, which becomes alpha clip
+
+F0 and gloss keep the game's 8-bit rounding. A material passes only when every term is a float expression of the mesh interpolants (UV0, UV1, normal, tangent and sign, vertex colour, front face) and its own textures and constants.
+
+Values a material does not own are bound and listed in its limitations:
+- **Neutral draw:** no dissolve, opaque, no render flags (lighting class 0), shader time 0.
+- **Review values:** screen position for dither, LOD fade and adapted luminance 1.
+
+**Coverage:** 4,617 of 5,721 materials. The rest are reported with a reason (`rc2016.games.rcra.surface.Unsupported`):
+- per-object buffer loads and integer operations left in the writer, for example foliage wind (591 materials)
+- writers without the packed normal, as in the holo graphs (360)
+- unbounded loops (81)
+
+### Textures
+
+Each unit texture is written as stored. Missing channels follow D3D: green and blue read 0, alpha reads 1.
+
+| Texture | Written as |
+| --- | --- |
+| 8-bit | RGBA PNG |
+| Float | Raw float32 RGBA (`.f32`), loaded into a packed float image |
+| Array, slice chosen at run time | Every slice; the material picks one by `round(slice)`, clamped |
+
+The colourspace follows the DXGI format: sRGB formats are `sRGB`, everything else `Non-Color`. Some material and graph strings double their path separators; they are normalised.
+
+### In Blender
+
+The emitter reads its inputs from the mesh:
+
+- **UVs:** the first and second UV maps, with game `v = 1 − v_blender`; every texture lookup flips back.
+- **Normal:** Geometry Normal, un-flipped on back faces.
+- **Tangent frame:** Blender's UV0 tangent space. Its bitangent follows the game's `−v`, as in the viewer; the stored vertex tangent is not decoded yet.
+- **Vertex colour:** the first colour attribute, else 1.
+- **Vectors:** game `(x, y, z)` is Blender `(x, −z, y)`.
+
+The BRDF group follows the deferred apply program:
+
+| Term | Node |
+| --- | --- |
+| Specular | Metallic BSDF, GGX, roughness `0.9725 − 0.7514 gloss`, F82 Fresnel with a white edge tint (Schlick with F90 = 1) |
+| Diffuse | Diffuse BSDF, roughness 0 |
+| Self-lit | Emission: albedo at strength `E` |
+
+Light strength is π × the game's light colour, as for R&C 2016. Cycles uses the exact Smith term rather than the game's joint approximation. The game applies occlusion to ambient light only, which Cycles cannot separate; the group's "Occlusion on diffuse" input (default 0) applies it to the diffuse colour instead.
+
+### Checks
+
+Export check: each export builds the `.blend` as a candidate, reopens it in a second Blender (`blender_convert.py --validate`), then moves it into place.
+
+`python -m rc2016.games.rcra.blender_check --game <install> --blender <blender.exe> --output-root <folder> <material> ...` bakes every surface output of the emitted node tree in Cycles. It compares the bake, texel by texel, with the recipe evaluated by the translator on the same textures:
+- **Window:** a UV window small enough that the bake's sub-pixel jitter stays below a texel.
+- **Results:** on one material from each of the ten most-used graphs, F0 and alpha are exact. Albedo and the normal agree within 2 × 10⁻³, and gloss, occlusion and emission within 8-bit rounding ties.
+
+### Not translated
+
+- **Forward and blended materials:** glass, screens and effects are drawn by the forward program in the game. Blender gets their G-buffer surface, opaque. A material whose flags word has bit `0x100` is labelled as probably blended. The bit is inferred: it is set on every glass and effect material sampled and clear on the opaque ones. The architecture glass domes come out black, because their writer stores only their specular.
+- **Lighting classes 1 to 5:** skin, hair and the other special classes need their own apply programs. They are lit with class 0.
 
 ## Evidence tool
 
@@ -537,4 +610,4 @@ python -m rc2016.games.rcra.inspect --game <install> --output-root <folder> --su
 - **Synthetic tests** build a small toc, dag and set of DSAR archives, a two-mesh model, texture and material assets, clips (plain and with a frame table) or skin batches (with a palette and a joint base).
 - **Real-install tests** read `RCRA_GAME` (the install folder) and skip when it is not set. They also compare bytes against ALERT's own TOC2 reader.
 
-`tests/test_sm5.py` compiles small HLSL programs with Windows' `d3dcompiler_47` at test time, checks the decoder against `D3DDisassemble` and the translator against known results (branches, loops, switch, bit packing, discard, reflection names, UAV stores). It skips without the DLL. `tests/test_rcra_shaders.py` (`RCRA_GAME`) checks the pass table, the glass forward program against the hand decode on the trooper dome, and the `basic_normal_gloss` G-buffer writer.
+`tests/test_rcra_surface.py` checks the surface terms: packed again with the engine's formulas they give the writer's own G-buffer bits, on four real graphs. It also checks the texture writer and the export wiring, and, with Blender installed (`RC2016_BLENDER` or the default path), bakes an emitted material against its recipe. `tests/test_sm5.py` compiles small HLSL programs with Windows' `d3dcompiler_47` at test time, checks the decoder against `D3DDisassemble` and the translator against known results (branches, loops, switch, bit packing, discard, reflection names, UAV stores). It skips without the DLL. `tests/test_rcra_shaders.py` (`RCRA_GAME`) checks the pass table, the glass forward program against the hand decode on the trooper dome, and the `basic_normal_gloss` G-buffer writer.

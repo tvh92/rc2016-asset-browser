@@ -45,6 +45,7 @@ FORMATS = {   # key: (label, file suffix, needs Blender)
     'obj': ('Wavefront (.obj + .mtl)', '.obj', False),
     'fbx': ('Autodesk FBX (.fbx)', '.fbx', True),
     'usd': ('Universal Scene Description (.usdc)', '.usdc', True),
+    'blend': ('Blender scene (.blend)', '.blend', True),
 }
 BLENDER_SCRIPT = Path(__file__).with_name('blender_convert.py')
 
@@ -853,7 +854,19 @@ class ModelExporter:
                 notes.append('OBJ holds the static rest pose only (no skeleton or animation).')
         if needs_blender:
             self._check()
-            written += self._blender_convert(folder, stem, doc, blob, needs_blender, options.blender)
+            translated = None
+            if options.textures:
+                self.log('  translating game materials for Blender')
+                translated = game.blender_materials(archive, {m['obj_name']: by_index.get(slot, {}) for slot, m in maps.items()},
+                                                    folder)
+            if translated is not None:
+                materials_json, untranslated = translated
+                kept = ', '.join(f'{name} ({why})' for name, why in sorted(untranslated.items()))
+                if untranslated:
+                    notes.append(f'{len(untranslated)} material(s) keep the glTF material in Blender: {kept}')
+                written.append(materials_json.name)
+            written += self._blender_convert(folder, stem, doc, blob, needs_blender, options.blender,
+                                             materials_json=translated[0] if translated else None)
         if options.source_textures:
             paths = sorted({p for m in maps.values() for p in m['sources'].values()})
             rows = game.export_textures(archive, paths, tex_dir / 'game_dds', {'dds'})
@@ -1094,15 +1107,22 @@ class ModelExporter:
                 lines += ['Ke 1 1 1', 'map_Ke ' + save('emissive', m['emissive'])]
         (folder / f'{stem}.mtl').write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
-    def _blender_convert(self, folder, stem, doc, blob, formats, blender):
-        """GLB -> FBX/USD in a background Blender with factory settings and a private user folder."""
+    def _blender_convert(self, folder, stem, doc, blob, formats, blender, materials_json=None):
+        """GLB -> FBX/USD/.blend in a background Blender with factory settings and a private user folder; with
+        ``materials_json`` the game's translated materials replace the imported ones."""
         with tempfile.TemporaryDirectory(prefix='rcps4-export-') as tmp:
             glb = Path(tmp) / f'{stem}.glb'
             tag_model(doc, stem)
             write_glb(glb, doc, blob)
-            targets = {f: folder / f'{stem}{FORMATS[f][1]}' for f in formats}
+            finals = {f: folder / f'{stem}{FORMATS[f][1]}' for f in formats}
+            # A .blend with translated materials is built as a candidate, reopened and validated in a second Blender,
+            # then moved into place.
+            candidate = materials_json is not None and 'blend' in finals
+            targets = dict(finals, blend=Path(tmp) / f'{stem}.blend') if candidate else finals
             command = [str(blender), '--background', '--factory-startup', '--python-exit-code', '1', '--python', str(BLENDER_SCRIPT), '--',
                        '--glb', str(glb)] + [arg for f, path in targets.items() for arg in (f'--{f}', str(path))]
+            if materials_json is not None:
+                command += ['--materials', str(materials_json)]
             env = os.environ.copy()
             env['BLENDER_USER_RESOURCES'] = str(Path(tmp) / 'user')
             env['PYTHONPATH'] = str(Path(__file__).resolve().parents[2]) + (os.pathsep + env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
@@ -1113,7 +1133,7 @@ class ModelExporter:
             output = []
             for line in self.process.stdout:
                 output.append(line.rstrip())
-                if line.startswith(('EXPORTED', 'Error', 'Traceback')):
+                if line.startswith(('EXPORTED', 'TRANSLATED', 'VALIDATED', 'Error', 'Traceback')):
                     self.log('  ' + line.rstrip())
             code = self.process.wait()
             self.process.stdout.close()
@@ -1125,7 +1145,19 @@ class ModelExporter:
             missing = [p.name for p in targets.values() if not p.is_file()]
             if missing:
                 raise RuntimeError('Blender did not write ' + ', '.join(missing))
-            return [p.name for p in targets.values()]
+            if candidate:
+                check = subprocess.run([str(blender), '--background', '--factory-startup', '--python-exit-code', '1',
+                                        '--python', str(BLENDER_SCRIPT), '--', '--validate', str(targets['blend'])],
+                                       capture_output=True, text=True, encoding='utf-8', errors='replace', env=env,
+                                       creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                lines = (check.stdout + check.stderr).splitlines()
+                for line in lines:
+                    if line.startswith(('VALIDATED', 'PROBLEM')):
+                        self.log('  ' + line)
+                if check.returncode:
+                    raise RuntimeError('The .blend failed its reopen check:\n' + '\n'.join(lines[-15:]))
+                os.replace(targets['blend'], finals['blend'])
+            return [p.name for p in finals.values()]
 
     def cancel(self):
         process = self.process

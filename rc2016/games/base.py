@@ -19,7 +19,7 @@ APP_TITLE = 'R&C Asset Browser'
 # Hooks a game may supply; each one missing raises NotImplementedError when called.
 HOOKS = frozenset({'list_models', 'decode_model', 'material_textures', 'model_texture_list', 'texture_header',
                    'material_rules', 'effect_preview', 'texture_paths', 'load_texture', 'export_textures',
-                   'material_maps', 'shadow_only', 'animation_library'})
+                   'material_maps', 'shadow_only', 'animation_library', 'blender_materials'})
 
 
 class GameUnavailable(RuntimeError):
@@ -157,6 +157,13 @@ class Game:
     def material_maps(self, source, material, cache, map_cache=None):
         """``export.models.material_maps``'s dict (name, base, mr, normal, emissive, factors, notes, sources, png)."""
         return self._hook('material_maps')(source, material, cache, map_cache)
+
+    def blender_materials(self, source, materials, folder):
+        """Translated Blender materials for an export: ({glTF material name: material dict}, export folder) ->
+        (path of a JSON file for rc2016/export/blender_convert.py, {name: reason a material keeps the glTF material}),
+        or None when the game has none."""
+        hook = self.hooks.get('blender_materials')
+        return hook(source, materials, folder) if hook is not None else None
 
     # Animation -------------------------------------------------------------------------------
     def has_animation_library(self) -> bool:

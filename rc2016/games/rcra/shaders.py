@@ -16,6 +16,7 @@ graph's float defaults overwritten by the material's parameter values at the gra
 ``t(5 + u)`` (``textureUnit<5+u>``) binds the graph's slot-table row ``u``: the material's texture for that slot key, else
 the row's default texture.
 """
+import re
 import struct
 
 from rc2016.games.rcra import material as rmat
@@ -78,9 +79,19 @@ def pass_shader(graph_data, slot):
     return dxbc.shader(blob)
 
 
+def _layout(graph_data):
+    """graph_layout, or no slots, parameters and defaults for a graph without those sections (template graphs)."""
+    try:
+        return rmat.graph_layout(graph_data)
+    except ValueError as error:
+        if 'no slot, parameter or default section' not in str(error):
+            raise
+        return [], {}, ()
+
+
 def material_constants(graph_data, material_data):
     """cb2 as floats: the graph's defaults overwritten by the material's values at the graph's byte offsets."""
-    _rows, offsets, defaults = rmat.graph_layout(graph_data)
+    _rows, offsets, defaults = _layout(graph_data)
     cb2 = list(defaults)
     for key, values in rmat.material_parameters(material_data).items():
         if key in offsets:
@@ -99,8 +110,10 @@ def constant_name(index):
 def material_units(graph_data, material_data):
     """{'textureUnit<n>': texture path}: each slot-table row's material texture, else the graph default."""
     slots = dict(rmat.material_slots(material_data))
-    rows, _offsets, _defaults = rmat.graph_layout(graph_data)
-    return {'textureUnit%d' % (FIRST_MATERIAL_UNIT + unit): slots.get(key) or default for unit, key, default in rows}
+    rows, _offsets, _defaults = _layout(graph_data)
+    # Some material and graph strings double their separators ("textures//default_pink_shader//..."); the toc does not.
+    return {'textureUnit%d' % (FIRST_MATERIAL_UNIT + unit): re.sub('/+', '/', slots.get(key) or default)
+            for unit, key, default in rows}
 
 
 class NeutralEngine(sm5.Bindings):
